@@ -2261,14 +2261,7 @@ impl AttractorApiService {
                         &flow,
                         flow_name,
                         expand_children,
-                        Some(
-                            &self.flow_roots(
-                                bundle
-                                    .record
-                                    .as_ref()
-                                    .map(|record| record.project_path.as_str()),
-                            ),
-                        ),
+                        Some(&self.flow_roots(run_flow_project(&bundle).as_deref())),
                     ),
                 ),
             ),
@@ -2330,11 +2323,11 @@ impl AttractorApiService {
                     json!({"status": "validation_error", "error": "flow_name is required when flow_source_mode is flow_name."}),
                 );
             };
-            // The run's own project when the request names none.
+            // The run's own resolution scope when the request names no project.
             let project_path = request
                 .project_path
                 .clone()
-                .or_else(|| source_record.map(|record| record.project_path.clone()));
+                .or_else(|| run_flow_project(&source));
             let loaded = load_flow(&self.flow_roots(project_path.as_deref()), &flow_name).and_then(
                 |loaded| {
                     attractor_dsl::flow_yaml(&loaded.flow).map(|content| (content, loaded.manifest))
@@ -2914,6 +2907,17 @@ pub fn flow_roots(settings: &SparkSettings, project_path: Option<&str>) -> FlowR
         .filter(|path| !path.is_empty())
         .map(Path::new);
     FlowRoots::new(settings.bundled_dir(), project)
+}
+
+/// The project a run's flows resolve through. `record.project_path` is always
+/// set (it keys the run's storage), so only a run that started with an org
+/// root resolves through it; others stay bundled only.
+fn run_flow_project(bundle: &RunBundle) -> Option<String> {
+    let record = bundle.record.as_ref()?;
+    match &bundle.checkpoint {
+        Some(checkpoint) if !checkpoint.context.contains_key("internal.org_root") => None,
+        _ => Some(record.project_path.clone()),
+    }
 }
 
 /// Run context for subflow resolution: the org root (when the run has a

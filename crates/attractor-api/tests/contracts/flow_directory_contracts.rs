@@ -970,3 +970,106 @@ fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
         "{manifest}"
     );
 }
+
+#[test]
+fn bundled_only_runs_continue_bundled_only_when_the_project_has_overrides() {
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let parent = parse_flow_definition(
+        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: child}\n    manager: {max_cycles: 1, child_autostart: true}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
+    )
+    .expect("parent");
+    let child = |title: &str| {
+        parse_flow_definition(&format!(
+            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
+        ))
+        .expect("child")
+    };
+    // Differing bundled and project copies of the same names.
+    let bundled = settings.bundled_dir().join("flows");
+    let project = temp.path().join("project");
+    let org = spark_common::project::org_dir(&project).join("flows");
+    write_flow_dir(&bundled.join("parent"), &parent).expect("bundled parent");
+    write_flow_dir(&bundled.join("child"), &child("Bundled Child")).expect("bundled child");
+    write_flow_dir(&org.join("parent"), &parent).expect("org parent");
+    write_flow_dir(&org.join("child"), &child("Org Child")).expect("org child");
+    let service = AttractorApiService::new(settings.clone());
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let path = project.to_string_lossy().into_owned();
+
+    // The project is only the working directory: no org is selected.
+    let started = service.start_pipeline(attractor_api::PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("source".to_string()),
+        flow_name: Some("parent".to_string()),
+        working_directory: path.clone(),
+        ..Default::default()
+    });
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+
+    let finished_child = |run_id: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let child = store
+                .list_run_records()
+                .expect("runs")
+                .into_iter()
+                .find(|record| {
+                    record.parent_run_id.as_deref() == Some(run_id) && record.status == "completed"
+                });
+            if let Some(child) = child {
+                return child;
+            }
+            assert!(Instant::now() < deadline, "{run_id}: no completed child");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let manifest_keys = |run_id: &str| {
+        let bundle = store
+            .read_run_bundle(run_id)
+            .expect("read")
+            .expect("bundle");
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(bundle.paths.artifacts_dir().join("flow/files.json")).expect("files.json"),
+        )
+        .expect("manifest");
+        assert_eq!(manifest["org"], Value::Null, "{manifest}");
+        manifest["files"]
+            .as_object()
+            .expect("files")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(finished_child("source").flow_name, "Bundled Child");
+
+    let response = service.continue_pipeline_route(
+        "source",
+        attractor_api::ContinuePipelineRequest {
+            start_node: "run".to_string(),
+            flow_source_mode: "flow_name".to_string(),
+            flow_name: Some("parent".to_string()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(response.body["status"], "started", "{}", response.body);
+    let continued = response.body["run_id"].as_str().expect("run id");
+    let keys = manifest_keys(continued);
+    assert!(
+        keys.iter().all(|key| key.starts_with("bundled/")),
+        "{keys:?}"
+    );
+    let child_run = finished_child(continued);
+    assert_eq!(child_run.flow_name, "Bundled Child");
+    let keys = manifest_keys(&child_run.run_id);
+    assert!(
+        keys.contains(&"bundled/flows/child/flow.md".to_string()),
+        "{keys:?}"
+    );
+    let context = attractor_runtime::RuntimeControls::new(store.clone())
+        .get_context(continued)
+        .expect("context");
+    assert!(!context.contains_key("internal.org_root"), "{context:?}");
+}
