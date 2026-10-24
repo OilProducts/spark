@@ -260,9 +260,16 @@ fn flow_name_from_path(flows_dir: &Path, flow_path: &Path) -> Option<String> {
 }
 
 /// Names of every flow directory (one containing `flow.md`) under
-/// `flows_dir`; a missing directory has none.
+/// `flows_dir`; a missing directory has none. A symlinked directory counts
+/// only if it resolves inside `flows_dir` and not to a directory being
+/// listed, so listing never leaves the root or loops.
 fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
-    fn collect(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    fn collect(
+        root: &Path,
+        dir: &Path,
+        ancestors: &mut Vec<PathBuf>,
+        paths: &mut Vec<PathBuf>,
+    ) -> std::io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             let hidden = path
@@ -271,10 +278,18 @@ fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
             if hidden || !path.is_dir() {
                 continue;
             }
+            let Ok(real) = path.canonicalize() else {
+                continue;
+            };
+            if !real.starts_with(root) || ancestors.contains(&real) {
+                continue;
+            }
             if path.join(FLOW_FILE).is_file() {
                 paths.push(path);
             } else {
-                collect(&path, paths)?;
+                ancestors.push(real);
+                collect(root, &path, ancestors, paths)?;
+                ancestors.pop();
             }
         }
         Ok(())
@@ -283,15 +298,18 @@ fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
         return Ok(Vec::new());
     }
     let mut paths = Vec::new();
-    collect(flows_dir, &mut paths).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!(
-                "Unable to list flows directory {}: {source}",
-                flows_dir.display()
-            ),
-        )
-    })?;
+    flows_dir
+        .canonicalize()
+        .and_then(|root| collect(&root, flows_dir, &mut vec![root.clone()], &mut paths))
+        .map_err(|source| {
+            FlowSourceError::new(
+                500,
+                format!(
+                    "Unable to list flows directory {}: {source}",
+                    flows_dir.display()
+                ),
+            )
+        })?;
     Ok(paths
         .iter()
         .filter_map(|path| flow_name_from_path(flows_dir, path))

@@ -377,6 +377,59 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_retried_save_after_a_failed_copy_commit_keeps_the_pristine_copy() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    let bundled = settings.bundled_dir().join("flows/shared/flow.md");
+    let before = std::fs::read_to_string(&bundled).expect("bundled");
+    let project = temp.path().join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let git = |args: &[&str]| spark_common::project::run_git(&org, args).expect("git");
+    git(&["config", "user.name", "Org Test"]);
+    git(&["config", "user.email", "org@example.com"]);
+    let hook = org.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().expect("hooks")).expect("hooks dir");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let service = attractor_api::AttractorApiService::new(settings.clone());
+    let save = || {
+        service.save_flow(attractor_api::SaveFlowRequest {
+            name: "shared".to_string(),
+            content: simple_flow("shared").replace("title: shared", "title: Edited"),
+            project_path: Some(project.to_string_lossy().to_string()),
+        })
+    };
+    assert_eq!(save().status_code, 500);
+    std::fs::remove_file(&hook).expect("unhook");
+    let retried = save();
+    assert_eq!(retried.status_code, 200, "{}", retried.body);
+    assert_eq!(
+        git(&["log", "--format=%s"]),
+        "Edit shared in the flow editor\nCopy shared from bundled"
+    );
+
+    let app = build_app(settings);
+    let (status, copy, _) = request_json(
+        app,
+        "GET",
+        &format!(
+            "/workspace/api/org/item?project_path={}&kind=flow&name=shared",
+            project.display()
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{copy}");
+    assert_eq!(copy["layer"], "project_copy");
+    assert_eq!(copy["bundled_changed"], false);
+    assert_eq!(std::fs::read_to_string(&bundled).expect("bundled"), before);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots() {
     use std::os::unix::fs::symlink;
     let temp = tempfile::tempdir().expect("tempdir");
@@ -384,14 +437,23 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let bundled = settings.bundled_dir();
     write_flow(&settings, "shared", &simple_flow("shared"));
     let outside = temp.path().join("outside");
-    std::fs::create_dir_all(outside.join("flow")).expect("outside");
+    std::fs::create_dir_all(&outside).expect("outside");
     std::fs::write(outside.join("secret.md"), "secret\n").expect("secret");
-    std::fs::write(
-        outside.join("flow/flow.md"),
-        std::fs::read_to_string(bundled.join("flows/shared/flow.md")).expect("flow"),
+    // An outside flow whose `review` node uses the reviewer role.
+    attractor_dsl::write_flow_dir(
+        &outside.join("flow"),
+        &attractor_dsl::parse_flow_definition(
+            "schema_version: '1'\nid: outside\ntitle: outside\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    config:\n      kind: agent_task\n      prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
+        )
+        .expect("valid flow"),
     )
     .expect("outside flow");
     std::fs::create_dir_all(bundled.join("roles")).expect("bundled roles");
+    std::fs::write(
+        bundled.join("roles/reviewer.md"),
+        "---\ntype: Role\n---\n\nYou review.\n",
+    )
+    .expect("reviewer");
     symlink(outside.join("secret.md"), bundled.join("roles/bleak.md")).expect("link");
     symlink(outside.join("flow"), bundled.join("flows/linked")).expect("link");
 
@@ -405,6 +467,15 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     std::fs::copy(bundled.join("flows/shared/flow.md"), copy.join("flow.md")).expect("copy");
     symlink(outside.join("secret.md"), copy.join("node.md")).expect("link");
     symlink(outside.join("flow"), org.join("flows/own")).expect("link");
+    // A flow of the org's own whose node file leads outside, and a cycle.
+    let nodelink = org.join("flows/nodelink");
+    std::fs::create_dir_all(&nodelink).expect("nodelink");
+    for file in ["flow.md", "start.md", "done.md"] {
+        std::fs::copy(outside.join("flow").join(file), nodelink.join(file)).expect("copy");
+    }
+    symlink(outside.join("flow/review.md"), nodelink.join("review.md")).expect("link");
+    std::fs::create_dir_all(org.join("flows/loop")).expect("loop");
+    symlink(org.join("flows"), org.join("flows/loop/back")).expect("link");
     std::fs::create_dir_all(org.join("memory")).expect("memory");
     symlink(&outside, org.join("memory/coordinator")).expect("link");
 
@@ -416,11 +487,34 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
         format!("/workspace/api/org/item?{query}&kind=flow&name=shared"),
         format!("/workspace/api/org/item?{query}&kind=flow&name=own"),
         format!("/workspace/api/org/item?{query}&kind=flow&name=linked"),
+        format!("/workspace/api/org/item?{query}&kind=flow&name=nodelink"),
     ] {
         let (status, body, _) = request_json(app.clone(), "GET", &uri, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
         assert!(!body.to_string().contains("secret\\n"), "{uri}: {body}");
     }
+    // Listing neither follows escaping directories or cycles nor reads
+    // escaping node files.
+    let (status, list, _) = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/org?{query}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let items = list["items"].as_array().expect("items");
+    let names: Vec<_> = items
+        .iter()
+        .filter(|item| item["kind"] == "flow")
+        .map(|item| item["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, ["nodelink", "shared"], "{list}");
+    let reviewer = items
+        .iter()
+        .find(|item| item["kind"] == "role" && item["name"] == "reviewer")
+        .expect("reviewer");
+    assert_eq!(reviewer["usage"], json!([]), "{list}");
     let (status, files, _) = request_json(
         app.clone(),
         "GET",

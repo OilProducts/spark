@@ -106,20 +106,26 @@ impl WorkspaceOrgService {
         let mut items = Vec::new();
         let mut usage: BTreeMap<String, Vec<RoleUsage>> = BTreeMap::new();
         for name in roots.list_flow_names().map_err(flow_error)? {
-            if let Ok(flow) = roots
-                .resolve_flow(&name)
-                .and_then(|resolved| attractor_dsl::read_flow_dir(&resolved.path))
+            let flow = item(&roots, &changed, "flow", name)?;
+            let root = if flow.layer == "bundled" {
+                &roots.bundled
+            } else {
+                &org
+            };
+            // A flow whose files lead outside its root, or do not parse, uses no roles.
+            if let Ok(definition) = item_files(root, &flow.path, "flow")
+                .and_then(|files| attractor_dsl::assemble_flow_files(&files).map_err(flow_error))
             {
-                for (node, definition) in &flow.nodes {
+                for (node, definition) in &definition.nodes {
                     if let Some(role) = &definition.role {
                         usage.entry(role.clone()).or_default().push(RoleUsage {
-                            flow: name.clone(),
+                            flow: flow.name.clone(),
                             node: node.clone(),
                         });
                     }
                 }
             }
-            items.push(item(&roots, &changed, "flow", name)?);
+            items.push(flow);
         }
         let standing = self.standing_roles(project)?;
         for name in role_names(&roots) {
@@ -404,11 +410,16 @@ fn item_files(root: &Path, rel: &str, kind: &str) -> WorkspaceResult<BTreeMap<St
         return Err(escaped());
     }
     if kind == "flow" {
-        let files = attractor_dsl::read_flow_dir_texts(&path).map_err(flow_error)?;
-        if files.keys().any(|name| !inside(root, &path.join(name))) {
-            return Err(escaped());
+        // Check every file before reading any.
+        for entry in fs::read_dir(&path).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !attractor_dsl::RESERVED_FILES.contains(&name.as_str())
+                && !inside(root, &entry.path())
+            {
+                return Err(escaped());
+            }
         }
-        return Ok(files);
+        return attractor_dsl::read_flow_dir_texts(&path).map_err(flow_error);
     }
     let text = fs::read_to_string(&path)
         .map_err(|error| WorkspaceError::Internal(format!("Unable to read role: {error}")))?;

@@ -555,6 +555,49 @@ fn saving_a_bundled_flow_creates_a_project_copy_and_deleting_it_reverts() {
     assert_eq!(service.delete_flow("shared", None).status_code, 409);
 }
 
+#[test]
+fn a_failed_copy_commit_is_recopied_by_the_retry() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let bundled = settings.bundled_dir().join("flows/shared");
+    write_flow(&bundled, VALID_FLOW);
+    let before = fs::read_to_string(bundled.join("task.md")).expect("bundled");
+    let service = AttractorApiService::new(settings);
+    let edited = VALID_FLOW.replace("prompt: Do work", "prompt: Project work");
+    let hook = reject_commits(&org);
+
+    let failed = service.save_flow(save("shared", &edited, &project));
+    assert_eq!(failed.status_code, 500, "{}", failed.body);
+    // The failed copy left its files behind, and a stray one appears.
+    fs::write(org.join("flows/shared/stray.md"), "stray\n").expect("stray");
+
+    fs::remove_file(&hook).expect("unhook");
+    let retried = service.save_flow(save("shared", &edited, &project));
+    assert_eq!(retried.status_code, 200, "{}", retried.body);
+    assert_eq!(
+        git(&org, &["log", "--format=%s"]),
+        "Edit shared in the flow editor\nCopy shared from bundled"
+    );
+    assert_eq!(
+        git(&org, &["show", "--name-only", "--format=", "HEAD~1"]),
+        "flows/shared/done.md\nflows/shared/flow.md\nflows/shared/start.md\nflows/shared/task.md"
+    );
+    assert_eq!(
+        git(&org, &["show", "HEAD~1:flows/shared/task.md"]),
+        before.trim()
+    );
+    assert_eq!(
+        read_flow_dir(&org.join("flows/shared")).expect("copy"),
+        parse_flow_definition(&edited).expect("flow")
+    );
+    assert_eq!(
+        fs::read_to_string(bundled.join("task.md")).expect("bundled"),
+        before
+    );
+}
+
 fn save(name: &str, content: &str, project: &Path) -> SaveFlowRequest {
     SaveFlowRequest {
         name: name.to_string(),

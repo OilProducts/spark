@@ -3259,8 +3259,16 @@ fn save_flow_request(
     );
     // The first save of a bundled flow commits the unmodified copy first, so
     // the copy's first commit is exactly the bundled version it came from.
-    if !flow_path.join(FLOW_FILE).is_file() {
-        if let Ok(Some(bundled)) = roots.find_flow(&name) {
+    // Until HEAD holds the copy (say its commit failed), a save recopies it:
+    // whatever the editor owns on disk is replaced by this save anyway.
+    let committed = spark_common::project::run_git(
+        &org,
+        &["cat-file", "-e", &format!("HEAD:{dir}/{FLOW_FILE}")],
+    )
+    .is_ok();
+    if !committed {
+        let bundled = FlowRoots::new(roots.bundled.clone(), None).find_flow(&name);
+        if let Ok(Some(bundled)) = bundled {
             if let Err(error) = copy_flow_files(&bundled.path, &flow_path).and_then(|()| {
                 commit_org_paths(&org, &pathspecs, &format!("Copy {name} from bundled"))
             }) {
@@ -3285,11 +3293,23 @@ fn save_flow_request(
     )
 }
 
-/// Copies a flow directory's files into `target`.
+/// Makes `target`'s flow files exactly `source`'s: copies each and removes
+/// any other flow file.
 fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
     let texts =
         attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(target).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let file = path.file_name().unwrap_or_default().to_string_lossy();
+        if file.ends_with(".md")
+            && !texts.contains_key(file.as_ref())
+            && !attractor_dsl::RESERVED_FILES.contains(&file.as_ref())
+            && path.is_file()
+        {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+    }
     texts.into_iter().try_for_each(|(file, text)| {
         fs::write(target.join(file), text).map_err(|error| error.to_string())
     })
