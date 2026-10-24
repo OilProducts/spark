@@ -729,6 +729,42 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     assert_eq!(tree(), before);
 }
 
+#[tokio::test]
+async fn workspace_org_list_writes_nothing_into_a_partial_workspace_data_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    // A project data root holding only a conversations directory: no
+    // project.toml, lock, or other project directories.
+    let paths = spark_storage::ProjectRegistry::new(settings.data_dir.clone())
+        .project_paths(&project.display().to_string())
+        .expect("project paths");
+    std::fs::create_dir_all(&paths.conversations_dir).expect("partial root");
+    std::fs::write(paths.root.join("note.txt"), "keep\n").expect("note");
+    let app = build_app(settings);
+    let tree = || {
+        let mut entries: Vec<_> = walk(temp.path())
+            .into_iter()
+            .map(|path| {
+                let content = std::fs::read(&path).ok();
+                (path, content)
+            })
+            .collect();
+        entries.sort();
+        entries
+    };
+    let before = tree();
+    let (status, list, _) = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/org?project_path={}", project.display()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(tree(), before);
+}
+
 fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(dir)
         .into_iter()

@@ -554,6 +554,20 @@ impl ConversationRepository {
             .map(|record| crate::conversation::snapshot_from_record(&record)))
     }
 
+    /// `read_snapshot` for a known project that never creates project storage.
+    pub fn read_existing_snapshot(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> Result<Option<Value>> {
+        let project_paths = self.registry.project_paths(project_path)?;
+        let paths = crate::conversation::ConversationRecordPaths::new(
+            project_paths.conversations_dir.join(conversation_id),
+        );
+        Ok(crate::conversation::read_record(&paths)?
+            .map(|record| crate::conversation::snapshot_from_record(&record)))
+    }
+
     /// Read one segment's externalized tool output. Returns `None` when the
     /// segment has no sidecar file (its output is stored inline) or the id is
     /// not filesystem-safe.
