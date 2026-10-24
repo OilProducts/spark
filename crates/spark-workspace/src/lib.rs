@@ -45,5 +45,6 @@ pub use workflow_log::{
 };
 pub mod inbox;
 pub mod missions;
+pub mod org;
 pub mod playbooks;
 pub mod roles;

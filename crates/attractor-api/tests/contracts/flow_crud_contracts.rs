@@ -510,10 +510,23 @@ fn saving_a_bundled_flow_creates_a_project_copy_and_deleting_it_reverts() {
         read_flow_dir(&org.join("flows/shared")).expect("copy"),
         parse_flow_definition(&edited).expect("flow")
     );
+    // The unmodified copy is committed first, then the edit.
+    assert_eq!(
+        git(&org, &["log", "--format=%s"]),
+        "Edit shared in the flow editor\nCopy shared from bundled"
+    );
     assert_eq!(
         last_commit(&org),
-        "Edit shared in the flow editor\nflows/shared/done.md\nflows/shared/flow.md\nflows/shared/start.md\nflows/shared/task.md"
+        "Edit shared in the flow editor\nflows/shared/task.md"
     );
+    for file in ["done.md", "flow.md", "start.md", "task.md"] {
+        assert_eq!(
+            git(&org, &["show", &format!("HEAD~1:flows/shared/{file}")]),
+            fs::read_to_string(bundled.join(file))
+                .expect("bundled file")
+                .trim()
+        );
+    }
     assert_eq!(
         service.get_flow("shared", project_path).body["layer"],
         "org"

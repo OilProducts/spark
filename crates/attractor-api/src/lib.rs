@@ -3199,7 +3199,8 @@ fn dispatch_pipeline_route(
 }
 
 /// Writes the changed files of a flow into the project's org repo and
-/// commits them. Saving a bundled flow copies it into the org first.
+/// commits them. Saving a bundled flow first copies it into the org and
+/// commits the copy unmodified.
 fn save_flow_request(
     roots: &FlowRoots,
     project: &Path,
@@ -3235,16 +3236,6 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    if !flow_path.join(FLOW_FILE).is_file() {
-        if let Ok(Some(bundled)) = roots.find_flow(&name) {
-            if let Err(error) = copy_flow_files(&bundled.path, &flow_path) {
-                return RuntimeRouteResponse::json(500, json!({"detail": error}));
-            }
-        }
-    }
-    if let Err(error) = write_flow_dir(&flow_path, flow) {
-        return flow_source_error_response(error);
-    }
     // Every flow file the editor owns (the directory's own `.md` files, which
     // it writes, copies and deletes), so a retry records what a failed commit
     // left behind; other files, and the reserved ones, are not the editor's.
@@ -3266,6 +3257,20 @@ fn save_flow_request(
             .iter()
             .map(|file| format!(":(exclude,literal){dir}/{file}")),
     );
+    // The first save of a bundled flow commits the unmodified copy first, so
+    // the copy's first commit is exactly the bundled version it came from.
+    if !flow_path.join(FLOW_FILE).is_file() {
+        if let Ok(Some(bundled)) = roots.find_flow(&name) {
+            if let Err(error) = copy_flow_files(&bundled.path, &flow_path).and_then(|()| {
+                commit_org_paths(&org, &pathspecs, &format!("Copy {name} from bundled"))
+            }) {
+                return RuntimeRouteResponse::json(500, json!({"detail": error}));
+            }
+        }
+    }
+    if let Err(error) = write_flow_dir(&flow_path, flow) {
+        return flow_source_error_response(error);
+    }
     if let Err(error) =
         commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
     {

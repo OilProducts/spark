@@ -84,6 +84,10 @@ pub fn router() -> Router<HttpAppState> {
         .route("/missions/{mission_id}/{control}", post(control_mission))
         .route("/roles", get(list_roles))
         .route("/roles/{name}/{control}", post(control_role))
+        .route("/org", get(list_org))
+        .route("/org/item", get(get_org_item))
+        .route("/org/history", get(get_org_history))
+        .route("/org/memory", get(get_org_memory))
         .route("/playbooks", get(list_playbooks))
         .route("/playbooks/{name}", get(get_playbook))
         .route("/projects", get(list_projects).delete(delete_project))
@@ -1802,6 +1806,65 @@ async fn list_roles(
     let roles = spark_workspace::roles::WorkspaceRoleService::new((*settings).clone())
         .list(&query.project_path)?;
     Ok(Json(json!({ "roles": roles })))
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgQuery {
+    project_path: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    role: String,
+    file: Option<String>,
+}
+
+fn org_service(settings: &SparkSettings) -> spark_workspace::org::WorkspaceOrgService {
+    spark_workspace::org::WorkspaceOrgService::new(settings.clone())
+}
+
+async fn list_org(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<OrgQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(payload)?;
+    Ok(Json(org_service(&settings).list(&query.project_path)?))
+}
+
+async fn get_org_item(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<OrgQuery>, QueryRejection>,
+) -> ApiResult<spark_workspace::org::OrgItemDetail> {
+    let query = query_payload(payload)?;
+    Ok(Json(org_service(&settings).item(
+        &query.project_path,
+        &query.kind,
+        &query.name,
+    )?))
+}
+
+async fn get_org_history(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<OrgQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(payload)?;
+    let commits = org_service(&settings).history(&query.project_path, &query.path)?;
+    Ok(Json(json!({ "commits": commits })))
+}
+
+async fn get_org_memory(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<OrgQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(payload)?;
+    Ok(Json(org_service(&settings).memory(
+        &query.project_path,
+        &query.role,
+        query.file.as_deref(),
+    )?))
 }
 
 #[derive(Debug, Default, Deserialize)]

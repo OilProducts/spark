@@ -212,7 +212,10 @@ fn flow_stem(flow_name: &str) -> String {
         .unwrap_or_else(|| flow_name.to_string())
 }
 
-fn flow_source_error(error: FlowSourceError, missing_name: Option<&str>) -> WorkspaceError {
+pub(crate) fn flow_source_error(
+    error: FlowSourceError,
+    missing_name: Option<&str>,
+) -> WorkspaceError {
     match error.status_code() {
         400 => WorkspaceError::Validation(error.detail().to_string()),
         404 => WorkspaceError::NotFound(format!(

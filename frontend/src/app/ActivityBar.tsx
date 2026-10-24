@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
-import { Bell, GitBranch, House, MessageSquare, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
+import { Bell, GitBranch, House, MessageSquare, Network, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
 
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -19,6 +19,7 @@ export const ACTIVITY_ITEMS: ActivityItem[] = [
     { mode: 'runs', label: 'Runs', icon: Play, testId: 'activity-runs' },
     { mode: 'triggers', label: 'Triggers', icon: Zap, testId: 'activity-triggers' },
     { mode: 'editor', label: 'Flows', icon: GitBranch, testId: 'activity-flows' },
+    { mode: 'org', label: 'Org', icon: Network, testId: 'activity-org' },
 ]
 const ACTIVITY_ORDER: ViewMode[] = [...ACTIVITY_ITEMS.map((item) => item.mode), 'settings']
 

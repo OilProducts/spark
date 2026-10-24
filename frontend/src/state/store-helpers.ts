@@ -18,7 +18,7 @@ export const DEFAULT_UI_DEFAULTS: UiDefaults = {
 
 export const ROUTE_STATE_STORAGE_KEY = 'spark.ui_route_state'
 export const VIEW_MODE_SESSION_KEY = 'spark.ui_view_mode'
-const VIEW_MODES: ViewMode[] = ['overview', 'home', 'projects', 'missions', 'editor', 'triggers', 'settings', 'runs']
+const VIEW_MODES: ViewMode[] = ['overview', 'home', 'projects', 'missions', 'editor', 'triggers', 'settings', 'runs', 'org']
 export const DEFAULT_WORKING_DIRECTORY = './test-app'
 export const RECENT_PROJECT_LIMIT = 5
 

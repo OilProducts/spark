@@ -163,6 +163,207 @@ async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names()
     assert_eq!(removed.0, StatusCode::METHOD_NOT_ALLOWED);
 }
 
+#[tokio::test]
+async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let bundled = settings.bundled_dir();
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "plain", &simple_flow("plain"));
+    let role = "---\ntype: Role\n---\n\nYou review.\n";
+    std::fs::create_dir_all(bundled.join("roles")).expect("roles dir");
+    std::fs::write(bundled.join("roles/reviewer.md"), role).expect("role");
+    std::fs::write(bundled.join("roles/coordinator.md"), role).expect("role");
+
+    let project = temp.path().join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let git = |args: &[&str]| {
+        spark_common::project::run_git(
+            &org,
+            &[
+                &[
+                    "-c",
+                    "user.name=Org Test",
+                    "-c",
+                    "user.email=org@example.com",
+                ],
+                args,
+            ]
+            .concat(),
+        )
+        .expect("git")
+    };
+    // `shared` is copied unmodified, then bundled moves on; `local` is the
+    // project's own and uses the bundled reviewer role.
+    let write_org_flow = |name: &str, content: &str| {
+        attractor_dsl::write_flow_dir(
+            &org.join("flows").join(name),
+            &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+        )
+        .expect("write org flow")
+    };
+    write_org_flow("shared", &simple_flow("shared"));
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "Copy shared from bundled"]);
+    write_org_flow(
+        "local",
+        "schema_version: '1'\nid: local\ntitle: local\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    config:\n      kind: agent_task\n      prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "Add local"]);
+    write_flow(
+        &settings,
+        "shared",
+        &simple_flow("shared").replace("title: shared", "title: Shared v2"),
+    );
+    std::fs::create_dir_all(org.join("roles")).expect("org roles");
+    std::fs::write(org.join("roles/helper.md"), role).expect("untracked role");
+    let memory = org.join("memory/coordinator");
+    std::fs::create_dir_all(memory.join("notes")).expect("memory");
+    std::fs::write(memory.join("index.md"), "# Known\n").expect("index");
+    std::fs::write(memory.join("notes/a.md"), "note a\n").expect("note");
+    let head = git(&["rev-parse", "HEAD"]);
+
+    let app = build_app(settings.clone());
+    let query = format!("project_path={}", project.display());
+    let get = |uri: String| {
+        let app = app.clone();
+        async move { request_json(app, "GET", &uri, None).await }
+    };
+
+    let (status, list, _) = get(format!("/workspace/api/org?{query}")).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let items = list["items"].as_array().expect("items");
+    let find = |kind: &str, name: &str| {
+        items
+            .iter()
+            .find(|item| item["kind"] == kind && item["name"] == name)
+            .unwrap_or_else(|| panic!("{kind} {name} in {list}"))
+            .clone()
+    };
+    assert_eq!(find("flow", "shared")["layer"], "project_copy");
+    assert_eq!(find("flow", "shared")["path"], "flows/shared");
+    assert_eq!(find("flow", "plain")["layer"], "bundled");
+    assert_eq!(find("flow", "local")["layer"], "project");
+    assert_eq!(find("flow", "local")["uncommitted"], false);
+    let helper = find("role", "helper");
+    assert_eq!(helper["layer"], "project");
+    assert_eq!(helper["uncommitted"], true);
+    assert_eq!(helper["standing"], Value::Null);
+    let reviewer = find("role", "reviewer");
+    assert_eq!(reviewer["layer"], "bundled");
+    assert_eq!(
+        reviewer["usage"],
+        json!([{"flow": "local", "node": "review"}])
+    );
+    let coordinator = find("role", "coordinator");
+    assert_eq!(coordinator["usage"], json!([]));
+    assert_eq!(coordinator["standing"]["state"], "idle");
+    assert_eq!(coordinator["standing"]["budget"]["runs_per_day"], 20);
+    assert!(coordinator["standing"]["conversation_id"]
+        .as_str()
+        .expect("conversation")
+        .ends_with("-coordinator"));
+
+    // A project copy carries its diff from today's bundled version and
+    // whether bundled changed since the copy's first commit.
+    let (status, copy, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=flow&name=shared"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{copy}");
+    assert_eq!(copy["bundled_changed"], true);
+    assert!(copy["bundled_diff"]
+        .as_str()
+        .expect("diff")
+        .contains("-title: Shared v2"));
+    let flow_file = copy["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|file| file["name"] == "flow.md")
+        .expect("flow.md")
+        .clone();
+    assert!(flow_file["content"]
+        .as_str()
+        .expect("content")
+        .contains("title: shared"));
+    assert_eq!(flow_file["status"], Value::Null);
+    let (_, plain, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=flow&name=plain"
+    ))
+    .await;
+    assert_eq!(plain["layer"], "bundled");
+    assert_eq!(plain["bundled_changed"], Value::Null);
+    let (_, helper, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=role&name=helper"
+    ))
+    .await;
+    assert_eq!(
+        helper["files"],
+        json!([{"name": "helper.md", "content": role, "status": "untracked"}])
+    );
+    // Copying shared again makes bundled match the first commit.
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    let (_, same, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=flow&name=shared"
+    ))
+    .await;
+    assert_eq!(same["bundled_changed"], false);
+    assert_eq!(same["bundled_diff"], "");
+
+    let (status, history, _) = get(format!(
+        "/workspace/api/org/history?{query}&path=flows/shared"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let commits = history["commits"].as_array().expect("commits");
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0]["message"], "Copy shared from bundled");
+    assert_eq!(commits[0]["author"], "Org Test");
+    assert!(commits[0]["diff"]
+        .as_str()
+        .expect("diff")
+        .contains("+title: shared"));
+    let elsewhere = temp.path().join("no-org");
+    let (status, empty, _) = get(format!(
+        "/workspace/api/org/history?project_path={}&path=flows/shared",
+        elsewhere.display()
+    ))
+    .await;
+    assert_eq!((status, empty), (StatusCode::OK, json!({"commits": []})));
+
+    let (status, files, _) = get(format!(
+        "/workspace/api/org/memory?{query}&role=coordinator"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{files}");
+    assert_eq!(files["files"], json!(["index.md", "notes/a.md"]));
+    let (_, note, _) = get(format!(
+        "/workspace/api/org/memory?{query}&role=coordinator&file=notes/a.md"
+    ))
+    .await;
+    assert_eq!(note["content"], "note a\n");
+
+    // Paths stay inside the org repo and the bundled root.
+    for uri in [
+        format!("/workspace/api/org/history?{query}&path=../outside"),
+        format!("/workspace/api/org/history?{query}&path=/etc/passwd"),
+        format!(
+            "/workspace/api/org/memory?{query}&role=coordinator&file=../../flows/shared/flow.md"
+        ),
+        format!("/workspace/api/org/memory?{query}&role=..&file=flows/shared/flow.md"),
+        format!("/workspace/api/org/item?{query}&kind=flow&name=../shared"),
+        format!("/workspace/api/org/item?{query}&kind=role&name=../roles/reviewer"),
+    ] {
+        let (status, body, _) = get(uri.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+    }
+    // Nothing above wrote to the org repo.
+    assert_eq!(git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&["status", "--porcelain"]), "?? memory/\n?? roles/");
+}
+
 async fn request_json(
     app: axum::Router,
     method: &str,
