@@ -453,11 +453,10 @@ fn run_service_with_updates(
     settings: SparkSettings,
 ) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join("ops/titled"),
+        &settings.bundled_dir().join("flows").join("ops/titled"),
         &attractor_dsl::parse_flow_definition(TITLED_FLOW).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join("ops/titled"));
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
     let observed = settings.clone();

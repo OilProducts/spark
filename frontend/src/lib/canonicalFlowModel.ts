@@ -69,6 +69,7 @@ const FLOW_METADATA_CORE_KEYS = new Set([
     'id',
     'title',
     'description',
+    'execution_lock',
     'goal',
     'inputs',
     'max_retries',
@@ -375,6 +376,8 @@ function flowMetadataFromFlow(flow: CanonicalFlowDefinition | null, graphMetadat
     if (typeof flow?.id === 'string') metadata.id = flow.id
     if (typeof flow?.title === 'string') metadata.title = flow.title
     if (typeof flow?.description === 'string') metadata.description = flow.description
+    const executionLock = asRecord(flow?.execution_lock)
+    if (typeof executionLock?.key === 'string') metadata.execution_lock = executionLock.key
     if (typeof flow?.goal === 'string') metadata.goal = flow.goal
     if (Array.isArray(flow?.inputs)) metadata.inputs = JSON.stringify(flow.inputs)
     if (defaults) {
@@ -782,6 +785,13 @@ function edgeFromCanonicalAttrs(
     })
 }
 
+// The editor edits only the lock key; scope and conflict policy have one allowed value each.
+function executionLockFromAttrs(attrs: CanonicalAttrMap, baseLock: unknown): unknown {
+    if (!('execution_lock' in attrs)) return baseLock ?? undefined
+    const key = readStringAttr(attrs, 'execution_lock').trim()
+    return key ? { scope: 'project', key, conflict_policy: 'queue' } : undefined
+}
+
 export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): string {
     const flowMetadata = model.flowMetadata
     const baseFlow = cloneFlowDefinition(model.flow) ?? {}
@@ -799,6 +809,7 @@ export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: 
         title: readStringAttr(flowMetadata, 'title') || flowName,
         description: readStringAttr(flowMetadata, 'description') || String(baseFlow.description ?? ''),
         goal: readStringAttr(flowMetadata, 'goal') || String(baseFlow.goal ?? ''),
+        execution_lock: executionLockFromAttrs(flowMetadata, baseFlow.execution_lock),
         inputs: inputs.length > 0 ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
         defaults: flowDefaultsFromAttrs(flowMetadata, asRecord(baseFlow.defaults)),
         nodes,

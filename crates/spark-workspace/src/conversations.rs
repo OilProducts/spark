@@ -2488,9 +2488,8 @@ impl WorkspaceConversationService {
         )
     }
 
-    /// An agent's flow launch from its conversation: runs immediately when the
-    /// flow catalog lets agents launch the flow, and a mission's conversation
-    /// launches through its mission.
+    /// An agent's flow launch from its conversation: runs immediately, and a
+    /// mission's conversation launches through its mission.
     pub fn create_flow_run_request_by_handle(
         &self,
         conversation_handle: &str,
@@ -2505,15 +2504,11 @@ impl WorkspaceConversationService {
                     "Unknown conversation handle: {conversation_handle}. Verify the handle shown in the thread UI and try again."
                 ))
             })?;
-        ensure_flow_exists(&self.settings, &request.flow_name)?;
-        let policy =
-            spark_storage::read_flow_launch_policy(&self.settings.config_dir, &request.flow_name)?;
-        if policy.effective_launch_policy != spark_storage::LAUNCH_POLICY_AGENT_REQUESTABLE {
-            return Err(WorkspaceError::Validation(format!(
-                "Flow {} is not agent-requestable; its launch policy is {}.",
-                policy.name, policy.effective_launch_policy
-            )));
-        }
+        ensure_flow_exists(
+            &self.settings,
+            Some(&handle_match.project_path),
+            &request.flow_name,
+        )?;
         let launch = RunLaunchRequest {
             flow_name: request.flow_name,
             summary: request.summary,
@@ -2620,7 +2615,7 @@ impl WorkspaceConversationService {
                 artifact_string(&snapshot, "flow_run_requests", request_index, "flow_name")
                     .unwrap_or_default()
             });
-        ensure_flow_exists(&self.settings, &approved_flow_name)?;
+        ensure_flow_exists(&self.settings, Some(&project_path), &approved_flow_name)?;
 
         update_artifact_at(
             &mut snapshot,
@@ -2805,7 +2800,7 @@ impl WorkspaceConversationService {
             return Ok(snapshot);
         }
 
-        ensure_flow_exists(&self.settings, IMPLEMENT_CHANGE_FLOW)?;
+        ensure_flow_exists(&self.settings, Some(&project_path), IMPLEMENT_CHANGE_FLOW)?;
         let project_root = PathBuf::from(&project_path);
         if !project_root.is_dir() {
             return Err(WorkspaceError::Validation(
@@ -2984,7 +2979,6 @@ impl WorkspaceConversationService {
             .map(|value| normalize_project_path_or_400(&value))
             .transpose()?;
         let payload = normalize_run_launch_request_payload(request)?;
-        ensure_flow_exists(&self.settings, &payload.flow_name)?;
 
         let repository = self.repository();
         let mut launch_artifact: Option<FlowLaunchArtifactCreated> = None;
@@ -3007,6 +3001,11 @@ impl WorkspaceConversationService {
                     ));
                 }
             }
+            ensure_flow_exists(
+                &self.settings,
+                Some(&handle_match.project_path),
+                &payload.flow_name,
+            )?;
             launch_artifact = Some(self.create_flow_launch_artifact(
                 &handle_match.conversation_id,
                 &handle_match.project_path,
@@ -3015,16 +3014,19 @@ impl WorkspaceConversationService {
             )?);
             handle_match.project_path
         } else {
-            explicit_project_path.ok_or_else(|| {
+            let project_path = explicit_project_path.ok_or_else(|| {
                 WorkspaceError::Validation(
                     "Project path is required when conversation_handle is omitted.".to_string(),
                 )
-            })?
+            })?;
+            ensure_flow_exists(&self.settings, Some(&project_path), &payload.flow_name)?;
+            project_path
         };
 
         let artifact_value = flow_launch_artifact_payload(&payload, &project_path);
         let launch_response = self.start_workspace_flow_route_response(
             &project_path,
+            Some(&project_path),
             &payload.flow_name,
             &artifact_value,
         );
@@ -3071,7 +3073,9 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<String> {
         let trigger_id = request.trigger_id.clone();
         let flow_name = request.action.flow_name.clone();
-        ensure_flow_exists(&self.settings, &flow_name)?;
+        // A trigger with no project uses bundled flows only.
+        let project_path = request.action.project_path.clone();
+        ensure_flow_exists(&self.settings, project_path.as_deref(), &flow_name)?;
         let working_directory = request
             .action
             .project_path
@@ -3102,8 +3106,12 @@ impl WorkspaceConversationService {
             "launch_context": launch_context,
             "execution_profile_id": request.action.execution_profile_id,
         });
-        let response =
-            self.start_workspace_flow_route_response(&working_directory, &flow_name, &artifact);
+        let response = self.start_workspace_flow_route_response(
+            &working_directory,
+            project_path.as_deref(),
+            &flow_name,
+            &artifact,
+        );
         flow_start_outcome_from_response(&response)
             .map(|outcome| outcome.run_id)
             .map_err(|failure| WorkspaceError::Internal(failure.detail))
@@ -3277,6 +3285,7 @@ impl WorkspaceConversationService {
                 start_node: start_node.clone(),
                 flow_source_mode: mode.clone(),
                 flow_name: flow_name.clone(),
+                project_path: project_override.clone(),
                 working_directory: project_override.clone(),
                 model,
                 llm_provider,
@@ -3794,9 +3803,12 @@ impl WorkspaceConversationService {
         Ok(())
     }
 
+    /// Starts `flow_name` in `working_directory`, resolving it through
+    /// `project_path`'s org repo (none: bundled only).
     fn start_workspace_flow_route_response(
         &self,
-        project_path: &str,
+        working_directory: &str,
+        project_path: Option<&str>,
         flow_name: &str,
         artifact: &Value,
     ) -> RuntimeRouteResponse {
@@ -3811,29 +3823,20 @@ impl WorkspaceConversationService {
             .and_then(non_empty_string);
         let project_default_execution_profile_id = if execution_profile_id.is_none() {
             ProjectRegistry::new(self.settings.data_dir.clone())
-                .read_project_record(project_path)
+                .read_project_record(working_directory)
                 .ok()
                 .flatten()
                 .and_then(|record| record.execution_profile_id)
         } else {
             None
         };
-        let execution_lock = spark_storage::load_flow_catalog(&self.settings.config_dir)
-            .ok()
-            .and_then(|catalog| catalog.get(flow_name).cloned())
-            .and_then(|entry| entry.execution_lock)
-            .map(|lock| attractor_api::ExecutionLockSpec {
-                scope: lock.scope,
-                key: lock.key,
-                conflict_policy: lock.conflict_policy,
-            });
         let response = self
             .runtime_api_service()
             .start_pipeline(PipelineStartRequest {
                 run_id: None,
                 flow_name: Some(flow_name.to_string()),
-                working_directory: project_path.to_string(),
-                execution_lock,
+                working_directory: working_directory.to_string(),
+                project_path: project_path.map(str::to_string),
                 model: artifact
                     .get("model")
                     .and_then(Value::as_str)
@@ -3942,7 +3945,12 @@ impl WorkspaceConversationService {
         flow_name: &str,
         artifact: &Value,
     ) -> Result<String, String> {
-        let response = self.start_workspace_flow_route_response(project_path, flow_name, artifact);
+        let response = self.start_workspace_flow_route_response(
+            project_path,
+            Some(project_path),
+            flow_name,
+            artifact,
+        );
         flow_start_outcome_from_response(&response)
             .map(|outcome| outcome.run_id)
             .map_err(|failure| failure.detail)
@@ -4280,23 +4288,24 @@ fn workspace_assistant_frame(project_path: &str, conversation_handle: &str) -> S
         {control}\n\n\
         Conversation handle: {handle}\n\
         Project path: {project_path}",
-        control = spark_control_surface(conversation_handle),
+        control = spark_control_surface(conversation_handle, project_path),
         handle = conversation_handle,
         project_path = project_path,
     )
 }
 
 /// How a conversation agent drives Spark, shared by the workspace and mission frames.
-pub(crate) fn spark_control_surface(conversation_handle: &str) -> String {
+pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
-        "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Installed flows are directories of markdown files (flow.md plus one file per node) under $SPARK_HOME/flows, and shared roles are $SPARK_HOME/roles/<name>.md; the flow catalog governs which flows are agent-requestable, and only those may be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
-        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>`\n\
+        "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's org repo {org} (flows/ and roles/) replaces any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
+        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>` (pass `--project {project_path}` to include this project's org flows)\n\
         - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
         Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
         - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
-        Never edit files under $SPARK_HOME/flows or $SPARK_HOME/roles; a run refuses any file a human has not signed off on. Write proposed changes under $SPARK_HOME/candidates instead, mirroring the live path (candidates/flows/<flow>/<node>.md, candidates/roles/<name>.md), with frontmatter `generated: {{ by: <agent>/<model>, at: <ISO 8601 timestamp with offset> }}` and `status: draft`; a human reviews and promotes them. `spark flow accept` and `spark flow promote` are for that human, not for you.\n\n\
+        Change files in the org repo only when the user asks you to, and commit each change there with its reason in the commit message. Never edit $SPARK_HOME/bundled.\n\n\
         Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",
         handle = conversation_handle,
+        org = spark_common::project::org_dir(Path::new(project_path)).display(),
     )
 }
 
@@ -6435,10 +6444,14 @@ fn strip_markdown_heading(value: &str) -> String {
     output.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn ensure_flow_exists(settings: &SparkSettings, flow_name: &str) -> WorkspaceResult<()> {
+fn ensure_flow_exists(
+    settings: &SparkSettings,
+    project_path: Option<&str>,
+    flow_name: &str,
+) -> WorkspaceResult<()> {
     let flow_name = non_empty_string(flow_name)
         .ok_or_else(|| WorkspaceError::Validation("Flow name is required.".to_string()))?;
-    match attractor_api::read_named_flow_source(&settings.flows_dir, &flow_name) {
+    match attractor_api::flow_roots(settings, project_path).read_named_flow_source(&flow_name) {
         Ok(_) => Ok(()),
         Err(error) if error.status_code() == 404 => Err(WorkspaceError::NotFound(format!(
             "Unknown flow: {flow_name}"

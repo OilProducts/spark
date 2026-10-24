@@ -34,24 +34,59 @@ pub fn build_project_id(project_path: impl AsRef<str>) -> Result<String> {
 /// Outside a git repository, falls back to the normalized path itself.
 pub fn repository_scope_path(path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
-    let fallback =
-        || normalize_path(path.to_string_lossy().as_ref()).unwrap_or_else(|_| path.to_path_buf());
-    let Ok(output) = Command::new("git")
+    match run_git(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        Ok(text) if !text.is_empty() => {
+            std::fs::canonicalize(&text).unwrap_or_else(|_| PathBuf::from(text))
+        }
+        _ => normalize_path(path.to_string_lossy().as_ref()).unwrap_or_else(|_| path.to_path_buf()),
+    }
+}
+
+/// Runs `git -C <directory> <args>`: trimmed stdout on success, else the
+/// error output.
+pub fn run_git(directory: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
         .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .arg(directory)
+        .args(args)
         .output()
-    else {
-        return fallback();
-    };
+        .map_err(|error| format!("Unable to run git: {error}"))?;
     if !output.status.success() {
-        return fallback();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("git {} failed: {stderr}", args.join(" ")));
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        return fallback();
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// A project's agent organization: its own flows (`flows/`) and roles
+/// (`roles/`), in a git repository whose history is the audit trail.
+pub fn org_dir(project: &Path) -> PathBuf {
+    project.join(".spark").join("agent-org")
+}
+
+/// Creates the project's org repository on its first write: the directory,
+/// `git init`, and `<project>/.spark/.gitignore` holding `*` if missing.
+pub fn ensure_org_repo(project: &Path) -> std::result::Result<PathBuf, String> {
+    let org = org_dir(project);
+    std::fs::create_dir_all(&org)
+        .map_err(|error| format!("Unable to create {}: {error}", org.display()))?;
+    if !org.join(".git").exists() {
+        run_git(&org, &["init", "-q"])?;
     }
-    std::fs::canonicalize(&text).unwrap_or_else(|_| PathBuf::from(text))
+    let ignore = project.join(".spark").join(".gitignore");
+    if !ignore.exists() {
+        std::fs::write(&ignore, "*\n")
+            .map_err(|error| format!("Unable to write {}: {error}", ignore.display()))?;
+    }
+    Ok(org)
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(bytes))
 }
 
 pub fn slugify(value: &str) -> String {

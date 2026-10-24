@@ -3,6 +3,10 @@ type: Flow
 id: explore_conjecture
 title: Explore Conjecture
 description: Survey an open problem, run computational experiments with the math-lab container's solver stack, verify every certificate, and synthesize honestly-labeled findings that are adversarially reviewed before commit. Launch with execution_profile_id math-lab.
+execution_lock:
+  scope: project
+  key: math-research
+  conflict_policy: queue
 schema_version: '1'
 inputs:
 - key: context.request.problem

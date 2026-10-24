@@ -27,7 +27,6 @@ import {
   fetchWorkspaceFlowListValidated,
   fetchWorkspaceFlowRawValidated,
   fetchWorkspaceFlowValidated,
-  updateWorkspaceFlowLaunchPolicyValidated,
   parseConversationSnapshotResponse,
   parseFlowListResponse,
   parseFlowPayloadResponse,
@@ -369,7 +368,7 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (url.endsWith('/attractor/api/flows')) {
+        if (url.split('?')[0].endsWith('/attractor/api/flows')) {
           return new Response(JSON.stringify(['contract-behavior.yaml']), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -439,23 +438,21 @@ describe('Frontend contract behavior', () => {
   it('[CID:12.1.02] provides typed endpoint adapters with runtime schema validation for required JSON responses', () => {
     expect(parseFlowListResponse(['a.yaml', 'nested/b.yaml'])).toEqual(['a.yaml', 'nested/b.yaml'])
     expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
-    expect(parseFlowPayloadResponse({ content: 'digraph G {}' })).toEqual({ name: '', content: 'digraph G {}' })
+    expect(parseFlowPayloadResponse({ content: 'digraph G {}', layer: 'org' })).toEqual({ name: '', content: 'digraph G {}', layer: 'org' })
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
     expect(parseWorkspaceFlowListResponse([
       {
         name: 'test-planning.yaml',
         title: 'Implement From Plan',
         description: 'Snapshot a plan file, implement it, and iterate until complete.',
-        launch_policy: null,
-        effective_launch_policy: 'disabled',
+        execution_lock: null,
       },
     ])).toMatchObject([
       {
         name: 'test-planning.yaml',
         title: 'Implement From Plan',
         description: 'Snapshot a plan file, implement it, and iterate until complete.',
-        launch_policy: null,
-        effective_launch_policy: 'disabled',
+        execution_lock: null,
       },
     ])
     expect(() => parseWorkspaceFlowListResponse({})).toThrow(ApiSchemaError)
@@ -463,12 +460,10 @@ describe('Frontend contract behavior', () => {
       name: 'test-planning.yaml',
       title: 'Implement From Plan',
       description: 'Snapshot a plan file, implement it, and iterate until complete.',
-      launch_policy: 'trigger_only',
-      effective_launch_policy: 'trigger_only',
+      execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' },
     })).toMatchObject({
       name: 'test-planning.yaml',
-      launch_policy: 'trigger_only',
-      effective_launch_policy: 'trigger_only',
+      execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' },
     })
     expect(parseWorkspaceFlowRawResponse('digraph G {}')).toBe('digraph G {}')
     expect(() => parseWorkspaceFlowRawResponse({})).toThrow(ApiSchemaError)
@@ -594,42 +589,32 @@ describe('Frontend contract behavior', () => {
             entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
           })
         }
-        if (url === '/attractor/api/flows') {
+        if (url === '/attractor/api/flows?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse(['alpha.yaml'])
         }
-        if (url === '/attractor/api/flows/alpha%20flow.yaml') {
-          return jsonResponse({ name: 'alpha flow.yaml', content: 'digraph G {}' })
+        if (url === '/attractor/api/flows/alpha%20flow.yaml?project_path=%2Ftmp%2Fproject%20one') {
+          return jsonResponse({ name: 'alpha flow.yaml', content: 'digraph G {}', layer: 'bundled' })
         }
-        if (url === '/workspace/api/flows?surface=human') {
+        if (url === '/workspace/api/flows?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse([
             {
               name: 'software-development/implement-change-request.yaml',
               title: 'Implement From Plan',
               description: 'Snapshot a plan file, implement it, and iterate until complete.',
-              launch_policy: null,
-              effective_launch_policy: 'agent_requestable',
+              execution_lock: null,
             },
           ])
         }
-        if (url === '/workspace/api/flows/alpha%20flow.yaml?surface=human') {
+        if (url === '/workspace/api/flows/alpha%20flow.yaml?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse({
             name: 'alpha flow.yaml',
             title: 'Alpha Flow',
             description: 'Run the alpha workflow.',
-            launch_policy: 'agent_requestable',
-            effective_launch_policy: 'agent_requestable',
+            execution_lock: null,
           })
         }
-        if (url === '/workspace/api/flows/alpha%20flow.yaml/raw?surface=human') {
+        if (url === '/workspace/api/flows/alpha%20flow.yaml/raw?project_path=%2Ftmp%2Fproject%20one') {
           return new Response('digraph G {}', { status: 200 })
-        }
-        if (url === '/workspace/api/flows/alpha%20flow.yaml/launch-policy' && method === 'PUT') {
-          return jsonResponse({
-            name: 'alpha flow.yaml',
-            revision: 'saved-catalog',
-            launch_policy: 'agent_requestable',
-            effective_launch_policy: 'agent_requestable',
-          })
         }
         if (url === '/workspace/api/conversations/conversation%201?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse(conversationSnapshot({
@@ -652,27 +637,21 @@ describe('Frontend contract behavior', () => {
       roots: [],
       entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
     })
-    await expect(fetchFlowListValidated()).resolves.toEqual(['alpha.yaml'])
-    await expect(fetchFlowPayloadValidated('alpha flow.yaml')).resolves.toEqual({
+    const project = '/tmp/project one'
+    await expect(fetchFlowListValidated(project)).resolves.toEqual(['alpha.yaml'])
+    await expect(fetchFlowPayloadValidated('alpha flow.yaml', project)).resolves.toEqual({
       name: 'alpha flow.yaml',
       content: 'digraph G {}',
+      layer: 'bundled',
     })
-    await expect(fetchWorkspaceFlowListValidated()).resolves.toMatchObject([
+    await expect(fetchWorkspaceFlowListValidated(project)).resolves.toMatchObject([
       expect.objectContaining({ name: 'software-development/implement-change-request.yaml' }),
     ])
-    await expect(fetchWorkspaceFlowValidated('alpha flow.yaml')).resolves.toMatchObject({
+    await expect(fetchWorkspaceFlowValidated('alpha flow.yaml', project)).resolves.toMatchObject({
       name: 'alpha flow.yaml',
-      effective_launch_policy: 'agent_requestable',
-    })
-    await expect(fetchWorkspaceFlowRawValidated('alpha flow.yaml')).resolves.toBe('digraph G {}')
-    await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.yaml', {
-      expected_revision: 'read-catalog',
-      launch_policy: 'agent_requestable',
       execution_lock: null,
-    })).resolves.toMatchObject({
-      name: 'alpha flow.yaml',
-      launch_policy: 'agent_requestable',
     })
+    await expect(fetchWorkspaceFlowRawValidated('alpha flow.yaml', project)).resolves.toBe('digraph G {}')
     await expect(fetchConversationSnapshotValidated('conversation 1', '/tmp/project one')).resolves.toMatchObject({
       conversation_id: 'conversation 1',
       flow_run_requests: [],
@@ -703,7 +682,7 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async () => jsonResponse({ flows: [] })),
     )
-    await expect(fetchFlowListValidated()).rejects.toBeInstanceOf(ApiSchemaError)
+    await expect(fetchFlowListValidated(null)).rejects.toBeInstanceOf(ApiSchemaError)
 
     vi.stubGlobal(
       'fetch',
@@ -934,7 +913,7 @@ describe('Frontend contract behavior', () => {
     let previewRequestCount = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
@@ -1043,6 +1022,8 @@ describe('Frontend contract behavior', () => {
     )
 
     expect(relativeWorkingDirectoryPayload.working_directory).toBe('/tmp/project-contract-behavior/build')
+    // Flows resolve in the project, separately from where the run works.
+    expect(relativeWorkingDirectoryPayload.project_path).toBe('/tmp/project-contract-behavior')
 
     const blankWorkingDirectoryPayload = buildPipelineStartPayload(
       {
@@ -1224,7 +1205,7 @@ describe('Frontend contract behavior', () => {
           commit: 'abc123def456',
         })
       }
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: 'digraph BuildContract { start -> end }' })
       }
       if (url.endsWith('/attractor/preview') && init?.method === 'POST') {
@@ -1699,7 +1680,7 @@ useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
             name: 'contract-behavior.yaml',
             content: 'digraph G { start [label="Start"]; end [label="End"]; start -> end; }',
@@ -1848,7 +1829,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
             name: 'contract-behavior.yaml',
             content: 'digraph G { start -> end; }',
@@ -4529,7 +4510,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     const saveResolvers: Array<() => void> = []
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return Promise.resolve(jsonResponse({ content: initialYaml }))
       }
       if (url.endsWith('/attractor/preview')) {
@@ -4601,7 +4582,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
@@ -4639,6 +4620,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(body).toEqual({
       name: 'contract-behavior.yaml',
       content: editedYaml,
+      project_path: '/tmp/project-contract-behavior',
     })
   })
 
@@ -4713,7 +4695,7 @@ digraph contract_behavior {
     const savedPayloads: Array<{ name: string; content: string }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
@@ -4832,7 +4814,7 @@ digraph contract_behavior {
     let previewRequestCount = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {

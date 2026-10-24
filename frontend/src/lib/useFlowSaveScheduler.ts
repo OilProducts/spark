@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { saveFlowContent } from '@/lib/flowPersistence'
+import { useStore } from '@/store'
 
 interface PendingFlowSaveRequest {
     flowName: string
     content: string
+    projectPath: string | null
 }
 
 interface UseFlowSaveSchedulerArgs<T> {
@@ -28,7 +30,7 @@ export function useFlowSaveScheduler<T = void>({
     }, [])
 
     const executeSaveRequest = useCallback((request: PendingFlowSaveRequest) => {
-        return saveFlowContent(request.flowName, request.content)
+        return saveFlowContent(request.flowName, request.content, request.projectPath)
     }, [])
 
     const createSaveRequest = useCallback((payload: T | undefined): PendingFlowSaveRequest | null => {
@@ -38,6 +40,8 @@ export function useFlowSaveScheduler<T = void>({
         return {
             flowName,
             content: buildContent(payload, flowName),
+            // Captured now so a debounced save cannot land in a project switched to meanwhile.
+            projectPath: useStore.getState().activeProjectPath,
         }
     }, [buildContent, flowName])
 

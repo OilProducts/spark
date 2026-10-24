@@ -6,7 +6,7 @@ import { RuntimeSettingsEditor } from '../RuntimeSettingsEditor'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 it('starts a replacement draft for invalid stored field types and requires explicit Save', async () => {
-    const defaults = { runs_dir:null, flows_dir:null, ui_dir:null, project_roots:[] }
+    const defaults = { runs_dir:null, ui_dir:null, project_roots:[] }
     let view: Record<string, unknown> = {scope:'workspace', revision:'one', stored:{project_roots:42}, effective:null,
         repair_defaults:defaults, restart_fields:[], validation_errors:['Invalid runtime section.']}
     const writes: Record<string, unknown>[] = []
@@ -23,10 +23,10 @@ it('starts a replacement draft for invalid stored field types and requires expli
     await screen.findByText('Invalid runtime section.')
     await user.click(screen.getByRole('button', {name:'Reset to defaults'}))
     expect(writes).toHaveLength(0)
-    await user.type(screen.getByLabelText('Flows directory'), '/replacement')
+    await user.type(screen.getByLabelText('Runs directory'), '/replacement')
     await user.click(screen.getByRole('button', {name: /^Save/}))
     await waitFor(() => expect(writes).toHaveLength(1))
-    expect(writes[0]).toEqual({expected_revision:'one',section:'runtime',value:{...defaults,flows_dir:'/replacement'}})
+    expect(writes[0]).toEqual({expected_revision:'one',section:'runtime',value:{...defaults,runs_dir:'/replacement'}})
 })
 
 it.each([42, 'missing-profile'])('retains the revision and scoped error for stored execution selection %s until explicit repair', async (stored) => {

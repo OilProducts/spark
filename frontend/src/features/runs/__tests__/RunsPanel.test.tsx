@@ -971,7 +971,7 @@ describe('RunsPanel', () => {
       if (url.includes('/workspace/api/projects/metadata')) {
         return jsonResponse({ branch: 'main' })
       }
-      if (url.endsWith('/attractor/api/flows')) {
+      if (url.split('?')[0].endsWith('/attractor/api/flows')) {
         return jsonResponse(['selected.dot'])
       }
       if (url.endsWith('/attractor/runs')) {
@@ -1089,6 +1089,7 @@ describe('RunsPanel', () => {
     expect(JSON.parse(String(continueCall?.[1]?.body))).toEqual({
       start_node: 'failed_node',
       flow_source_mode: 'snapshot',
+      project_path: '/tmp/project-one',
       working_directory: '/tmp/project-one/worktree',
       model: null,
     })
@@ -1158,7 +1159,7 @@ describe('RunsPanel', () => {
           },
         })
       }
-      if (url.endsWith('/attractor/api/flows')) {
+      if (url.split('?')[0].endsWith('/attractor/api/flows')) {
         return jsonResponse(['selected.dot'])
       }
       if (url.endsWith('/attractor/runs')) {
@@ -1169,8 +1170,6 @@ describe('RunsPanel', () => {
           name: selectedRun.flow_name,
           title: selectedRun.flow_name,
           description: '',
-          launch_policy: null,
-          effective_launch_policy: 'disabled',
           execution_lock: null,
         })
       }
@@ -1363,7 +1362,7 @@ describe('RunsPanel', () => {
 
     const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
     await waitFor(() => expect(openButton).toBeDisabled())
-    expect(openButton).toHaveAttribute('title', "This run's flow is not installed in the catalog.")
+    expect(openButton).toHaveAttribute('title', "This run's flow is not in the active project's flows.")
   })
 
   it('notes when a run predates launch-input recording', async () => {

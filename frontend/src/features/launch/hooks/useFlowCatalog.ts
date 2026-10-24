@@ -7,32 +7,30 @@ export interface FlowCatalogState {
     isLoaded: boolean
 }
 
-export function useFlowCatalog(enabled = true): FlowCatalogState {
-    const [flows, setFlows] = useState<string[]>([])
-    const [isLoaded, setIsLoaded] = useState(false)
+export function useFlowCatalog(projectPath: string | null, enabled = true): FlowCatalogState {
+    const [catalog, setCatalog] = useState<{ projectPath: string | null; flows: string[] } | null>(null)
+    const isLoaded = catalog !== null && catalog.projectPath === projectPath
 
     useEffect(() => {
         if (!enabled || isLoaded) {
             return
         }
         let cancelled = false
-        loadFlowCatalog()
-            .then((catalog) => {
+        loadFlowCatalog(projectPath)
+            .then((flows) => {
                 if (!cancelled) {
-                    setFlows(catalog)
-                    setIsLoaded(true)
+                    setCatalog({ projectPath, flows })
                 }
             })
             .catch(() => {
                 if (!cancelled) {
-                    setFlows([])
-                    setIsLoaded(true)
+                    setCatalog({ projectPath, flows: [] })
                 }
             })
         return () => {
             cancelled = true
         }
-    }, [enabled, isLoaded])
+    }, [enabled, isLoaded, projectPath])
 
-    return { flows, isLoaded }
+    return { flows: isLoaded ? catalog.flows : [], isLoaded }
 }

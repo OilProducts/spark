@@ -10,14 +10,8 @@ use spark_common::settings::SparkSettings;
 use spark_storage::{ConversationHandleRepository, ProjectRegistry};
 use spark_workspace::{
     ConversationTurnRequest, FlowRunRequestCreateByHandleRequest, FlowRunRequestReviewRequest,
-    ProposedPlanReviewRequest, WorkspaceConversationService, WorkspaceError,
+    ProposedPlanReviewRequest, WorkspaceConversationService,
 };
-
-fn agent_requestable(settings: &SparkSettings, flow: &str) {
-    write_flow(settings, flow, simple_flow());
-    spark_storage::set_flow_launch_policy(&settings.config_dir, flow, "agent_requestable")
-        .expect("launch policy");
-}
 
 #[test]
 fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
@@ -26,7 +20,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    agent_requestable(&settings, "ops/review");
+    write_flow(&settings, "ops/review", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -72,44 +66,13 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
 }
 
 #[test]
-fn by_handle_run_request_refuses_flows_agents_may_not_launch() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let project_path = temp.path().join("project");
-    fs::create_dir_all(&project_path).expect("project dir");
-    write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/private", simple_flow());
-    seed_conversation(
-        &settings,
-        project_path.to_str().expect("utf-8"),
-        "conversation-private",
-    );
-    let service = WorkspaceConversationService::new(settings.clone());
-
-    let refused = service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/private".to_string(),
-                summary: "Not allowed.".to_string(),
-                execution_profile_id: Some("native".to_string()),
-                ..FlowRunRequestCreateByHandleRequest::default()
-            },
-        )
-        .expect_err("refused");
-    assert!(matches!(refused, WorkspaceError::Validation(_)));
-    assert!(refused.to_string().contains("not agent-requestable"));
-    assert!(runs_dir_is_empty(&settings));
-}
-
-#[test]
 fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    agent_requestable(&settings, "ops/review");
+    write_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_assistant_status(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -592,11 +555,10 @@ fn request_by_id<'a>(snapshot: &'a Value, request_id: &str) -> &'a Value {
 
 pub(super) fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 pub(super) fn write_native_execution_profile(settings: &SparkSettings) {
@@ -785,7 +747,6 @@ fn settings_for_project(project_root: &Path, root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }
@@ -1064,7 +1025,8 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
         "spark convo run-request",
         "launches the flow immediately",
         "do not use any other Spark installation",
-        "agent-requestable",
+        "Every flow can be launched",
+        ".spark/agent-org",
         "$SPARK_HOME/attractor/runs",
         "spark playbook list",
     ] {

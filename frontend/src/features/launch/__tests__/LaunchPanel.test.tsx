@@ -78,8 +78,6 @@ const installLaunchFetchMock = (options?: {
         name: TEST_FLOW,
         title: TEST_FLOW,
         description: '',
-        launch_policy: null,
-        effective_launch_policy: 'disabled',
         execution_lock: null,
       })
     }

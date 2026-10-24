@@ -165,6 +165,40 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
 }
 
 #[test]
+fn launches_resolve_flows_through_the_projects_org_repo() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    let other_path = temp.path().join("other");
+    fs::create_dir_all(&project_path).expect("project dir");
+    fs::create_dir_all(&other_path).expect("other dir");
+    let name = crate::install_org_flow(&project_path, simple_flow());
+    let service = WorkspaceConversationService::new(settings.clone());
+    let launch = |project: &Path| {
+        service.launch_workspace_run(RunLaunchRequest {
+            flow_name: name.clone(),
+            summary: "Launch an org flow.".to_string(),
+            project_path: Some(project.to_string_lossy().into_owned()),
+            ..RunLaunchRequest::default()
+        })
+    };
+
+    let launched = launch(&project_path).expect("org flow launch");
+    assert_eq!(launched["ok"], true);
+    let record = RunStore::for_settings(&settings)
+        .read_run_bundle(launched["run_id"].as_str().expect("run id"))
+        .expect("read run")
+        .expect("run")
+        .record
+        .expect("record");
+    assert_eq!(record.flow_name, name);
+
+    // Another project's org is not consulted.
+    let unknown = launch(&other_path).expect_err("not in this project");
+    assert!(matches!(unknown, WorkspaceError::NotFound(message) if message.contains(&name)));
+}
+
+#[test]
 fn retry_and_continue_record_recovery_artifacts_and_delegate_to_attractor() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -388,11 +422,10 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> &'static str {
@@ -438,7 +471,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }

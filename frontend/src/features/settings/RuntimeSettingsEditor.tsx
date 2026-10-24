@@ -13,8 +13,8 @@ export function RuntimeSettingsEditor() {
             {pending ? <p role="status">Updating…</p> : !saved && !error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs text-muted-foreground">Changes require restart. Leave a path empty to use its default.</p>
             {draft && saved && <>
-                {(['runs_dir', 'flows_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
-                    <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', flows_dir: 'Flows directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
+                {(['runs_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
+                    <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
                     <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
                     <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective[key] ?? 'Not configured' : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
                 </Field>)}
@@ -29,9 +29,8 @@ export function RuntimeSettingsEditor() {
                     <Button aria-label="Discard runtime paths changes" variant="ghost" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
-            {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
+            {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
             {!draft && saved?.repair_defaults && <Button variant="outline" disabled={pending} onClick={() => setDraft(saved!.repair_defaults!)}>Reset to defaults</Button>}
-            {saved?.locally_edited_flows?.length ? <p className="text-xs">These installed flows have local changes, so Spark keeps them instead of updating them to newer bundled versions: {saved.locally_edited_flows.join(', ')}. Delete a flow's directory to reinstall the bundled version on the next start.</p> : null}
             {saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={message} error={error} dirty={dirty} />
         </CardContent>

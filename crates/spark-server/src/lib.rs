@@ -80,14 +80,12 @@ impl CommandOutput {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct InitArgs {
     data_dir: Option<PathBuf>,
-    flows_dir: Option<PathBuf>,
     force: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ServeArgs {
     data_dir: Option<PathBuf>,
-    flows_dir: Option<PathBuf>,
     ui_dir: Option<PathBuf>,
     host: Option<String>,
     port: Option<u16>,
@@ -98,18 +96,9 @@ struct ServeArgs {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ServiceInstallArgs {
     data_dir: Option<PathBuf>,
-    flows_dir: Option<PathBuf>,
     ui_dir: Option<PathBuf>,
     host: String,
     port: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeedStarterFlowsResult {
-    pub flows_dir: PathBuf,
-    pub created: Vec<String>,
-    pub updated: Vec<String>,
-    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +113,6 @@ pub struct ServeConfiguration {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeInitializationOptions {
     pub data_dir: Option<PathBuf>,
-    pub flows_dir: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
     pub force: bool,
 }
@@ -217,15 +205,12 @@ fn run_init_shell(args: &[String], env: &impl Environment) -> CommandOutput {
     }
 
     match initialize_runtime(&init_args, env) {
-        Ok((settings, result)) => CommandOutput::stdout(
+        Ok(settings) => CommandOutput::stdout(
             0,
             format!(
-                "Initialized Spark at {}\nSeeded flows: {}\ncreated={} updated={} skipped={}\n",
+                "Initialized Spark at {}\nBundled library: {}\n",
                 settings.data_dir.display(),
-                result.flows_dir.display(),
-                result.created.len(),
-                result.updated.len(),
-                result.skipped.len()
+                settings.bundled_dir().display(),
             ),
         ),
         Err(message) => CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{message}\n")),
@@ -341,11 +326,10 @@ pub fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_ad
 fn initialize_runtime(
     args: &InitArgs,
     env: &impl Environment,
-) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
+) -> std::result::Result<SparkSettings, String> {
     initialize_runtime_with_options(
         &RuntimeInitializationOptions {
             data_dir: args.data_dir.clone(),
-            flows_dir: args.flows_dir.clone(),
             ui_dir: None,
             force: args.force,
         },
@@ -357,11 +341,10 @@ fn initialize_runtime_with_ui(
     args: &InitArgs,
     ui_dir: Option<PathBuf>,
     env: &impl Environment,
-) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
+) -> std::result::Result<SparkSettings, String> {
     initialize_runtime_with_options(
         &RuntimeInitializationOptions {
             data_dir: args.data_dir.clone(),
-            flows_dir: args.flows_dir.clone(),
             ui_dir,
             force: args.force,
         },
@@ -372,11 +355,10 @@ fn initialize_runtime_with_ui(
 pub fn initialize_runtime_with_options(
     options: &RuntimeInitializationOptions,
     env: &impl Environment,
-) -> std::result::Result<(SparkSettings, SeedStarterFlowsResult), String> {
+) -> std::result::Result<SparkSettings, String> {
     let settings = resolve_server_settings_with_env(
         &SettingsOverrides {
             data_dir: options.data_dir.clone(),
-            flows_dir: options.flows_dir.clone(),
             runs_dir: None,
             ui_dir: options.ui_dir.clone(),
         },
@@ -385,59 +367,7 @@ pub fn initialize_runtime_with_options(
     .map_err(|error| error.to_string())?;
     validate_settings(&settings).map_err(|error| error.to_string())?;
 
-    let flows = spark_assets::flows::starter_flow_assets()
-        .map_err(|error| format!("Packaged flow assets are unavailable: {error:?}"))?
-        .into_iter()
-        .map(|asset| (asset.name, asset.content))
-        .collect();
-    // Flows and roles: the approval log records what seeding installed.
-    let log = settings
-        .config_dir
-        .join(spark_common::approvals::APPROVALS_FILE);
-    let entries = spark_common::approvals::read_approvals(&log)
-        .map_err(|error| format!("Unable to read approval log {}: {error}", log.display()))?;
-    let mut installed = Vec::new();
-    let result = seed_packaged_files(
-        &settings.flows_dir,
-        flows,
-        &spark_common::approvals::installed_hashes(&entries, "flows/"),
-        options.force,
-    )?;
-    installed.extend(
-        result
-            .1
-            .into_iter()
-            .map(|(name, hash)| (format!("flows/{name}"), hash)),
-    );
-    let roles = seed_packaged_files(
-        &settings.roles_dir(),
-        spark_assets::roles::assets(),
-        &spark_common::approvals::installed_hashes(&entries, "roles/"),
-        options.force,
-    )?;
-    installed.extend(
-        roles
-            .1
-            .into_iter()
-            .map(|(name, hash)| (format!("roles/{name}"), hash)),
-    );
-    spark_common::approvals::append_approvals(
-        &log,
-        &spark_common::approvals::approval_entries(
-            spark_common::approvals::EVENT_INSTALLED,
-            &spark_common::approvals::installer_actor(),
-            installed,
-        ),
-    )
-    .map_err(|error| format!("Unable to write approval log {}: {error}", log.display()))?;
-    // The log replaced these manifests.
-    for (dir, manifest) in [
-        (&settings.flows_dir, ".packaged-flow-hashes.json"),
-        (&settings.roles_dir(), ".packaged-role-hashes.json"),
-    ] {
-        let _ = fs::remove_file(dir.join(manifest));
-    }
-    let result = result.0;
+    write_bundled_library(&settings)?;
     // Playbooks keep their own manifest.
     let playbooks_dir = settings.data_dir.join("playbooks");
     let manifest_path = playbooks_dir.join(".packaged-playbook-hashes.json");
@@ -447,7 +377,7 @@ pub fn initialize_runtime_with_options(
             serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text).ok()
         })
         .unwrap_or_default();
-    let (_, installed) = seed_packaged_files(
+    let installed = seed_packaged_files(
         &playbooks_dir,
         spark_assets::playbooks::assets(),
         &hashes,
@@ -459,9 +389,7 @@ pub fn initialize_runtime_with_options(
         serde_json::to_vec_pretty(&hashes).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("Unable to write packaged hash manifest: {e}"))?;
-    spark_storage::seed_default_flow_catalog(&settings.config_dir)
-        .map_err(|error| error.to_string())?;
-    Ok((settings, result))
+    Ok(settings)
 }
 
 fn run_service_install(args: &ServiceInstallArgs, env: &impl Environment) -> CommandOutput {
@@ -471,11 +399,9 @@ fn run_service_install(args: &ServiceInstallArgs, env: &impl Environment) -> Com
     };
     let init_args = InitArgs {
         data_dir: args.data_dir.clone(),
-        flows_dir: args.flows_dir.clone(),
         force: false,
     };
-    let (settings, result) = match initialize_runtime_with_ui(&init_args, args.ui_dir.clone(), env)
-    {
+    let settings = match initialize_runtime_with_ui(&init_args, args.ui_dir.clone(), env) {
         Ok(result) => result,
         Err(message) => return CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{message}\n")),
     };
@@ -520,16 +446,13 @@ fn run_service_install(args: &ServiceInstallArgs, env: &impl Environment) -> Com
     CommandOutput::stdout(
         0,
         format!(
-            "Installed Spark user service: {}\nService name: {}\nListening on http://{}:{}\nInitialized Spark at {}\nSeeded flows: {}\ncreated={} updated={} skipped={}\n",
+            "Installed Spark user service: {}\nService name: {}\nListening on http://{}:{}\nInitialized Spark at {}\nBundled library: {}\n",
             unit_path.display(),
             SERVICE_UNIT_NAME,
             args.host,
             args.port,
             settings.data_dir.display(),
-            result.flows_dir.display(),
-            result.created.len(),
-            result.updated.len(),
-            result.skipped.len()
+            settings.bundled_dir().display(),
         ),
     )
 }
@@ -611,7 +534,6 @@ fn build_service_unit(
     let mut service_environment = vec![
         quote_systemd_arg(format!("PATH={path_env}")),
         quote_systemd_arg(format!("SPARK_HOME={}", settings.data_dir.display())),
-        quote_systemd_arg(format!("SPARK_FLOWS_DIR={}", settings.flows_dir.display())),
     ];
     if let Some(ui_dir) = settings.ui_dir.as_deref() {
         service_environment.push(quote_systemd_arg(format!(
@@ -629,8 +551,6 @@ fn build_service_unit(
         port.to_string(),
         "--data-dir".to_string(),
         settings.data_dir.to_string_lossy().into_owned(),
-        "--flows-dir".to_string(),
-        settings.flows_dir.to_string_lossy().into_owned(),
     ];
     if let Some(ui_dir) = settings.ui_dir.as_deref() {
         exec_args.push("--ui-dir".to_string());
@@ -780,7 +700,6 @@ pub fn build_serve_configuration_from_args(
     let mut settings = resolve_server_settings_with_env(
         &SettingsOverrides {
             data_dir: serve_args.data_dir.clone(),
-            flows_dir: serve_args.flows_dir.clone(),
             runs_dir: None,
             ui_dir: serve_args.ui_dir.clone(),
         },
@@ -788,6 +707,8 @@ pub fn build_serve_configuration_from_args(
     )
     .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     validate_settings(&settings)
+        .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+    write_bundled_library(&settings)
         .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     for (key, cli, variable, stored) in [
         (
@@ -921,34 +842,54 @@ fn run_serve_process(
     })
 }
 
+/// Wipes and rewrites `$SPARK_HOME/bundled/{flows,roles}` from the packaged
+/// assets. The bundled library is read-only: projects override it in their
+/// org repos.
+fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), String> {
+    let flows = spark_assets::flows::starter_flow_assets()
+        .map_err(|error| format!("Packaged flow assets are unavailable: {error:?}"))?
+        .into_iter()
+        .map(|asset| (asset.name, asset.content));
+    let bundled = settings.bundled_dir();
+    for (dir, assets) in [
+        (bundled.join("flows"), flows.collect::<Vec<_>>()),
+        (bundled.join("roles"), spark_assets::roles::assets()),
+    ] {
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Unable to clear {}: {error}", dir.display())),
+        }
+        for (name, content) in assets {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!("Unable to create directory {}: {error}", parent.display())
+                })?;
+            }
+            fs::write(&path, content)
+                .map_err(|error| format!("Unable to write {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Writes packaged `(relative name, content)` files into `dir`: creates
 /// missing ones, updates unmodified installed copies, and keeps local edits.
 /// `installed` maps each name to the hash Spark last installed there. Returns
-/// the seeding result and the `(name, hash)` pairs now installed: files it
-/// wrote, and files already byte-identical to the packaged version.
+/// the `(name, hash)` pairs now installed: files it wrote, and files already
+/// byte-identical to the packaged version.
 fn seed_packaged_files(
     dir: &Path,
     assets: Vec<(String, String)>,
     installed: &std::collections::BTreeMap<String, String>,
     force: bool,
-) -> std::result::Result<(SeedStarterFlowsResult, Vec<(String, String)>), String> {
+) -> std::result::Result<Vec<(String, String)>, String> {
     fs::create_dir_all(dir)
         .map_err(|source| format!("Unable to create directory {}: {source}", dir.display()))?;
 
     use sha2::{Digest, Sha256};
     let mut now_installed = Vec::new();
-    let mut created = Vec::new();
-    let mut updated = Vec::new();
-    let mut skipped = Vec::new();
-    // Flow directories present before seeding. A packaged node file missing
-    // from one of them was deleted locally, so it stays deleted.
-    let present_flow_dirs = assets
-        .iter()
-        .filter_map(|(name, _)| name.strip_suffix("flow.md"))
-        .filter(|flow_dir| dir.join(flow_dir).join("flow.md").is_file())
-        .map(|flow_dir| dir.join(flow_dir))
-        .collect::<std::collections::BTreeSet<_>>();
-
     for (relative_name, content) in assets {
         let target_path = dir.join(&relative_name);
         if let Some(parent) = target_path.parent() {
@@ -961,18 +902,7 @@ fn seed_packaged_files(
         }
 
         let packaged_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-        let existed = target_path.exists();
-        if !existed
-            && !force
-            && installed.contains_key(&relative_name)
-            && target_path
-                .parent()
-                .is_some_and(|parent| present_flow_dirs.contains(parent))
-        {
-            skipped.push(relative_name);
-            continue;
-        }
-        if existed && !force {
+        if target_path.exists() && !force {
             let current_hash = fs::read(&target_path)
                 .map(|content| format!("{:x}", Sha256::digest(content)))
                 .map_err(|source| {
@@ -987,7 +917,6 @@ fn seed_packaged_files(
                 if installed.get(&relative_name) != Some(&packaged_hash) {
                     now_installed.push((relative_name.clone(), packaged_hash));
                 }
-                skipped.push(relative_name);
                 continue;
             }
             if installed.get(&relative_name) != Some(&current_hash) {
@@ -996,7 +925,6 @@ fn seed_packaged_files(
                     file = %relative_name,
                     "keeping a locally edited packaged file; the bundled version differs"
                 );
-                skipped.push(relative_name);
                 continue;
             }
         }
@@ -1007,23 +935,9 @@ fn seed_packaged_files(
                 target_path.display()
             )
         })?;
-        if existed {
-            updated.push(relative_name.clone());
-        } else {
-            created.push(relative_name.clone());
-        }
         now_installed.push((relative_name, packaged_hash));
     }
-
-    Ok((
-        SeedStarterFlowsResult {
-            flows_dir: dir.to_path_buf(),
-            created,
-            updated,
-            skipped,
-        },
-        now_installed,
-    ))
+    Ok(now_installed)
 }
 
 fn enforce_runtime_home_guard(
@@ -1053,9 +967,6 @@ fn parse_init_args(args: &[String]) -> std::result::Result<InitArgs, String> {
             "--data-dir" => {
                 parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?);
             }
-            "--flows-dir" => {
-                parsed.flows_dir = Some(next_path(args, &mut index, "--flows-dir")?);
-            }
             "--force" => {
                 parsed.force = true;
                 index += 1;
@@ -1073,7 +984,6 @@ fn parse_serve_args(args: &[String]) -> std::result::Result<ServeArgs, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--data-dir" => parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?),
-            "--flows-dir" => parsed.flows_dir = Some(next_path(args, &mut index, "--flows-dir")?),
             "--ui-dir" => parsed.ui_dir = Some(next_path(args, &mut index, "--ui-dir")?),
             "--host" => parsed.host = Some(next_value(args, &mut index, "--host")?),
             "--port" => {
@@ -1109,7 +1019,6 @@ fn parse_service_install_args(args: &[String]) -> std::result::Result<ServiceIns
     while index < args.len() {
         match args[index].as_str() {
             "--data-dir" => parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?),
-            "--flows-dir" => parsed.flows_dir = Some(next_path(args, &mut index, "--flows-dir")?),
             "--ui-dir" => parsed.ui_dir = Some(next_path(args, &mut index, "--ui-dir")?),
             "--host" => parsed.host = next_value(args, &mut index, "--host")?,
             "--port" => {

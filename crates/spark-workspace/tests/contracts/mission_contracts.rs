@@ -130,10 +130,8 @@ impl Harness {
             .unwrap()
             .to_string()
     }
-    fn agent_requestable(&self, flow: &str, content: &str) {
+    fn install(&self, flow: &str, content: &str) {
         write_flow(&self.settings, flow, content);
-        spark_storage::set_flow_launch_policy(&self.settings.config_dir, flow, "agent_requestable")
-            .unwrap();
     }
     /// The agent's `spark convo run-request` from inside its turn.
     fn launch(&self, id: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
@@ -525,8 +523,8 @@ fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
 #[test]
 fn events_during_a_turn_are_delivered_as_one_next_turn() {
     let harness = Harness::new();
-    harness.agent_requestable("work/ok", simple_flow());
-    harness.agent_requestable("work/fail", &tool_flow("exit 1"));
+    harness.install("work/ok", simple_flow());
+    harness.install("work/fail", &tool_flow("exit 1"));
     let mission = harness.create(json!({"title": "Ship", "description": "Deliver"}));
     harness
         .missions
@@ -610,10 +608,9 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
 }
 
 #[test]
-fn launches_over_budget_or_outside_the_catalog_are_refused() {
+fn launches_over_budget_are_refused() {
     let harness = Harness::new();
-    harness.agent_requestable("work/slow", &tool_flow("sleep 30"));
-    write_flow(&harness.settings, "work/private", simple_flow());
+    harness.install("work/slow", &tool_flow("sleep 30"));
     let mission = harness
         .create(json!({"title": "Budgeted", "budget": {"concurrent_runs": 1, "total_runs": 2}}));
     harness
@@ -621,13 +618,6 @@ fn launches_over_budget_or_outside_the_catalog_are_refused() {
         .start(&harness.project, &mission.id)
         .unwrap();
     harness.wait_turns(1);
-    let refused = harness
-        .launch(&mission.id, "work/private", "Nope")
-        .unwrap_err();
-    assert!(
-        refused.to_string().contains("not agent-requestable"),
-        "{refused}"
-    );
     harness.launch(&mission.id, "work/slow", "One").unwrap();
     let refused = harness.launch(&mission.id, "work/slow", "Two").unwrap_err();
     assert!(
@@ -653,7 +643,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     let release = harness._temp.path().join("release-canceled-run");
     let entered = harness._temp.path().join("entered-canceled-run");
     // Keep the tool in flight until cancellation; expire the gate if the test fails.
-    harness.agent_requestable(
+    harness.install(
         "work/slow",
         &tool_flow(&format!(
             "touch '{}'; for i in $(seq 1 600); do [ -f '{}' ] && exit 0; sleep 0.1; done; exit 1",
@@ -849,7 +839,7 @@ fn missions_stay_inside_their_project() {
 #[test]
 fn ordinary_conversations_launch_directly_without_mission_integration() {
     let harness = Harness::new();
-    harness.agent_requestable("ops/review", simple_flow());
+    harness.install("ops/review", simple_flow());
     seed_conversation(&harness.settings, &harness.project, "conversation-task");
     let mission = harness.create(json!({"title": "Unrelated"}));
     let response = WorkspaceConversationService::new(harness.settings.clone())
@@ -1024,7 +1014,7 @@ fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
 fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
     for status in ["canceled", "failed", "validation_error", "completed"] {
         let harness = Harness::new();
-        harness.agent_requestable("work/next", simple_flow());
+        harness.install("work/next", simple_flow());
         let mission = harness.create(json!({
             "title": "Continue after termination", "budget": {"concurrent_runs": 1}
         }));
@@ -1329,7 +1319,7 @@ fn the_offered_question_is_one_still_unanswered() {
 #[test]
 fn answering_a_live_child_gate_resumes_the_run_tree() {
     let harness = Harness::new();
-    harness.agent_requestable(
+    harness.install(
         "work/parent",
         &json!({
             "schema_version":"1", "id":"parent",

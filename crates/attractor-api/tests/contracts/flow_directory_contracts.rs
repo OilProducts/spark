@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use attractor_api::{preview_with_flows_dir, AttractorApiService, PreviewRequest, SaveFlowRequest};
+use attractor_api::{preview_with_roots, AttractorApiService, PreviewRequest, SaveFlowRequest};
 use attractor_core::{ExecutionConfig, NodeConfig};
 use attractor_dsl::{
-    flow_yaml, parse_flow_definition, read_flow_dir, resolve_flow_ref, resolve_flow_roles,
-    write_flow_dir, FlowDefinition,
+    flow_ref_name, flow_yaml, load_flow, parse_flow_definition, read_flow_dir, resolve_flow_roles,
+    write_flow_dir, FlowDefinition, FlowRoots,
 };
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
@@ -57,13 +57,26 @@ fn flow() -> FlowDefinition {
     parse_flow_definition(FLOW).expect("valid flow")
 }
 
-/// Editor saves stamp `generated` on the files they write.
-fn without_generated(mut flow: FlowDefinition) -> FlowDefinition {
-    flow.generated = None;
-    for node in flow.nodes.values_mut() {
-        node.generated = None;
+/// A project with an org repo that has a local git identity, since editor
+/// saves commit under the repo's normal git config.
+fn project_with_org(root: &Path) -> std::path::PathBuf {
+    let project = root.join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
+    for (key, value) in [
+        ("user.name", "Editor Test"),
+        ("user.email", "editor@example.com"),
+    ] {
+        spark_common::project::run_git(&org, &["config", key, value]).expect("git config");
     }
-    flow
+    project
+}
+
+fn save_request(name: &str, content: String, project: &Path) -> SaveFlowRequest {
+    SaveFlowRequest {
+        name: name.to_string(),
+        content,
+        project_path: Some(project.to_string_lossy().to_string()),
+    }
 }
 
 fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -175,7 +188,8 @@ fn roles_prepend_their_persona_and_merge_execution_under_the_node() {
     fs::create_dir_all(&roles_dir).expect("roles");
     fs::write(roles_dir.join("reviewer.md"), ROLE).expect("role");
 
-    let resolved = resolve_flow_roles(&flow(), &roles_dir).expect("resolve");
+    let resolved =
+        resolve_flow_roles(&flow(), &FlowRoots::new(temp.path(), None)).expect("resolve");
     let review = &resolved.nodes["review"];
     assert_eq!(review.role, None);
     assert_eq!(
@@ -193,7 +207,8 @@ fn roles_prepend_their_persona_and_merge_execution_under_the_node() {
         })
     );
 
-    let error = resolve_flow_roles(&flow(), &temp.path().join("missing")).expect_err("unknown");
+    let error = resolve_flow_roles(&flow(), &FlowRoots::new(temp.path().join("missing"), None))
+        .expect_err("unknown");
     assert!(
         error.detail().contains("unknown role 'reviewer'"),
         "{}",
@@ -214,12 +229,10 @@ fn roles_prepend_their_persona_and_merge_execution_under_the_node() {
 fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project_with_org(temp.path());
     let service = AttractorApiService::new(settings.clone());
 
-    let unknown_role = service.save_flow(SaveFlowRequest {
-        name: "review".to_string(),
-        content: FLOW.to_string(),
-    });
+    let unknown_role = service.save_flow(save_request("review", FLOW.to_string(), &project));
     assert_eq!(unknown_role.status_code, 422, "{}", unknown_role.body);
     assert!(unknown_role
         .body
@@ -227,20 +240,17 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
         .contains("unknown role 'reviewer'"));
 
     // Settings a role contributes are validated like the node's own.
-    fs::create_dir_all(settings.roles_dir()).expect("roles");
+    fs::create_dir_all(settings.bundled_dir().join("roles")).expect("roles");
     for (execution, expected) in [
         ("reasoning_mode: turbo", "reasoning_mode must be one of"),
         ("llm_profile: missing-profile", "Unknown profile reference"),
     ] {
         fs::write(
-            settings.roles_dir().join("reviewer.md"),
+            settings.bundled_dir().join("roles").join("reviewer.md"),
             format!("---\ntype: Role\nexecution:\n  {execution}\n---\n\nPersona.\n"),
         )
         .expect("role");
-        let rejected = service.save_flow(SaveFlowRequest {
-            name: "review".to_string(),
-            content: FLOW.to_string(),
-        });
+        let rejected = service.save_flow(save_request("review", FLOW.to_string(), &project));
         assert_ne!(rejected.status_code, 200, "{}", rejected.body);
         assert!(
             rejected.body.to_string().contains(expected),
@@ -248,50 +258,65 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
             rejected.body
         );
     }
-    assert!(!settings.flows_dir.join("review").exists());
+    let org = spark_common::project::org_dir(&project);
+    assert!(!org.join("flows/review").exists());
 
-    fs::write(settings.roles_dir().join("reviewer.md"), ROLE).expect("role");
-    let saved = service.save_flow(SaveFlowRequest {
-        name: "review".to_string(),
-        content: FLOW.to_string(),
-    });
+    fs::write(
+        settings.bundled_dir().join("roles").join("reviewer.md"),
+        ROLE,
+    )
+    .expect("role");
+    let saved = service.save_flow(save_request("review", FLOW.to_string(), &project));
     assert_eq!(saved.status_code, 200, "{}", saved.body);
 
-    let loaded = service.get_flow("review");
+    let loaded = service.get_flow("review", project.to_str());
     let content = loaded.body["content"].as_str().expect("content");
     assert!(content.contains("role: reviewer"));
     assert!(!content.contains("careful reviewer"));
-    assert_eq!(
-        without_generated(parse_flow_definition(content).expect("authored")),
-        flow()
-    );
+    assert_eq!((parse_flow_definition(content).expect("authored")), flow());
 
-    let resolved = attractor_dsl::load_resolved_flow_content(
-        &settings.flows_dir,
-        &settings.roles_dir(),
-        "review",
-    )
-    .expect("resolved");
+    let roots = FlowRoots::new(settings.bundled_dir(), Some(&project));
+    let resolved = flow_yaml(&load_flow(&roots, "review").expect("resolved").flow).expect("yaml");
     assert!(resolved.contains("You are a careful reviewer."));
     assert!(!resolved.contains("role: reviewer"));
+
+    // A project role replaces the bundled role of the same name.
+    fs::create_dir_all(org.join("roles")).expect("org roles");
+    fs::write(
+        org.join("roles/reviewer.md"),
+        "---\ntype: Role\n---\n\nYou are the project's reviewer.\n",
+    )
+    .expect("org role");
+    let resolved = flow_yaml(&load_flow(&roots, "review").expect("resolved").flow).expect("yaml");
+    assert!(
+        resolved.contains("You are the project's reviewer."),
+        "{resolved}"
+    );
+    assert!(!resolved.contains("careful reviewer"));
 }
 
 #[test]
 fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    fs::create_dir_all(settings.roles_dir()).expect("roles");
-    fs::write(settings.roles_dir().join("reviewer.md"), ROLE).expect("role");
+    fs::create_dir_all(settings.bundled_dir().join("roles")).expect("roles");
+    fs::write(
+        settings.bundled_dir().join("roles").join("reviewer.md"),
+        ROLE,
+    )
+    .expect("role");
+    let project = project_with_org(temp.path());
     let service = AttractorApiService::new(settings.clone());
     let save = |flow: &FlowDefinition| {
-        let response = service.save_flow(SaveFlowRequest {
-            name: "review".to_string(),
-            content: flow_yaml(flow).expect("yaml"),
-        });
+        let response = service.save_flow(save_request(
+            "review",
+            flow_yaml(flow).expect("yaml"),
+            &project,
+        ));
         assert_eq!(response.status_code, 200, "{}", response.body);
     };
     save(&flow());
-    let dir = settings.flows_dir.join("review");
+    let dir = spark_common::project::org_dir(&project).join("flows/review");
 
     // Hand formatting that keeps the meaning survives a save untouched.
     let start = fs::read_to_string(dir.join("start.md")).expect("start");
@@ -312,10 +337,7 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
             assert_eq!(&after[name], bytes, "{name} must stay byte-identical");
         }
     }
-    assert_eq!(
-        without_generated(read_flow_dir(&dir).expect("load")),
-        edited
-    );
+    assert_eq!((read_flow_dir(&dir).expect("load")), edited);
 
     let mut removed = edited.clone();
     removed.nodes.remove("check");
@@ -329,10 +351,7 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     });
     save(&removed);
     assert!(!dir.join("check.md").exists());
-    assert_eq!(
-        without_generated(read_flow_dir(&dir).expect("load")),
-        removed.normalize()
-    );
+    assert_eq!((read_flow_dir(&dir).expect("load")), removed.normalize());
     assert!(!files(&dir).keys().any(|name| name.starts_with('.')));
     // Temp files live beside the flow directory and are renamed away.
     assert!(fs::read_dir(dir.parent().expect("parent"))
@@ -359,19 +378,24 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
     .expect("parent");
     write_flow_dir(&flows_dir.join("team/parent"), &parent).expect("parent");
 
-    // The runtime resolves against internal.flow_source_dir, the directory
-    // containing the parent's directory; preview uses the same resolver.
+    // A ref names the flow beside the parent; the runtime and preview then
+    // resolve that name through the roots.
     assert_eq!(
-        resolve_flow_ref(&flows_dir.join("team"), "workers/child"),
-        Some(flows_dir.join("team/workers/child"))
+        flow_ref_name(Some("team/parent"), "workers/child"),
+        Some("team/workers/child".to_string())
     );
-    let preview = preview_with_flows_dir(
+    assert_eq!(
+        flow_ref_name(None, "workers/child"),
+        Some("workers/child".to_string())
+    );
+    let preview = preview_with_roots(
         PreviewRequest {
             flow_content: flow_yaml(&parent).expect("yaml"),
             flow_name: Some("team/parent".to_string()),
             expand_children: true,
+            project_path: None,
         },
-        &flows_dir,
+        &FlowRoots::new(temp.path(), None),
     );
     assert_eq!(
         preview.body["graph"]["child_previews"]["run"]["flow_name"],
@@ -413,13 +437,14 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
         parent
     };
     let child_preview = |parent: &FlowDefinition| {
-        preview_with_flows_dir(
+        preview_with_roots(
             PreviewRequest {
                 flow_content: flow_yaml(parent).expect("yaml"),
                 flow_name: Some("team/parent".to_string()),
                 expand_children: true,
+                project_path: None,
             },
-            &flows_dir,
+            &FlowRoots::new(temp.path(), None),
         )
         .body["graph"]["child_previews"]["run"]["flow_name"]
             .clone()
@@ -429,8 +454,8 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
     let parent = parent_with("workers\\child");
     attractor_dsl::validate_flow_definition(&parent).expect("backslash ref is valid");
     assert_eq!(
-        resolve_flow_ref(&flows_dir.join("team"), "workers\\child"),
-        Some(flows_dir.join("team/workers/child"))
+        flow_ref_name(Some("team/parent"), "workers\\child"),
+        Some("team/workers/child".to_string())
     );
     assert_eq!(child_preview(&parent), json!("team/workers/child"));
 
@@ -446,7 +471,7 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
             error.diagnostics.iter().any(|d| d.rule_id == "subflow_ref"),
             "{flow_ref}: {error}"
         );
-        assert_eq!(resolve_flow_ref(&flows_dir.join("team"), flow_ref), None);
+        assert_eq!(flow_ref_name(Some("team/parent"), flow_ref), None);
         assert_eq!(child_preview(&parent), Value::Null, "{flow_ref}");
     }
 }
@@ -459,24 +484,34 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
         "id: child\ntitle: Child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
     )
     .expect("child");
-    write_flow_dir(&settings.flows_dir.join("team/workers/child"), &child).expect("child");
+    write_flow_dir(
+        &settings
+            .bundled_dir()
+            .join("flows")
+            .join("team/workers/child"),
+        &child,
+    )
+    .expect("child");
     let parent = parse_flow_definition(
         "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n    manager: {max_cycles: 1, child_autostart: true, child_workdir: worktree}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
     )
     .expect("parent");
-    write_flow_dir(&settings.flows_dir.join("team/parent"), &parent).expect("parent");
-    crate::approve_flow(&settings, &settings.flows_dir.join("team/workers/child"));
-    crate::approve_flow(&settings, &settings.flows_dir.join("team/parent"));
+    write_flow_dir(
+        &settings.bundled_dir().join("flows").join("team/parent"),
+        &parent,
+    )
+    .expect("parent");
     let project = temp.path().join("project");
     fs::create_dir_all(project.join("worktree")).expect("worktree");
 
-    let preview = preview_with_flows_dir(
+    let preview = preview_with_roots(
         PreviewRequest {
             flow_content: flow_yaml(&parent).expect("yaml"),
             flow_name: Some("team/parent".to_string()),
             expand_children: true,
+            project_path: None,
         },
-        &settings.flows_dir,
+        &FlowRoots::new(settings.bundled_dir(), None),
     );
     assert_eq!(
         preview.body["graph"]["child_previews"]["run"]["flow_name"],
@@ -530,7 +565,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -579,7 +613,7 @@ edges:
   - {from: first, to: second}
   - {from: second, to: done}
 "#;
-    // Runs launch the approved flow on disk by name.
+    // Runs launch the flow on disk by name.
     let name = crate::install_flow(&settings, flow);
     let launch = |run_id: &str| {
         service.start_pipeline(attractor_api::PipelineStartRequest {
@@ -603,18 +637,12 @@ edges:
         .as_str()
         .is_some_and(|error| error.contains("unknown role 'reviewer'")));
 
-    fs::create_dir_all(settings.roles_dir()).expect("roles");
+    fs::create_dir_all(settings.bundled_dir().join("roles")).expect("roles");
     fs::write(
-        settings.roles_dir().join("reviewer.md"),
+        settings.bundled_dir().join("roles").join("reviewer.md"),
         "---\ntype: Role\nexecution:\n  llm_model: role-model\n---\n\nYou are a careful reviewer.\n",
     )
     .expect("role");
-    attractor_dsl::accept(
-        &attractor_dsl::TrustStore::for_settings(&settings),
-        &settings.roles_dir().join("reviewer.md"),
-        "human:test",
-    )
-    .expect("approve role");
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut requests = Vec::new();
@@ -683,4 +711,139 @@ edges:
         "{snapshot}"
     );
     assert!(!snapshot.contains("role:"), "{snapshot}");
+}
+
+#[test]
+fn launches_resolve_child_flows_by_name_to_the_project_copy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let bundled = settings.bundled_dir().join("flows");
+    let child = |title: &str| {
+        parse_flow_definition(&format!(
+            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
+        ))
+        .expect("child")
+    };
+    write_flow_dir(&bundled.join("team/workers/child"), &child("Bundled Child")).expect("child");
+    let parent = parse_flow_definition(
+        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n    manager: {max_cycles: 1, child_autostart: true}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
+    )
+    .expect("parent");
+    write_flow_dir(&bundled.join("team/parent"), &parent).expect("parent");
+    let project = temp.path().join("project");
+    write_flow_dir(
+        &spark_common::project::org_dir(&project).join("flows/team/workers/child"),
+        &child("Project Child"),
+    )
+    .expect("project child");
+    let service = AttractorApiService::new(settings.clone());
+    let launch = |run_id: &str, project_path: Option<&Path>| {
+        let started = service.start_pipeline(attractor_api::PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some(run_id.to_string()),
+            flow_name: Some("team/parent".to_string()),
+            working_directory: project.to_string_lossy().into_owned(),
+            project_path: project_path.map(|path| path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        assert_eq!(started.body["status"], "started", "{}", started.body);
+        attractor_runtime::RunStore::for_settings(&settings)
+            .list_run_records()
+            .expect("runs")
+            .into_iter()
+            .find(|record| record.parent_run_id.as_deref() == Some(run_id))
+            .expect("child run")
+            .flow_name
+    };
+
+    // The parent is bundled; its child resolves by name, project copy first.
+    assert_eq!(launch("with-project", Some(&project)), "Project Child");
+    // A launch with no project uses bundled flows only.
+    assert_eq!(launch("bundled-only", None), "Bundled Child");
+}
+
+#[test]
+fn run_manifests_hash_each_file_by_layer_with_org_state_and_spark_version() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let bundled = settings.bundled_dir();
+    write_flow_dir(&bundled.join("flows/review"), &flow()).expect("bundled flow");
+    fs::create_dir_all(bundled.join("roles")).expect("roles");
+    fs::write(bundled.join("roles/reviewer.md"), ROLE).expect("role");
+    let hash = |bytes: &[u8]| spark_common::project::sha256_hex(bytes);
+
+    // No project: bundled files only, and no org.
+    let loaded = load_flow(&FlowRoots::new(&bundled, None), "review").expect("load");
+    let manifest = serde_json::to_value(&loaded.manifest).expect("manifest");
+    assert_eq!(manifest["org"], Value::Null);
+    assert_eq!(manifest["spark_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        manifest["files"]["bundled/roles/reviewer.md"],
+        json!(hash(ROLE.as_bytes()))
+    );
+    assert_eq!(
+        manifest["files"]["bundled/flows/review/flow.md"],
+        json!(hash(
+            &fs::read(bundled.join("flows/review/flow.md")).expect("flow.md")
+        ))
+    );
+    assert_eq!(manifest["files"].as_object().expect("files").len(), 6);
+
+    // A project copy is hashed under org/, with the org repo's state.
+    let project = project_with_org(temp.path());
+    let org = spark_common::project::org_dir(&project);
+    let roots = FlowRoots::new(&bundled, Some(&project));
+    write_flow_dir(&org.join("flows/review"), &flow()).expect("org flow");
+    spark_common::project::run_git(&org, &["add", "-A"]).expect("add");
+    spark_common::project::run_git(&org, &["commit", "-q", "-m", "Add review"]).expect("commit");
+    let head = spark_common::project::run_git(&org, &["rev-parse", "HEAD"]).expect("head");
+    let manifest = serde_json::to_value(load_flow(&roots, "review").expect("load").manifest)
+        .expect("manifest");
+    assert_eq!(manifest["org"], json!({"commit": head, "dirty": false}));
+    let keys = manifest["files"]
+        .as_object()
+        .expect("files")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        keys.contains(&"org/flows/review/review.md".to_string()),
+        "{keys:?}"
+    );
+    assert!(
+        keys.contains(&"bundled/roles/reviewer.md".to_string()),
+        "{keys:?}"
+    );
+    assert!(
+        keys.iter().all(|key| !key.starts_with("bundled/flows/")),
+        "{keys:?}"
+    );
+
+    fs::write(org.join("notes.md"), "uncommitted\n").expect("dirty");
+    let manifest = serde_json::to_value(load_flow(&roots, "review").expect("load").manifest)
+        .expect("manifest");
+    assert_eq!(manifest["org"], json!({"commit": head, "dirty": true}));
+
+    // Launches record the manifest beside the flow snapshot.
+    let started = AttractorApiService::new(settings.clone()).start_pipeline(
+        attractor_api::PipelineStartRequest {
+            run_id: Some("manifest-run".to_string()),
+            flow_name: Some("review".to_string()),
+            working_directory: project.to_string_lossy().into_owned(),
+            project_path: Some(project.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(started.status_code, 200, "{}", started.body);
+    let recorded: Value = serde_json::from_slice(
+        &fs::read(
+            started.body["flow_files_path"]
+                .as_str()
+                .or_else(|| started.body["graph_paths"]["flow_files_path"].as_str())
+                .expect("files.json path"),
+        )
+        .expect("files.json"),
+    )
+    .expect("json");
+    assert_eq!(recorded, manifest);
 }

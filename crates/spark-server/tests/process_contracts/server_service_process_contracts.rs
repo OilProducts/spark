@@ -24,8 +24,6 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
             "8123",
             "--data-dir",
             harness.data_dir_text.as_str(),
-            "--flows-dir",
-            harness.flows_dir_text.as_str(),
             "--ui-dir",
             harness.ui_dir_text.as_str(),
         ])
@@ -35,19 +33,22 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
     assert_eq!(
         stdout_text(&install),
         format!(
-            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nSeeded flows: {}\ncreated={flow_count} updated=0 skipped=0\n",
+            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nBundled library: {}\n",
             harness.unit_path.display(),
             harness.data_dir.display(),
-            harness.flows_dir.display()
+            harness.data_dir.join("bundled").display()
         )
     );
 
-    assert_eq!(count_flow_files(&harness.flows_dir), flow_count);
-    assert!(harness
+    assert_eq!(
+        count_flow_files(&harness.data_dir.join("bundled/flows")),
+        flow_count
+    );
+    assert!(!harness
         .data_dir
         .join("config")
         .join("flow-catalog.toml")
-        .is_file());
+        .exists());
     let unit = fs::read_to_string(&harness.unit_path).expect("service unit");
     assert!(unit.contains("[Unit]\n"));
     assert!(unit.contains("[Service]\n"));
@@ -67,19 +68,15 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
         "Environment=SPARK_HOME={}\n",
         harness.data_dir.display()
     )));
-    assert!(unit.contains(&format!(
-        "Environment=SPARK_FLOWS_DIR={}\n",
-        harness.flows_dir.display()
-    )));
+    assert!(!unit.contains("SPARK_FLOWS_DIR"));
     assert!(unit.contains(&format!(
         "Environment=SPARK_UI_DIR={}\n",
         harness.ui_dir.display()
     )));
     assert!(unit.contains(&format!(
-        "ExecStart={} serve --host 127.0.0.1 --port 8123 --data-dir {} --flows-dir {} --ui-dir {}\n",
+        "ExecStart={} serve --host 127.0.0.1 --port 8123 --data-dir {} --ui-dir {}\n",
         env!("CARGO_BIN_EXE_spark-server"),
         harness.data_dir.display(),
-        harness.flows_dir.display(),
         harness.ui_dir.display()
     )));
 
@@ -135,8 +132,6 @@ fn service_install_defaults_to_wildcard_host() {
             "install",
             "--data-dir",
             harness.data_dir_text.as_str(),
-            "--flows-dir",
-            harness.flows_dir_text.as_str(),
         ])
         .output()
         .expect("service install output");
@@ -145,10 +140,9 @@ fn service_install_defaults_to_wildcard_host() {
 
     let unit = fs::read_to_string(&harness.unit_path).expect("service unit");
     assert!(unit.contains(&format!(
-        "ExecStart={} serve --host 0.0.0.0 --port 8000 --data-dir {} --flows-dir {}\n",
+        "ExecStart={} serve --host 0.0.0.0 --port 8000 --data-dir {}\n",
         env!("CARGO_BIN_EXE_spark-server"),
-        harness.data_dir.display(),
-        harness.flows_dir.display()
+        harness.data_dir.display()
     )));
     assert!(!unit.contains("SPARK_UI_DIR"));
 }
@@ -157,8 +151,6 @@ struct ServiceHarness {
     _temp: tempfile::TempDir,
     data_dir: PathBuf,
     data_dir_text: String,
-    flows_dir: PathBuf,
-    flows_dir_text: String,
     ui_dir: PathBuf,
     ui_dir_text: String,
     unit_path: PathBuf,
@@ -207,7 +199,6 @@ exit 0\n",
         )
         .expect("joined PATH");
         let data_dir = temp.path().join("spark-home");
-        let flows_dir = temp.path().join("flows");
         let ui_dir = temp.path().join("ui");
         fs::create_dir_all(&ui_dir).expect("ui dir");
         fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
@@ -221,10 +212,8 @@ exit 0\n",
         Self {
             _temp: temp,
             data_dir_text: data_dir.to_string_lossy().into_owned(),
-            flows_dir_text: flows_dir.to_string_lossy().into_owned(),
             ui_dir_text: ui_dir.to_string_lossy().into_owned(),
             data_dir,
-            flows_dir,
             ui_dir,
             unit_path,
             systemctl_log,
@@ -242,7 +231,6 @@ exit 0\n",
             .env("XDG_CONFIG_HOME", &self.xdg_config_home)
             .env("HOME", &self.home)
             .env_remove("SPARK_HOME")
-            .env_remove("SPARK_FLOWS_DIR")
             .env_remove("SPARK_UI_DIR");
         command
     }

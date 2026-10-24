@@ -121,4 +121,4 @@ fn encode_query(value: impl AsRef<str>) -> String {
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{approve_flow, install_flow};
+pub(crate) use flow_install::{install_flow, install_org_flow};

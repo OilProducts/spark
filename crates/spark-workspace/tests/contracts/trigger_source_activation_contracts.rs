@@ -328,14 +328,13 @@ fn flow_event_trigger_keeps_static_context_nested() {
 
 fn write_flow(settings: &SparkSettings, name: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(
             "schema_version: '1'\nid: workspace-trigger\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
         )
         .expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn flow_event_definition(
@@ -368,7 +367,7 @@ fn flow_event_definition(
 }
 
 fn write_invalid_flow(settings: &SparkSettings, name: &str) {
-    let path = settings.flows_dir.join(name);
+    let path = settings.bundled_dir().join("flows").join(name);
     fs::create_dir_all(&path).expect("flow dir");
     fs::write(
         path.join("flow.md"),
@@ -410,7 +409,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }

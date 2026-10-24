@@ -108,8 +108,9 @@ const pruneRunsSessionsForProject = (
     }
 }
 
-const preserveEditorSession = (state: AppState) => ({
-    activeFlow: state.activeFlow,
+// Flows are per project, so the open flow does not survive a project switch.
+const preserveEditorSession = (state: AppState, nextActiveProjectPath: string | null) => ({
+    activeFlow: nextActiveProjectPath === state.activeProjectPath ? state.activeFlow : null,
     selectedNodeId: state.selectedNodeId,
     selectedEdgeId: state.selectedEdgeId,
     flowMetadata: state.flowMetadata,
@@ -192,7 +193,7 @@ export const buildHydrateProjectRegistryTransition = (
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
     return {
-        ...preserveEditorSession(state),
+        ...preserveEditorSession(state, nextActiveProjectPath),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         activeProjectPath: nextActiveProjectPath,
@@ -273,7 +274,7 @@ export const buildRemoveProjectTransition = (
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
     const nextRunsSessions = pruneRunsSessionsForProject(state, normalizedPath)
     return {
-        ...preserveEditorSession(state),
+        ...preserveEditorSession(state, nextResolvedActiveProjectPath),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
@@ -328,7 +329,7 @@ export const buildSetActiveProjectTransition = (
 
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
     return {
-        ...preserveEditorSession(state),
+        ...preserveEditorSession(state, nextProjectPath),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, nextProjectPath),

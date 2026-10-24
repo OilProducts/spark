@@ -8,7 +8,6 @@ use crate::paths::{
 };
 
 pub const ENV_HOME_DIR: &str = "SPARK_HOME";
-pub const ENV_FLOWS_DIR: &str = "SPARK_FLOWS_DIR";
 pub const ENV_UI_DIR: &str = "SPARK_UI_DIR";
 pub const ENV_PROJECT_ROOTS: &str = "SPARK_PROJECT_ROOTS";
 
@@ -285,7 +284,6 @@ pub struct DesktopSettings {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSettings {
     pub runs_dir: Option<PathBuf>,
-    pub flows_dir: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
     #[serde(default)]
     pub project_roots: Vec<PathBuf>,
@@ -293,7 +291,7 @@ pub struct RuntimeSettings {
 
 impl RuntimeSettings {
     pub fn validate(&self) -> Result<()> {
-        if [&self.runs_dir, &self.flows_dir, &self.ui_dir]
+        if [&self.runs_dir, &self.ui_dir]
             .into_iter()
             .flatten()
             .chain(self.project_roots.iter())
@@ -493,15 +491,15 @@ pub struct SparkSettings {
     pub projects_dir: PathBuf,
     pub attractor_dir: PathBuf,
     pub runs_dir: PathBuf,
-    pub flows_dir: PathBuf,
     pub ui_dir: Option<PathBuf>,
     pub project_roots: Vec<PathBuf>,
 }
 
 impl SparkSettings {
-    /// Role files (`roles/<name>.md`) that flow nodes reference.
-    pub fn roles_dir(&self) -> PathBuf {
-        self.data_dir.join("roles")
+    /// The bundled flow and role library (`flows/`, `roles/`), rewritten
+    /// from the packaged assets on every start.
+    pub fn bundled_dir(&self) -> PathBuf {
+        self.data_dir.join("bundled")
     }
 }
 
@@ -509,7 +507,6 @@ impl SparkSettings {
 pub struct SettingsOverrides {
     pub data_dir: Option<PathBuf>,
     pub runs_dir: Option<PathBuf>,
-    pub flows_dir: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
 }
 
@@ -552,14 +549,6 @@ pub fn resolve_settings_with_persisted(
             .as_ref()
             .unwrap_or(&attractor_dir.join("runs")),
     )?;
-    let flows_dir = coalesce_path(
-        overrides.flows_dir.as_ref(),
-        env.get_var(ENV_FLOWS_DIR).as_deref(),
-        persisted
-            .flows_dir
-            .as_ref()
-            .unwrap_or(&data_dir.join("flows")),
-    )?;
     let ui_dir = coalesce_optional_path(
         overrides.ui_dir.as_ref(),
         env.get_var(ENV_UI_DIR).as_deref(),
@@ -580,12 +569,6 @@ pub fn resolve_settings_with_persisted(
             overrides.runs_dir.is_some(),
             "",
             persisted.runs_dir.is_some(),
-        ),
-        (
-            "runtime.flows_dir",
-            overrides.flows_dir.is_some(),
-            ENV_FLOWS_DIR,
-            persisted.flows_dir.is_some(),
         ),
         (
             "runtime.ui_dir",
@@ -624,7 +607,6 @@ pub fn resolve_settings_with_persisted(
         projects_dir,
         attractor_dir,
         runs_dir,
-        flows_dir,
         ui_dir,
         project_roots,
     })
@@ -638,7 +620,6 @@ pub fn validate_settings(settings: &SparkSettings) -> Result<()> {
     ensure_writable_directory(&settings.projects_dir, "projects")?;
     ensure_writable_directory(&settings.attractor_dir, "attractor")?;
     ensure_writable_directory(&settings.runs_dir, "runs")?;
-    ensure_writable_directory(&settings.flows_dir, "flows")?;
     if let Some(ui_dir) = settings.ui_dir.as_deref() {
         if !ui_dir.join("index.html").exists() {
             return Err(SparkCommonError::InvalidUiDirectory(ui_dir.to_path_buf()));
@@ -729,7 +710,6 @@ impl ExecutionConfiguration {
         self.config_dir = settings.config_dir.clone();
         self.runtime = RuntimeSettings {
             runs_dir: Some(settings.runs_dir.clone()),
-            flows_dir: Some(settings.flows_dir.clone()),
             ui_dir: settings.ui_dir.clone(),
             project_roots: settings.project_roots.clone(),
         };

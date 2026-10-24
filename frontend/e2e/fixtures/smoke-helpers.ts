@@ -8,14 +8,15 @@ const screenshotDir = path.resolve(testDir, '..', '..', 'artifacts', 'ui-smoke')
 const repoRoot = path.resolve(testDir, '..', '..', '..')
 const smokeFixturePath = path.join(repoRoot, 'crates', 'test-fixtures', 'flows', 'flows', 'editor-smoke-base.yaml')
 const smokeFixtureContent = readFileSync(smokeFixturePath, 'utf-8')
-const smokeFlowRegistry = new WeakMap<Page, Set<string>>()
+// Flows are per project: each smoke flow remembers the project it was saved in.
+const smokeFlowRegistry = new WeakMap<Page, Map<string, string>>()
 
-function getRegisteredSmokeFlows(page: Page): Set<string> {
+function getRegisteredSmokeFlows(page: Page): Map<string, string> {
   const existing = smokeFlowRegistry.get(page)
   if (existing) {
     return existing
   }
-  const created = new Set<string>()
+  const created = new Map<string, string>()
   smokeFlowRegistry.set(page, created)
   return created
 }
@@ -149,22 +150,27 @@ export async function gotoWithRegisteredProject(page: Page, projectPath: string)
   await registerProjectForSmokeTest(page, projectPath)
 }
 
-export async function createFlowForSmokeTest(page: Page, flowPrefix: string): Promise<string> {
+/** Saves a smoke flow into `projectPath`, the project whose editor lists it. */
+export async function createFlowForSmokeTest(page: Page, flowPrefix: string, projectPath: string): Promise<string> {
   const flowName = `${flowPrefix}-${Date.now()}`
   const saveResponse = await page.request.post('/attractor/api/flows', {
-    data: { name: flowName, content: smokeFixtureContent },
+    data: { name: flowName, content: smokeFixtureContent, project_path: projectPath },
   })
   if (!saveResponse.ok()) {
     throw new Error(`Failed to persist smoke flow ${flowName}: HTTP ${saveResponse.status()}`)
   }
-  getRegisteredSmokeFlows(page).add(flowName)
+  getRegisteredSmokeFlows(page).set(flowName, projectPath)
   return flowName
 }
 
 export async function deleteFlowAfterSmoke(page: Page, flowName: string): Promise<void> {
+  const projectPath = smokeFlowRegistry.get(page)?.get(flowName)
+  if (!projectPath) {
+    return
+  }
   let response: Awaited<ReturnType<Page['request']['delete']>> | null = null
   try {
-    response = await page.request.delete(`/attractor/api/flows/${encodeURIComponent(flowName)}`, {
+    response = await page.request.delete(`/attractor/api/flows/${encodeURIComponent(flowName)}?project_path=${encodeURIComponent(projectPath)}`, {
       timeout: 2_000,
     })
   } catch (error) {
@@ -193,7 +199,7 @@ export async function cleanupSmokeFlowsForPage(page: Page): Promise<void> {
   if (!registered || registered.size === 0) {
     return
   }
-  const flowNames = [...registered]
+  const flowNames = [...registered.keys()]
   for (const flowName of flowNames) {
     try {
       await deleteFlowAfterSmoke(page, flowName)

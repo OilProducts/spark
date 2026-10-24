@@ -607,23 +607,8 @@ edges:
                     json!({ "ticket": "nested-7" }),
                 ),
                 (
-                    "internal.flow_source_dir".to_string(),
+                    "internal.bundled_root".to_string(),
                     json!(temp.path().to_string_lossy().to_string()),
-                ),
-                (
-                    "internal.flows_dir".to_string(),
-                    json!(temp.path().to_string_lossy().to_string()),
-                ),
-                (
-                    "internal.roles_dir".to_string(),
-                    under(&json!(temp.path().to_string_lossy().to_string()), "roles"),
-                ),
-                (
-                    "internal.approvals_log".to_string(),
-                    under(
-                        &json!(temp.path().to_string_lossy().to_string()),
-                        "approvals.jsonl",
-                    ),
                 ),
                 (
                     "internal.run_workdir".to_string(),
@@ -652,29 +637,16 @@ edges:
     assert!(child_handler_observed_map.load(Ordering::SeqCst));
 }
 
-/// Writes an approved child flow: `dir`'s parent is the flows root, with
-/// the approval log beside the flows in it.
+/// Writes a child flow as a bundled flow: `dir` is `<root>/<name>`, and the
+/// flow lands in `<root>/flows/<name>`, where `internal.bundled_root` =
+/// `<root>` finds it.
 fn write_child_flow(dir: &std::path::Path, source: &str) {
+    let root = dir.parent().expect("bundled root");
     attractor_dsl::write_flow_dir(
-        dir,
+        &root.join("flows").join(dir.file_name().expect("flow name")),
         &attractor_dsl::parse_flow_definition(source).expect("valid flow"),
     )
     .expect("write flow");
-    let root = dir.parent().expect("flows root");
-    let trust = attractor_dsl::TrustStore {
-        flows_dir: root.to_path_buf(),
-        roles_dir: root.join("roles"),
-        log_path: root.join("approvals.jsonl"),
-    };
-    attractor_dsl::accept(&trust, dir, "human:test").expect("approve child flow");
-}
-
-/// A path under a context directory value, for the trust context keys.
-fn under(dir: &serde_json::Value, leaf: &str) -> serde_json::Value {
-    json!(std::path::Path::new(dir.as_str().expect("directory"))
-        .join(leaf)
-        .to_string_lossy()
-        .to_string())
 }
 
 const CHILD_FLOW_SOURCE: &str = r#"
@@ -735,7 +707,7 @@ fn dynamic_workdir_subflow_node(child_workdir_from: &str) -> FlowNode {
 fn execute_dynamic_workdir_subflow(
     node: FlowNode,
     run_workdir: &std::path::Path,
-    flow_source_dir: &std::path::Path,
+    bundled_root: &std::path::Path,
     context_entries: Vec<(String, serde_json::Value)>,
 ) -> (Outcome, Option<std::path::PathBuf>) {
     let flow = FlowDefinition {
@@ -763,26 +735,8 @@ fn execute_dynamic_workdir_subflow(
             json!(run_workdir.to_string_lossy().to_string()),
         ),
         (
-            "internal.flow_source_dir".to_string(),
-            json!(flow_source_dir.to_string_lossy().to_string()),
-        ),
-        (
-            "internal.flows_dir".to_string(),
-            json!(flow_source_dir.to_string_lossy().to_string()),
-        ),
-        (
-            "internal.roles_dir".to_string(),
-            under(
-                &json!(flow_source_dir.to_string_lossy().to_string()),
-                "roles",
-            ),
-        ),
-        (
-            "internal.approvals_log".to_string(),
-            under(
-                &json!(flow_source_dir.to_string_lossy().to_string()),
-                "approvals.jsonl",
-            ),
+            "internal.bundled_root".to_string(),
+            json!(bundled_root.to_string_lossy().to_string()),
         ),
     ]);
     context.extend(context_entries);
@@ -886,16 +840,7 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
                 ("internal.run_id".to_string(), json!("parent-run")),
                 ("internal.root_run_id".to_string(), json!("parent-run")),
                 ("internal.run_workdir".to_string(), json!(project)),
-                ("internal.flow_source_dir".to_string(), json!(project)),
-                ("internal.flows_dir".to_string(), json!(project)),
-                (
-                    "internal.roles_dir".to_string(),
-                    under(&json!(project), "roles"),
-                ),
-                (
-                    "internal.approvals_log".to_string(),
-                    under(&json!(project), "approvals.jsonl"),
-                ),
+                ("internal.bundled_root".to_string(), json!(project)),
             ]),
             prompt: String::new(),
             node: node.clone(),
@@ -1337,23 +1282,8 @@ fn reentry_context(temp: &std::path::Path, run_id: &str) -> ContextMap {
         ("internal.run_id".to_string(), json!(run_id)),
         ("internal.root_run_id".to_string(), json!(run_id)),
         (
-            "internal.flow_source_dir".to_string(),
+            "internal.bundled_root".to_string(),
             json!(temp.to_string_lossy().to_string()),
-        ),
-        (
-            "internal.flows_dir".to_string(),
-            json!(temp.to_string_lossy().to_string()),
-        ),
-        (
-            "internal.roles_dir".to_string(),
-            under(&json!(temp.to_string_lossy().to_string()), "roles"),
-        ),
-        (
-            "internal.approvals_log".to_string(),
-            under(
-                &json!(temp.to_string_lossy().to_string()),
-                "approvals.jsonl",
-            ),
         ),
         (
             "internal.run_workdir".to_string(),

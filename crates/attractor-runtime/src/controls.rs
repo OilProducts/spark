@@ -77,7 +77,7 @@ pub struct ContinueRunRequest {
     pub flow_definition_json: Option<String>,
     /// The new run's manifest (`artifacts/flow/files.json`).
     #[serde(default)]
-    pub flow_files: Option<BTreeMap<String, String>>,
+    pub flow_files: Option<attractor_dsl::FlowManifest>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]

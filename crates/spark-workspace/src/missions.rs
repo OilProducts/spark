@@ -1194,7 +1194,7 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
         total = budget.total_runs,
         project = mission.project_path,
         id = mission.id,
-        control = crate::conversations::spark_control_surface(handle),
+        control = crate::conversations::spark_control_surface(handle, &mission.project_path),
     )
 }
 

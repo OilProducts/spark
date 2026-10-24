@@ -103,13 +103,11 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
                     "runtime" => {
                         view["effective"] = json!(RuntimeSettings {
                             runs_dir: Some(settings.runs_dir.clone()),
-                            flows_dir: Some(settings.flows_dir.clone()),
                             ui_dir: settings.ui_dir.clone(),
                             project_roots: settings.project_roots.clone()
                         });
-                        view["restart_fields"] =
-                            json!(["runs_dir", "flows_dir", "ui_dir", "project_roots"]);
-                        for key in ["runs_dir", "flows_dir", "ui_dir", "project_roots"] {
+                        view["restart_fields"] = json!(["runs_dir", "ui_dir", "project_roots"]);
+                        for key in ["runs_dir", "ui_dir", "project_roots"] {
                             view["sources"][key] =
                                 json!(startup_source(settings, &format!("{section}.{key}")));
                         }
@@ -263,7 +261,6 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
     }
     result["runtime"]["active_startup"] = json!(RuntimeSettings {
         runs_dir: Some(settings.runs_dir.clone()),
-        flows_dir: Some(settings.flows_dir.clone()),
         ui_dir: settings.ui_dir.clone(),
         project_roots: settings.project_roots.clone()
     });

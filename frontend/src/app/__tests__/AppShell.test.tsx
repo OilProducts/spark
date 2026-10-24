@@ -2613,20 +2613,6 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.includes(`/workspace/api/flows/${LINEAR_FLOW_NAME}?surface=human`)) {
-          return new Response(JSON.stringify({
-            name: LINEAR_FLOW_NAME,
-            title: 'Simple Linear Workflow',
-            description: 'A minimal starter flow.',
-            launch_policy: null,
-            effective_launch_policy: 'disabled',
-            graph_label: 'Simple Linear Workflow',
-            graph_goal: 'Inspect the repo.',
-          }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
         if (url.includes('/attractor/status')) {
           return new Response(JSON.stringify({ status: 'idle' }), {
             status: 200,
@@ -2669,7 +2655,6 @@ describe('App shell behavior', () => {
   it('renders the flow selector as a directory tree and opens nested editor flows', async () => {
     const user = userEvent.setup()
     let sawNestedAttractorFlowRequest = false
-    let sawNestedWorkspaceFlowRequest = false
 
     vi.stubGlobal(
       'fetch',
@@ -2726,21 +2711,6 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.includes(`/workspace/api/flows/${NESTED_LINEAR_FLOW_NAME}?surface=human`)) {
-          sawNestedWorkspaceFlowRequest = true
-          return new Response(JSON.stringify({
-            name: NESTED_LINEAR_FLOW_NAME,
-            title: 'Team Review Flow',
-            description: 'A nested flow used to verify tree-based selection.',
-            launch_policy: null,
-            effective_launch_policy: 'disabled',
-            graph_label: 'Team Review Flow',
-            graph_goal: 'Inspect nested flow loading.',
-          }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
         if (url.includes('/attractor/status')) {
           return new Response(JSON.stringify({ status: 'idle' }), {
             status: 200,
@@ -2778,7 +2748,6 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
       expect(sawNestedAttractorFlowRequest).toBe(true)
-      expect(sawNestedWorkspaceFlowRequest).toBe(true)
     })
   })
 

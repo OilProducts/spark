@@ -8,11 +8,14 @@ interface SaveFlowErrorDetail {
 }
 
 const FALLBACK_SAVE_FAILURE_MESSAGE = 'Flow save failed before confirmation from backend.'
-let lastSaveRequest: { name: string; content: string } | null = null
+let lastSaveRequest: { name: string; content: string; projectPath: string | null } | null = null
 const persistedBaselineByScope = new Map<string, string>()
 
-function getSaveScopeKey(name: string): string {
-    return name
+// Flows belong to a project; the same name in another project is a different flow.
+const activeProjectPath = () => useStore.getState().activeProjectPath
+
+function getSaveScopeKey(name: string, projectPath: string | null): string {
+    return `${projectPath ?? ''}\n${name}`
 }
 
 function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {
@@ -43,11 +46,11 @@ function buildErrorMessage(status: string | undefined, error: string | undefined
 
 export async function retryLastSaveContent(): Promise<boolean> {
     if (!lastSaveRequest) return false
-    return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content)
+    return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content, lastSaveRequest.projectPath)
 }
 
-export function primeFlowSaveBaseline(name: string, content: string): void {
-    persistedBaselineByScope.set(getSaveScopeKey(name), content)
+export function primeFlowSaveBaseline(name: string, content: string, projectPath = activeProjectPath()): void {
+    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath), content)
 }
 
 export function resetFlowSaveBaselines(): void {
@@ -62,15 +65,15 @@ export async function waitForFlowSaves(): Promise<void> {
     await Promise.all([...inFlightSaves])
 }
 
-export function saveFlowContent(name: string, content: string): Promise<boolean> {
-    const save = persistFlowContent(name, content)
+export function saveFlowContent(name: string, content: string, projectPath = activeProjectPath()): Promise<boolean> {
+    const save = persistFlowContent(name, content, projectPath)
     inFlightSaves.add(save)
     void save.finally(() => inFlightSaves.delete(save))
     return save
 }
 
-async function persistFlowContent(name: string, content: string): Promise<boolean> {
-    const scopeKey = getSaveScopeKey(name)
+async function persistFlowContent(name: string, content: string, projectPath: string | null): Promise<boolean> {
+    const scopeKey = getSaveScopeKey(name, projectPath)
     const existingBaseline = persistedBaselineByScope.get(scopeKey)
     if (existingBaseline === content) {
         recordFlowLoadDebug('save:skipped', name, {
@@ -80,14 +83,14 @@ async function persistFlowContent(name: string, content: string): Promise<boolea
         return true
     }
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
-    lastSaveRequest = { name, content }
+    lastSaveRequest = { name, content, projectPath }
     recordFlowLoadDebug('save:request', name, {
         contentLength: content.length,
     })
     markSaveInFlight()
 
     try {
-        const response = await saveFlowValidated(name, content)
+        const response = await saveFlowValidated(name, content, projectPath)
         if (!response.ok) {
             const detail = parseErrorDetail(response.payload)
             const message = buildErrorMessage(detail.status, detail.error, response.statusCode)

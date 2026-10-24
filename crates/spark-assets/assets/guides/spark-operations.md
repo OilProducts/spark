@@ -39,14 +39,20 @@ Operational rules:
 
 ## Discover And Validate Flows
 
-List agent-requestable flows:
+Flows resolve project first, then bundled: a project's org repo
+(`<project>/.spark/agent-org/flows`) replaces any bundled flow of the same name
+in `$SPARK_HOME/bundled/flows`. Pass `--project <path>` (or `project_path=` on
+the HTTP routes) to include a project's flows; without it you see the bundled
+library only. Every flow can be launched.
+
+List flows:
 
 ```bash
-spark flow list --text
+spark flow list --project /absolute/path/to/project --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows?surface=agent
+curl 'http://127.0.0.1:8000/workspace/api/flows?project_path=/absolute/path/to/project'
 ```
 
 Describe one flow:
@@ -56,7 +62,7 @@ spark flow describe --flow examples/simple-linear --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear?surface=agent
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear
 ```
 
 Fetch raw YAML for a stored flow:
@@ -66,7 +72,7 @@ spark flow get --flow examples/simple-linear --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/raw?surface=agent
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/raw
 ```
 
 Validate a flow directory you are editing directly:
@@ -186,7 +192,7 @@ curl -X POST \
 Notes:
 
 - `spark run launch` requires either `--conversation` or `--project`.
-- `spark convo run-request` launches only flows the flow catalog marks `agent_requestable`.
+- `spark convo run-request` launches any flow, resolved through the conversation's project.
 - Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use attractor_api::{AttractorApiService, ExecutionLockSpec, PipelineStartRequest};
+use attractor_api::{AttractorApiService, PipelineStartRequest};
 use attractor_core::RunExecutionLock;
 use attractor_runtime::RunStore;
 use serde_json::json;
@@ -23,7 +23,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -87,12 +86,9 @@ fn wait_for_release_file_command(marker: &str) -> String {
     )
 }
 
-fn project_lock(key: &str) -> ExecutionLockSpec {
-    ExecutionLockSpec {
-        scope: "project".to_string(),
-        key: key.to_string(),
-        conflict_policy: "queue".to_string(),
-    }
+/// `flow.md` frontmatter declaring a project-scope lock.
+fn project_lock(key: &str) -> String {
+    format!("execution_lock: {{ scope: project, key: {key}, conflict_policy: queue }}\n")
 }
 
 fn start_locked_run(
@@ -101,13 +97,16 @@ fn start_locked_run(
     run_id: &str,
     working_directory: &Path,
     flow: String,
-    lock: Option<ExecutionLockSpec>,
+    lock: Option<String>,
 ) {
+    // The lock is read from the flow's own flow.md.
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some(run_id.to_string()),
-        flow_name: Some(crate::install_flow(settings, flow)),
+        flow_name: Some(crate::install_flow(
+            settings,
+            flow + &lock.unwrap_or_default(),
+        )),
         working_directory: working_directory.to_string_lossy().to_string(),
-        execution_lock: lock,
         ..PipelineStartRequest::default()
     });
     assert_eq!(response.status_code, 200, "{:?}", response.body);
@@ -392,24 +391,28 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
 }
 
 #[test]
-fn unsupported_lock_scope_is_a_validation_error() {
+fn unsupported_lock_scope_in_flow_md_is_a_validation_error() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let name = crate::install_flow(
+        &settings,
+        tool_flow("bad", "printf done") + &project_lock("integration"),
+    );
+    let flow_md = settings
+        .bundled_dir()
+        .join("flows")
+        .join(&name)
+        .join("flow.md");
+    let text = fs::read_to_string(&flow_md).expect("flow.md");
+    assert!(text.contains("execution_lock:"), "{text}");
+    fs::write(&flow_md, text.replace("scope: project", "scope: global")).expect("edit flow.md");
     let service = AttractorApiService::new(settings.clone());
 
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-bad-scope".to_string()),
-        flow_name: Some(crate::install_flow(
-            &settings,
-            tool_flow("bad", "printf done"),
-        )),
+        flow_name: Some(name),
         working_directory: temp.path().join("repo").to_string_lossy().to_string(),
-        execution_lock: Some(ExecutionLockSpec {
-            scope: "global".to_string(),
-            key: "integration".to_string(),
-            conflict_policy: "queue".to_string(),
-        }),
         ..PipelineStartRequest::default()
     });
     assert_eq!(response.body["status"], json!("validation_error"));
@@ -417,7 +420,7 @@ fn unsupported_lock_scope_is_a_validation_error() {
         response.body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("scope"),
+            .contains("execution_lock.scope"),
         "{:?}",
         response.body
     );
@@ -432,8 +435,7 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     init_git_repo(&project);
     // The parent installs as tests/parent; its flow_ref resolves beside it.
     write_flow(
-        &settings,
-        &settings.flows_dir.join("tests/child"),
+        &settings.bundled_dir().join("flows").join("tests/child"),
         &tool_flow(
             "child",
             &format!(
@@ -536,11 +538,10 @@ edges:
     });
 }
 
-fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
+fn write_flow(dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(settings, dir);
 }

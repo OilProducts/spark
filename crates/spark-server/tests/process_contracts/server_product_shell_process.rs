@@ -104,10 +104,10 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
 fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     let temp = tempfile::tempdir().expect("tempdir");
     let ui_dir = temp.path().join("ui");
-    let flows_dir = temp.path().join("flows");
     let project_dir = temp.path().join("project");
+    // Serve rewrites the bundled library, so the flows live in the project's org.
+    let flows_dir = spark_common::project::org_dir(&project_dir).join("flows");
     fs::create_dir_all(&ui_dir).expect("ui dir");
-    fs::create_dir_all(&flows_dir).expect("flows dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     write_flow(&flows_dir, "root", &nested_flow("root", "branch", "child"));
@@ -123,6 +123,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
             "run_id": "process-tree-root",
             "flow_name": "root",
             "working_directory": project_dir,
+            "project_path": project_dir,
         }),
     );
     assert_eq!(launch.status, 200, "{}", launch.body_text());
@@ -178,21 +179,12 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     assert_eq!(lineage_ids(&completed), before_ids);
 }
 
-/// Writes an approved flow into the server's flows dir (`<root>/flows`,
-/// approved in `<root>/spark-home/config/approvals.jsonl`).
 fn write_flow(flows_dir: &Path, name: &str, yaml: &str) {
     attractor_dsl::write_flow_dir(
         &flows_dir.join(name),
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
-    let home = flows_dir.parent().expect("root").join("spark-home");
-    let trust = attractor_dsl::TrustStore {
-        flows_dir: flows_dir.to_path_buf(),
-        roles_dir: home.join("roles"),
-        log_path: home.join("config/approvals.jsonl"),
-    };
-    attractor_dsl::accept(&trust, &flows_dir.join(name), "human:test").expect("approve flow");
 }
 
 fn nested_flow(id: &str, node: &str, child: &str) -> String {
@@ -253,10 +245,8 @@ impl RunningServer {
     fn start(root: &Path, ui_dir: &Path) -> Self {
         let port = free_tcp_port();
         let data_dir = root.join("spark-home");
-        let flows_dir = root.join("flows");
         let port_text = port.to_string();
         let data_dir_text = data_dir.to_string_lossy().into_owned();
-        let flows_dir_text = flows_dir.to_string_lossy().into_owned();
         let ui_dir_text = ui_dir.to_string_lossy().into_owned();
         let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
             .args([
@@ -267,8 +257,6 @@ impl RunningServer {
                 port_text.as_str(),
                 "--data-dir",
                 data_dir_text.as_str(),
-                "--flows-dir",
-                flows_dir_text.as_str(),
                 "--ui-dir",
                 ui_dir_text.as_str(),
             ])

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,9 +54,9 @@ pub struct CreateRunRequest {
     pub manifest: Option<RunManifest>,
     pub flow_source: Option<String>,
     pub flow_definition_json: Option<String>,
-    /// `$SPARK_HOME`-relative path -> SHA-256 of every file the run's flow
-    /// was assembled from, written as `artifacts/flow/files.json`.
-    pub flow_files: Option<BTreeMap<String, String>>,
+    /// Every file the run's flow was assembled from, written as
+    /// `artifacts/flow/files.json`.
+    pub flow_files: Option<attractor_dsl::FlowManifest>,
 }
 
 #[derive(Debug, Clone)]

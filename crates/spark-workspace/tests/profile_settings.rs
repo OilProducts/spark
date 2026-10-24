@@ -12,7 +12,7 @@ fn fixture() -> (tempfile::TempDir, SparkSettings) {
         &std::collections::BTreeMap::new(),
     )
     .unwrap();
-    std::fs::create_dir_all(&settings.flows_dir).unwrap();
+    std::fs::create_dir_all(&settings.bundled_dir().join("flows")).unwrap();
     (temp, settings)
 }
 fn llm(id: &str) -> Value {
@@ -474,8 +474,8 @@ fn invalid_section_shape_preserves_stored_value_and_can_be_replaced_independentl
     let view = workspace_settings(&settings).unwrap();
     assert_eq!(view["runtime"]["stored"]["project_roots"], 42);
     assert_eq!(
-        view["runtime"]["active_startup"]["flows_dir"],
-        settings.flows_dir.to_string_lossy().as_ref()
+        view["runtime"]["active_startup"]["runs_dir"],
+        settings.runs_dir.to_string_lossy().as_ref()
     );
     assert_eq!(
         view["runtime"]["repair_defaults"]["project_roots"],
@@ -505,7 +505,7 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
     other["default_model"] = json!("m2");
     let first = save(&settings, "llm_profiles", "absent", json!([team, other])).unwrap();
     let revision = first["llm_profiles"]["revision"].as_str().unwrap();
-    let flow_path = settings.flows_dir.join("inherited");
+    let flow_path = settings.bundled_dir().join("flows").join("inherited");
     let write_flow = |source: &str| {
         attractor_dsl::write_flow_dir(
             &flow_path,

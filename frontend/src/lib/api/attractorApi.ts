@@ -23,6 +23,10 @@ function attractorUrl(path: string): string {
     return `${ATTRACTOR_BASE}${path}`
 }
 
+function projectQuery(projectPath: string | null): string {
+    return projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''
+}
+
 export function pipelineJournalUrl(
     pipelineId: string,
     options?: {
@@ -44,6 +48,7 @@ export function pipelineJournalUrl(
 export interface FlowPayloadResponse {
     name: string
     content: string
+    layer?: 'org' | 'bundled'
 }
 
 export interface SaveFlowApiResponse {
@@ -312,6 +317,7 @@ export interface RunRecordResponse {
 
 export interface PreviewRequestOptions {
     flowName?: string | null
+    projectPath?: string | null
     expandChildren?: boolean
 }
 
@@ -389,6 +395,7 @@ export function parseFlowPayloadResponse(payload: unknown, endpoint = '/attracto
     return {
         name: typeof record.name === 'string' ? record.name : '',
         content: expectString(record.content, endpoint, 'content'),
+        layer: record.layer === 'org' || record.layer === 'bundled' ? record.layer : undefined,
     }
 }
 
@@ -859,18 +866,28 @@ export function parseRuntimeStatusResponse(payload: unknown, endpoint = '/attrac
     }
 }
 
-export async function fetchFlowListValidated(): Promise<string[]> {
-    return fetchJsonWithValidation(attractorUrl('/api/flows'), undefined, '/attractor/api/flows', parseFlowListResponse)
+export async function fetchFlowListValidated(projectPath: string | null): Promise<string[]> {
+    return fetchJsonWithValidation(
+        attractorUrl(`/api/flows${projectQuery(projectPath)}`),
+        undefined,
+        '/attractor/api/flows',
+        parseFlowListResponse,
+    )
 }
 
-export async function fetchFlowPayloadValidated(flowName: string, init?: RequestInit): Promise<FlowPayloadResponse> {
-    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}`)
+export async function fetchFlowPayloadValidated(
+    flowName: string,
+    projectPath: string | null,
+    init?: RequestInit,
+): Promise<FlowPayloadResponse> {
+    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}${projectQuery(projectPath)}`)
     return fetchJsonWithValidation(url, init, '/attractor/api/flows/{name}', parseFlowPayloadResponse)
 }
 
 export async function saveFlowValidated(
     name: string,
     content: string,
+    projectPath: string | null,
 ): Promise<SaveFlowApiResponse> {
     const response = await fetch(attractorUrl('/api/flows'), {
         method: 'POST',
@@ -878,6 +895,7 @@ export async function saveFlowValidated(
         body: JSON.stringify({
             name,
             content,
+            project_path: projectPath,
         }),
     })
     let payload: unknown = null
@@ -893,8 +911,8 @@ export async function saveFlowValidated(
     }
 }
 
-export async function deleteFlowValidated(flowName: string): Promise<void> {
-    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}`)
+export async function deleteFlowValidated(flowName: string, projectPath: string | null): Promise<void> {
+    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}${projectQuery(projectPath)}`)
     await fetchJsonWithValidation(url, { method: 'DELETE' }, '/attractor/api/flows/{name}', () => undefined)
 }
 
@@ -914,6 +932,9 @@ export async function fetchPreviewValidated(
     }
     if (typeof options?.flowName === 'string' && options.flowName.trim()) {
         payload.flow_name = options.flowName
+    }
+    if (options?.projectPath) {
+        payload.project_path = options.projectPath
     }
     if (options?.expandChildren) {
         payload.expand_children = true

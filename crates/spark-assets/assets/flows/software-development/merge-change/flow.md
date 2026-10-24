@@ -3,6 +3,10 @@ type: Flow
 id: merge_change
 title: Merge Change
 description: Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating only when conflicts require resolution.
+execution_lock:
+  scope: project
+  key: software-development-integration
+  conflict_policy: queue
 schema_version: '1'
 inputs:
 - key: context.request.source_ref

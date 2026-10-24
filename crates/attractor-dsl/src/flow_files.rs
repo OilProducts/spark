@@ -8,19 +8,18 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::RwLock;
 
 use attractor_core::{
-    deserialize_verified, Attribution, ExecutionConfig, FlowDefaults, FlowDefinition,
-    FlowDefinitionError, FlowDiagnostic, FlowEdge, FlowInput, FlowMetadata, FlowNode,
-    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig,
-    TrustStatus, UiConfig,
+    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
+    FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, ManagerLoopConfig, NodeConfig,
+    NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig, UiConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::flow_sources::{validate_flow_definition, FlowSourceError};
+use crate::flow_sources::{validate_flow_definition, FlowManifest, FlowRoots, FlowSourceError};
 
 pub const FLOW_FILE: &str = "flow.md";
 /// OKF-reserved names the loader ignores.
@@ -40,15 +39,7 @@ struct FlowFile {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    generated: Option<Attribution>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_verified"
-    )]
-    verified: Vec<Attribution>,
-    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
-    status: TrustStatus,
+    execution_lock: Option<FlowExecutionLock>,
     #[serde(default = "default_schema_version")]
     schema_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -69,16 +60,6 @@ struct NodeFile {
     title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    generated: Option<Attribution>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_verified"
-    )]
-    verified: Vec<Attribution>,
-    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
-    status: TrustStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -125,10 +106,6 @@ struct RoleFile {
     file_type: String,
     #[serde(default)]
     execution: Option<ExecutionConfig>,
-    #[serde(default)]
-    generated: Option<Attribution>,
-    #[serde(default, deserialize_with = "deserialize_verified")]
-    verified: Vec<Attribution>,
 }
 
 /// Loads a flow directory in its authored form (roles unresolved), validated
@@ -230,40 +207,15 @@ pub fn render_flow_files(
 
 /// Writes a flow into `dir`, rewriting only files whose parsed content
 /// changed (untouched files stay byte-identical), each atomically, and
-/// deleting the files of removed nodes. Returns the written file names.
+/// deleting the files of removed nodes. Returns the names of the files it
+/// wrote or deleted.
 pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, FlowSourceError> {
-    write_flow_files(dir, flow, None, |_| Ok(()))
-}
-
-/// An editor save: like [`write_flow_dir`], but incoming `generated` and
-/// `verified` are ignored. Every file keeps both from disk, so the comparison
-/// ignores them, and each changed file gets `generated: <generated>`.
-/// `record` gets each changed file's path and final text before anything is
-/// written; when it fails, nothing is written, so a retry still sees the change.
-pub fn save_flow_dir(
-    dir: &Path,
-    flow: &FlowDefinition,
-    generated: &Attribution,
-    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
-) -> Result<Vec<String>, FlowSourceError> {
-    write_flow_files(dir, flow, Some(generated), record)
-}
-
-fn write_flow_files(
-    dir: &Path,
-    flow: &FlowDefinition,
-    generated: Option<&Attribution>,
-    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
-) -> Result<Vec<String>, FlowSourceError> {
-    let mut flow = flow.normalize();
+    let flow = flow.normalize();
     let _guard = FLOW_DIR_LOCK
         .write()
         .unwrap_or_else(|error| error.into_inner());
-    if generated.is_some() {
-        keep_disk_trust(dir, &mut flow);
-    }
-    let mut files = render_flow_files(&flow)?;
-    let changed = files
+    let files = render_flow_files(&flow)?;
+    let mut changed = files
         .iter()
         .filter(|(name, text)| {
             fs::read_to_string(dir.join(name))
@@ -273,18 +225,6 @@ fn write_flow_files(
         })
         .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
-    if let Some(generated) = generated {
-        for name in &changed {
-            *trust_fields_mut(&mut flow, name).0 = Some(generated.clone());
-        }
-        files = render_flow_files(&flow)?;
-    }
-    record(
-        &changed
-            .iter()
-            .map(|name| (dir.join(name), files[name].clone()))
-            .collect::<Vec<_>>(),
-    )?;
     fs::create_dir_all(dir).map_err(|error| write_error(dir, error))?;
     let temp_dir = dir.parent().unwrap_or(dir);
     let dir_name = dir
@@ -308,50 +248,52 @@ fn write_flow_files(
             && entry.path().is_file()
         {
             fs::remove_file(entry.path()).map_err(|error| write_error(&entry.path(), error))?;
+            changed.push(name);
         }
     }
     Ok(changed)
 }
 
-/// Replaces each file's `generated`/`verified` with what that file has on
-/// disk (none for a new or unreadable file).
-fn keep_disk_trust(dir: &Path, flow: &mut FlowDefinition) {
-    let names = std::iter::once(FLOW_FILE.to_string())
-        .chain(flow.nodes.keys().map(|node_id| format!("{node_id}.md")))
-        .collect::<Vec<_>>();
-    for name in names {
-        let (generated, verified) = fs::read_to_string(dir.join(&name))
-            .ok()
-            .and_then(|text| {
-                if name == FLOW_FILE {
-                    parse_flow_file(&text)
-                        .ok()
-                        .map(|flow| (flow.generated, flow.verified))
-                } else {
-                    parse_node_file(name.trim_end_matches(".md"), &text)
-                        .ok()
-                        .map(|(node, _)| (node.generated, node.verified))
-                }
-            })
-            .unwrap_or_default();
-        let fields = trust_fields_mut(flow, &name);
-        *fields.0 = generated;
-        *fields.1 = verified;
-    }
+/// A flow loaded for a run: the resolved form runs execute, and the manifest
+/// of every file it used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedFlow {
+    pub name: String,
+    pub flow: FlowDefinition,
+    pub manifest: FlowManifest,
 }
 
-fn trust_fields_mut<'a>(
-    flow: &'a mut FlowDefinition,
-    file_name: &str,
-) -> (&'a mut Option<Attribution>, &'a mut Vec<Attribution>) {
-    let node = file_name
-        .strip_suffix(".md")
-        .filter(|_| file_name != FLOW_FILE)
-        .and_then(|node_id| flow.nodes.get_mut(node_id));
-    match node {
-        Some(node) => (&mut node.generated, &mut node.verified),
-        None => (&mut flow.generated, &mut flow.verified),
-    }
+/// Loads the named flow through `roots` for a run: assembles its directory,
+/// resolves its roles, and hashes every file it used (`flow.md`, node files,
+/// role files).
+pub fn load_flow(roots: &FlowRoots, flow_name: &str) -> Result<LoadedFlow, FlowSourceError> {
+    let resolved = roots.resolve_flow(flow_name)?;
+    let texts = read_flow_dir_texts(&resolved.path)?;
+    let authored = assemble_flow_files(&texts)?;
+    let mut files = texts
+        .iter()
+        .map(|(file, text)| {
+            (
+                format!("{}/flows/{}/{file}", resolved.layer, resolved.name),
+                spark_common::project::sha256_hex(text.as_bytes()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let flow = resolve_flow_roles_with(&authored, |name| {
+        roots.role_text(name).map(|(key, text)| {
+            files.insert(key, spark_common::project::sha256_hex(text.as_bytes()));
+            text
+        })
+    })?;
+    Ok(LoadedFlow {
+        name: resolved.name,
+        flow,
+        manifest: FlowManifest {
+            files,
+            org: roots.org_state(),
+            spark_version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    })
 }
 
 /// Resolves roles into the executable form: each role's persona is
@@ -359,19 +301,15 @@ fn trust_fields_mut<'a>(
 /// `execution` is merged under the node's own, field by field.
 pub fn resolve_flow_roles(
     flow: &FlowDefinition,
-    roles_dir: &Path,
+    roots: &FlowRoots,
 ) -> Result<FlowDefinition, FlowSourceError> {
-    resolve_flow_roles_with(flow, |name| {
-        let path = roles_dir.join(format!("{name}.md"));
-        fs::read_to_string(&path)
-            .map_err(|_| format!("unknown role '{name}' (no {})", path.display()))
-    })
+    resolve_flow_roles_with(flow, |name| roots.role_text(name).map(|(_, text)| text))
 }
 
 /// [`resolve_flow_roles`] with role file texts supplied by `role_text`.
 pub(crate) fn resolve_flow_roles_with(
     flow: &FlowDefinition,
-    role_text: impl Fn(&str) -> Result<String, String>,
+    mut role_text: impl FnMut(&str) -> Result<String, String>,
 ) -> Result<FlowDefinition, FlowSourceError> {
     let mut resolved = flow.clone();
     let mut errors = Vec::new();
@@ -434,30 +372,7 @@ pub(crate) fn parse_role(
     if role.file_type != "Role" {
         return Err(format!("role file {name}.md must declare type: Role"));
     }
-    if let Some(problem) = role
-        .generated
-        .iter()
-        .chain(&role.verified)
-        .find_map(Attribution::problem)
-    {
-        return Err(format!("role file {name}.md: {problem}"));
-    }
     Ok((body.trim().to_string(), role.execution))
-}
-
-/// The trust fields every flow, node and role file may carry, read from its
-/// frontmatter alone.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct FileTrust {
-    #[serde(default)]
-    pub generated: Option<Attribution>,
-    #[serde(default)]
-    pub status: TrustStatus,
-}
-
-pub(crate) fn file_trust(text: &str) -> Result<FileTrust, String> {
-    let (frontmatter, _) = split_frontmatter(text)?;
-    serde_yaml::from_str(frontmatter).map_err(|error| error.to_string())
 }
 
 fn merge_execution(
@@ -510,9 +425,7 @@ fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
         edges: Vec::new(),
         metadata: file.metadata,
         extensions: file.extensions,
-        generated: file.generated,
-        verified: file.verified,
-        status: file.status,
+        execution_lock: file.execution_lock,
     })
 }
 
@@ -522,9 +435,7 @@ fn render_flow_file(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
         id: flow.id.clone(),
         title: flow.title.clone(),
         description: flow.description.clone(),
-        generated: flow.generated.clone(),
-        verified: flow.verified.clone(),
-        status: flow.status,
+        execution_lock: flow.execution_lock.clone(),
         schema_version: flow.schema_version.clone(),
         inputs: flow.inputs.clone(),
         defaults: flow.defaults.clone(),
@@ -596,9 +507,6 @@ fn parse_node_file(
         label: file.title,
         description: file.description,
         role: file.role,
-        generated: file.generated,
-        verified: file.verified,
-        status: file.status,
         config: Some(config),
         context: file.context,
         runtime: file.runtime,
@@ -638,9 +546,6 @@ fn render_node_file(node: &FlowNode, mut edges: Vec<FlowEdge>) -> Result<String,
         title: node.label.clone(),
         description: node.description.clone(),
         role: node.role.clone(),
-        generated: node.generated.clone(),
-        verified: node.verified.clone(),
-        status: node.status,
         config,
         context: node.context.clone(),
         runtime: node.runtime.clone(),

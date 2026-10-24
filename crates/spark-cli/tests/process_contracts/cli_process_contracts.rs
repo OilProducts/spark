@@ -99,14 +99,15 @@ fn process_flow_validate_dir_resolves_referenced_roles() {
     assert_eq!(missing["diagnostics"][0]["rule_id"], "role");
     assert_eq!(missing["diagnostics"][0]["node_id"], "task");
 
-    fs::create_dir_all(home.join("roles")).expect("roles");
-    fs::write(home.join("roles/persona.md"), "no frontmatter\n").expect("role");
+    // Outside a project, roles resolve through the bundled library.
+    fs::create_dir_all(home.join("bundled/roles")).expect("roles");
+    fs::write(home.join("bundled/roles/persona.md"), "no frontmatter\n").expect("role");
     let malformed = validate();
     assert_eq!(malformed["status"], "validation_error");
     assert_eq!(malformed["diagnostics"][0]["rule_id"], "role");
 
     fs::write(
-        home.join("roles/persona.md"),
+        home.join("bundled/roles/persona.md"),
         "---\ntype: Role\n---\nPersona.\n",
     )
     .expect("role");
@@ -154,7 +155,7 @@ fn process_flow_list_text_executes_http_and_renders_rows() {
             .recv_timeout(Duration::from_secs(2))
             .expect("request")
             .path,
-        "/workspace/api/flows?surface=agent"
+        "/workspace/api/flows"
     );
 }
 
@@ -189,7 +190,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             .recv_timeout(Duration::from_secs(2))
             .expect("request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/raw"
     );
 }
 
@@ -569,24 +570,20 @@ fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence
 }
 
 #[test]
-fn process_flow_accept_and_promote_act_on_spark_home() {
+fn process_flow_validate_file_resolves_roles_through_the_files_org() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
-    let flow_dir = home.join("flows/team/work");
+    let project = temp.path().join("project");
+    let org = project.join(".spark/agent-org");
+    let flow_dir = org.join("flows/team/work");
     attractor_dsl::write_flow_dir(
         &flow_dir,
         &attractor_dsl::parse_flow_definition(
-            "id: work\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
+            "id: work\nnodes:\n  start: {kind: start}\n  task: {kind: agent_task, role: reviewer, prompt: Review.}\n  done: {kind: exit}\nedges:\n  - {from: start, to: task}\n  - {from: task, to: done}\n",
         )
         .expect("flow"),
     )
     .expect("write flow");
-    fs::create_dir_all(home.join("config")).expect("config");
-    fs::write(
-        home.join("config/spark.toml"),
-        "human_id = \"cli-tester\"\n",
-    )
-    .expect("toml");
     let spark = |args: &[&str]| {
         Command::new(spark_bin())
             .args(args)
@@ -596,59 +593,27 @@ fn process_flow_accept_and_promote_act_on_spark_home() {
             .output()
             .expect("run spark")
     };
-    let log = || {
-        spark_common::approvals::read_approvals(&home.join("config/approvals.jsonl"))
-            .expect("approval log")
+    let flow_dir = flow_dir.to_string_lossy().to_string();
+
+    let status = |output: &std::process::Output| {
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).expect("validation JSON")["status"].clone()
     };
+    let missing = spark(&["flow", "validate", "--file", &flow_dir]);
+    assert_eq!(status(&missing), "validation_error");
+    assert!(String::from_utf8_lossy(&missing.stdout).contains("unknown role 'reviewer'"));
 
-    let accepted = spark(&["flow", "accept", "flows/team/work/flow.md"]);
-    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
-    let entries = log();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].event, "human_save");
-    assert_eq!(entries[0].path, "flows/team/work/flow.md");
-    assert_eq!(entries[0].by, "human:cli-tester");
-
-    let candidate = home.join("candidates/flows/team/work/done.md");
-    fs::create_dir_all(candidate.parent().expect("parent")).expect("candidates");
+    fs::create_dir_all(org.join("roles")).expect("roles");
     fs::write(
-        &candidate,
-        "---\ntype: exit\ntitle: Finished\ngenerated: {by: codex/gpt-5, at: '2026-10-20T12:00:00+00:00'}\nstatus: draft\n---\n",
+        org.join("roles/reviewer.md"),
+        "---\ntype: Role\n---\nYou review.\n",
     )
-    .expect("candidate");
-    let promoted = spark(&["flow", "promote", "flows/team/work/done.md"]);
-    assert_eq!(promoted.status.code(), Some(0), "{promoted:?}");
-    assert!(!candidate.exists());
-    let entries = log();
-    assert_eq!(entries.last().expect("entry").event, "promoted");
-    assert_eq!(
-        entries.last().expect("entry").path,
-        "flows/team/work/done.md"
-    );
+    .expect("role");
+    let valid = spark(&["flow", "validate", "--file", &flow_dir]);
+    assert_eq!(status(&valid), "ok");
 
-    let refused = spark(&["flow", "promote", "flows/team/work/done.md"]);
-    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
-
-    // Without human_id the actor is the OS account, whatever USER/USERNAME
-    // say or whether they are set at all.
-    fs::write(home.join("config/spark.toml"), "").expect("toml");
-    let os_user = Command::new("id").arg("-un").output().expect("id");
-    let os_user = String::from_utf8(os_user.stdout).expect("utf8");
-    let expected = format!("human:{}", os_user.trim());
-    for fabricated in [true, false] {
-        let mut command = Command::new(spark_bin());
-        command
-            .args(["flow", "accept", "flows/team/work/flow.md"])
-            .env_clear()
-            .env("HOME", temp.path())
-            .env("SPARK_HOME", &home);
-        if fabricated {
-            command
-                .env("USER", "fabricated-review-user")
-                .env("USERNAME", "fabricated-review-user");
-        }
-        let accepted = command.output().expect("run spark");
-        assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
-        assert_eq!(log().last().expect("entry").by, expected);
+    for removed in ["accept", "promote"] {
+        let output = spark(&["flow", removed, "flows/team/work/flow.md"]);
+        assert_ne!(output.status.code(), Some(0), "{output:?}");
     }
 }

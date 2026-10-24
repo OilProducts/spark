@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { saveFlowContent } from '@/lib/flowPersistence'
+import { useStore } from '@/store'
 
 vi.mock('@/lib/flowPersistence', () => ({
   saveFlowContent: vi.fn(),
@@ -47,9 +48,12 @@ describe('useFlowSaveScheduler', () => {
   })
 
   it('supports scheduling a save from inside a state updater without crashing', async () => {
+    useStore.setState({ activeProjectPath: '/tmp/project-a' })
     render(<SchedulerHarness />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Count 0' }))
+    // The save stays with the project it was scheduled in.
+    useStore.setState({ activeProjectPath: '/tmp/project-b' })
 
     expect(screen.getByRole('button', { name: 'Count 1' })).toBeVisible()
     expect(saveFlowContent).not.toHaveBeenCalled()
@@ -63,6 +67,7 @@ describe('useFlowSaveScheduler', () => {
         flowName: 'demo.yaml',
         value: 1,
       }),
+      '/tmp/project-a',
     )
   })
 })

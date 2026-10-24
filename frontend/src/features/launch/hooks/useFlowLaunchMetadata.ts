@@ -5,7 +5,7 @@ import {
     type WorkspaceFlowResponse,
 } from '@/lib/workspaceClient'
 
-export function useFlowLaunchMetadata(flowName: string | null): WorkspaceFlowResponse | null {
+export function useFlowLaunchMetadata(flowName: string | null, projectPath: string | null): WorkspaceFlowResponse | null {
     const [flowMetadata, setFlowMetadata] = useState<WorkspaceFlowResponse | null>(null)
 
     useEffect(() => {
@@ -14,7 +14,7 @@ export function useFlowLaunchMetadata(flowName: string | null): WorkspaceFlowRes
             return
         }
         let cancelled = false
-        fetchWorkspaceFlowValidated(flowName)
+        fetchWorkspaceFlowValidated(flowName, projectPath)
             .then((payload) => {
                 if (cancelled) {
                     return
@@ -30,7 +30,7 @@ export function useFlowLaunchMetadata(flowName: string | null): WorkspaceFlowRes
         return () => {
             cancelled = true
         }
-    }, [flowName])
+    }, [flowName, projectPath])
 
     return flowMetadata
 }

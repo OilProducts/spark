@@ -144,7 +144,7 @@ test('an open Overview follows a background chat that launches a run', async ({ 
     const project = testInfo.outputPath('overview-live-project')
     mkdirSync(project, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
-    expect((await page.request.post('/attractor/api/flows', { data: { name: 'overview-live-smoke.yaml', content: flowYaml } })).ok()).toBeTruthy()
+    expect((await page.request.post('/attractor/api/flows', { data: { name: 'overview-live-smoke', content: flowYaml, project_path: project } })).ok()).toBeTruthy()
     // The background chat had a turn, so it can own a launch; the other chat is where you were last.
     // The smoke server's chat turns finish once their gates are open (see chat-live-turn.spec.ts).
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
@@ -166,7 +166,7 @@ test('an open Overview follows a background chat that launches a run', async ({ 
 
     // The background chat launches a flow, as the spark CLI does; it runs to completion.
     const launched = await page.request.post('/workspace/api/runs/launch', {
-        data: { flow_name: 'overview-live-smoke.yaml', summary: 'Launch from a background chat.', conversation_handle: snapshot.conversation_handle },
+        data: { flow_name: 'overview-live-smoke', summary: 'Launch from a background chat.', conversation_handle: snapshot.conversation_handle },
     })
     expect(launched.ok(), await launched.text()).toBeTruthy()
     const runId = (await launched.json()).run_id as string
@@ -188,11 +188,8 @@ test('a mission launching a flow credits the chat that started it, not its own c
     const project = testInfo.outputPath('overview-mission-project')
     mkdirSync(project, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
-    const flowName = 'overview-mission-smoke.yaml'
-    expect((await page.request.post('/attractor/api/flows', { data: { name: flowName, content: flowYaml } })).ok()).toBeTruthy()
-    const flow = await (await page.request.get(`/workspace/api/flows/${flowName}`)).json()
-    const policy = await page.request.put(`/workspace/api/flows/${flowName}/launch-policy`, { data: { launch_policy: 'agent_requestable', expected_revision: flow.revision } })
-    expect(policy.ok(), await policy.text()).toBeTruthy()
+    const flowName = 'overview-mission-smoke'
+    expect((await page.request.post('/attractor/api/flows', { data: { name: flowName, content: flowYaml, project_path: project } })).ok()).toBeTruthy()
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
     for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
     const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()

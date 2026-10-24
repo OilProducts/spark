@@ -5,13 +5,10 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_http::build_app;
-use spark_storage::{
-    read_flow_launch_policy, set_flow_launch_policy, LAUNCH_POLICY_AGENT_REQUESTABLE,
-};
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn workspace_flow_list_detail_raw_validate_and_policy_routes_match_contracts() {
+async fn workspace_flow_list_detail_raw_and_validate_routes_layer_the_project_org() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let flow_content = r#"schema_version: '1'
@@ -36,40 +33,49 @@ edges:
     to: done
 "#;
     write_flow(&settings, "ops/review/inspectable", flow_content);
-    write_flow(&settings, "disabled", &simple_flow("disabled"));
-    set_flow_launch_policy(
-        &settings.config_dir,
-        "ops/review/inspectable",
-        LAUNCH_POLICY_AGENT_REQUESTABLE,
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    // The project's copy of `shared` replaces the bundled one, with a lock.
+    let project = temp.path().join("project");
+    let org_flows = spark_common::project::org_dir(&project).join("flows");
+    attractor_dsl::write_flow_dir(
+        &org_flows.join("shared"),
+        &attractor_dsl::parse_flow_definition(&format!(
+            "{}execution_lock: {{ scope: project, key: integration }}\n",
+            simple_flow("shared").replace("title: shared", "title: Project Shared")
+        ))
+        .expect("valid flow"),
     )
-    .expect("policy");
+    .expect("write org flow");
     let app = build_app(settings.clone());
+    let query = format!("?project_path={}", project.display());
 
-    let human = request_json(
+    let bundled = request_json(app.clone(), "GET", "/workspace/api/flows", None).await;
+    assert_eq!(bundled.0, StatusCode::OK);
+    assert_eq!(bundled.1.as_array().expect("flows").len(), 2);
+    assert_eq!(bundled.1[1]["title"], "shared");
+    assert_eq!(bundled.1[1]["execution_lock"], Value::Null);
+
+    let layered = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows?surface=human",
+        &format!("/workspace/api/flows{query}"),
         None,
     )
     .await;
-    assert_eq!(human.0, StatusCode::OK);
-    assert_eq!(human.1.as_array().expect("flows").len(), 2);
-
-    let agent = request_json(
-        app.clone(),
-        "GET",
-        "/workspace/api/flows?surface=agent",
-        None,
-    )
-    .await;
-    assert_eq!(agent.0, StatusCode::OK);
-    assert_eq!(agent.1.as_array().expect("flows").len(), 1);
-    assert_eq!(agent.1[0]["name"], "ops/review/inspectable");
+    assert_eq!(layered.0, StatusCode::OK);
+    assert_eq!(layered.1.as_array().expect("flows").len(), 2);
+    assert_eq!(layered.1[1]["name"], "shared");
+    assert_eq!(layered.1[1]["title"], "Project Shared");
+    assert_eq!(
+        layered.1[1]["execution_lock"],
+        json!({"scope": "project", "key": "integration", "conflict_policy": "queue"})
+    );
+    assert!(layered.1[1].get("effective_launch_policy").is_none());
 
     let detail = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable?surface=agent",
+        &format!("/workspace/api/flows/ops/review/inspectable{query}"),
         None,
     )
     .await;
@@ -80,7 +86,7 @@ edges:
     let raw = request_text(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable/raw?surface=agent",
+        "/workspace/api/flows/ops/review/inspectable/raw",
         None,
     )
     .await;
@@ -89,8 +95,13 @@ edges:
     assert_eq!(raw.3, Some("ops/review/inspectable".to_string()));
     assert_eq!(
         attractor_dsl::parse_flow_definition(&raw.1).expect("raw flow"),
-        attractor_dsl::read_flow_dir(&settings.flows_dir.join("ops/review/inspectable"))
-            .expect("stored flow")
+        attractor_dsl::read_flow_dir(
+            &settings
+                .bundled_dir()
+                .join("flows")
+                .join("ops/review/inspectable")
+        )
+        .expect("stored flow")
     );
 
     let validation = request_json(
@@ -104,45 +115,26 @@ edges:
     assert_eq!(validation.1["name"], "ops/review/inspectable");
     assert_eq!(validation.1["status"], "ok");
 
-    let policy = request_json(
+    let project_raw = request_text(
         app,
-        "PUT",
-        "/workspace/api/flows/ops/review/inspectable/launch-policy",
-        Some(json!({"launch_policy": "trigger_only", "expected_revision": detail.1["revision"]})),
+        "GET",
+        &format!("/workspace/api/flows/shared/raw{query}"),
+        None,
     )
     .await;
-    assert_eq!(policy.0, StatusCode::OK);
-    assert_eq!(policy.1["name"], "ops/review/inspectable");
-    assert_eq!(policy.1["launch_policy"], "trigger_only");
-    assert_eq!(
-        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable")
-            .expect("stored")
-            .launch_policy
-            .as_deref(),
-        Some("trigger_only")
+    assert_eq!(project_raw.0, StatusCode::OK);
+    assert!(
+        project_raw.1.contains("Project Shared"),
+        "{}",
+        project_raw.1
     );
 }
 
 #[tokio::test]
-async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and_json() {
+async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "hidden", &simple_flow("hidden"));
-    set_flow_launch_policy(&settings.config_dir, "hidden", "trigger_only").expect("policy");
     let app = build_app(settings);
-
-    let invalid_surface = request_json(
-        app.clone(),
-        "GET",
-        "/workspace/api/flows?surface=invalid",
-        None,
-    )
-    .await;
-    assert_eq!(invalid_surface.0, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        invalid_surface.1,
-        json!({"detail": "Flow surface must be 'human' or 'agent'."})
-    );
 
     let missing = request_json(app.clone(), "GET", "/workspace/api/flows/missing", None).await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
@@ -158,32 +150,17 @@ async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and
     assert_eq!(escaped.0, StatusCode::BAD_REQUEST);
     assert_eq!(
         escaped.1,
-        json!({"detail": "Flow name must be a relative path inside flows_dir."})
+        json!({"detail": "Flow name must be a relative path inside the flows directory."})
     );
 
-    let hidden = request_json(
-        app.clone(),
-        "GET",
-        "/workspace/api/flows/hidden/raw?surface=agent",
-        None,
-    )
-    .await;
-    assert_eq!(hidden.0, StatusCode::NOT_FOUND);
-    assert_eq!(hidden.1, json!({"detail": "Unknown flow: hidden"}));
-
-    let malformed = request_text(
+    let removed = request_text(
         app,
         "PUT",
-        "/workspace/api/flows/hidden/launch-policy",
-        Some("{not-json"),
+        "/workspace/api/flows/missing/launch-policy",
+        Some("{}"),
     )
     .await;
-    assert_eq!(malformed.0, StatusCode::BAD_REQUEST);
-    let payload: Value = serde_json::from_str(&malformed.1).expect("json");
-    assert!(payload["detail"]
-        .as_str()
-        .expect("detail")
-        .contains("Failed to parse"));
+    assert_eq!(removed.0, StatusCode::METHOD_NOT_ALLOWED);
 }
 
 async fn request_json(
@@ -239,11 +216,10 @@ async fn request_text(
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow(id: &str) -> String {
@@ -267,46 +243,7 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
-}
-
-#[tokio::test]
-async fn flow_policy_adapter_requires_revision_and_rejects_stale_clients() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    write_flow(&settings, "policy", &simple_flow("policy"));
-    let app = build_app(settings);
-    let detail = request_json(app.clone(), "GET", "/workspace/api/flows/policy", None).await;
-    let missing = request_json(
-        app.clone(),
-        "PUT",
-        "/workspace/api/flows/policy/launch-policy",
-        Some(json!({"launch_policy":"agent_requestable"})),
-    )
-    .await;
-    assert_eq!(missing.0, StatusCode::BAD_REQUEST);
-    let payload =
-        json!({"launch_policy":"agent_requestable", "expected_revision": detail.1["revision"]});
-    let saved = request_json(
-        app.clone(),
-        "PUT",
-        "/workspace/api/flows/policy/launch-policy",
-        Some(payload.clone()),
-    )
-    .await;
-    assert_eq!(saved.0, StatusCode::OK);
-    let stale = request_json(
-        app.clone(),
-        "PUT",
-        "/workspace/api/flows/policy/launch-policy",
-        Some(payload),
-    )
-    .await;
-    assert_eq!(stale.0, StatusCode::CONFLICT);
-    let detail = request_json(app, "GET", "/workspace/api/flows/policy", None).await;
-    assert_eq!(detail.1["revision"], saved.1["revision"]);
-    assert_eq!(detail.1["launch_policy"], "agent_requestable");
 }

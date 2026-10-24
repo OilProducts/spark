@@ -21,7 +21,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -217,12 +216,14 @@ fn packaged_software_development_flows_validate_cleanly() {
             continue;
         }
         let name = dir
-            .strip_prefix(&flows)
+            .strip_prefix(flows.parent().expect("flows root"))
             .expect("relative")
             .to_str()
             .expect("utf8");
-        let source = attractor_api::read_named_flow_source(&flows, name).expect("read flow");
-        let preview = attractor_api::preview_named_flow_source(&flows, name, &source.content);
+        // The packaged assets are laid out like the bundled library.
+        let roots = attractor_dsl::FlowRoots::new(flows.join("../.."), None);
+        let source = roots.read_named_flow_source(name).expect("read flow");
+        let preview = attractor_api::preview_named_flow_source(&roots, name, &source.content);
         assert_eq!(
             preview.status_code, 200,
             "{name} failed validation: {:?}",

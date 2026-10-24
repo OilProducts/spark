@@ -24,43 +24,30 @@ fn bootstrap_uses_app_owned_spark_data_directory_by_default() {
     assert_eq!(bootstrap.settings.data_dir, default_spark_data_dir(&paths));
     assert!(is_app_owned_data_dir(&paths, &bootstrap.settings.data_dir));
     assert_eq!(
-        bootstrap.settings.flows_dir,
-        bootstrap.settings.data_dir.join("flows")
+        bootstrap.settings.bundled_dir(),
+        bootstrap.settings.data_dir.join("bundled")
     );
     assert_eq!(bootstrap.bind_host, LOCAL_BIND_HOST);
 }
 
 #[test]
-fn first_launch_seeds_packaged_flows_into_desktop_runtime() {
+fn first_launch_writes_the_bundled_library_into_desktop_runtime() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
 
     let bootstrap =
         bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
 
-    assert_eq!(
-        bootstrap.seeded_flows.created,
-        spark_assets::flows::starter_flow_assets()
-            .expect("packaged starter flow files")
-            .into_iter()
-            .map(|asset| asset.name)
-            .collect::<Vec<_>>()
-    );
-    assert!(bootstrap
-        .settings
-        .flows_dir
-        .join("software-development/implement-change/flow.md")
+    let bundled = bootstrap.settings.bundled_dir();
+    assert!(bundled
+        .join("flows/software-development/implement-change/flow.md")
         .is_file());
-    assert!(bootstrap
-        .settings
-        .roles_dir()
-        .join("adversarial-reviewer.md")
-        .is_file());
-    assert!(bootstrap
+    assert!(bundled.join("roles/adversarial-reviewer.md").is_file());
+    assert!(!bootstrap
         .settings
         .config_dir
         .join("flow-catalog.toml")
-        .is_file());
+        .exists());
 }
 
 #[test]
@@ -339,9 +326,9 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
         .unwrap()
         .json()
         .unwrap();
-    let flows = temp.path().canonicalize().unwrap().join("new-flows");
+    let runs = temp.path().canonicalize().unwrap().join("new-runs");
     let response = client.patch(format!("{first_url}workspace/api/settings")).json(&serde_json::json!({
-        "expected_revision": document["runtime"]["revision"], "section": "runtime", "value": {"flows_dir": flows, "project_roots": []}
+        "expected_revision": document["runtime"]["revision"], "section": "runtime", "value": {"runs_dir": runs, "project_roots": []}
     })).send().unwrap();
     assert!(
         response.status().is_success(),
@@ -361,7 +348,7 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     // Keep the old listener open so the replacement necessarily gets a different port.
     let restarted =
         bootstrap_desktop_runtime(&paths, &load_desktop_settings(&paths).unwrap()).unwrap();
-    assert_eq!(restarted.settings.flows_dir, flows);
+    assert_eq!(restarted.settings.runs_dir, runs);
     let mut second = start_desktop_server(restarted.settings, LOCAL_BIND_HOST).unwrap();
     assert_ne!(second.url(), first_url);
     assert_eq!(
@@ -392,8 +379,8 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
         .json()
         .unwrap();
     assert_eq!(
-        response["runtime"]["effective"]["flows_dir"],
-        flows.to_string_lossy().as_ref()
+        response["runtime"]["effective"]["runs_dir"],
+        runs.to_string_lossy().as_ref()
     );
     assert_eq!(response["models"]["stored"]["model"], "restart-model");
     assert_eq!(response["models"]["effective"]["model"], "restart-model");

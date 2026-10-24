@@ -1,30 +1,29 @@
-//! Runs start only from approved live files, so tests install their flows
-//! the way a human would: write the directory, then approve its files.
+//! Tests install their flows the way Spark reads them: into the bundled
+//! library, or into a project's org repo, which shadows it.
 
-/// Logs `human_save` for every file in a live flow directory.
-#[allow(dead_code)]
-pub(crate) fn approve_flow(
-    settings: &spark_common::settings::SparkSettings,
-    dir: &std::path::Path,
-) {
-    attractor_dsl::accept(
-        &attractor_dsl::TrustStore::for_settings(settings),
-        dir,
-        "human:test",
-    )
-    .expect("approve flow");
-}
+use std::path::Path;
 
-/// Installs flow YAML as an approved live flow directory and returns its name.
+/// Installs flow YAML as a bundled flow directory and returns its name.
 #[allow(dead_code)]
 pub(crate) fn install_flow(
     settings: &spark_common::settings::SparkSettings,
     content: impl AsRef<str>,
 ) -> String {
-    let flow = attractor_dsl::parse_flow_definition(content.as_ref()).expect("valid flow");
+    install_into(&settings.bundled_dir().join("flows"), content.as_ref())
+}
+
+/// Installs flow YAML into `project`'s org repo and returns its name.
+#[allow(dead_code)]
+pub(crate) fn install_org_flow(project: &Path, content: impl AsRef<str>) -> String {
+    install_into(
+        &spark_common::project::org_dir(project).join("flows"),
+        content.as_ref(),
+    )
+}
+
+fn install_into(flows_dir: &Path, content: &str) -> String {
+    let flow = attractor_dsl::parse_flow_definition(content).expect("valid flow");
     let name = format!("tests/{}", flow.id.replace('_', "-"));
-    let dir = settings.flows_dir.join(&name);
-    attractor_dsl::write_flow_dir(&dir, &flow).expect("write flow");
-    approve_flow(settings, &dir);
+    attractor_dsl::write_flow_dir(&flows_dir.join(&name), &flow).expect("write flow");
     name
 }

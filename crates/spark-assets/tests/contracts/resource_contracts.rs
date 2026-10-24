@@ -184,10 +184,10 @@ fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
 #[test]
 fn bundled_flows_round_trip_through_the_directory_writer() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let roles_dir = temp.path().join("roles");
-    fs::create_dir_all(&roles_dir).expect("roles dir");
+    let roots = attractor_dsl::FlowRoots::new(temp.path(), None);
+    fs::create_dir_all(temp.path().join("roles")).expect("roles dir");
     for (name, text) in spark_assets::roles::assets() {
-        fs::write(roles_dir.join(name), text).expect("role");
+        fs::write(temp.path().join("roles").join(name), text).expect("role");
     }
     for name in flows::starter_flow_names().expect("names") {
         let flow = bundled_flow(&name);
@@ -210,7 +210,7 @@ fn bundled_flows_round_trip_through_the_directory_writer() {
             flow,
             "{name}"
         );
-        attractor_dsl::resolve_flow_roles(&flow, &roles_dir)
+        attractor_dsl::resolve_flow_roles(&flow, &roots)
             .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
     }
 }
@@ -764,65 +764,7 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
-}
-
-#[test]
-fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
-    use spark_common::approvals::{
-        append_approvals, approval_entries, sha256_hex as hash, EVENT_HUMAN_SAVE, EVENT_INSTALLED,
-    };
-    let temp = tempfile::tempdir().expect("tempdir");
-    let dir = temp.path();
-    let log = dir.join("config/approvals.jsonl");
-    let assets = flows::starter_flow_assets().expect("bundled flows");
-    let [same, stale, edited, unknown, ..] = &assets[..] else {
-        panic!("at least four bundled flows")
-    };
-    let write = |name: &str, content: &[u8]| {
-        let path = dir.join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
-    };
-    write(&same.name, same.content.as_bytes());
-    write(&stale.name, b"older packaged version\n");
-    write(&edited.name, b"edited: true\n");
-    write(&unknown.name, b"installed before the log existed\n");
-    let installed = |name: &String, bytes: &[u8]| (format!("flows/{name}"), hash(bytes));
-    append_approvals(
-        &log,
-        &approval_entries(
-            EVENT_INSTALLED,
-            "spark/test",
-            [
-                installed(&same.name, b"anything"),
-                installed(&stale.name, b"older packaged version\n"),
-                installed(&edited.name, edited.content.as_bytes()),
-            ],
-        ),
-    )
-    .unwrap();
-    // Only `installed` entries mark what seeding put there.
-    append_approvals(
-        &log,
-        &approval_entries(
-            EVENT_HUMAN_SAVE,
-            "human:test",
-            [installed(&edited.name, b"edited: true\n")],
-        ),
-    )
-    .unwrap();
-
-    // Matching the bundled copy, or the last installed version (updated on the
-    // next start), is not an edit; missing files are reinstalled. Edits are
-    // reported per flow directory.
-    let flow_of = |name: &str| name.rsplit_once('/').unwrap().0.to_string();
-    assert_eq!(flow_of(&edited.name), flow_of(&unknown.name));
-    assert_eq!(
-        flows::locally_edited_flows(dir, &log),
-        vec![flow_of(&edited.name)]
-    );
 }

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use attractor_api::{
-    handle_attractor_request, handle_preview_request, preview, preview_with_flows_dir,
-    PreviewRequest, PreviewServiceConfig,
+    handle_attractor_request, handle_preview_request, preview, preview_with_roots, PreviewRequest,
+    PreviewServiceConfig,
 };
 use serde_json::json;
 use spark_common::settings::SparkSettings;
@@ -13,6 +13,7 @@ fn preview_service_body_reports_flow_definition_graph() {
         flow_content: simple_flow(),
         flow_name: None,
         expand_children: false,
+        project_path: None,
     });
 
     assert_eq!(response.status_code, 200);
@@ -31,6 +32,7 @@ fn preview_service_body_reports_yaml_parse_errors() {
         flow_content: "nodes: [".to_string(),
         flow_name: None,
         expand_children: false,
+        project_path: None,
     });
 
     assert_eq!(response.status_code, 200);
@@ -56,6 +58,7 @@ edges:
         .to_string(),
         flow_name: None,
         expand_children: false,
+        project_path: None,
     });
 
     assert_eq!(response.status_code, 200);
@@ -70,14 +73,14 @@ edges:
 #[test]
 fn preview_service_accepts_flow_name_and_expand_children_flags() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let flows_dir = temp.path().join("flows");
-    let response = preview_with_flows_dir(
+    let response = preview_with_roots(
         PreviewRequest {
             flow_content: simple_flow(),
             flow_name: Some("nested/parent".to_string()),
             expand_children: true,
+            project_path: None,
         },
-        &flows_dir,
+        &attractor_dsl::FlowRoots::new(temp.path(), None),
     );
 
     assert_eq!(response.status_code, 200);
@@ -85,18 +88,57 @@ fn preview_service_accepts_flow_name_and_expand_children_flags() {
 }
 
 #[test]
-fn preview_service_expands_subflow_children_from_flows_dir() {
+fn preview_service_expands_subflow_children_by_name_through_the_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let flows_dir = temp.path().join("flows");
     attractor_dsl::write_flow_dir(
-        &flows_dir.join("nested/child"),
+        &temp.path().join("flows/nested/child"),
         &attractor_dsl::parse_flow_definition(&child_flow()).expect("valid flow"),
     )
     .expect("child flow");
+    let project = temp.path().join("project");
+    attractor_dsl::write_flow_dir(
+        &spark_common::project::org_dir(&project).join("flows/nested/child"),
+        &attractor_dsl::parse_flow_definition(
+            &child_flow().replace("title: Child", "title: Project Child"),
+        )
+        .expect("valid flow"),
+    )
+    .expect("project child flow");
+    let request = |project: Option<&Path>| {
+        preview_with_roots(
+            parent_request(),
+            &attractor_dsl::FlowRoots::new(temp.path(), project),
+        )
+    };
 
-    let response = preview_with_flows_dir(
-        PreviewRequest {
-            flow_content: r#"schema_version: "1"
+    let response = request(None);
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["status"], json!("ok"));
+    assert_eq!(
+        response.body["graph"]["child_previews"]["child"]["flow_name"],
+        json!("nested/child")
+    );
+    assert_eq!(
+        response.body["graph"]["child_previews"]["child"]["flow_label"],
+        json!("Child")
+    );
+    assert!(
+        response.body["graph"]["child_previews"]["child"]["graph"]["nodes"]
+            .as_array()
+            .expect("child nodes")
+            .iter()
+            .any(|node| node["kind"] == json!("human_gate"))
+    );
+    // A project copy of the child wins.
+    assert_eq!(
+        request(Some(&project)).body["graph"]["child_previews"]["child"]["flow_label"],
+        json!("Project Child")
+    );
+}
+
+fn parent_request() -> PreviewRequest {
+    PreviewRequest {
+        flow_content: r#"schema_version: "1"
 id: parent
 title: Parent
 nodes:
@@ -116,26 +158,11 @@ edges:
   - from: child
     to: done
 "#
-            .to_string(),
-            flow_name: Some("nested/parent".to_string()),
-            expand_children: true,
-        },
-        &flows_dir,
-    );
-
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.body["status"], json!("ok"));
-    assert_eq!(
-        response.body["graph"]["child_previews"]["child"]["flow_name"],
-        json!("nested/child")
-    );
-    assert!(
-        response.body["graph"]["child_previews"]["child"]["graph"]["nodes"]
-            .as_array()
-            .expect("child nodes")
-            .iter()
-            .any(|node| node["kind"] == json!("human_gate"))
-    );
+        .to_string(),
+        flow_name: Some("nested/parent".to_string()),
+        expand_children: true,
+        project_path: None,
+    }
 }
 
 #[test]
@@ -254,7 +281,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }

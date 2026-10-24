@@ -36,9 +36,6 @@ pub mod workspace_projects;
 /// Workspace conversation repositories.
 pub mod workspace_conversations;
 
-/// Workspace source-tree flow catalog repository.
-pub mod workspace_flow_catalog;
-
 /// Workspace trigger definition and route-state repositories.
 pub mod workspace_triggers;
 
@@ -66,17 +63,6 @@ pub use workspace_conversations::{
     CONVERSATION_HANDLE_PATTERN, CONVERSATION_HANDLE_SCHEMA_VERSION,
     CONVERSATION_STATE_SCHEMA_VERSION, UNSUPPORTED_CONVERSATION_STATE_SCHEMA,
     UNSUPPORTED_CONVERSATION_STATE_SEGMENTS,
-};
-pub use workspace_flow_catalog::{
-    flow_catalog_path, load_flow_catalog, normalize_execution_lock_config,
-    normalize_execution_lock_conflict_policy, normalize_execution_lock_scope,
-    normalize_execution_lock_value, normalize_flow_name, normalize_launch_policy,
-    read_flow_launch_policy, seed_default_flow_catalog, set_flow_catalog_entry,
-    set_flow_catalog_entry_revision, set_flow_launch_policy, write_flow_catalog, FlowCatalogEntry,
-    FlowExecutionLockConfig, FlowLaunchPolicyState, ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES,
-    ALLOWED_EXECUTION_LOCK_SCOPES, ALLOWED_LAUNCH_POLICIES, DEFAULT_AGENT_REQUESTABLE_FLOWS,
-    EXECUTION_LOCK_CONFLICT_POLICY_QUEUE, EXECUTION_LOCK_SCOPE_PROJECT, FLOW_CATALOG_FILE_NAME,
-    LAUNCH_POLICY_AGENT_REQUESTABLE, LAUNCH_POLICY_DISABLED, LAUNCH_POLICY_TRIGGER_ONLY,
 };
 pub use workspace_projects::{
     DeletedProjectRecord, ProjectPaths, ProjectRecord, ProjectRecordUpdate, ProjectRegistry,

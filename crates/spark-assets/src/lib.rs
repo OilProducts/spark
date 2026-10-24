@@ -193,36 +193,6 @@ pub mod flows {
             .collect()
     }
 
-    /// Installed flows that seeding keeps as local edits: some file differs
-    /// from the bundled copy and from the version Spark last installed (its
-    /// latest `installed` entry in the approval log), so newer bundled
-    /// versions never reach it.
-    pub fn locally_edited_flows(
-        flows_dir: &std::path::Path,
-        approvals_log: &std::path::Path,
-    ) -> Vec<String> {
-        use spark_common::approvals::{installed_hashes, read_approvals, sha256_hex};
-        let installed =
-            installed_hashes(&read_approvals(approvals_log).unwrap_or_default(), "flows/");
-        let mut edited = starter_flow_assets()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|asset| {
-                let current = sha256_hex(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
-                (current != sha256_hex(asset.content.as_bytes())
-                    && installed.get(&asset.name) != Some(&current))
-                .then(|| {
-                    asset
-                        .name
-                        .rsplit_once('/')
-                        .map_or(asset.name.clone(), |(flow, _)| flow.to_string())
-                })
-            })
-            .collect::<Vec<_>>();
-        edited.dedup();
-        edited
-    }
-
     /// Every bundled flow file, for seeding.
     pub fn starter_flow_assets() -> Result<Vec<StarterFlowAsset>, FlowResourceError> {
         fn collect(

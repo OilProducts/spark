@@ -108,7 +108,9 @@ export function RunsPanel() {
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
-    const flowCatalog = useFlowCatalog(Boolean(selectedRunId))
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
+    // The editor opens flows from the active project.
+    const flowCatalog = useFlowCatalog(activeProjectPath, Boolean(selectedRunId))
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
     const selectedRunSummary = useStore((state) => (
@@ -503,8 +505,8 @@ export function RunsPanel() {
                                     selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
                                         ? null
                                         : flowCatalog.isLoaded
-                                            ? "This run's flow is not installed in the catalog."
-                                            : 'Loading the flow catalog…'
+                                            ? "This run's flow is not in the active project's flows."
+                                            : 'Loading the project flows…'
                                 }
                                 fillHeight={!isNarrowViewport}
                             />

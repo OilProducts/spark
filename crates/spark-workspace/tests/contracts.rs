@@ -1,7 +1,5 @@
 #[path = "contracts/conversation_repository_contracts.rs"]
 mod conversation_repository_contracts;
-#[path = "contracts/flow_catalog_contracts.rs"]
-mod flow_catalog_contracts;
 #[path = "contracts/mission_contracts.rs"]
 mod mission_contracts;
 #[path = "contracts/project_registry_contracts.rs"]
@@ -105,4 +103,4 @@ fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{approve_flow, install_flow};
+pub(crate) use flow_install::{install_flow, install_org_flow};

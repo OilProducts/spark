@@ -20,7 +20,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -148,9 +147,9 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
-    let flow_dir = settings.flows_dir.join("lifecycle");
-    write_flow(&settings, &flow_dir.join("parent"), PARENT_FLOW);
-    write_flow(&settings, &flow_dir.join("workers/child"), CHILD_FLOW);
+    let flow_dir = settings.bundled_dir().join("flows").join("lifecycle");
+    write_flow(&flow_dir.join("parent"), PARENT_FLOW);
+    write_flow(&flow_dir.join("workers/child"), CHILD_FLOW);
 
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
@@ -281,11 +280,10 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
     );
 }
 
-fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
+fn write_flow(dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(settings, dir);
 }

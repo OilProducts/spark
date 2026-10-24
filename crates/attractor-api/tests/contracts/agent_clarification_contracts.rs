@@ -36,7 +36,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("home/projects"),
         attractor_dir: root.join("home/attractor"),
         runs_dir: root.join("home/runs"),
-        flows_dir: root.join("home/flows"),
         ui_dir: None,
         project_roots: vec![],
     }

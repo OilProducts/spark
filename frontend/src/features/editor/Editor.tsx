@@ -232,6 +232,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
     const hydratedFlowNameRef = useRef<string | null>(null);
+    // A flow belongs to a project: the same name in another project is another flow.
+    const hydratedProjectPathRef = useRef<string | null>(null);
     const previewTimer = useRef<number | null>(null);
     const activeFlowLoadIdRef = useRef(0);
     const liveRouteTimerRef = useRef<number | null>(null);
@@ -636,6 +638,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             signal ? { signal } : undefined,
             {
                 flowName,
+                projectPath: activeProjectPath,
                 expandChildren: options?.expandChildren ?? expandChildFlowsRef.current,
             },
         )
@@ -650,7 +653,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             ...summarizeDiagnosticsForFlowLoadDebug(preview.diagnostics),
         });
         return { preview, elapsedMs };
-    }, [flowName]);
+    }, [activeProjectPath, flowName]);
 
     // Auto-load and sync with Backend Preview
     useEffect(() => {
@@ -694,7 +697,11 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             return;
         }
 
-        if (hydratedRef.current && hydratedFlowNameRef.current === flowName) {
+        if (
+            hydratedRef.current
+            && hydratedFlowNameRef.current === flowName
+            && hydratedProjectPathRef.current === activeProjectPath
+        ) {
             return;
         }
         hydratedRef.current = false;
@@ -742,7 +749,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
         const startScopedLoad = async () => {
             try {
-                const data = await loadEditorFlowPayload(flowName, { signal: loadAbort.signal });
+                const data = await loadEditorFlowPayload(flowName, activeProjectPath, { signal: loadAbort.signal });
                 if (!isCurrentLoad()) {
                     return;
                 }
@@ -813,6 +820,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 hydratedFlowNameRef.current = flowName;
+                hydratedProjectPathRef.current = activeProjectPath;
                 recordFlowLoadDebug('hydrate:complete', flowName, {
                     loadId,
                     source: 'flow-load-source-yaml',
@@ -837,6 +845,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     }, [
         isActive,
         flowName,
+        activeProjectPath,
         clearDiagnostics,
         hydrateFromPreview,
         requestPreview,

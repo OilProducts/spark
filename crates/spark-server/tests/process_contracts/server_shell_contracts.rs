@@ -115,15 +115,16 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated={flow_count} updated=0 skipped=0\n",
+            "Initialized Spark at {}\nBundled library: {}\n",
             data_dir.display(),
-            data_dir.join("flows").display()
+            data_dir.join("bundled").display()
         )
     );
-    assert!(data_dir.join("config/flow-catalog.toml").is_file());
-    assert!(data_dir
-        .join("flows/examples/simple-linear/flow.md")
-        .is_file());
+    assert!(!data_dir.join("config/flow-catalog.toml").exists());
+    assert_eq!(
+        list_flow_files(&data_dir.join("bundled/flows")).len(),
+        flow_count
+    );
 }
 
 #[test]
@@ -159,14 +160,13 @@ spark-server: error: argument --port: invalid int value: 'not-a-port'\n"
 }
 
 #[test]
-fn init_creates_runtime_layout_flows_and_catalog() {
+fn init_creates_runtime_layout_and_bundled_library() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: init output prints canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let data_dir = root.join("spark-home");
-    let flows_dir = root.join("flows");
-    let flow_names = starter_flow_files();
+    let bundled = data_dir.join("bundled");
 
     let output = run_with_args_and_env(
         [
@@ -174,8 +174,6 @@ fn init_creates_runtime_layout_flows_and_catalog() {
             "init",
             "--data-dir",
             data_dir.to_str().expect("utf-8 data dir"),
-            "--flows-dir",
-            flows_dir.to_str().expect("utf-8 flows dir"),
         ],
         &env,
     );
@@ -185,10 +183,9 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     assert_eq!(
         output.stdout,
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated={} updated=0 skipped=0\n",
+            "Initialized Spark at {}\nBundled library: {}\n",
             data_dir.display(),
-            flows_dir.display(),
-            flow_names.len()
+            bundled.display(),
         )
     );
     for relative in [
@@ -202,19 +199,39 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     ] {
         assert!(data_dir.join(relative).is_dir(), "missing {relative}");
     }
-    assert_eq!(list_flow_files(&flows_dir), flow_names);
-    let catalog = fs::read_to_string(data_dir.join("config/flow-catalog.toml")).expect("catalog");
     assert_eq!(
-        catalog
-            .matches("launch_policy = \"agent_requestable\"")
-            .count(),
-        11
+        list_flow_files(&bundled.join("flows")),
+        starter_flow_files()
     );
-    assert!(catalog.contains("[flows.\"math-research/explore-conjecture\".execution_lock]"));
-    assert!(catalog.contains("key = \"math-research\""));
-    assert!(catalog.contains("[flows.\"software-development/merge-change\".execution_lock]"));
-    assert!(catalog.contains("key = \"software-development-integration\""));
-    assert!(!catalog.contains("software-development/workers/"));
+    assert!(bundled.join("roles/adversarial-reviewer.md").is_file());
+    assert!(!data_dir.join("flows").exists());
+    assert!(!data_dir.join("config/flow-catalog.toml").exists());
+    // Execution locks travel in the bundled flows' frontmatter.
+    let lock = |name: &str| {
+        attractor_dsl::read_flow_dir(&bundled.join("flows").join(name))
+            .expect("bundled flow loads")
+            .execution_lock
+            .map(|lock| (lock.scope, lock.key, lock.conflict_policy))
+    };
+    for name in [
+        "math-research/explore-conjecture",
+        "math-research/formalize-result",
+        "math-research/prove-refute",
+    ] {
+        assert_eq!(
+            lock(name),
+            Some(("project".into(), "math-research".into(), "queue".into()))
+        );
+    }
+    assert_eq!(
+        lock("software-development/merge-change"),
+        Some((
+            "project".into(),
+            "software-development-integration".into(),
+            "queue".into()
+        ))
+    );
+    assert_eq!(lock("software-development/implement-change"), None);
 }
 
 #[test]
@@ -229,8 +246,6 @@ fn init_seeds_playbooks_updating_unmodified_copies_and_keeping_edits() {
                 "init",
                 "--data-dir",
                 data_dir.to_str().expect("utf-8 data dir"),
-                "--flows-dir",
-                temp.path().join("flows").to_str().expect("utf-8 flows dir"),
             ],
             &env,
         );
@@ -279,143 +294,47 @@ fn init_seeds_playbooks_updating_unmodified_copies_and_keeping_edits() {
 }
 
 #[test]
-fn init_respects_skip_and_force_counts() {
+fn bundled_library_is_rewritten_on_every_start_including_serve() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
     let data_dir_text = data_dir.to_str().expect("utf-8 data dir");
-    let flows_dir_text = flows_dir.to_str().expect("utf-8 flows dir");
-    let flow_count = starter_flow_files().len();
+    let bundled = data_dir.join("bundled");
+    let init = run_with_args_and_env(["spark-server", "init", "--data-dir", data_dir_text], &env);
+    assert_eq!(init.exit_code, 0, "{}", init.stderr);
 
-    let first = run_with_args_and_env(
+    // Local edits, deletions and stray files in the bundled library do not
+    // survive a start.
+    let edited = bundled.join("flows/examples/simple-linear/plan.md");
+    let packaged = fs::read_to_string(&edited).expect("bundled node");
+    fs::write(&edited, "edited\n").expect("edit");
+    fs::remove_dir_all(bundled.join("flows/examples/parallel-review")).expect("delete flow");
+    fs::write(bundled.join("flows/examples/simple-linear/extra.md"), "x").expect("stray");
+    let role = bundled.join("roles/adversarial-reviewer.md");
+    fs::write(&role, "edited role\n").expect("edit role");
+    fs::write(bundled.join("roles/stray.md"), "x").expect("stray role");
+
+    let serve = run_with_args_and_env(
         [
             "spark-server",
-            "init",
+            "serve",
             "--data-dir",
             data_dir_text,
-            "--flows-dir",
-            flows_dir_text,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9101",
         ],
         &env,
     );
-    assert_eq!(first.exit_code, 0);
-    // Seeding installs flow directories and bundled roles.
-    let implement_change = flows_dir.join("software-development/implement-change");
-    assert!(implement_change.join("flow.md").is_file());
-    attractor_dsl::read_flow_dir(&implement_change).expect("seeded flow directory loads");
-    let roles_dir = data_dir.join("roles");
-    let role = fs::read_to_string(roles_dir.join("adversarial-reviewer.md")).expect("seeded role");
-    // The approval log records each installed file; it replaced the manifests.
-    let log = data_dir.join("config/approvals.jsonl");
-    let installed = |path: &str| -> Vec<String> {
-        spark_common::approvals::read_approvals(&log)
-            .expect("approval log")
-            .into_iter()
-            .filter(|entry| entry.event == "installed" && entry.path == path)
-            .inspect(|entry| assert!(entry.by.starts_with("spark/"), "{entry:?}"))
-            .map(|entry| entry.sha256)
-            .collect()
-    };
+    assert_eq!(serve.exit_code, 0, "{}", serve.stderr);
+    assert_eq!(fs::read_to_string(&edited).expect("rewritten"), packaged);
     assert_eq!(
-        installed("roles/adversarial-reviewer.md"),
-        vec![format!("{:x}", Sha256::digest(role.as_bytes()))]
+        list_flow_files(&bundled.join("flows")),
+        starter_flow_files()
     );
-    assert!(!flows_dir.join(".packaged-flow-hashes.json").exists());
-    assert!(!roles_dir.join(".packaged-role-hashes.json").exists());
-    // Seeded flows pass the launch gate as installed.
-    let trust = attractor_dsl::TrustStore {
-        flows_dir: flows_dir.clone(),
-        roles_dir: roles_dir.clone(),
-        log_path: log.clone(),
-    };
-    attractor_dsl::load_approved_flow(&trust, &implement_change).expect("seeded flow is approved");
-
-    let edited_flow = flows_dir.join("examples/simple-linear/plan.md");
-    fs::write(&edited_flow, "edited: true\n").expect("user edit");
-
-    // Simulate an installed packaged version becoming stale while keeping a
-    // separate local edit. The latest `installed` entry is the durable
-    // baseline that makes those two cases distinguishable on the next init.
-    let refresh_name = "examples/human-review-loop/flow.md";
-    let refresh_flow = flows_dir.join(refresh_name);
-    let old_packaged = b"schema_version: old-packaged\n";
-    fs::write(&refresh_flow, old_packaged).expect("old packaged flow");
-    spark_common::approvals::append_approvals(
-        &log,
-        &spark_common::approvals::approval_entries(
-            "installed",
-            "spark/0.0.0",
-            [(
-                format!("flows/{refresh_name}"),
-                format!("{:x}", Sha256::digest(old_packaged)),
-            )],
-        ),
-    )
-    .expect("older install");
-
-    // A node deleted in the editor stays deleted; a deleted flow is restored.
-    let deleted_node = flows_dir.join("examples/simple-linear/summarize.md");
-    fs::remove_file(&deleted_node).expect("delete node");
-    let deleted_flow = flows_dir.join("examples/parallel-review");
-    let deleted_flow_files = fs::read_dir(&deleted_flow).expect("flow dir").count();
-    fs::remove_dir_all(&deleted_flow).expect("delete flow");
-
-    let second = run_with_args_and_env(
-        [
-            "spark-server",
-            "init",
-            "--data-dir",
-            data_dir_text,
-            "--flows-dir",
-            flows_dir_text,
-        ],
-        &env,
-    );
-    assert_eq!(second.exit_code, 0);
-    assert!(second.stdout.ends_with(&format!(
-        "created={deleted_flow_files} updated=1 skipped={}\n",
-        flow_count - 1 - deleted_flow_files
-    )));
-    assert!(!deleted_node.exists());
-    assert!(deleted_flow.join("flow.md").is_file());
-    assert_eq!(
-        fs::read_to_string(&edited_flow).expect("edited flow"),
-        "edited: true\n"
-    );
-    let refreshed = fs::read(&refresh_flow).expect("refreshed flow");
-    assert_ne!(refreshed, old_packaged);
-    assert_eq!(
-        installed(&format!("flows/{refresh_name}")).last(),
-        Some(&format!("{:x}", Sha256::digest(&refreshed)))
-    );
-    // The kept local edit is not approved, so launches refuse it.
-    let edited_entries = installed("flows/examples/simple-linear/plan.md");
-    assert!(!edited_entries.contains(&format!("{:x}", Sha256::digest(b"edited: true\n"))));
-
-    let forced = run_with_args_and_env(
-        [
-            "spark-server",
-            "init",
-            "--data-dir",
-            data_dir_text,
-            "--flows-dir",
-            flows_dir_text,
-            "--force",
-        ],
-        &env,
-    );
-    assert_eq!(forced.exit_code, 0);
-    assert!(forced
-        .stdout
-        .ends_with(&format!("created=1 updated={} skipped=0\n", flow_count - 1)));
-    assert!(deleted_node.is_file());
-    let forced_flow = fs::read(&edited_flow).expect("forced flow");
-    assert_ne!(forced_flow, b"edited: true\n");
-    assert_eq!(
-        installed("flows/examples/simple-linear/plan.md").last(),
-        Some(&format!("{:x}", Sha256::digest(&forced_flow)))
-    );
+    assert_ne!(fs::read_to_string(&role).expect("role"), "edited role\n");
+    assert!(!bundled.join("roles/stray.md").exists());
 }
 
 #[test]
@@ -423,7 +342,6 @@ fn serve_validates_settings_and_parses_host_port_without_binding_socket() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
 
     let serve = run_with_args_and_env(
         [
@@ -431,8 +349,6 @@ fn serve_validates_settings_and_parses_host_port_without_binding_socket() {
             "serve",
             "--data-dir",
             data_dir.to_str().expect("utf-8 data dir"),
-            "--flows-dir",
-            flows_dir.to_str().expect("utf-8 flows dir"),
             "--host",
             "127.0.0.1",
             "--port",
@@ -453,15 +369,12 @@ fn serve_validates_settings_and_parses_host_port_without_binding_socket() {
 fn serve_debug_codex_jsonrpc_flag_and_env_enable_process_debug_configuration() {
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
 
     let flag_config = build_serve_configuration_from_args(
         &[
             "serve".to_string(),
             "--data-dir".to_string(),
             data_dir.to_string_lossy().into_owned(),
-            "--flows-dir".to_string(),
-            flows_dir.to_string_lossy().into_owned(),
             "--debug-codex-jsonrpc".to_string(),
         ],
         &BTreeMap::new(),
@@ -474,8 +387,6 @@ fn serve_debug_codex_jsonrpc_flag_and_env_enable_process_debug_configuration() {
             "serve".to_string(),
             "--data-dir".to_string(),
             data_dir.to_string_lossy().into_owned(),
-            "--flows-dir".to_string(),
-            flows_dir.to_string_lossy().into_owned(),
         ],
         &BTreeMap::from([(ENV_SPARK_DEBUG_CODEX_JSONRPC.to_string(), "YES".to_string())]),
     )
@@ -487,8 +398,6 @@ fn serve_debug_codex_jsonrpc_flag_and_env_enable_process_debug_configuration() {
             "serve".to_string(),
             "--data-dir".to_string(),
             data_dir.to_string_lossy().into_owned(),
-            "--flows-dir".to_string(),
-            flows_dir.to_string_lossy().into_owned(),
         ],
         &BTreeMap::new(),
     )
@@ -503,7 +412,6 @@ fn serve_configuration_preserves_ui_dir_and_rejects_missing_index() {
     // Canonicalize: resolved settings hold canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let data_dir = root.join("spark-home");
-    let flows_dir = root.join("flows");
     let ui_dir = root.join("ui");
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("index");
@@ -513,8 +421,6 @@ fn serve_configuration_preserves_ui_dir_and_rejects_missing_index() {
             "serve".to_string(),
             "--data-dir".to_string(),
             data_dir.to_string_lossy().into_owned(),
-            "--flows-dir".to_string(),
-            flows_dir.to_string_lossy().into_owned(),
             "--ui-dir".to_string(),
             ui_dir.to_string_lossy().into_owned(),
         ],
@@ -531,8 +437,6 @@ fn serve_configuration_preserves_ui_dir_and_rejects_missing_index() {
             "serve".to_string(),
             "--data-dir".to_string(),
             data_dir.to_string_lossy().into_owned(),
-            "--flows-dir".to_string(),
-            flows_dir.to_string_lossy().into_owned(),
             "--ui-dir".to_string(),
             missing_ui.to_string_lossy().into_owned(),
         ],
@@ -550,7 +454,6 @@ fn installed_server_settings_use_package_root_for_resource_fallback() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
     let package_root = temp.path().join("site-packages/spark");
     let executable_path = package_root.join("bin/spark-server");
     let ui_dist = package_root.join("ui_dist");
@@ -564,7 +467,6 @@ fn installed_server_settings_use_package_root_for_resource_fallback() {
     let settings = resolve_server_settings_with_executable_path(
         &SettingsOverrides {
             data_dir: Some(data_dir),
-            flows_dir: Some(flows_dir),
             runs_dir: None,
             ui_dir: None,
         },
@@ -959,8 +861,8 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     let home = root.join("home");
     fs::create_dir_all(home.join("config")).unwrap();
     let path = home.join("config/spark.toml");
-    let first = root.join("first-flows");
-    let second = root.join("second-flows");
+    let first = root.join("first-runs");
+    let second = root.join("second-runs");
     let overrides = SettingsOverrides {
         data_dir: Some(home.clone()),
         ..Default::default()
@@ -968,45 +870,37 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     let env = BTreeMap::new();
     fs::write(
         &path,
-        format!("[runtime]\nflows_dir = '{}'\n", first.display()),
+        format!("[runtime]\nruns_dir = '{}'\n", first.display()),
     )
     .unwrap();
     let captured = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
-    assert_eq!(captured.flows_dir, first);
+    assert_eq!(captured.runs_dir, first);
     fs::write(
         &path,
         format!(
-            "schema_version = 1\n[runtime]\nflows_dir = '{}'\n",
+            "schema_version = 1\n[runtime]\nruns_dir = '{}'\n",
             second.display()
         ),
     )
     .unwrap();
     let restarted = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
-    assert_eq!(restarted.flows_dir, second);
-    assert_eq!(captured.flows_dir, first);
+    assert_eq!(restarted.runs_dir, second);
+    assert_eq!(captured.runs_dir, first);
     assert_eq!(restarted.data_dir, home);
-    let mut env = env;
-    env.insert(
-        "SPARK_FLOWS_DIR".into(),
-        first.to_string_lossy().into_owned(),
-    );
-    assert_eq!(
-        resolve_server_settings_with_executable_path(&overrides, &env, None)
-            .unwrap()
-            .flows_dir,
-        first
-    );
     let overrides = SettingsOverrides {
-        flows_dir: Some(second.clone()),
+        runs_dir: Some(first.clone()),
         ..overrides
     };
     assert_eq!(
         resolve_server_settings_with_executable_path(&overrides, &env, None)
             .unwrap()
-            .flows_dir,
-        second
+            .runs_dir,
+        first
     );
-    fs::write(&path, "[runtime]\nflows_dir = 123\n").unwrap();
+    fs::write(&path, "[runtime]\nruns_dir = 123\n").unwrap();
+    assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());
+    // The retired flows_dir setting is rejected, not silently ignored.
+    fs::write(&path, "[runtime]\nflows_dir = '/flows'\n").unwrap();
     assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());
 }
 

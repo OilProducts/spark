@@ -22,8 +22,6 @@ mod preview_route_contracts;
 mod run_recovery_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;
-#[path = "contracts/trust_contracts.rs"]
-mod trust_contracts;
 #[path = "contracts/validation_loop_contracts.rs"]
 mod validation_loop_contracts;
 #[path = "contracts/worktree_lifecycle_contracts.rs"]
@@ -35,4 +33,4 @@ mod fake_compatible_server;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{approve_flow, install_flow};
+pub(crate) use flow_install::{install_flow, install_org_flow};

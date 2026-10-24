@@ -39,7 +39,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const otherProject = path.join(tmpRoot, 'projects', 'live-turn-other')
     mkdirSync(otherProject, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: otherProject } })).ok()).toBe(true)
-    expect((await page.request.post('/attractor/api/flows', { data: { name: 'live-turn-smoke.yaml', content: flowYaml } })).ok()).toBe(true)
+    expect((await page.request.post('/attractor/api/flows', { data: { name: 'live-turn-smoke', content: flowYaml, project_path: projectPath } })).ok()).toBe(true)
     await page.addInitScript(({ projectPath }) => {
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
     }, { projectPath })
@@ -67,17 +67,17 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     // The agent launches a flow mid-turn, as the spark CLI does: a real artifact commit that publishes a full snapshot.
     const snapshot = await (await page.request.get(`/workspace/api/conversations/${conversationId}?project_path=${encodeURIComponent(projectPath)}`)).json()
     const launched = await page.request.post('/workspace/api/runs/launch', {
-        data: { flow_name: 'live-turn-smoke.yaml', summary: 'Launch the live turn smoke flow.', conversation_handle: snapshot.conversation_handle },
+        data: { flow_name: 'live-turn-smoke', summary: 'Launch the live turn smoke flow.', conversation_handle: snapshot.conversation_handle },
     })
     expect(launched.ok()).toBe(true)
-    await expect(history).toContainText('live-turn-smoke.yaml')
+    await expect(history).toContainText('live-turn-smoke')
     await expect(history).toContainText('Planning the work.')
     await expect(history).toContainText('Half done.')
 
     openGate('continue')
     await expect(history).toContainText('Half done. Still going.')
     await expect(history).toContainText('Planning the work.')
-    await expect(history).toContainText('live-turn-smoke.yaml')
+    await expect(history).toContainText('live-turn-smoke')
     expect(snapshotFetches).toBe(0)
 
     // Leaving the chat for one in another project keeps the dot until the turn ends there.

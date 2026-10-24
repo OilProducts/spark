@@ -34,8 +34,7 @@ use spark_workspace::WorkspaceError;
 use spark_workspace::{
     workspace_settings, BrowseResponse, ConversationSummary, ProjectMetadata, SerializedTrigger,
     TriggerCreateRequest, TriggerDeleteResponse, TriggerUpdateRequest, WebhookHandleRequest,
-    WorkspaceFlowLaunchPolicyUpdate, WorkspaceFlowService, WorkspaceFlowSummary,
-    WorkspaceProjectService, WorkspaceTriggerService,
+    WorkspaceFlowService, WorkspaceFlowSummary, WorkspaceProjectService, WorkspaceTriggerService,
 };
 use tokio::sync::broadcast;
 use tokio::time::{self, Duration};
@@ -103,10 +102,7 @@ pub fn router() -> Router<HttpAppState> {
         )
         .route("/attention", get(pending_attention))
         .route("/flows", get(list_workspace_flows))
-        .route(
-            "/flows/{*flow_path}",
-            get(get_workspace_flow_dispatch).put(put_workspace_flow_dispatch),
-        )
+        .route("/flows/{*flow_path}", get(get_workspace_flow_dispatch))
         .route(
             "/conversations/{conversation_id}/tool-output/{segment_id}",
             get(get_conversation_segment_tool_output),
@@ -209,7 +205,7 @@ struct ChatModelsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 struct FlowSurfaceQuery {
-    surface: Option<String>,
+    project_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1133,7 +1129,7 @@ async fn list_workspace_flows(
 ) -> ApiResult<Vec<WorkspaceFlowSummary>> {
     let query = optional_query_payload(payload)?;
     WorkspaceFlowService::new((*settings).clone())
-        .list_flows(query.surface.as_deref())
+        .list_flows(query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
 }
@@ -1147,35 +1143,18 @@ async fn get_workspace_flow_dispatch(
     let flow_path = flow_path.trim_start_matches('/');
     let service = WorkspaceFlowService::new((*settings).clone());
     if let Some(flow_name) = flow_path.strip_suffix("/raw") {
-        let raw = service.raw_flow(flow_name, query.surface.as_deref())?;
+        let raw = service.raw_flow(flow_name, query.project_path.as_deref())?;
         return raw_flow_response(raw);
     }
     if let Some(flow_name) = flow_path.strip_suffix("/validate") {
-        let payload = service.validate_flow(flow_name)?;
+        let payload = service.validate_flow(flow_name, query.project_path.as_deref())?;
         return Ok(Json(payload).into_response());
     }
-    if flow_path.is_empty() || flow_path.ends_with("/launch-policy") {
+    if flow_path.is_empty() {
         return Err(WorkspaceError::NotFound("Not Found".to_string()).into());
     }
-    let flow = service.describe_flow(flow_path, query.surface.as_deref())?;
+    let flow = service.describe_flow(flow_path, query.project_path.as_deref())?;
     Ok(Json(flow).into_response())
-}
-
-async fn put_workspace_flow_dispatch(
-    State(settings): State<Arc<SparkSettings>>,
-    State(live_hub): State<Arc<WorkspaceLiveHub>>,
-    AxumPath(flow_path): AxumPath<String>,
-    payload: Result<Json<WorkspaceFlowLaunchPolicyUpdate>, JsonRejection>,
-) -> ApiResult<spark_workspace::WorkspaceFlowLaunchPolicyResponse> {
-    let flow_path = flow_path.trim_start_matches('/');
-    let Some(flow_name) = flow_path.strip_suffix("/launch-policy") else {
-        return Err(WorkspaceError::NotFound("Not Found".to_string()).into());
-    };
-    let request = json_payload(payload)?;
-    let response =
-        WorkspaceFlowService::new((*settings).clone()).update_launch_policy(flow_name, request)?;
-    live_hub.publish_settings_change("workspace", "flow_policy", None, json!(response.revision));
-    Ok(Json(response))
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1208,16 +1187,7 @@ async fn settings(
         (Some(path), None) => {
             spark_workspace::settings::project_model_settings_view(&settings, &path)
         }
-        (None, None) => workspace_settings(&settings).map(|mut view| {
-            view["runtime"]["locally_edited_flows"] =
-                serde_json::json!(spark_assets::flows::locally_edited_flows(
-                    &settings.flows_dir,
-                    &settings
-                        .config_dir
-                        .join(spark_common::approvals::APPROVALS_FILE),
-                ));
-            view
-        }),
+        (None, None) => workspace_settings(&settings),
     }
     .map(Json)
     .map_err(Into::into)

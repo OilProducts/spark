@@ -376,43 +376,31 @@ fn autostart_child_pipeline(
     } else {
         resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir)
     };
-    let Some(child_flow_path) =
-        resolve_child_flow_path(&child_flow_ref, &child_workdir_path, context)
-    else {
+    // Children resolve by name through the same roots as their root run and
+    // execute the resolved form.
+    let Some(child_flow_name_ref) = attractor_dsl::flow_ref_name(
+        non_empty(context_string(context, "internal.flow_name")).as_deref(),
+        &child_flow_ref,
+    ) else {
         return Ok(Some(fail_outcome(format!(
             "Invalid child flow_ref: {child_flow_ref}"
         ))));
     };
-    if !child_flow_path.join(attractor_dsl::FLOW_FILE).is_file() {
-        return Ok(Some(fail_outcome(format!(
-            "Child flow not found: {}",
-            child_flow_path.display()
-        ))));
-    }
-
-    // Children execute the resolved form and pass the same gate as root launches.
-    let (Some(flows_dir), Some(roles_dir), Some(log_path)) = (
-        context_path(context, "internal.flows_dir"),
-        context_path(context, "internal.roles_dir"),
-        context_path(context, "internal.approvals_log"),
-    ) else {
+    let Some(bundled_root) = context_path(context, "internal.bundled_root") else {
         return Ok(Some(fail_outcome(
-            "Child flow refused: this run records no approval log to check the child's files against"
-                .to_string(),
+            "Child flow not found: this run records no flow roots".to_string(),
         )));
     };
-    let trust = attractor_dsl::TrustStore {
-        flows_dir,
-        roles_dir,
-        log_path,
+    let roots = attractor_dsl::FlowRoots {
+        org: context_path(context, "internal.org_root"),
+        bundled: bundled_root,
     };
     let (child_flow, child_flow_files) =
-        match attractor_dsl::load_approved_flow(&trust, &child_flow_path) {
-            Ok(approved) => (approved.flow, approved.files),
-            Err(error) if error.status_code() == 403 => {
+        match attractor_dsl::load_flow(&roots, &child_flow_name_ref) {
+            Ok(loaded) => (loaded.flow, loaded.manifest),
+            Err(error) if error.status_code() == 404 => {
                 return Ok(Some(fail_outcome(format!(
-                    "Child flow refused: {}",
-                    error.detail()
+                    "Child flow not found: {child_flow_name_ref}"
                 ))));
             }
             Err(error) => {
@@ -430,9 +418,9 @@ fn autostart_child_pipeline(
     let child_flow_name = (!child_flow.title.trim().is_empty())
         .then(|| child_flow.title.trim().to_string())
         .or_else(|| {
-            child_flow_path
-                .file_name()
-                .and_then(|value| value.to_str())
+            child_flow_name_ref
+                .rsplit('/')
+                .next()
                 .filter(|value| !value.trim().is_empty())
                 .map(str::to_string)
         })
@@ -476,7 +464,7 @@ fn autostart_child_pipeline(
         child_run_id: child_run_id.clone(),
         child_flow: child_flow.clone(),
         child_flow_name: child_flow_name.clone(),
-        child_flow_path: child_flow_path.clone(),
+        child_flow_ref: child_flow_name_ref.clone(),
         child_workdir: child_workdir_path.clone(),
         input_map,
         parent_context: child_launch_context,
@@ -709,7 +697,7 @@ fn launch_default_child_run(
     runtime: &HandlerRuntime,
     request: ChildRunRequest,
     child_source: String,
-    child_flow_files: BTreeMap<String, String>,
+    child_flow_files: attractor_dsl::FlowManifest,
 ) -> std::result::Result<ChildRunResult, String> {
     let Some(parent_paths) = runtime.run_paths.as_ref() else {
         return Err("parent run paths are unavailable".to_string());
@@ -763,13 +751,11 @@ fn launch_default_child_run(
         "internal.runs_dir",
         json!(parent_paths.runs_dir.to_string_lossy().to_string()),
     );
-    if let Some(source_dir) = request.child_flow_path.parent() {
-        set_context(
-            &mut child_context,
-            "internal.flow_source_dir",
-            json!(source_dir.to_string_lossy().to_string()),
-        );
-    }
+    set_context(
+        &mut child_context,
+        "internal.flow_name",
+        json!(request.child_flow_ref.clone()),
+    );
 
     let child_invocation_index = store
         .next_child_invocation_index(&request.parent_run_id, &request.parent_node_id)
@@ -1487,32 +1473,13 @@ fn resolve_context_child_workdir(
 }
 
 fn git_common_dir(dir: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        return None;
-    }
+    let text = spark_common::project::run_git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()
+    .filter(|text| !text.is_empty())?;
     fs::canonicalize(&text).ok()
-}
-
-/// Flow refs resolve against the directory containing the parent flow, as in
-/// preview; the child's execution workdir never changes the base.
-fn resolve_child_flow_path(
-    child_flow_ref: &str,
-    child_workdir_path: &Path,
-    context: &ContextMap,
-) -> Option<PathBuf> {
-    let base_dir = context_path(context, "internal.flow_source_dir")
-        .unwrap_or_else(|| child_workdir_path.to_path_buf());
-    attractor_dsl::resolve_flow_ref(&base_dir, child_flow_ref)
 }
 
 fn resolve_path_from_base(raw_path: impl AsRef<Path>, base_dir: &Path) -> PathBuf {
