@@ -2,6 +2,7 @@ import { chooseModel, customModel, chooseEffort, openPicker } from '@/components
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
+import { buildCanonicalFlowModelFromPreviewGraph } from '@/lib/canonicalFlowModel'
 import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
@@ -100,42 +101,6 @@ describe('Graph and settings behavior', () => {
             settingsRevision += 1
           }
           return Response.json({ models: { scope: 'workspace', source: 'workspace', revision: String(settingsRevision), stored: serverModels, effective: serverModels } })
-        }
-        if (url.includes('/workspace/api/flows/') && url.includes('/launch-policy') && method === 'PUT') {
-          const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
-          return new Response(
-            JSON.stringify({
-              name: TEST_GRAPH_FLOW,
-              revision: 'catalog-revision',
-              launch_policy: body.launch_policy ?? 'agent_requestable',
-              effective_launch_policy: body.launch_policy ?? 'agent_requestable',
-              execution_lock: body.execution_lock ?? null,
-              allowed_launch_policies: ['agent_requestable', 'trigger_only', 'disabled'],
-              allowed_execution_lock_scopes: ['project'],
-              allowed_execution_lock_conflict_policies: ['queue'],
-            }),
-            {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            },
-          )
-        }
-        if (url.includes('/workspace/api/flows/')) {
-          return new Response(
-            JSON.stringify({
-              name: TEST_GRAPH_FLOW,
-              title: 'Implement From Plan File',
-              description: 'Snapshot a plan file, implement it, and iterate until complete.',
-              revision: 'catalog-revision',
-              launch_policy: null,
-              effective_launch_policy: 'disabled',
-              execution_lock: null,
-            }),
-            {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            },
-          )
         }
         return new Response(JSON.stringify({ status: 'saved' }), {
           status: 200,
@@ -459,9 +424,6 @@ describe('Graph and settings behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     })
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toBeVisible()
-    })
 
     await user.click(screen.getByTestId('graph-launch-input-add'))
     fireEvent.change(screen.getByTestId('graph-launch-input-label-0'), {
@@ -481,9 +443,6 @@ describe('Graph and settings behavior', () => {
     wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toBeVisible()
-    })
     expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
     expect(screen.getByTestId('graph-launch-input-key-0')).toHaveValue('draft.invalid')
     expect(screen.getByTestId('graph-launch-inputs-error')).toHaveTextContent(
@@ -491,84 +450,30 @@ describe('Graph and settings behavior', () => {
     )
   })
 
-  it('loads and saves workspace launch policy without touching flow save state', async () => {
+  it('edits the execution lock key as FlowDefinition execution_lock', async () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'No catalog entry yet. Effective policy is Disabled.',
-      )
-    })
-    expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled')
+    await user.type(screen.getByLabelText('Execution Lock Key'), 'integration')
+    expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
+    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata, { flow: null })
+    expect(yaml).toContain('execution_lock:\n  scope: project\n  key: integration\n  conflict_policy: queue')
 
-    await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
-    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
-    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await user.clear(screen.getByLabelText('Execution Lock Key'))
+    const base = { execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' } }
+    expect(generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata, { flow: base }))
+      .not.toContain('execution_lock')
+    expect(generateFlowYaml(TEST_GRAPH_FLOW, [], [], {}, { flow: base })).toContain('key: integration')
+    expect(buildCanonicalFlowModelFromPreviewGraph('g', { nodes: [], edges: [] }, { flow: base }).flowMetadata.execution_lock)
+      .toBe('integration')
 
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'Workspace flow catalog settings saved.',
-      )
-    })
-
-    expect(useStore.getState().saveState).toBe('idle')
-    expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
-  })
-
-  it('loads and saves execution lock config from the workspace flow catalog', async () => {
-    const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'No catalog entry yet. Effective policy is Disabled.',
-      )
-    })
-
-    await user.click(screen.getByLabelText('Enable execution lock'))
-    await user.type(screen.getByLabelText('Lock Key'), 'main-worktree-integration')
-    fireEvent.blur(screen.getByLabelText('Lock Key'))
-    await user.click(screen.getByRole('button', { name: /^Save/ }))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'Workspace flow catalog settings saved.',
-      )
-    })
-
-    expect(screen.getByLabelText('Lock Scope')).toHaveValue('project')
-    expect(screen.getByLabelText('Lock Key')).toHaveValue('main-worktree-integration')
-    expect(screen.getByLabelText('Conflict Policy')).toHaveValue('queue')
-  })
-
-  it('retains a stale policy draft and reloads the catalog on Discard', async () => {
-    const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Discard/ })).toBeEnabled())
-    await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
-    const fetchMock = vi.mocked(fetch)
-    fetchMock.mockResolvedValueOnce(Response.json({ detail: 'Settings changed; reload before saving.' }, { status: 409 }))
-    await user.click(screen.getByRole('button', { name: /^Save/ }))
-    await waitFor(() => expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent('Settings changed'))
-    expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
-    const request = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
-    expect(JSON.parse(String(request?.[1]?.body)).expected_revision).toBe('catalog-revision')
-    expect(screen.getByRole('button', { name: /^Save/ })).toBeEnabled()
-    await user.click(screen.getByRole('button', { name: /^Discard/ }))
-    await waitFor(() => expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled'))
-    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+    await user.click(screen.getByTestId('graph-advanced-toggle'))
+    expect(screen.queryByTestId('graph-extension-attr-key-0')).not.toBeInTheDocument()
   })
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {
     const fetchMock = vi.mocked(fetch)
     wrapWithFlowProvider(<GraphSettings inline />)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
-        'No catalog entry yet. Effective policy is Disabled.',
-      )
-    })
 
     const saveRequestsBefore = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'POST').length
 

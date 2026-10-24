@@ -1,6 +1,6 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
 import {
   ensureScreenshotDir,
@@ -9,14 +9,13 @@ import {
   stubProjectMetadata,
 } from '../fixtures/smoke-helpers'
 
-// The smoke server's temporary dirs (scripts/run-rust-smoke-server.mjs).
-const smokeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
-const smokeFlowsDir = path.join(smokeRoot, 'flows')
-const smokeRolesDir = path.join(smokeRoot, 'spark-home', 'roles')
+// A project's flows and roles live in its org repo.
+const orgDir = (projectPath: string) => path.join(projectPath, '.spark', 'agent-org')
 
-const flowFiles = (flowName: string) => Object.fromEntries(
-  readdirSync(path.join(smokeFlowsDir, flowName)).map((name) => [name, readFileSync(path.join(smokeFlowsDir, flowName, name), 'utf-8')]),
-)
+const flowFiles = (projectPath: string, flowName: string) => {
+  const flowDir = path.join(orgDir(projectPath), 'flows', flowName)
+  return Object.fromEntries(readdirSync(flowDir).map((name) => [name, readFileSync(path.join(flowDir, name), 'utf-8')]))
+}
 
 test.beforeAll(() => {
   ensureScreenshotDir()
@@ -50,7 +49,7 @@ edges:
     to: done
 `
 
-  await page.route("**/attractor/api/flows", async (route) => {
+  await page.route((url) => url.pathname === "/attractor/api/flows", async (route) => {
     const request = route.request()
     if (request.method() === "GET") {
       await route.fulfill({
@@ -90,7 +89,7 @@ edges:
     await route.continue()
   })
 
-  await page.route(`**/attractor/api/flows/${flowName}`, async (route) => {
+  await page.route((url) => url.pathname === `/attractor/api/flows/${flowName}`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue()
       return
@@ -168,12 +167,14 @@ edges:
 })
 
 test("editing one role-bearing node rewrites only that node's file", async ({ page }) => {
-  const projectPath = `/tmp/ui-smoke-project-roles-${Date.now()}`
+  const projectPath = mkdtempSync(path.join(os.tmpdir(), 'ui-smoke-project-roles-'))
   const flowName = `ui-smoke-roles-${Date.now()}`
-  mkdirSync(smokeRolesDir, { recursive: true })
-  writeFileSync(path.join(smokeRolesDir, "reviewer.md"), "---\ntype: Role\n---\n\nYou are a careful reviewer.\n")
+  const rolesDir = path.join(orgDir(projectPath), 'roles')
+  mkdirSync(rolesDir, { recursive: true })
+  writeFileSync(path.join(rolesDir, "reviewer.md"), "---\ntype: Role\n---\n\nYou are a careful reviewer.\n")
   const created = await page.request.post("/attractor/api/flows", {
     data: {
+      project_path: projectPath,
       name: flowName,
       content: `schema_version: "1"
 id: roles
@@ -199,7 +200,7 @@ edges:
     },
   })
   expect(created.ok(), await created.text()).toBe(true)
-  const before = flowFiles(flowName)
+  const before = flowFiles(projectPath, flowName)
   expect(before["second.md"]).toContain("role: reviewer")
 
   try {
@@ -217,7 +218,7 @@ edges:
     await promptField.fill("Review A twice.")
     expect((await saved).ok()).toBe(true)
 
-    const after = flowFiles(flowName)
+    const after = flowFiles(projectPath, flowName)
     expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort())
     expect(after["first.md"]).toContain("Review A twice.")
     expect(after["first.md"]).toContain("role: reviewer")
@@ -225,6 +226,6 @@ edges:
       expect(after[name], `${name} must stay byte-identical`).toBe(before[name])
     }
   } finally {
-    await page.request.delete(`/attractor/api/flows/${encodeURIComponent(flowName)}`)
+    rmSync(projectPath, { recursive: true, force: true })
   }
 })

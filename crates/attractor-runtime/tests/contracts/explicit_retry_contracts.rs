@@ -235,11 +235,13 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
             flow_definition_json: None,
             flow_files: None,
             flow_name: None,
+            project_path: None,
             working_directory: None,
             model: None,
             llm_provider: None,
             llm_profile: None,
             reasoning_effort: None,
+            execution_lock: None,
         })
         .unwrap();
     assert_eq!(started.run_id, "continued");

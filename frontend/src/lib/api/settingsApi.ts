@@ -114,7 +114,6 @@ export async function fetchWorkspaceSettingsValidated(): Promise<WorkspaceSettin
 
 export interface RuntimeSettings {
     runs_dir: string | null
-    flows_dir: string | null
     ui_dir: string | null
     project_roots: string[]
 }
@@ -126,7 +125,6 @@ export interface RuntimeSettingsView {
     repair_defaults?: RuntimeSettings
     effective: RuntimeSettings | null
     active_startup?: RuntimeSettings
-    locally_edited_flows?: string[]
     sources?: Record<string, string>
     validation_errors?: string[]
     restart_fields: string[]
@@ -137,7 +135,7 @@ function parseRuntimeSettings(value: unknown, endpoint: string): RuntimeSettings
     const path = (key: string) => record[key] == null ? null : expectString(record[key], endpoint, key)
     if (!Array.isArray(record.project_roots)) throw new ApiSchemaError(endpoint, 'Expected project roots.')
     return {
-        runs_dir: path('runs_dir'), flows_dir: path('flows_dir'), ui_dir: path('ui_dir'),
+        runs_dir: path('runs_dir'), ui_dir: path('ui_dir'),
         project_roots: record.project_roots.map((entry) => expectString(entry, endpoint, 'project_roots')),
     }
 }
@@ -151,7 +149,6 @@ function parseRuntimeView(payload: unknown, endpoint: string): RuntimeSettingsVi
         active_startup: record.active_startup == null ? undefined : parseRuntimeSettings(record.active_startup, endpoint), effective: record.effective == null ? null : parseRuntimeSettings(record.effective, endpoint),
         ...parseSettingsFeedback(record, endpoint),
         restart_fields: Array.isArray(record.restart_fields) ? record.restart_fields.map((value) => expectString(value, endpoint, 'restart_fields')) : [],
-        locally_edited_flows: Array.isArray(record.locally_edited_flows) ? record.locally_edited_flows.map((value) => expectString(value, endpoint, 'locally_edited_flows')) : [],
     }
 }
 

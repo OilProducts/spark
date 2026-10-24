@@ -3,6 +3,10 @@ type: Flow
 id: prove_refute
 title: Prove or Refute
 description: Attack a conjecture from both sides at once — a prover branch attempts a kernel-checked Lean proof while a refuter branch searches for machine-verified counterexamples — exchanging stuck lemmas and near-misses each round, with an arbiter that settles, repairs the statement, or continues, and honest budget-bounded synthesis into the dossier. Launch with execution_profile_id math-lab.
+execution_lock:
+  scope: project
+  key: math-research
+  conflict_policy: queue
 schema_version: '1'
 inputs:
 - key: context.request.conjecture

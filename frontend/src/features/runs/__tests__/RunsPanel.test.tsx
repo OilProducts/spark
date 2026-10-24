@@ -10,6 +10,7 @@ import {
   useRunJournalStore,
 } from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
+import { saveFlowContent } from '@/lib/flowPersistence'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -971,7 +972,7 @@ describe('RunsPanel', () => {
       if (url.includes('/workspace/api/projects/metadata')) {
         return jsonResponse({ branch: 'main' })
       }
-      if (url.endsWith('/attractor/api/flows')) {
+      if (url.split('?')[0].endsWith('/attractor/api/flows')) {
         return jsonResponse(['selected.dot'])
       }
       if (url.endsWith('/attractor/runs')) {
@@ -1089,6 +1090,7 @@ describe('RunsPanel', () => {
     expect(JSON.parse(String(continueCall?.[1]?.body))).toEqual({
       start_node: 'failed_node',
       flow_source_mode: 'snapshot',
+      project_path: '/tmp/project-one',
       working_directory: '/tmp/project-one/worktree',
       model: null,
     })
@@ -1108,6 +1110,9 @@ describe('RunsPanel', () => {
       const method = init?.method ?? 'GET'
       if (url.endsWith('/attractor/pipelines') && method === 'POST') {
         return jsonResponse({ status: 'started', pipeline_id: 'run-rerun-new' })
+      }
+      if (url.endsWith('/attractor/api/flows') && method === 'POST') {
+        return jsonResponse({ status: 'saved' })
       }
       if (url.endsWith('/attractor/preview') && method === 'POST') {
         // The installed flow dropped context.legacy, added a required input and changed a default.
@@ -1158,8 +1163,9 @@ describe('RunsPanel', () => {
           },
         })
       }
-      if (url.endsWith('/attractor/api/flows')) {
-        return jsonResponse(['selected.dot'])
+      if (url.split('?')[0].endsWith('/attractor/api/flows')) {
+        // Project two also has a flow project one lacks.
+        return jsonResponse(url.includes('project-two') ? ['selected.dot', 'two-only.dot'] : ['selected.dot'])
       }
       if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
@@ -1169,8 +1175,6 @@ describe('RunsPanel', () => {
           name: selectedRun.flow_name,
           title: selectedRun.flow_name,
           description: '',
-          launch_policy: null,
-          effective_launch_policy: 'disabled',
           execution_lock: null,
         })
       }
@@ -1337,6 +1341,43 @@ describe('RunsPanel', () => {
     })
   })
 
+  it.each(['selected.dot', 'two-only.dot'])('opens %s from the run project, not the active one', async (flowName) => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: flowName,
+      status: 'failed',
+      project_path: '/tmp/project-two',
+      working_directory: '/tmp/project-two',
+      current_node: 'task',
+    })
+    const fetchMock = installRerunFetchMock(selectedRun)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().registerProject('/tmp/project-two')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await user.click(await screen.findByTestId('run-history-row'))
+    await user.click(await screen.findByTestId('run-graph-toggle'))
+    const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
+    await waitFor(() => expect(openButton).toBeEnabled())
+    await user.click(openButton)
+
+    // The editor loads and saves the active project's copy, so opening switches to the run's project.
+    expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
+    expect(useStore.getState().activeFlow).toBe(flowName)
+    expect(useStore.getState().viewMode).toBe('editor')
+    expect(await saveFlowContent(flowName, 'schema_version: "1"\nid: edited\n')).toBe(true)
+    const saveCall = fetchMock.mock.calls.find(([input, init]) => (
+      resolveRequestUrl(input).endsWith('/attractor/api/flows') && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toMatchObject({ name: flowName, project_path: '/tmp/project-two' })
+  })
+
   it('disables the editor cross-link when the run flow is not in the catalog', async () => {
     const selectedRun = makeRun({
       run_id: 'run-to-rerun',
@@ -1363,7 +1404,7 @@ describe('RunsPanel', () => {
 
     const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
     await waitFor(() => expect(openButton).toBeDisabled())
-    expect(openButton).toHaveAttribute('title', "This run's flow is not installed in the catalog.")
+    expect(openButton).toHaveAttribute('title', "This run's flow is not in its project's flows.")
   })
 
   it('notes when a run predates launch-input recording', async () => {

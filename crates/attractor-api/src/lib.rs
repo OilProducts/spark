@@ -13,9 +13,8 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    flow_name_from_path, load_approved_flow, parse_flow_definition,
-    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, resolve_flow_ref,
-    resolve_flow_roles, save_flow_dir, FlowSourceError, TrustStore, FLOW_FILE,
+    flow_ref_name, load_flow, parse_flow_definition, resolve_flow_roles, write_flow_dir, FlowRoots,
+    FlowSourceError, BUNDLED_LAYER, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -99,7 +98,7 @@ fn execution_lock_registry() -> &'static ExecutionLockRegistry {
 }
 
 fn resolve_execution_lock(
-    spec: &ExecutionLockSpec,
+    spec: &attractor_core::FlowExecutionLock,
     working_directory: &str,
 ) -> std::result::Result<RunExecutionLock, String> {
     let scope = spec.scope.trim().to_lowercase();
@@ -237,11 +236,14 @@ pub struct PreviewRequest {
     pub flow_name: Option<String>,
     #[serde(default)]
     pub expand_children: bool,
+    /// The project whose org flows child previews resolve through.
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreviewServiceConfig {
-    pub flows_dir: Option<PathBuf>,
+    pub roots: Option<FlowRoots>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -316,6 +318,9 @@ impl RuntimeRouteResponse {
 pub struct SaveFlowRequest {
     pub name: String,
     pub content: String,
+    /// The project whose org repo the save writes into.
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -324,6 +329,9 @@ pub struct ContinuePipelineRequest {
     pub flow_source_mode: String,
     #[serde(default)]
     pub flow_name: Option<String>,
+    /// The project whose org flows `flow_name` resolves through.
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -342,6 +350,11 @@ pub struct PipelineStartRequest {
     pub run_id: Option<String>,
     #[serde(default = "default_working_directory")]
     pub working_directory: String,
+    /// The project whose org flows and roles resolve before the bundled
+    /// library; none means bundled only. Separate from `working_directory`,
+    /// since run worktrees do not contain the org.
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -368,23 +381,6 @@ pub struct PipelineStartRequest {
     /// state (the pre-detached behavior). Defaults to detached execution.
     #[serde(default)]
     pub wait: Option<bool>,
-    /// Optional execution lock. Conflicting runs (same resolved lock
-    /// identity) queue and execute one at a time.
-    #[serde(default)]
-    pub execution_lock: Option<ExecutionLockSpec>,
-}
-
-/// Caller-declared execution lock, typically sourced from the flow catalog.
-/// Scope "project" resolves identity from the repository containing the
-/// working directory, so linked git worktrees share one lock.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionLockSpec {
-    #[serde(default)]
-    pub scope: String,
-    #[serde(default)]
-    pub key: String,
-    #[serde(default)]
-    pub conflict_policy: String,
 }
 
 impl Default for PipelineStartRequest {
@@ -392,6 +388,7 @@ impl Default for PipelineStartRequest {
         Self {
             run_id: None,
             working_directory: default_working_directory(),
+            project_path: None,
             model: None,
             llm_provider: None,
             llm_profile: None,
@@ -404,7 +401,6 @@ impl Default for PipelineStartRequest {
             spec_id: None,
             plan_id: None,
             wait: None,
-            execution_lock: None,
         }
     }
 }
@@ -443,9 +439,11 @@ pub struct ResolvedContinueFlow {
     #[serde(default)]
     pub flow_definition_json: Option<String>,
     #[serde(default)]
-    pub flow_files: Option<std::collections::BTreeMap<String, String>>,
+    pub flow_files: Option<attractor_dsl::FlowManifest>,
     #[serde(default)]
     pub flow_name: Option<String>,
+    #[serde(default)]
+    pub execution_lock: Option<RunExecutionLock>,
 }
 
 #[derive(Debug, Clone)]
@@ -500,11 +498,13 @@ impl RuntimeControlService {
             flow_source: resolved_flow.flow_source,
             flow_definition_json: resolved_flow.flow_definition_json,
             flow_files: resolved_flow.flow_files,
+            project_path: request.project_path,
             working_directory: request.working_directory,
             model: request.model,
             llm_provider: request.llm_provider,
             llm_profile: request.llm_profile,
             reasoning_effort: request.reasoning_effort,
+            execution_lock: resolved_flow.execution_lock,
         };
         match self.controls.continue_from_snapshot(request) {
             Ok(started) => RuntimeRouteResponse::json(200, json!(started)),
@@ -1460,13 +1460,15 @@ impl AttractorApiService {
         }
     }
 
+    /// The roots flows resolve through for `project_path`: its org repo,
+    /// then the bundled library; none means bundled only.
+    pub fn flow_roots(&self, project_path: Option<&str>) -> FlowRoots {
+        flow_roots(&self.settings, project_path)
+    }
+
     pub fn preview(&self, req: PreviewRequest) -> RuntimeRouteResponse {
-        let response = preview_with_config(
-            req,
-            &PreviewServiceConfig {
-                flows_dir: Some(self.settings.flows_dir.clone()),
-            },
-        );
+        let roots = self.flow_roots(req.project_path.as_deref());
+        let response = preview_with_config(req, &PreviewServiceConfig { roots: Some(roots) });
         RuntimeRouteResponse {
             status_code: response.status_code,
             content_type: response.content_type,
@@ -1474,20 +1476,24 @@ impl AttractorApiService {
         }
     }
 
-    pub fn list_flows(&self) -> RuntimeRouteResponse {
-        match list_logical_flow_names(&self.settings.flows_dir) {
+    pub fn list_flows(&self, project_path: Option<&str>) -> RuntimeRouteResponse {
+        match self.flow_roots(project_path).list_flow_names() {
             Ok(names) => RuntimeRouteResponse::json(200, json!(names)),
             Err(error) => flow_source_error_response(error),
         }
     }
 
     /// The flow directory assembled into one YAML document, in its authored
-    /// form (roles referenced, not merged).
-    pub fn get_flow(&self, name: &str) -> RuntimeRouteResponse {
-        match read_typed_named_flow_source(&self.settings.flows_dir, name) {
-            Ok(source) => RuntimeRouteResponse::json(
+    /// form (roles referenced, not merged), and the layer it came from.
+    pub fn get_flow(&self, name: &str, project_path: Option<&str>) -> RuntimeRouteResponse {
+        let roots = self.flow_roots(project_path);
+        match roots.read_named_flow_source(name).and_then(|source| {
+            let layer = roots.resolve_flow(&source.name)?.layer;
+            Ok((source, layer))
+        }) {
+            Ok((source, layer)) => RuntimeRouteResponse::json(
                 200,
-                json!({"name": source.name, "content": source.content}),
+                json!({"name": source.name, "content": source.content, "layer": layer}),
             ),
             Err(error) => flow_source_error_response(error),
         }
@@ -1501,12 +1507,19 @@ impl AttractorApiService {
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
                 }
             };
-        let flow = match attractor_dsl::parse_editor_flow_definition(&req.content) {
+        let flow = match parse_flow_definition(&req.content) {
             Ok(flow) => flow,
             Err(error) => return flow_save_definition_error_response(error),
         };
+        let Some(project_path) = trimmed_option(req.project_path.as_deref()) else {
+            return RuntimeRouteResponse::json(
+                400,
+                json!({"detail": "project_path is required: saves write into a project's org repo."}),
+            );
+        };
+        let roots = self.flow_roots(Some(&project_path));
         // Validate the resolved form, so role-provided profiles are checked too.
-        let resolved = match resolve_flow_roles(&flow, &self.settings.roles_dir()) {
+        let resolved = match resolve_flow_roles(&flow, &roots) {
             Ok(resolved) => resolved,
             Err(error) => return flow_save_definition_error_response(error),
         };
@@ -1516,20 +1529,57 @@ impl AttractorApiService {
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(&self.settings, req.name, &flow)
+        save_flow_request(&roots, Path::new(&project_path), req.name, &flow)
     }
 
-    pub fn delete_flow(&self, name: &str) -> RuntimeRouteResponse {
-        let flow_path = match resolve_flow_path(&self.settings.flows_dir, name) {
-            Ok(path) => path,
+    /// Deletes a project's copy of a flow, which reverts it to the bundled
+    /// flow of the same name if there is one. Bundled flows are read-only.
+    pub fn delete_flow(&self, name: &str, project_path: Option<&str>) -> RuntimeRouteResponse {
+        let roots = self.flow_roots(project_path);
+        let resolved = match roots.resolve_flow(name) {
+            Ok(resolved) => resolved,
             Err(error) => return flow_source_error_response(error),
         };
-        if !flow_path.join(FLOW_FILE).is_file() {
-            return RuntimeRouteResponse::json(404, json!({"detail": "Flow not found."}));
+        if resolved.layer == BUNDLED_LAYER {
+            return RuntimeRouteResponse::json(
+                409,
+                json!({"detail": format!("{} is a bundled flow; bundled flows cannot be deleted.", resolved.name)}),
+            );
         }
-        match fs::remove_dir_all(&flow_path) {
+        let org = roots.org.clone().unwrap_or_default();
+        // Set the copy aside (inside .git, so git ignores it) until the
+        // deletion commits, and put it back if the commit fails.
+        // Nest it by name, so namespaced flows (`team/flow`) set aside too.
+        let aside = org.join(".git/spark-deleting").join(&resolved.name);
+        let _ = fs::remove_dir_all(&aside);
+        let result = aside
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::rename(&resolved.path, &aside))
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                commit_org_paths(
+                    &org,
+                    &[format!(
+                        ":(literal){}",
+                        resolved
+                            .path
+                            .strip_prefix(&org)
+                            .unwrap_or(&resolved.path)
+                            .to_string_lossy()
+                    )],
+                    &format!("Delete {} in the flow editor", resolved.name),
+                )
+                .inspect_err(|_| {
+                    let _ = fs::rename(&aside, &resolved.path);
+                })
+            })
+            .map(|()| {
+                let _ = fs::remove_dir_all(&aside);
+            });
+        match result {
             Ok(()) => RuntimeRouteResponse::json(200, json!({"status": "deleted"})),
-            Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
+            Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error})),
         }
     }
 
@@ -1557,22 +1607,12 @@ impl AttractorApiService {
     pub fn start_pipeline(&self, request: PipelineStartRequest) -> RuntimeRouteResponse {
         let store = self.observed_store();
         let wait_for_terminal = request.wait.unwrap_or(false);
-        // Runs start only from the live files on disk, through the trust gate.
+        // Runs start only from the files on disk, project org before bundled.
         let Some(flow_name) = trimmed_option(request.flow_name.as_deref()) else {
             return validation_error_response("flow_name is required.");
         };
-        let trust = TrustStore::for_settings(&self.settings);
-        let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name).and_then(|path| {
-            if path.join(FLOW_FILE).is_file() {
-                load_approved_flow(&trust, &path).map(|approved| (path, approved))
-            } else {
-                Err(FlowSourceError::new(
-                    404,
-                    format!("Flow not found: {flow_name}"),
-                ))
-            }
-        });
-        let (flow_path, approved) = match loaded {
+        let roots = self.flow_roots(request.project_path.as_deref());
+        let loaded = match load_flow(&roots, &flow_name) {
             Ok(loaded) => loaded,
             Err(error) if error.diagnostics().is_empty() => {
                 return RuntimeRouteResponse::json(
@@ -1585,10 +1625,10 @@ impl AttractorApiService {
             }
             Err(error) => return flow_definition_validation_response(error),
         };
-        let flow_source_dir = flow_path.parent().map(Path::to_path_buf);
-        let flow_files = approved.files;
+        let flow_name = loaded.name;
+        let flow_files = loaded.manifest;
         // The manifest hashes the files as read; the goal is injected after.
-        let mut flow = approved.flow;
+        let mut flow = loaded.flow;
         if let Some(goal) = trimmed_option(request.goal.as_deref()) {
             flow.goal = goal;
         }
@@ -1614,10 +1654,14 @@ impl AttractorApiService {
             Err(error) => return validation_error_response(error),
         };
         let working_directory = absolutize_path(&request.working_directory);
-        let execution_lock = match request
+        // The project the flows resolve through; a run's checkout may sit elsewhere.
+        let project_path = trimmed_option(request.project_path.as_deref())
+            .map(|path| absolutize_path(&path))
+            .unwrap_or_else(|| working_directory.clone());
+        let execution_lock = match flow
             .execution_lock
             .as_ref()
-            .map(|spec| resolve_execution_lock(spec, &working_directory))
+            .map(|spec| resolve_execution_lock(spec, &project_path))
             .transpose()
         {
             Ok(lock) => lock,
@@ -1739,9 +1783,9 @@ impl AttractorApiService {
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
         let mut record = RunRecord::new(&run_id, &working_directory);
-        record.flow_name = flow_name;
+        record.flow_name = flow_name.clone();
         record.working_directory = working_directory.clone();
-        record.project_path = working_directory.clone();
+        record.project_path = project_path;
         record.model = display_model.clone();
         record.provider = selected_provider.clone();
         record.llm_provider = selected_provider.clone();
@@ -1811,20 +1855,9 @@ impl AttractorApiService {
             "internal.runs_dir".to_string(),
             json!(self.settings.runs_dir.to_string_lossy().to_string()),
         );
-        if let Some(flow_source_dir) = flow_source_dir.as_ref() {
-            runtime_context.insert(
-                "internal.flow_source_dir".to_string(),
-                json!(flow_source_dir.to_string_lossy().to_string()),
-            );
-        }
-        // Subflow children pass the same trust gate, against the same files.
-        for (key, path) in [
-            ("internal.flows_dir", &trust.flows_dir),
-            ("internal.roles_dir", &trust.roles_dir),
-            ("internal.approvals_log", &trust.log_path),
-        ] {
-            runtime_context.insert(key.to_string(), json!(path.to_string_lossy().to_string()));
-        }
+        // Subflow children resolve by name through the same roots.
+        runtime_context.insert("internal.flow_name".to_string(), json!(flow_name.clone()));
+        flow_roots_context(&roots, &mut runtime_context);
 
         if let Err(error) = fs::create_dir_all(&working_directory) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
@@ -2246,7 +2279,7 @@ impl AttractorApiService {
                         &flow,
                         flow_name,
                         expand_children,
-                        Some(&self.settings.flows_dir),
+                        Some(&self.flow_roots(run_flow_project(&bundle).as_deref())),
                     ),
                 ),
             ),
@@ -2257,7 +2290,7 @@ impl AttractorApiService {
     pub fn continue_pipeline_route(
         &self,
         pipeline_id: &str,
-        request: ContinuePipelineRequest,
+        mut request: ContinuePipelineRequest,
     ) -> RuntimeRouteResponse {
         let store = RunStore::for_settings(&self.settings);
         let source = match store.read_run_bundle(pipeline_id) {
@@ -2274,12 +2307,12 @@ impl AttractorApiService {
         }
         let source_record = source.record.as_ref();
         let mode = request.flow_source_mode.trim().to_lowercase();
-        let (flow_name, flow_content, flow_files) = if mode == "snapshot" {
+        let (flow_name, flow_content, flow_files, project_path) = if mode == "snapshot" {
             let flow_name = source_record
                 .map(|record| record.flow_name.clone())
                 .unwrap_or_default();
             // Snapshot mode reuses the stored resolved source, so it keeps the
-            // source run's manifest and is not gated.
+            // source run's manifest.
             let flow_files = fs::read(
                 source
                     .paths
@@ -2290,7 +2323,7 @@ impl AttractorApiService {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             match store.read_graph_source(&source.paths) {
-                Ok(Some(source)) => (flow_name, source, flow_files),
+                Ok(Some(source)) => (flow_name, source, flow_files, None),
                 Ok(None) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2308,15 +2341,18 @@ impl AttractorApiService {
                     json!({"status": "validation_error", "error": "flow_name is required when flow_source_mode is flow_name."}),
                 );
             };
-            let trust = TrustStore::for_settings(&self.settings);
-            let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name)
-                .and_then(|path| load_approved_flow(&trust, &path))
-                .and_then(|approved| {
-                    attractor_dsl::flow_yaml(&approved.flow)
-                        .map(|content| (content, approved.files))
-                });
+            // The run's own resolution scope when the request names no project.
+            let project_path = request
+                .project_path
+                .clone()
+                .or_else(|| run_flow_project(&source));
+            let loaded = load_flow(&self.flow_roots(project_path.as_deref()), &flow_name).and_then(
+                |loaded| {
+                    attractor_dsl::flow_yaml(&loaded.flow).map(|content| (content, loaded.manifest))
+                },
+            );
             match loaded {
-                Ok((content, files)) => (flow_name, content, Some(files)),
+                Ok((content, files)) => (flow_name, content, Some(files), project_path),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2337,6 +2373,28 @@ impl AttractorApiService {
             Ok(flow) => flow,
             Err(error) => return flow_definition_validation_response(error),
         };
+        // Snapshot keeps the source's roots; flow_name moves to the resolved project.
+        request.project_path = project_path;
+        // The effective flow's lock, keyed to the new run's project as the runtime records it.
+        let lock_project = request
+            .project_path
+            .clone()
+            .or_else(|| source_record.map(|record| record.project_path.clone()))
+            .and_then(|path| trimmed_option(Some(&path)))
+            .or_else(|| trimmed_option(request.working_directory.as_deref()))
+            .or_else(|| {
+                source_record.and_then(|record| trimmed_option(Some(&record.working_directory)))
+            })
+            .unwrap_or_default();
+        let execution_lock = match flow
+            .execution_lock
+            .as_ref()
+            .map(|spec| resolve_execution_lock(spec, &absolutize_path(&lock_project)))
+            .transpose()
+        {
+            Ok(lock) => lock,
+            Err(error) => return validation_error_response(error),
+        };
         let response = RuntimeControlService::new(self.observed_store()).continue_pipeline(
             pipeline_id,
             request,
@@ -2346,6 +2404,7 @@ impl AttractorApiService {
                 flow_definition_json: Some(flow.to_canonical_json_string()),
                 flow_files,
                 flow_name: Some(flow_name),
+                execution_lock,
             },
         );
         self.execute_prepared_route_response(&response, flow);
@@ -2850,14 +2909,11 @@ pub fn preview(req: PreviewRequest) -> PreviewRouteResponse {
     preview_with_config(req, &PreviewServiceConfig::default())
 }
 
-pub fn preview_with_flows_dir(
-    req: PreviewRequest,
-    flows_dir: impl AsRef<Path>,
-) -> PreviewRouteResponse {
+pub fn preview_with_roots(req: PreviewRequest, roots: &FlowRoots) -> PreviewRouteResponse {
     preview_with_config(
         req,
         &PreviewServiceConfig {
-            flows_dir: Some(flows_dir.as_ref().to_path_buf()),
+            roots: Some(roots.clone()),
         },
     )
 }
@@ -2875,7 +2931,7 @@ pub fn preview_with_config(
                     &flow,
                     req.flow_name.as_deref(),
                     req.expand_children,
-                    config.flows_dir.as_deref(),
+                    config.roots.as_ref(),
                 ),
             ),
         ),
@@ -2883,24 +2939,39 @@ pub fn preview_with_config(
     }
 }
 
-pub fn list_logical_flow_names(
-    flows_dir: impl AsRef<Path>,
-) -> Result<Vec<String>, FlowSourceError> {
-    attractor_dsl::list_flow_names(flows_dir)
+/// The roots flows resolve through for `project_path` (none: bundled only).
+pub fn flow_roots(settings: &SparkSettings, project_path: Option<&str>) -> FlowRoots {
+    let project = project_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    FlowRoots::new(settings.bundled_dir(), project)
 }
 
-pub fn resolve_logical_flow_path(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<PathBuf, FlowSourceError> {
-    resolve_flow_path(flows_dir, flow_name)
+/// The project a run's flows resolve through. `record.project_path` is always
+/// set (it keys the run's storage), so only a run that started with an org
+/// root resolves through it; others stay bundled only.
+fn run_flow_project(bundle: &RunBundle) -> Option<String> {
+    let record = bundle.record.as_ref()?;
+    match &bundle.checkpoint {
+        Some(checkpoint) if !checkpoint.context.contains_key("internal.org_root") => None,
+        _ => Some(record.project_path.clone()),
+    }
 }
 
-pub fn read_named_flow_source(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<NamedFlowSource, FlowSourceError> {
-    read_typed_named_flow_source(flows_dir, flow_name)
+/// Run context for subflow resolution: the org root (when the run has a
+/// project) and the bundled root.
+fn flow_roots_context(roots: &FlowRoots, context: &mut ContextMap) {
+    if let Some(org) = roots.org.as_ref() {
+        context.insert(
+            "internal.org_root".to_string(),
+            json!(org.to_string_lossy().to_string()),
+        );
+    }
+    context.insert(
+        "internal.bundled_root".to_string(),
+        json!(roots.bundled.to_string_lossy().to_string()),
+    );
 }
 
 /// A preview response reporting a flow that failed to load.
@@ -2909,17 +2980,17 @@ pub fn flow_source_error_preview(error: &FlowSourceError) -> PreviewRouteRespons
 }
 
 pub fn preview_named_flow_source(
-    flows_dir: impl AsRef<Path>,
+    roots: &FlowRoots,
     flow_name: &str,
     flow_content: &str,
 ) -> PreviewRouteResponse {
-    preview_with_flows_dir(
+    preview_with_roots(
         PreviewRequest {
             flow_content: flow_content.to_string(),
             flow_name: Some(flow_name.to_string()),
-            expand_children: false,
+            ..PreviewRequest::default()
         },
-        flows_dir,
+        roots,
     )
 }
 
@@ -2972,7 +3043,9 @@ fn dispatch_attractor_route(
                 json!({"detail": format!("Invalid preview request JSON: {error}")}),
             ),
         },
-        ("GET", "/api/flows") => service.list_flows(),
+        ("GET", "/api/flows") => {
+            service.list_flows(query_string(&query, "project_path").as_deref())
+        }
         ("POST", "/api/flows") => match serde_json::from_str::<SaveFlowRequest>(body) {
             Ok(req) => service.save_flow(req),
             Err(error) => RuntimeRouteResponse::json(
@@ -2982,12 +3055,14 @@ fn dispatch_attractor_route(
         },
         ("GET", "/api/llm-profiles") => service.list_llm_profiles(),
         ("GET", "/api/execution-placement-settings") => service.get_execution_placement_settings(),
-        ("GET", path) if path.starts_with("/api/flows/") => {
-            service.get_flow(path.trim_start_matches("/api/flows/"))
-        }
-        ("DELETE", path) if path.starts_with("/api/flows/") => {
-            service.delete_flow(path.trim_start_matches("/api/flows/"))
-        }
+        ("GET", path) if path.starts_with("/api/flows/") => service.get_flow(
+            path.trim_start_matches("/api/flows/"),
+            query_string(&query, "project_path").as_deref(),
+        ),
+        ("DELETE", path) if path.starts_with("/api/flows/") => service.delete_flow(
+            path.trim_start_matches("/api/flows/"),
+            query_string(&query, "project_path").as_deref(),
+        ),
         _ if path.starts_with("/pipelines/") => {
             dispatch_pipeline_route(service, &method, &path, &query, body)
         }
@@ -3123,16 +3198,26 @@ fn dispatch_pipeline_route(
     }
 }
 
-/// Writes the changed files of a flow, stamped `generated` by the local
-/// human, and logs `human_save` for each.
+/// Writes the changed files of a flow into the project's org repo and
+/// commits them. Saving a bundled flow copies it into the org first.
 fn save_flow_request(
-    settings: &SparkSettings,
+    roots: &FlowRoots,
+    project: &Path,
     name: String,
     flow: &FlowDefinition,
 ) -> RuntimeRouteResponse {
-    let flows_dir = settings.flows_dir.as_path();
-    let flow_path = match resolve_flow_path(flows_dir, &name) {
-        Ok(path) => path,
+    let name = match attractor_dsl::normalize_flow_name(&name) {
+        Ok(name) => name,
+        Err(error) => return flow_source_error_response(error),
+    };
+    let org = match spark_common::project::ensure_org_repo(project) {
+        Ok(org) => org,
+        Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
+    };
+    let flows_dir = org.join("flows");
+    let flow_path = match roots.org_flow_path(&name) {
+        Ok(Some(path)) => path,
+        Ok(None) => unreachable!("roots for a project have an org"),
         Err(error) => return flow_source_error_response(error),
     };
     // A flow directory holds only its own files: never turn a folder of
@@ -3150,25 +3235,42 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    let by = spark_storage::settings::human_actor(&settings.config_dir);
-    let generated = attractor_core::Attribution {
-        by: by.clone(),
-        at: spark_common::approvals::timestamp_now(),
-    };
-    // Approvals are logged before the files are written: a failed log leaves
-    // the old files, so a retry of the same content still saves and logs it.
-    let trust = TrustStore::for_settings(settings);
-    if let Err(error) = save_flow_dir(&flow_path, flow, &generated, |files| {
-        trust
-            .record(spark_common::approvals::EVENT_HUMAN_SAVE, &by, files)
-            .map(|_| ())
-    }) {
+    if !flow_path.join(FLOW_FILE).is_file() {
+        if let Ok(Some(bundled)) = roots.find_flow(&name) {
+            if let Err(error) = copy_flow_files(&bundled.path, &flow_path) {
+                return RuntimeRouteResponse::json(500, json!({"detail": error}));
+            }
+        }
+    }
+    if let Err(error) = write_flow_dir(&flow_path, flow) {
         return flow_source_error_response(error);
     }
-    let name = match flow_name_from_path(flows_dir, &flow_path) {
-        Ok(name) => name,
-        Err(error) => return flow_source_error_response(error),
-    };
+    // Every flow file the editor owns (the directory's own `.md` files, which
+    // it writes, copies and deletes), so a retry records what a failed commit
+    // left behind; other files, and the reserved ones, are not the editor's.
+    let dir = flow_path
+        .strip_prefix(&org)
+        .unwrap_or(&flow_path)
+        .to_string_lossy()
+        .to_string();
+    let mut escaped = String::new();
+    for c in dir.chars() {
+        if "\\*?[".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    let mut pathspecs = vec![format!(":(glob){escaped}/*.md")];
+    pathspecs.extend(
+        attractor_dsl::RESERVED_FILES
+            .iter()
+            .map(|file| format!(":(exclude,literal){dir}/{file}")),
+    );
+    if let Err(error) =
+        commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
+    {
+        return RuntimeRouteResponse::json(500, json!({"detail": error}));
+    }
     RuntimeRouteResponse::json(
         200,
         json!({
@@ -3176,6 +3278,41 @@ fn save_flow_request(
             "name": name,
         }),
     )
+}
+
+/// Copies a flow directory's files into `target`.
+fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
+    let texts =
+        attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;
+    fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    texts.into_iter().try_for_each(|(file, text)| {
+        fs::write(target.join(file), text).map_err(|error| error.to_string())
+    })
+}
+
+/// Commits the changes under `pathspecs` (relative to the org repo), and
+/// nothing else, under the repo's normal git identity. A failed commit
+/// leaves them unstaged, so a retry records them.
+fn commit_org_paths(
+    org: &Path,
+    pathspecs: &[String],
+    message: &str,
+) -> std::result::Result<(), String> {
+    let run_git = spark_common::project::run_git;
+    let pathspecs = pathspecs.iter().map(String::as_str);
+    let with = |args: &[&'static str]| -> Vec<&str> {
+        args.iter().copied().chain(pathspecs.clone()).collect()
+    };
+    // Nothing to record, e.g. deleting a copy that was never committed.
+    if run_git(org, &with(&["status", "--porcelain", "--"]))?.is_empty() {
+        return Ok(());
+    }
+    run_git(org, &with(&["add", "-A", "--"]))?;
+    let mut commit = vec!["commit", "-q", "-m", message, "--"];
+    commit.extend(pathspecs.clone());
+    run_git(org, &commit).map(|_| ()).inspect_err(|_| {
+        let _ = run_git(org, &with(&["reset", "-q", "--"]));
+    })
 }
 
 fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
@@ -3473,12 +3610,12 @@ fn child_preview_map(
     flow: &FlowDefinition,
     parent_flow_name: Option<&str>,
     expand_children: bool,
-    flows_dir: Option<&Path>,
+    roots: Option<&FlowRoots>,
 ) -> Value {
     if !expand_children {
         return json!({});
     }
-    let Some(flows_dir) = flows_dir else {
+    let Some(roots) = roots else {
         return json!({});
     };
 
@@ -3487,16 +3624,10 @@ fn child_preview_map(
         let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() else {
             continue;
         };
-        let parent_dir = parent_flow_name
-            .and_then(|name| resolve_flow_path(flows_dir, name).ok())
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| flows_dir.to_path_buf());
-        let Some(Ok(child_name)) = resolve_flow_ref(&parent_dir, flow_ref)
-            .map(|path| flow_name_from_path(flows_dir, path))
-        else {
+        let Some(child_name) = flow_ref_name(parent_flow_name, flow_ref) else {
             continue;
         };
-        let Ok(source) = read_typed_named_flow_source(flows_dir, &child_name) else {
+        let Ok(source) = roots.read_named_flow_source(&child_name) else {
             continue;
         };
         previews.insert(

@@ -72,7 +72,7 @@ pub enum ExecutionStart {
         start_node: String,
         checkpoint: CheckpointState,
         /// The run manifest (`artifacts/flow/files.json`) of the new run.
-        flow_files: Option<BTreeMap<String, String>>,
+        flow_files: Option<attractor_dsl::FlowManifest>,
     },
 }
 
@@ -1064,7 +1064,7 @@ pub fn prepare_fresh_run(
     flow: &FlowDefinition,
     flow_source: Option<String>,
     flow_definition_json: Option<String>,
-    flow_files: Option<BTreeMap<String, String>>,
+    flow_files: Option<attractor_dsl::FlowManifest>,
     launch_context: &LaunchContext,
     runtime_context: &ContextMap,
 ) -> Result<crate::paths::RunRootPaths> {

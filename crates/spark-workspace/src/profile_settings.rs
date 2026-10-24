@@ -286,43 +286,53 @@ pub fn validate_profile_candidate(
             format!("trigger {}.action", trigger.id),
         );
     }
-    for name in attractor_api::list_logical_flow_names(&settings.flows_dir).map_err(|_| {
-        WorkspaceError::Validation("Cannot enumerate flows to check profile references.".into())
-    })? {
-        let source = attractor_dsl::load_resolved_flow_content(
-            &settings.flows_dir,
-            &settings.roles_dir(),
-            &name,
-        )
-        .map_err(|_| {
-            WorkspaceError::Validation(format!(
-                "Cannot read flow {name} to check profile references."
-            ))
+    // Bundled flows, then each registered project's flows with its org
+    // files layered over them.
+    let projects =
+        spark_storage::ProjectRegistry::new(settings.data_dir.clone()).list_project_records()?;
+    let scopes = std::iter::once((attractor_api::flow_roots(settings, None), String::new()))
+        .chain(projects.iter().map(|project| {
+            (
+                attractor_api::flow_roots(settings, Some(&project.project_path)),
+                format!(" in {}", project.project_path),
+            )
+        }))
+        .collect::<Vec<_>>();
+    for (roots, scope) in &scopes {
+        let names = roots.list_flow_names().map_err(|_| {
+            WorkspaceError::Validation("Cannot enumerate flows to check profile references.".into())
         })?;
-        let mut flow = attractor_dsl::parse_flow_definition(&source).map_err(|_| {
-            WorkspaceError::Validation(format!(
-                "Invalid flow {name}; repair it before deleting profiles."
-            ))
-        })?;
-        if !execution {
-            for node in flow.nodes.values_mut() {
-                let selection = node.execution.get_or_insert_with(Default::default);
-                let inputs = unified_llm_adapter::LlmResolutionInputs {
-                    node_model: selection.llm_model.clone(),
-                    node_profile: selection.llm_profile.clone(),
-                    fallback_model: flow.defaults.llm_model.clone(),
-                    fallback_profile: flow.defaults.llm_profile.clone(),
-                    ..Default::default()
-                };
-                // Resolve authored inheritance only; runtime captures are not references.
-                let context = Default::default();
-                selection.llm_profile =
-                    unified_llm_adapter::resolve_effective_llm_profile(&inputs, &context);
-                selection.llm_model =
-                    unified_llm_adapter::resolve_effective_llm_model(&inputs, &context);
+        for name in names {
+            let mut flow = roots
+                .read_named_flow_source(&name)
+                .and_then(|source| attractor_dsl::resolve_flow_roles(&source.flow, roots))
+                .map_err(|error| {
+                    WorkspaceError::Validation(if error.status_code() == 422 {
+                        format!("Invalid flow {name}{scope}; repair it before deleting profiles.")
+                    } else {
+                        format!("Cannot read flow {name}{scope} to check profile references.")
+                    })
+                })?;
+            if !execution {
+                for node in flow.nodes.values_mut() {
+                    let selection = node.execution.get_or_insert_with(Default::default);
+                    let inputs = unified_llm_adapter::LlmResolutionInputs {
+                        node_model: selection.llm_model.clone(),
+                        node_profile: selection.llm_profile.clone(),
+                        fallback_model: flow.defaults.llm_model.clone(),
+                        fallback_profile: flow.defaults.llm_profile.clone(),
+                        ..Default::default()
+                    };
+                    // Resolve authored inheritance only; runtime captures are not references.
+                    let context = Default::default();
+                    selection.llm_profile =
+                        unified_llm_adapter::resolve_effective_llm_profile(&inputs, &context);
+                    selection.llm_model =
+                        unified_llm_adapter::resolve_effective_llm_model(&inputs, &context);
+                }
             }
+            inspect(json!(flow), format!("flow {name}{scope}"));
         }
-        inspect(json!(flow), format!("flow {name}"));
     }
     if references.is_empty() {
         Ok(())

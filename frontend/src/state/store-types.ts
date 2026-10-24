@@ -52,6 +52,7 @@ export interface FlowDefinitionMetadata {
     id?: string
     title?: string
     description?: string
+    execution_lock?: string
     inputs?: string
     result_node?: string
     result_summary_enabled?: string

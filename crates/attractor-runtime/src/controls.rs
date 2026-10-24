@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use attractor_core::{CheckpointState, ContextMap, FlowDefinition, RunManifest};
 use serde::{Deserialize, Serialize};
@@ -77,7 +78,10 @@ pub struct ContinueRunRequest {
     pub flow_definition_json: Option<String>,
     /// The new run's manifest (`artifacts/flow/files.json`).
     #[serde(default)]
-    pub flow_files: Option<BTreeMap<String, String>>,
+    pub flow_files: Option<attractor_dsl::FlowManifest>,
+    /// The project the new run's flows resolve through; none keeps the source's.
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -88,6 +92,9 @@ pub struct ContinueRunRequest {
     pub llm_profile: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// The flow's lock resolved against the new run's project; none clears it.
+    #[serde(default)]
+    pub execution_lock: Option<attractor_core::RunExecutionLock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,6 +272,17 @@ impl RuntimeControls {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| source_record.flow_name.clone());
+        let project_path = request.project_path.as_deref().and_then(non_empty_string);
+        // Children resolve by name through the new run's flow and project.
+        context.insert("internal.flow_name".to_string(), json!(flow_name.clone()));
+        if let Some(project) = project_path.as_deref() {
+            context.insert(
+                "internal.org_root".to_string(),
+                json!(spark_common::project::org_dir(Path::new(project))
+                    .to_string_lossy()
+                    .to_string()),
+            );
+        }
         let mut record = source_record.clone();
         record.run_id = new_run_id.clone();
         record.flow_name = flow_name.clone();
@@ -273,6 +291,9 @@ impl RuntimeControls {
         record.outcome_reason_code = None;
         record.outcome_reason_message = None;
         record.working_directory = working_directory.clone();
+        if let Some(project) = project_path {
+            record.project_path = project;
+        }
         if record.project_path.trim().is_empty() {
             record.project_path = working_directory.clone();
         }
@@ -281,6 +302,7 @@ impl RuntimeControls {
         record.llm_provider = provider.clone();
         record.llm_profile = llm_profile.clone();
         record.reasoning_effort = reasoning_effort.clone();
+        record.execution_lock = request.execution_lock.clone();
         record.started_at = crate::events::utc_timestamp();
         record.ended_at = None;
         record.continued_from_run_id = Some(source_record.run_id.clone());

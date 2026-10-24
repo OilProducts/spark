@@ -1118,8 +1118,6 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     let conversation_id = "conversation-mid-turn";
     seed_conversation(&settings, &project_path, conversation_id);
     write_flow(&settings, "ops/live");
-    spark_storage::set_flow_launch_policy(&settings.config_dir, "ops/live", "agent_requestable")
-        .expect("launch policy");
 
     let mut commentary = content_completed(
         TurnStreamChannel::Assistant,
@@ -2453,11 +2451,10 @@ fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation
 
 fn write_flow(settings: &SparkSettings, name: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> String {
@@ -2542,7 +2539,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -3065,24 +3061,13 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
 }
 
 #[tokio::test]
-async fn settings_only_stream_receives_flow_policy_and_conversation_resource_changes() {
+async fn settings_only_stream_receives_conversation_resource_changes() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/settings");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).unwrap();
     seed_conversation(&settings, &project_path, "settings-live");
     let app = build_app(settings);
-    let flow = json_body(
-        request(
-            app.clone(),
-            "GET",
-            "/workspace/api/flows/ops/settings",
-            None,
-        )
-        .await,
-    )
-    .await;
     let conversation = json_body(
         request(
             app.clone(),
@@ -3105,18 +3090,11 @@ async fn settings_only_stream_receives_flow_policy_and_conversation_resource_cha
     .await;
     let mut stream = response.into_body().into_data_stream();
     assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
-    for (path, payload, section) in [
-        (
-            "/workspace/api/flows/ops/settings/launch-policy",
-            json!({"expected_revision":flow["revision"], "launch_policy":"trigger_only"}),
-            "flow_policy",
-        ),
-        (
-            "/workspace/api/conversations/settings-live/settings",
-            json!({"project_path":project_path, "expected_revision":conversation["settings"]["models"]["revision"], "model_settings":{"provider":"claude-code"}}),
-            "models",
-        ),
-    ] {
+    for (path, payload, section) in [(
+        "/workspace/api/conversations/settings-live/settings",
+        json!({"project_path":project_path, "expected_revision":conversation["settings"]["models"]["revision"], "model_settings":{"provider":"claude-code"}}),
+        "models",
+    )] {
         let saved = request(app.clone(), "PUT", path, Some(payload)).await;
         assert_eq!(saved.status(), StatusCode::OK, "{}", json_body(saved).await);
         let event = sse_data_json(&next_sse_chunk(&mut stream).await);

@@ -6,7 +6,7 @@ use std::thread;
 
 use serde::Serialize;
 use spark_common::settings::SparkSettings;
-use spark_server::{RuntimeInitializationOptions, SeedStarterFlowsResult};
+use spark_server::RuntimeInitializationOptions;
 use tokio::sync::oneshot;
 
 pub const LOCAL_BIND_HOST: &str = "127.0.0.1";
@@ -44,7 +44,6 @@ pub struct DesktopServerSettingsView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopBootstrap {
     pub settings: SparkSettings,
-    pub seeded_flows: SeedStarterFlowsResult,
     pub bind_host: String,
 }
 
@@ -216,10 +215,9 @@ pub fn bootstrap_desktop_runtime(
             paths.app_data_dir.display()
         )
     })?;
-    let (spark_settings, seeded_flows) = spark_server::initialize_runtime_with_options(
+    let spark_settings = spark_server::initialize_runtime_with_options(
         &RuntimeInitializationOptions {
             data_dir: Some(data_dir),
-            flows_dir: None,
             ui_dir: None,
             force: false,
         },
@@ -228,7 +226,6 @@ pub fn bootstrap_desktop_runtime(
     let bind_host = server_host_for_settings(settings).to_string();
     Ok(DesktopBootstrap {
         settings: spark_settings,
-        seeded_flows,
         bind_host,
     })
 }

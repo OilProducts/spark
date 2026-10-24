@@ -118,7 +118,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveErrorKind).toBeNull()
   })
 
-  it('sends YAML content without semantic-equivalence options', async () => {
+  it('sends YAML content and the active project without semantic-equivalence options', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'saved' }), {
         status: 200,
@@ -126,6 +126,7 @@ describe('Editor save state behavior', () => {
       }),
     )
     vi.stubGlobal('fetch', fetchMock)
+    useStore.setState({ activeProjectPath: '/tmp/project-a' })
 
     const saved = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
     expect(saved).toBe(true)
@@ -135,6 +136,7 @@ describe('Editor save state behavior', () => {
     expect(body).toEqual({
       name: 'demo.yaml',
       content: 'schema_version: "1"\nid: demo\n',
+      project_path: '/tmp/project-a',
     })
   })
 

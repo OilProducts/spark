@@ -1,17 +1,10 @@
 use std::path::Path;
 
-use attractor_core::{FlowDefinition, NodeKind};
-use attractor_dsl::FlowSourceError;
+use attractor_core::{FlowDefinition, FlowExecutionLock, NodeKind};
+use attractor_dsl::{FlowRoots, FlowSourceError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{
-    load_flow_catalog, normalize_execution_lock_value, normalize_launch_policy,
-    read_flow_launch_policy, set_flow_catalog_entry_revision, FlowCatalogEntry,
-    FlowExecutionLockConfig, ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES,
-    ALLOWED_EXECUTION_LOCK_SCOPES, ALLOWED_LAUNCH_POLICIES, LAUNCH_POLICY_AGENT_REQUESTABLE,
-    LAUNCH_POLICY_DISABLED,
-};
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
@@ -26,16 +19,13 @@ pub struct WorkspaceFlowSummary {
     pub name: String,
     pub title: String,
     pub description: String,
-    pub launch_policy: Option<String>,
-    pub effective_launch_policy: String,
-    pub execution_lock: Option<FlowExecutionLockConfig>,
+    pub execution_lock: Option<FlowExecutionLock>,
     pub graph_label: String,
     pub graph_goal: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceFlowDescription {
-    pub revision: String,
     #[serde(flatten)]
     pub summary: WorkspaceFlowSummary,
     pub node_count: usize,
@@ -49,33 +39,6 @@ pub struct WorkspaceFlowRaw {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceFlowLaunchPolicyUpdate {
-    pub expected_revision: String,
-    pub launch_policy: String,
-    #[serde(default)]
-    pub execution_lock: Option<Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceFlowLaunchPolicyResponse {
-    pub revision: String,
-    pub name: String,
-    pub launch_policy: Option<String>,
-    pub effective_launch_policy: String,
-    pub execution_lock: Option<FlowExecutionLockConfig>,
-    pub allowed_launch_policies: Vec<String>,
-    pub allowed_execution_lock_scopes: Vec<String>,
-    pub allowed_execution_lock_conflict_policies: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowSurface {
-    Human,
-    Agent,
-}
-
 #[derive(Debug, Clone)]
 pub struct WorkspaceFlowService {
     settings: SparkSettings,
@@ -86,23 +49,24 @@ impl WorkspaceFlowService {
         Self { settings }
     }
 
-    pub fn list_flows(&self, surface: Option<&str>) -> WorkspaceResult<Vec<WorkspaceFlowSummary>> {
-        let surface = validate_surface(surface)?;
-        let catalog = load_flow_catalog(&self.settings.config_dir)?;
-        let names = attractor_api::list_logical_flow_names(&self.settings.flows_dir)
+    fn roots(&self, project_path: Option<&str>) -> FlowRoots {
+        attractor_api::flow_roots(&self.settings, project_path)
+    }
+
+    pub fn list_flows(
+        &self,
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<Vec<WorkspaceFlowSummary>> {
+        let roots = self.roots(project_path);
+        let names = roots
+            .list_flow_names()
             .map_err(|error| flow_source_error(error, None))?;
         let mut flows = Vec::new();
         for name in names {
-            let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, &name)
+            let resolved = roots
+                .resolve_flow(&name)
                 .map_err(|error| flow_source_error(error, None))?;
-            let entry = catalog.get(&name).cloned().unwrap_or_default();
-            let summary = build_flow_summary(&path, &name, entry);
-            if surface == FlowSurface::Agent
-                && summary.effective_launch_policy != LAUNCH_POLICY_AGENT_REQUESTABLE
-            {
-                continue;
-            }
-            flows.push(summary);
+            flows.push(build_flow_summary(&resolved.path, &name));
         }
         Ok(flows)
     }
@@ -110,19 +74,11 @@ impl WorkspaceFlowService {
     pub fn describe_flow(
         &self,
         flow_name: &str,
-        surface: Option<&str>,
+        project_path: Option<&str>,
     ) -> WorkspaceResult<WorkspaceFlowDescription> {
-        let surface = validate_surface(surface)?;
-        let source = self.read_existing_flow(flow_name)?;
-        let state = read_flow_launch_policy(&self.settings.config_dir, &source.name)?;
-        let entry = FlowCatalogEntry {
-            launch_policy: state.launch_policy,
-            execution_lock: state.execution_lock,
-        };
-        let summary = build_flow_summary_from_definition(&source.name, &source.flow, entry);
-        filter_flow_surface_or_404(&summary, surface)?;
+        let source = self.read_existing_flow(flow_name, project_path)?;
+        let summary = build_flow_summary_from_definition(&source.name, &source.flow);
         Ok(WorkspaceFlowDescription {
-            revision: state.revision,
             node_count: source.flow.nodes.len(),
             edge_count: source.flow.edges.len(),
             features: WorkspaceFlowFeatures {
@@ -144,44 +100,38 @@ impl WorkspaceFlowService {
     pub fn raw_flow(
         &self,
         flow_name: &str,
-        surface: Option<&str>,
+        project_path: Option<&str>,
     ) -> WorkspaceResult<WorkspaceFlowRaw> {
-        let surface = validate_surface(surface)?;
-        let policy_state = read_flow_launch_policy(&self.settings.config_dir, flow_name)?;
-        if surface == FlowSurface::Agent
-            && policy_state.effective_launch_policy != LAUNCH_POLICY_AGENT_REQUESTABLE
-        {
-            return Err(WorkspaceError::NotFound(format!(
-                "Unknown flow: {}",
-                policy_state.name
-            )));
-        }
-        let source = self.read_existing_flow(flow_name)?;
+        let source = self.read_existing_flow(flow_name, project_path)?;
         Ok(WorkspaceFlowRaw {
             name: source.name,
             content: source.content,
         })
     }
 
-    pub fn validate_flow(&self, flow_name: &str) -> WorkspaceResult<Value> {
-        self.ensure_flow_exists(flow_name)?;
-        let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, flow_name)
-            .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        let name = attractor_dsl::flow_name_from_path(&self.settings.flows_dir, &path)
-            .map_err(|error| flow_source_error(error, Some(flow_name)))?;
+    pub fn validate_flow(
+        &self,
+        flow_name: &str,
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<Value> {
+        let roots = self.roots(project_path);
+        let resolved = match roots.resolve_flow(flow_name) {
+            Ok(resolved) => resolved,
+            Err(error) => return Err(flow_source_error(error, Some(flow_name))),
+        };
         // Referenced roles must resolve; the preview keeps the authored form.
-        let preview = match attractor_dsl::read_flow_dir(&path).and_then(|flow| {
-            attractor_dsl::resolve_flow_roles(&flow, &self.settings.roles_dir())?;
+        let preview = match attractor_dsl::read_flow_dir(&resolved.path).and_then(|flow| {
+            attractor_dsl::resolve_flow_roles(&flow, &roots)?;
             attractor_dsl::flow_yaml(&flow)
         }) {
             Ok(content) => {
-                attractor_api::preview_named_flow_source(&self.settings.flows_dir, &name, &content)
+                attractor_api::preview_named_flow_source(&roots, &resolved.name, &content)
             }
             Err(error) => attractor_api::flow_source_error_preview(&error),
         };
-        let path = path.canonicalize().unwrap_or(path);
+        let path = resolved.path.canonicalize().unwrap_or(resolved.path);
         let mut payload = Map::new();
-        payload.insert("name".to_string(), Value::String(name));
+        payload.insert("name".to_string(), Value::String(resolved.name));
         payload.insert(
             "path".to_string(),
             Value::String(path.to_string_lossy().into_owned()),
@@ -192,114 +142,45 @@ impl WorkspaceFlowService {
         Ok(Value::Object(payload))
     }
 
-    pub fn update_launch_policy(
+    pub fn ensure_flow_exists(
         &self,
         flow_name: &str,
-        request: WorkspaceFlowLaunchPolicyUpdate,
-    ) -> WorkspaceResult<WorkspaceFlowLaunchPolicyResponse> {
-        let normalized_launch_policy = normalize_launch_policy(&request.launch_policy)?;
-        let execution_lock = request
-            .execution_lock
-            .as_ref()
-            .map(normalize_execution_lock_value)
-            .transpose()?;
-        self.ensure_flow_exists(flow_name)?;
-        let policy_state = set_flow_catalog_entry_revision(
-            &self.settings.config_dir,
-            flow_name,
-            &normalized_launch_policy,
-            execution_lock,
-            &request.expected_revision,
-        )?;
-        Ok(WorkspaceFlowLaunchPolicyResponse {
-            revision: policy_state.revision,
-            name: policy_state.name,
-            launch_policy: policy_state.launch_policy,
-            effective_launch_policy: policy_state.effective_launch_policy,
-            execution_lock: policy_state.execution_lock,
-            allowed_launch_policies: ALLOWED_LAUNCH_POLICIES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
-            allowed_execution_lock_scopes: ALLOWED_EXECUTION_LOCK_SCOPES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
-            allowed_execution_lock_conflict_policies: ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
-        })
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<()> {
+        self.roots(project_path)
+            .resolve_flow(flow_name)
+            .map(|_| ())
+            .map_err(|error| flow_source_error(error, Some(flow_name)))
     }
 
     fn read_existing_flow(
         &self,
         flow_name: &str,
-    ) -> WorkspaceResult<attractor_api::NamedFlowSource> {
-        match attractor_api::read_named_flow_source(&self.settings.flows_dir, flow_name) {
-            Ok(source) => Ok(source),
-            Err(error) if error.status_code() == 404 => Err(WorkspaceError::NotFound(format!(
-                "Unknown flow: {flow_name}"
-            ))),
-            Err(error) => Err(flow_source_error(error, Some(flow_name))),
-        }
-    }
-
-    pub fn ensure_flow_exists(&self, flow_name: &str) -> WorkspaceResult<()> {
-        let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, flow_name)
-            .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        if path.join(attractor_dsl::FLOW_FILE).is_file() {
-            Ok(())
-        } else {
-            Err(WorkspaceError::NotFound(format!(
-                "Unknown flow: {flow_name}"
-            )))
-        }
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<attractor_dsl::NamedFlowSource> {
+        self.roots(project_path)
+            .read_named_flow_source(flow_name)
+            .map_err(|error| flow_source_error(error, Some(flow_name)))
     }
 }
 
-fn validate_surface(surface: Option<&str>) -> WorkspaceResult<FlowSurface> {
-    let surface = surface.unwrap_or("human").trim().to_ascii_lowercase();
-    match surface.as_str() {
-        "human" => Ok(FlowSurface::Human),
-        "agent" => Ok(FlowSurface::Agent),
-        _ => Err(WorkspaceError::Validation(
-            "Flow surface must be 'human' or 'agent'.".to_string(),
-        )),
-    }
-}
-
-fn filter_flow_surface_or_404(
-    flow: &WorkspaceFlowSummary,
-    surface: FlowSurface,
-) -> WorkspaceResult<()> {
-    if surface == FlowSurface::Agent
-        && flow.effective_launch_policy != LAUNCH_POLICY_AGENT_REQUESTABLE
-    {
-        return Err(WorkspaceError::NotFound(format!(
-            "Unknown flow: {}",
-            flow.name
-        )));
-    }
-    Ok(())
-}
-
-fn build_flow_summary(
-    flow_path: &Path,
-    flow_name: &str,
-    entry: FlowCatalogEntry,
-) -> WorkspaceFlowSummary {
-    let fallback_title = flow_stem(flow_name);
+fn build_flow_summary(flow_path: &Path, flow_name: &str) -> WorkspaceFlowSummary {
     match attractor_dsl::read_flow_dir(flow_path) {
-        Ok(flow) => build_flow_summary_from_definition(flow_name, &flow, entry),
-        Err(_) => fallback_summary(flow_name, fallback_title, entry),
+        Ok(flow) => build_flow_summary_from_definition(flow_name, &flow),
+        Err(_) => WorkspaceFlowSummary {
+            name: flow_name.to_string(),
+            title: flow_stem(flow_name),
+            description: String::new(),
+            execution_lock: None,
+            graph_label: String::new(),
+            graph_goal: String::new(),
+        },
     }
 }
 
 fn build_flow_summary_from_definition(
     flow_name: &str,
     flow: &FlowDefinition,
-    entry: FlowCatalogEntry,
 ) -> WorkspaceFlowSummary {
     let title = first_non_empty(&[flow.title.as_str()]).unwrap_or_else(|| flow_stem(flow_name));
     let description =
@@ -308,32 +189,9 @@ fn build_flow_summary_from_definition(
         name: flow_name.to_string(),
         title,
         description,
-        launch_policy: entry.launch_policy.clone(),
-        effective_launch_policy: entry
-            .launch_policy
-            .unwrap_or_else(|| LAUNCH_POLICY_DISABLED.to_string()),
-        execution_lock: entry.execution_lock,
+        execution_lock: flow.execution_lock.clone(),
         graph_label: flow.title.clone(),
         graph_goal: flow.goal.clone(),
-    }
-}
-
-fn fallback_summary(
-    flow_name: &str,
-    title: String,
-    entry: FlowCatalogEntry,
-) -> WorkspaceFlowSummary {
-    WorkspaceFlowSummary {
-        name: flow_name.to_string(),
-        title,
-        description: String::new(),
-        launch_policy: entry.launch_policy.clone(),
-        effective_launch_policy: entry
-            .launch_policy
-            .unwrap_or_else(|| LAUNCH_POLICY_DISABLED.to_string()),
-        execution_lock: entry.execution_lock,
-        graph_label: String::new(),
-        graph_goal: String::new(),
     }
 }
 

@@ -729,11 +729,10 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 
 fn write_flow_content(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn write_persisted_trigger_toml(
@@ -782,7 +781,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }

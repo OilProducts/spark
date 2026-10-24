@@ -227,13 +227,10 @@ impl WorkspaceTriggerService {
                 return Err(WorkspaceError::Validation("Mission is closed".into()));
             }
         } else if action.mode == "static" {
-            self.ensure_flow_exists(&action.flow_name)?;
+            WorkspaceFlowService::new(self.settings.clone())
+                .ensure_flow_exists(&action.flow_name, action.project_path.as_deref())?;
         }
         Ok(())
-    }
-
-    fn ensure_flow_exists(&self, flow_name: &str) -> WorkspaceResult<()> {
-        WorkspaceFlowService::new(self.settings.clone()).ensure_flow_exists(flow_name)
     }
 
     fn source_runtime(&self) -> TriggerSourceRuntime {

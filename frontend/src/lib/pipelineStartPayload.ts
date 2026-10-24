@@ -12,6 +12,7 @@ export interface RunInitiationFormState {
 }
 
 export interface PipelineStartPayload {
+    project_path: string
     working_directory: string
     model: string | null
     llm_provider?: string | null
@@ -29,6 +30,7 @@ export interface PipelineContinuePayload {
     start_node: string
     flow_source_mode: PipelineContinueFlowSourceMode
     flow_name?: string | null
+    project_path?: string
     working_directory?: string
     model?: string | null
     llm_provider?: string | null
@@ -90,6 +92,7 @@ export function buildPipelineStartPayload(
 ): PipelineStartPayload {
     const workingDirectory = resolveExecutionWorkingDirectory(form)
     const payload: PipelineStartPayload = {
+        project_path: normalizePath(form.projectPath),
         working_directory: workingDirectory,
         model: form.model,
         flow_name: form.flowSource,
@@ -134,6 +137,10 @@ export function buildPipelineContinuePayload(
         flow_name: continuation.flowSourceMode === 'flow_name' ? (continuation.flowName || null) : undefined,
         working_directory: resolveExecutionWorkingDirectory(form),
         model: form.model,
+    }
+    const projectPath = normalizePath(form.projectPath)
+    if (projectPath) {
+        payload.project_path = projectPath
     }
     const llmProfile = form.llmProfile?.trim()
     if (llmProfile) {

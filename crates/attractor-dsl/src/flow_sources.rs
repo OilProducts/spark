@@ -1,10 +1,12 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use attractor_core::{normalize_flow_ref, FlowDefinition, FlowDefinitionError, FlowDiagnostic};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::flow_files::{read_flow_dir, resolve_flow_roles, FLOW_FILE};
+use crate::flow_files::{read_flow_dir, FLOW_FILE};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{detail}")]
@@ -42,20 +44,6 @@ impl FlowSourceError {
     pub fn diagnostics(&self) -> &[FlowDiagnostic] {
         &self.diagnostics
     }
-}
-
-pub fn ensure_flows_dir(flows_dir: impl AsRef<Path>) -> Result<PathBuf, FlowSourceError> {
-    let flows_dir = flows_dir.as_ref();
-    std::fs::create_dir_all(flows_dir).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!(
-                "Unable to create flows directory {}: {source}",
-                flows_dir.display()
-            ),
-        )
-    })?;
-    Ok(flows_dir.to_path_buf())
 }
 
 pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
@@ -98,80 +86,184 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
     Ok(parts.join("/"))
 }
 
-pub fn resolve_flow_path(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<PathBuf, FlowSourceError> {
-    let normalized_name = normalize_flow_name(flow_name)?;
-    let root = ensure_flows_dir(flows_dir)?;
-    Ok(normalized_name
-        .split('/')
-        .fold(root, |path, part| path.join(part)))
+/// The ordered roots flows and roles resolve through: the project's org repo
+/// (`<project>/.spark/agent-org`), then the bundled library. Each root holds
+/// `flows/` and `roles/`; a project file replaces a bundled one of the same
+/// name. Reads never create anything, and a missing org means bundled only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRoots {
+    pub org: Option<PathBuf>,
+    pub bundled: PathBuf,
 }
 
-pub fn flow_name_from_path(
-    flows_dir: impl AsRef<Path>,
-    flow_path: impl AsRef<Path>,
-) -> Result<String, FlowSourceError> {
-    let root = ensure_flows_dir(flows_dir)?;
-    let relative = flow_path
-        .as_ref()
-        .strip_prefix(&root)
-        .map_err(|_| path_safety_error())?;
-    let parts = relative
+/// Where a resolved flow directory sits: `layer` is `org` or `bundled`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFlowDir {
+    pub layer: &'static str,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// A run's `artifacts/flow/files.json`: the SHA-256 of every file the flow
+/// used (`org/...` or `bundled/...`), the org repo state, and Spark's version.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowManifest {
+    pub files: BTreeMap<String, String>,
+    pub org: Option<OrgState>,
+    pub spark_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgState {
+    pub commit: Option<String>,
+    pub dirty: bool,
+}
+
+pub const ORG_LAYER: &str = "org";
+pub const BUNDLED_LAYER: &str = "bundled";
+
+impl FlowRoots {
+    /// The roots for `project` (none: bundled only) over `bundled`.
+    pub fn new(bundled: impl Into<PathBuf>, project: Option<&Path>) -> Self {
+        Self {
+            org: project.map(spark_common::project::org_dir),
+            bundled: bundled.into(),
+        }
+    }
+
+    fn layers(&self) -> impl Iterator<Item = (&'static str, &Path)> {
+        self.org
+            .as_deref()
+            .map(|org| (ORG_LAYER, org))
+            .into_iter()
+            .chain(std::iter::once((BUNDLED_LAYER, self.bundled.as_path())))
+    }
+
+    /// `<org>/flows/<name>`, where saves write; None without a project.
+    pub fn org_flow_path(&self, flow_name: &str) -> Result<Option<PathBuf>, FlowSourceError> {
+        let name = normalize_flow_name(flow_name)?;
+        Ok(self
+            .org
+            .as_deref()
+            .map(|org| join_name(&org.join("flows"), &name)))
+    }
+
+    /// The first flow directory named `flow_name`, if any root has one.
+    pub fn find_flow(&self, flow_name: &str) -> Result<Option<ResolvedFlowDir>, FlowSourceError> {
+        let name = normalize_flow_name(flow_name)?;
+        Ok(self.layers().find_map(|(layer, root)| {
+            let path = join_name(&root.join("flows"), &name);
+            path.join(FLOW_FILE).is_file().then(|| ResolvedFlowDir {
+                layer,
+                name: name.clone(),
+                path,
+            })
+        }))
+    }
+
+    /// Like [`Self::find_flow`], but a missing flow is a 404.
+    pub fn resolve_flow(&self, flow_name: &str) -> Result<ResolvedFlowDir, FlowSourceError> {
+        self.find_flow(flow_name)?.ok_or_else(|| {
+            FlowSourceError::new(404, format!("Flow not found: {}", flow_name.trim()))
+        })
+    }
+
+    /// Names of every flow in any root, each once, sorted.
+    pub fn list_flow_names(&self) -> Result<Vec<String>, FlowSourceError> {
+        let mut names = BTreeSet::new();
+        for (_, root) in self.layers() {
+            names.extend(list_flow_names(&root.join("flows"))?);
+        }
+        Ok(names.into_iter().collect())
+    }
+
+    /// The named flow in its authored form (roles referenced, not merged).
+    /// The named flow in its authored form (roles referenced, not merged).
+    pub fn read_named_flow_source(
+        &self,
+        flow_name: &str,
+    ) -> Result<NamedFlowSource, FlowSourceError> {
+        let resolved = self.resolve_flow(flow_name)?;
+        let flow = read_flow_dir(&resolved.path)?;
+        Ok(NamedFlowSource {
+            name: resolved.name,
+            path: resolved.path,
+            content: flow_yaml(&flow)?,
+            flow,
+        })
+    }
+
+    /// The first role file named `name`: its manifest key and text.
+    pub fn role_text(&self, name: &str) -> Result<(String, String), String> {
+        let file = format!("{name}.md");
+        let unknown =
+            || format!("unknown role '{name}' (no roles/{file} in the project or bundled library)");
+        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+            return Err(unknown());
+        }
+        self.layers()
+            .find_map(|(layer, root)| {
+                fs::read_to_string(root.join("roles").join(&file))
+                    .ok()
+                    .map(|text| (format!("{layer}/roles/{file}"), text))
+            })
+            .ok_or_else(unknown)
+    }
+
+    /// The org repo's HEAD and whether it has uncommitted changes; None when
+    /// there is no org repo.
+    pub fn org_state(&self) -> Option<OrgState> {
+        let org = self
+            .org
+            .as_deref()
+            .filter(|org| org.join(".git").exists())?;
+        let run_git = spark_common::project::run_git;
+        Some(OrgState {
+            commit: run_git(org, &["rev-parse", "HEAD"]).ok(),
+            dirty: run_git(org, &["status", "--porcelain"]).is_ok_and(|text| !text.is_empty()),
+        })
+    }
+}
+
+/// The flow name a subflow's `flow_ref` names: relative to the directory
+/// holding the parent flow (`parent_flow_name`). The name then resolves
+/// through the roots, so a project copy of a bundled child wins. None for a
+/// ref that is absolute or climbs out.
+pub fn flow_ref_name(parent_flow_name: Option<&str>, flow_ref: &str) -> Option<String> {
+    let flow_ref = normalize_flow_ref(flow_ref)?;
+    let parent_dir = parent_flow_name
+        .and_then(|name| normalize_flow_name(name).ok())
+        .and_then(|name| name.rsplit_once('/').map(|(dir, _)| dir.to_string()));
+    normalize_flow_name(&match parent_dir {
+        Some(dir) => format!("{dir}/{flow_ref}"),
+        None => flow_ref,
+    })
+    .ok()
+}
+
+fn join_name(root: &Path, name: &str) -> PathBuf {
+    name.split('/')
+        .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+fn flow_name_from_path(flows_dir: &Path, flow_path: &Path) -> Option<String> {
+    let parts = flow_path
+        .strip_prefix(flows_dir)
+        .ok()?
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => Some(part.to_string_lossy().to_string()),
             _ => None,
         })
         .collect::<Vec<_>>();
-    if parts.is_empty() {
-        return Err(FlowSourceError::new(
-            400,
-            "Flow name must reference a file.",
-        ));
-    }
-    Ok(parts.join("/"))
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-/// Reads a named flow directory in the resolved form runs execute: roles
-/// merged in, as one YAML document.
-pub fn load_resolved_flow_content(
-    flows_dir: impl AsRef<Path>,
-    roles_dir: &Path,
-    flow_name: &str,
-) -> Result<String, FlowSourceError> {
-    flow_yaml(&resolve_flow_roles(
-        &read_named_flow(flows_dir, flow_name)?,
-        roles_dir,
-    )?)
-}
-
-fn read_named_flow(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<FlowDefinition, FlowSourceError> {
-    let flow_path = resolve_flow_path(flows_dir, flow_name)?;
-    read_flow_dir(&flow_path).map_err(|error| {
-        if error.status_code() == 404 {
-            FlowSourceError::new(404, format!("Flow not found: {}", flow_name.trim()))
-        } else {
-            error
-        }
-    })
-}
-
-/// Resolves a subflow's `flow_ref` against `base_dir`: the directory that
-/// contains the parent flow's directory. Preview and runtime share this;
-/// None for a ref that is absolute or climbs out of `base_dir`.
-pub fn resolve_flow_ref(base_dir: &Path, flow_ref: &str) -> Option<PathBuf> {
-    normalize_flow_ref(flow_ref).map(|flow_ref| base_dir.join(flow_ref))
-}
-
-/// Names of every flow directory (one containing `flow.md`) under `flows_dir`.
-pub fn list_flow_names(flows_dir: impl AsRef<Path>) -> Result<Vec<String>, FlowSourceError> {
+/// Names of every flow directory (one containing `flow.md`) under
+/// `flows_dir`; a missing directory has none.
+fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
     fn collect(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
+        for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             let hidden = path
                 .file_name()
@@ -187,57 +279,29 @@ pub fn list_flow_names(flows_dir: impl AsRef<Path>) -> Result<Vec<String>, FlowS
         }
         Ok(())
     }
-    let flows_dir = ensure_flows_dir(flows_dir)?;
+    if !flows_dir.is_dir() {
+        return Ok(Vec::new());
+    }
     let mut paths = Vec::new();
-    collect(&flows_dir, &mut paths).map_err(|source| list_error(&flows_dir, source))?;
-    let mut names = paths
-        .into_iter()
-        .map(|path| flow_name_from_path(&flows_dir, path))
-        .collect::<Result<Vec<_>, _>>()?;
-    names.sort();
-    Ok(names)
-}
-
-fn list_error(flows_dir: &Path, source: std::io::Error) -> FlowSourceError {
-    FlowSourceError::new(
-        500,
-        format!(
-            "Unable to list flows directory {}: {source}",
-            flows_dir.display()
-        ),
-    )
+    collect(flows_dir, &mut paths).map_err(|source| {
+        FlowSourceError::new(
+            500,
+            format!(
+                "Unable to list flows directory {}: {source}",
+                flows_dir.display()
+            ),
+        )
+    })?;
+    Ok(paths
+        .iter()
+        .filter_map(|path| flow_name_from_path(flows_dir, path))
+        .collect())
 }
 
 pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
     let flow = FlowDefinition::from_yaml_str(source).map_err(flow_definition_error)?;
     validate_flow_definition(&flow).map_err(flow_definition_error)?;
     Ok(flow.normalize())
-}
-
-/// Parses editor content with every incoming `generated`/`verified` removed
-/// first, so malformed attribution is ignored rather than rejected; the
-/// save keeps the disk values and stamps its own.
-pub fn parse_editor_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
-    let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(source) else {
-        return parse_flow_definition(source);
-    };
-    let strip = |value: &mut serde_yaml::Value| {
-        if let Some(map) = value.as_mapping_mut() {
-            map.remove("generated");
-            map.remove("verified");
-        }
-    };
-    strip(&mut value);
-    if let Some(nodes) = value
-        .get_mut("nodes")
-        .and_then(|nodes| nodes.as_mapping_mut())
-    {
-        nodes.values_mut().for_each(strip);
-    }
-    match serde_yaml::to_string(&value) {
-        Ok(stripped) => parse_flow_definition(&stripped),
-        Err(_) => parse_flow_definition(source),
-    }
 }
 
 pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinitionError> {
@@ -271,22 +335,6 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
     Ok(())
 }
 
-pub fn read_named_flow_source(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<NamedFlowSource, FlowSourceError> {
-    let flows_dir = flows_dir.as_ref();
-    let path = resolve_flow_path(flows_dir, flow_name)?;
-    let flow = read_flow_dir(&path)?;
-    let name = flow_name_from_path(flows_dir, &path)?;
-    Ok(NamedFlowSource {
-        name,
-        path,
-        content: flow_yaml(&flow)?,
-        flow,
-    })
-}
-
 pub fn flow_yaml(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
     serde_yaml::to_string(flow).map_err(|source| {
         FlowSourceError::new(500, format!("Unable to serialize flow YAML: {source}"))
@@ -304,7 +352,10 @@ pub fn canonicalize_flow_yaml(source: &str) -> Result<String, FlowSourceError> {
 }
 
 fn path_safety_error() -> FlowSourceError {
-    FlowSourceError::new(400, "Flow name must be a relative path inside flows_dir.")
+    FlowSourceError::new(
+        400,
+        "Flow name must be a relative path inside the flows directory.",
+    )
 }
 
 fn flow_definition_error(error: FlowDefinitionError) -> FlowSourceError {

@@ -6,7 +6,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         ensureScreenshotDir()
         await page.setViewportSize({ width, height: 900 })
         await stubProjectMetadata(page)
-        const flow = await createFlowForSmokeTest(page, 'model-picker')
+        const flow = await createFlowForSmokeTest(page, 'model-picker', '/tmp/model-picker-smoke')
         await gotoWithRegisteredProject(page, '/tmp/model-picker-smoke')
         await page.route('**/workspace/api/projects/chat-models**', route => route.fulfill({ json: {
             providers: { codex: { status: 'available', error: null } },

@@ -47,10 +47,10 @@ pub use context_contracts::{
 };
 pub use error::{AttractorCoreError, Result};
 pub use flow_definition::{
-    deserialize_verified, flow_definition_schema_value, normalize_flow_ref, Attribution,
-    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
-    FlowInput, FlowMetadata, FlowNode, HumanDecision, ManagerLoopConfig, NodeConfig, NodeContracts,
-    NodeKind, NodeRuntimeConfig, RecoveryPolicy, RetryConfig, TrustStatus, UiConfig,
+    flow_definition_schema_value, normalize_flow_ref, ExecutionConfig, FlowDefaults,
+    FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge, FlowExecutionLock, FlowInput,
+    FlowMetadata, FlowNode, HumanDecision, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
+    NodeRuntimeConfig, RecoveryPolicy, RetryConfig, UiConfig,
 };
 pub use graph::{
     attr_bool, attr_i64, attr_string, attr_text, dot_value_text, dot_value_to_json,

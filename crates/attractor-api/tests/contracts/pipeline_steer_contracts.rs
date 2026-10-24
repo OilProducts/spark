@@ -93,7 +93,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("home/projects"),
         attractor_dir: root.join("home/attractor"),
         runs_dir: root.join("home/runs"),
-        flows_dir: root.join("home/flows"),
         ui_dir: None,
         project_roots: vec![],
     };
@@ -412,15 +411,13 @@ fn steer_targets_agent_node_of_child_run() {
     }
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    fs::create_dir_all(&settings.flows_dir).unwrap();
+    fs::create_dir_all(&settings.bundled_dir().join("flows")).unwrap();
     write_flow(
-        &settings,
-        &settings.flows_dir.join("child"),
+        &settings.bundled_dir().join("flows").join("child"),
         &agent_flow("steer_child"),
     );
     write_flow(
-        &settings,
-        &settings.flows_dir.join("parent"),
+        &settings.bundled_dir().join("flows").join("parent"),
         r#"schema_version: "1"
 id: steer_parent
 nodes:
@@ -808,11 +805,10 @@ edges:
     assert_eq!(events[1]["target_node_id"], "left");
 }
 
-fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
+fn write_flow(dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(settings, dir);
 }

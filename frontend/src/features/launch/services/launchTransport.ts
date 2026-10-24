@@ -1,5 +1,5 @@
 import { fetchFlowListValidated } from '@/lib/attractorClient'
 
-export async function loadFlowCatalog(): Promise<string[]> {
-    return fetchFlowListValidated()
+export async function loadFlowCatalog(projectPath: string | null): Promise<string[]> {
+    return fetchFlowListValidated(projectPath)
 }

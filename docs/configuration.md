@@ -50,9 +50,9 @@ Native Desktop saves publish through the same settings live stream as HTTP saves
 
 The existing `PUT /workspace/api/conversations/<id>/settings` adapter also requires `expected_revision` for model and `chat_mode` changes, including the legacy `provider`, `llm_profile`, `model`, and `reasoning_effort` selectors. Missing revisions return HTTP 400; stale revisions return HTTP 409. Read the revision from the conversation response's `settings.models.revision`. Mode-only settings updates use the same revision checks; stale settings mutations are rejected under the conversation commit lock. Operational transcript/event mutations retain rebasing.
 
-Flow launch policy remains in `flow-catalog.toml`. Read a flow's detail response to obtain the catalog `revision`, then include `expected_revision` when calling `PUT /workspace/api/flows/<name>/launch-policy`. The dedicated graph controls use explicit Save/Discard. Catalog writes use the shared atomic document lock and preserve unrelated fields. Policy updates publish `settings.changed`; dirty editors retain drafts and report external changes.
+Flows are not settings. They resolve through a project's org repo (`<project>/.spark/agent-org`, a git repository) and then the bundled library in `$SPARK_HOME/bundled`, which every start rewrites; there is no flows directory setting. Every flow can be launched, and a flow's execution lock is `execution_lock` in its own `flow.md`.
 
-The settings sections and dedicated profile/flow-policy editors provide explicit Save/Discard. Remote-access changes retain Desktop's native confirmation.
+The settings sections and dedicated profile editors provide explicit Save/Discard. Remote-access changes retain Desktop's native confirmation.
 
 ## Migration boundaries
 

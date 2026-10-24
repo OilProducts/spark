@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use attractor_api::{AttractorApiService, ExecutionLockSpec, PipelineStartRequest};
+use attractor_api::{AttractorApiService, PipelineStartRequest};
 use attractor_core::RunExecutionLock;
 use attractor_runtime::RunStore;
 use serde_json::json;
@@ -23,7 +23,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -87,12 +86,9 @@ fn wait_for_release_file_command(marker: &str) -> String {
     )
 }
 
-fn project_lock(key: &str) -> ExecutionLockSpec {
-    ExecutionLockSpec {
-        scope: "project".to_string(),
-        key: key.to_string(),
-        conflict_policy: "queue".to_string(),
-    }
+/// `flow.md` frontmatter declaring a project-scope lock.
+fn project_lock(key: &str) -> String {
+    format!("execution_lock: {{ scope: project, key: {key}, conflict_policy: queue }}\n")
 }
 
 fn start_locked_run(
@@ -101,13 +97,16 @@ fn start_locked_run(
     run_id: &str,
     working_directory: &Path,
     flow: String,
-    lock: Option<ExecutionLockSpec>,
+    lock: Option<String>,
 ) {
+    // The lock is read from the flow's own flow.md.
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some(run_id.to_string()),
-        flow_name: Some(crate::install_flow(settings, flow)),
+        flow_name: Some(crate::install_flow(
+            settings,
+            flow + &lock.unwrap_or_default(),
+        )),
         working_directory: working_directory.to_string_lossy().to_string(),
-        execution_lock: lock,
         ..PipelineStartRequest::default()
     });
     assert_eq!(response.status_code, 200, "{:?}", response.body);
@@ -392,24 +391,28 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
 }
 
 #[test]
-fn unsupported_lock_scope_is_a_validation_error() {
+fn unsupported_lock_scope_in_flow_md_is_a_validation_error() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let name = crate::install_flow(
+        &settings,
+        tool_flow("bad", "printf done") + &project_lock("integration"),
+    );
+    let flow_md = settings
+        .bundled_dir()
+        .join("flows")
+        .join(&name)
+        .join("flow.md");
+    let text = fs::read_to_string(&flow_md).expect("flow.md");
+    assert!(text.contains("execution_lock:"), "{text}");
+    fs::write(&flow_md, text.replace("scope: project", "scope: global")).expect("edit flow.md");
     let service = AttractorApiService::new(settings.clone());
 
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-bad-scope".to_string()),
-        flow_name: Some(crate::install_flow(
-            &settings,
-            tool_flow("bad", "printf done"),
-        )),
+        flow_name: Some(name),
         working_directory: temp.path().join("repo").to_string_lossy().to_string(),
-        execution_lock: Some(ExecutionLockSpec {
-            scope: "global".to_string(),
-            key: "integration".to_string(),
-            conflict_policy: "queue".to_string(),
-        }),
         ..PipelineStartRequest::default()
     });
     assert_eq!(response.body["status"], json!("validation_error"));
@@ -417,7 +420,7 @@ fn unsupported_lock_scope_is_a_validation_error() {
         response.body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("scope"),
+            .contains("execution_lock.scope"),
         "{:?}",
         response.body
     );
@@ -432,8 +435,7 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     init_git_repo(&project);
     // The parent installs as tests/parent; its flow_ref resolves beside it.
     write_flow(
-        &settings,
-        &settings.flows_dir.join("tests/child"),
+        &settings.bundled_dir().join("flows").join("tests/child"),
         &tool_flow(
             "child",
             &format!(
@@ -536,11 +538,200 @@ edges:
     });
 }
 
-fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
+fn write_flow(dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(settings, dir);
+}
+
+#[test]
+fn launches_naming_one_project_share_lock_identity_across_checkouts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project = temp.path().join("project");
+    let checkouts = [
+        temp.path().join("checkout-0"),
+        temp.path().join("checkout-1"),
+    ];
+    for dir in std::iter::once(&project).chain(&checkouts) {
+        fs::create_dir_all(dir).expect("create dir");
+    }
+    let service = AttractorApiService::new(settings.clone());
+    let start = |run_id: &str, checkout: &Path, flow: String| {
+        let response = service.start_pipeline(PipelineStartRequest {
+            run_id: Some(run_id.to_string()),
+            flow_name: Some(crate::install_flow(
+                &settings,
+                flow + &project_lock("shared"),
+            )),
+            working_directory: checkout.to_string_lossy().to_string(),
+            project_path: Some(project.to_string_lossy().to_string()),
+            ..PipelineStartRequest::default()
+        });
+        assert_eq!(
+            response.body["status"],
+            json!("started"),
+            "{:?}",
+            response.body
+        );
+    };
+
+    start(
+        "run-proj-a",
+        &checkouts[0],
+        tool_flow("holder", &wait_for_release_file_command("release-proj")),
+    );
+    wait_until("first checkout holds the lock", || {
+        read_lock(&settings, "run-proj-a").is_some_and(|lock| lock.state == "holding")
+    });
+    start(
+        "run-proj-b",
+        &checkouts[1],
+        tool_flow("waiter", "printf done"),
+    );
+    wait_until("second checkout queues behind the first", || {
+        read_lock(&settings, "run-proj-b").is_some_and(|lock| lock.state == "queued")
+    });
+    assert_eq!(
+        read_lock(&settings, "run-proj-a").expect("lock a").identity,
+        read_lock(&settings, "run-proj-b").expect("lock b").identity,
+        "launches naming one project must resolve to one lock identity"
+    );
+
+    fs::write(checkouts[0].join("release-proj"), "go").expect("release holder");
+    wait_until("both runs complete after release", || {
+        read_status(&settings, "run-proj-a") == "completed"
+            && read_status(&settings, "run-proj-b") == "completed"
+    });
+}
+
+#[test]
+fn continuations_resolve_the_effective_flows_lock_against_their_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project_a = temp.path().join("cont-a");
+    let project_b = temp.path().join("cont-b");
+    init_git_repo(&project_a);
+    init_git_repo(&project_b);
+    let service = AttractorApiService::new(settings.clone());
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+    let holder = crate::install_flow(
+        &settings,
+        tool_flow(
+            "cont-holder",
+            &wait_for_release_file_command("release-cont"),
+        ) + &project_lock("integration"),
+    );
+    let waiter = crate::install_flow(
+        &settings,
+        tool_flow("cont-waiter", "printf done") + &project_lock("integration"),
+    );
+    let unlocked = crate::install_flow(&settings, tool_flow("cont-free", "printf done"));
+    let continue_run = |source: &str, mode: &str, flow: Option<&str>, project: Option<&Path>| {
+        let response = service.continue_pipeline_route(
+            source,
+            attractor_api::ContinuePipelineRequest {
+                start_node: "work".to_string(),
+                flow_source_mode: mode.to_string(),
+                flow_name: flow.map(str::to_string),
+                project_path: project.map(path),
+                working_directory: project.map(path),
+                ..Default::default()
+            },
+        );
+        assert_eq!(response.body["status"], "started", "{}", response.body);
+        response.body["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string()
+    };
+
+    let started = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("cont-src".to_string()),
+        flow_name: Some(unlocked.clone()),
+        working_directory: path(&project_a),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+    assert_eq!(read_lock(&settings, "cont-src"), None);
+
+    // Unlocked to locked: the continuation takes the flow's lock in its project.
+    let locked = continue_run("cont-src", "flow_name", Some(&holder), None);
+    wait_until("continuation holds the newly declared lock", || {
+        read_lock(&settings, &locked).is_some_and(|lock| lock.state == "holding")
+    });
+    start_locked_run(
+        &settings,
+        &service,
+        "cont-probe-a",
+        &project_a,
+        tool_flow("cont-probe", "printf done"),
+        Some(project_lock("integration")),
+    );
+    wait_until("a fresh launch in the project queues behind it", || {
+        read_status(&settings, "cont-probe-a") == "queued"
+    });
+    let identity_a = read_lock(&settings, &locked).expect("lock").identity;
+    assert_eq!(
+        read_lock(&settings, "cont-probe-a")
+            .expect("probe")
+            .identity,
+        identity_a
+    );
+    fs::write(project_a.join("release-cont"), "go").expect("release");
+    wait_until("continuation and probe complete", || {
+        read_status(&settings, &locked) == "completed"
+            && read_status(&settings, "cont-probe-a") == "completed"
+    });
+
+    // Snapshot keeps the source's flow and project, and so its lock identity.
+    let snapshot = continue_run(&locked, "snapshot", None, None);
+    wait_until("snapshot continuation completes", || {
+        read_status(&settings, &snapshot) == "completed"
+    });
+    assert_eq!(
+        read_lock(&settings, &snapshot).expect("lock").identity,
+        identity_a
+    );
+
+    // Locked to unlocked: the inherited lock is cleared.
+    let freed = continue_run(&locked, "flow_name", Some(&unlocked), None);
+    wait_until("unlocked continuation completes", || {
+        read_status(&settings, &freed) == "completed"
+    });
+    assert_eq!(read_lock(&settings, &freed), None);
+
+    // Another project: the lock moves to that project and queues there.
+    start_locked_run(
+        &settings,
+        &service,
+        "cont-holder-b",
+        &project_b,
+        tool_flow("cont-holder-b", &wait_for_release_file_command("release-b")),
+        Some(project_lock("integration")),
+    );
+    wait_until("project B holder takes its lock", || {
+        read_lock(&settings, "cont-holder-b").is_some_and(|lock| lock.state == "holding")
+    });
+    let moved = continue_run(&locked, "flow_name", Some(&waiter), Some(&project_b));
+    wait_until("moved continuation queues in project B", || {
+        read_status(&settings, &moved) == "queued"
+    });
+    let identity_b = read_lock(&settings, "cont-holder-b")
+        .expect("lock")
+        .identity;
+    assert_ne!(identity_a, identity_b);
+    assert_eq!(
+        read_lock(&settings, &moved).expect("lock").identity,
+        identity_b
+    );
+    fs::write(project_b.join("release-b"), "go").expect("release b");
+    wait_until("moved continuation runs after project B releases", || {
+        read_status(&settings, &moved) == "completed"
+    });
 }

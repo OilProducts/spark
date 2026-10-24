@@ -136,18 +136,21 @@ describe('project scope store behavior', () => {
     expect(duplicateResult.error).toBe('Project already registered: /tmp/demo/project')
   })
 
-  it('keeps the run and flow selections when the chat project changes', () => {
+  it('keeps the run selection but clears the open flow when the chat project changes', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
 
     store.setRunsSelectedRunId('run-a')
     store.setActiveFlow('preferred.dot')
+    store.setActiveProjectPath('/tmp/project-a')
+    expect(useStore.getState().activeFlow).toBe('preferred.dot')
     store.setActiveProjectPath('/tmp/project-b')
 
+    // Flows are per project: the same name in project-b is a different flow.
     const next = useStore.getState()
     expect(selectSelectedRunId(next)).toBe('run-a')
-    expect(next.activeFlow).toBe('preferred.dot')
+    expect(next.activeFlow).toBeNull()
   })
 
   it('shows the chat, not a project page, when a chat project is chosen', () => {

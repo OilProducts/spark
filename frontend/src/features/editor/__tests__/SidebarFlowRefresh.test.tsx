@@ -53,6 +53,7 @@ const createDeferred = <T,>() => {
 
 const resetSidebarState = (activeFlow: string | null = null) => {
     useStore.setState({
+        activeProjectPath: '/tmp/sidebar-project',
         activeFlow,
         executionFlow: null,
         selectedNodeId: null,
@@ -217,12 +218,27 @@ describe('Editor sidebar manual refresh', () => {
         await user.click(await screen.findByTestId('shared-dialog-confirm'))
 
         await waitFor(() => {
-            expect(deleteFlowMock).toHaveBeenCalledWith('beta.dot')
+            expect(deleteFlowMock).toHaveBeenCalledWith('beta.dot', '/tmp/sidebar-project')
             expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
             expect(useStore.getState().activeFlow).toBeNull()
         })
 
         expect(screen.queryByRole('button', { name: 'beta.dot' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'alpha.dot' })).toBeVisible()
+    })
+
+    it('lists the active project flows and reloads them when the project changes', async () => {
+        fetchFlowListMock.mockResolvedValueOnce(['alpha.dot']).mockResolvedValueOnce(['gamma.dot'])
+
+        renderWithFlowProvider(<SidebarHarness />)
+
+        await waitFor(() => {
+            expect(fetchFlowListMock).toHaveBeenCalledWith('/tmp/sidebar-project')
+        })
+        useStore.setState({ activeProjectPath: '/tmp/other-project' })
+        await waitFor(() => {
+            expect(fetchFlowListMock).toHaveBeenLastCalledWith('/tmp/other-project')
+            expect(screen.getByRole('button', { name: 'gamma.dot' })).toBeVisible()
+        })
     })
 })

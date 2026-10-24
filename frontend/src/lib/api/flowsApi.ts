@@ -8,7 +8,6 @@ import {
 } from './shared'
 import { fetchWorkspaceJsonValidated, fetchWorkspaceTextValidated } from './apiClient'
 
-export type FlowLaunchPolicy = 'agent_requestable' | 'trigger_only' | 'disabled'
 export type FlowExecutionLockScope = 'project'
 export type FlowExecutionLockConflictPolicy = 'queue'
 
@@ -19,12 +18,9 @@ export interface FlowExecutionLockResponse {
 }
 
 export interface WorkspaceFlowResponse {
-    revision?: string
     name: string
     title: string
     description: string
-    launch_policy: FlowLaunchPolicy | null
-    effective_launch_policy: FlowLaunchPolicy
     execution_lock?: FlowExecutionLockResponse | null
     graph_label?: string | null
     graph_goal?: string | null
@@ -34,36 +30,6 @@ export interface WorkspaceFlowResponse {
         has_human_gate: boolean
         has_manager_loop: boolean
     }
-}
-
-export interface WorkspaceFlowLaunchPolicyResponse {
-    revision: string
-    name: string
-    launch_policy: FlowLaunchPolicy | null
-    effective_launch_policy: FlowLaunchPolicy
-    execution_lock?: FlowExecutionLockResponse | null
-    allowed_launch_policies?: FlowLaunchPolicy[]
-    allowed_execution_lock_scopes?: FlowExecutionLockScope[]
-    allowed_execution_lock_conflict_policies?: FlowExecutionLockConflictPolicy[]
-}
-
-function parseFlowLaunchPolicy(value: unknown, endpoint: string, fieldName: string, allowNull = false): FlowLaunchPolicy | null {
-    if (value === null) {
-        if (allowNull) {
-            return null
-        }
-        throw new ApiSchemaError(endpoint, `Expected "${fieldName}" to be a flow launch policy string.`)
-    }
-    if (typeof value !== 'string') {
-        throw new ApiSchemaError(endpoint, `Expected "${fieldName}" to be a flow launch policy string.`)
-    }
-    if (value === 'agent_requestable' || value === 'trigger_only' || value === 'disabled') {
-        return value
-    }
-    throw new ApiSchemaError(
-        endpoint,
-        `Expected "${fieldName}" to be agent_requestable|trigger_only|disabled; got "${value}".`,
-    )
 }
 
 function parseFlowExecutionLockScope(
@@ -125,11 +91,8 @@ export function parseWorkspaceFlowResponse(value: unknown, endpoint: string): Wo
         : undefined
     return {
         name: expectString(record.name, endpoint, 'name'),
-        revision: asOptionalNullableString(record.revision) ?? undefined,
         title: expectString(record.title, endpoint, 'title'),
         description: expectString(record.description, endpoint, 'description'),
-        launch_policy: parseFlowLaunchPolicy(record.launch_policy, endpoint, 'launch_policy', true),
-        effective_launch_policy: parseFlowLaunchPolicy(record.effective_launch_policy, endpoint, 'effective_launch_policy')!,
         execution_lock: parseFlowExecutionLock(record.execution_lock, endpoint, 'execution_lock'),
         graph_label: graphLabel,
         graph_goal: graphGoal,
@@ -155,39 +118,13 @@ export function parseWorkspaceFlowRawResponse(payload: unknown, endpoint = '/wor
     return payload
 }
 
-export function parseWorkspaceFlowLaunchPolicyResponse(
-    payload: unknown,
-    endpoint = '/workspace/api/flows/{flow_name}/launch-policy',
-): WorkspaceFlowLaunchPolicyResponse {
-    const record = expectObjectRecord(payload, endpoint)
-    const allowedRaw = Array.isArray(record.allowed_launch_policies) ? record.allowed_launch_policies : undefined
-    const allowedLaunchPolicies = allowedRaw?.map((entry) => parseFlowLaunchPolicy(entry, endpoint, 'allowed_launch_policies'))
-        .filter((entry): entry is FlowLaunchPolicy => entry !== null)
-    const allowedScopesRaw = Array.isArray(record.allowed_execution_lock_scopes)
-        ? record.allowed_execution_lock_scopes
-        : undefined
-    const allowedConflictPoliciesRaw = Array.isArray(record.allowed_execution_lock_conflict_policies)
-        ? record.allowed_execution_lock_conflict_policies
-        : undefined
-    return {
-        revision: expectString(record.revision, endpoint, 'revision'),
-        name: expectString(record.name, endpoint, 'name'),
-        launch_policy: parseFlowLaunchPolicy(record.launch_policy, endpoint, 'launch_policy', true),
-        effective_launch_policy: parseFlowLaunchPolicy(record.effective_launch_policy, endpoint, 'effective_launch_policy')!,
-        execution_lock: parseFlowExecutionLock(record.execution_lock, endpoint, 'execution_lock'),
-        allowed_launch_policies: allowedLaunchPolicies,
-        allowed_execution_lock_scopes: allowedScopesRaw?.map((entry) => (
-            parseFlowExecutionLockScope(entry, endpoint, 'allowed_execution_lock_scopes')
-        )),
-        allowed_execution_lock_conflict_policies: allowedConflictPoliciesRaw?.map((entry) => (
-            parseFlowExecutionLockConflictPolicy(entry, endpoint, 'allowed_execution_lock_conflict_policies')
-        )),
-    }
+function projectQuery(projectPath: string | null): string {
+    return projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''
 }
 
-export async function fetchWorkspaceFlowListValidated(surface: 'human' | 'agent' = 'human'): Promise<WorkspaceFlowResponse[]> {
+export async function fetchWorkspaceFlowListValidated(projectPath: string | null): Promise<WorkspaceFlowResponse[]> {
     return fetchWorkspaceJsonValidated(
-        `/flows?surface=${encodeURIComponent(surface)}`,
+        `/flows${projectQuery(projectPath)}`,
         undefined,
         '/workspace/api/flows',
         parseWorkspaceFlowListResponse,
@@ -196,10 +133,10 @@ export async function fetchWorkspaceFlowListValidated(surface: 'human' | 'agent'
 
 export async function fetchWorkspaceFlowValidated(
     flowName: string,
-    surface: 'human' | 'agent' = 'human',
+    projectPath: string | null,
 ): Promise<WorkspaceFlowResponse> {
     return fetchWorkspaceJsonValidated(
-        `/flows/${encodeFlowPath(flowName)}?surface=${encodeURIComponent(surface)}`,
+        `/flows/${encodeFlowPath(flowName)}${projectQuery(projectPath)}`,
         undefined,
         '/workspace/api/flows/{flow_name}',
         parseWorkspaceFlowResponse,
@@ -208,32 +145,12 @@ export async function fetchWorkspaceFlowValidated(
 
 export async function fetchWorkspaceFlowRawValidated(
     flowName: string,
-    surface: 'human' | 'agent' = 'human',
+    projectPath: string | null,
 ): Promise<string> {
     return fetchWorkspaceTextValidated(
-        `/flows/${encodeFlowPath(flowName)}/raw?surface=${encodeURIComponent(surface)}`,
+        `/flows/${encodeFlowPath(flowName)}/raw${projectQuery(projectPath)}`,
         undefined,
         '/workspace/api/flows/{flow_name}/raw',
         parseWorkspaceFlowRawResponse,
-    )
-}
-
-export async function updateWorkspaceFlowLaunchPolicyValidated(
-    flowName: string,
-    payload: {
-        expected_revision: string
-        launch_policy: FlowLaunchPolicy
-        execution_lock?: FlowExecutionLockResponse | null
-    },
-): Promise<WorkspaceFlowLaunchPolicyResponse> {
-    return fetchWorkspaceJsonValidated(
-        `/flows/${encodeFlowPath(flowName)}/launch-policy`,
-        {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        },
-        '/workspace/api/flows/{flow_name}/launch-policy',
-        parseWorkspaceFlowLaunchPolicyResponse,
     )
 }

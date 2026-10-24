@@ -6,8 +6,6 @@ mod conversation_commit_contracts;
 mod conversation_runtime_session_contracts;
 #[path = "contracts/storage_contracts.rs"]
 mod storage_contracts;
-#[path = "contracts/workspace_flow_catalog_contracts.rs"]
-mod workspace_flow_catalog_contracts;
 #[path = "contracts/workspace_project_contracts.rs"]
 mod workspace_project_contracts;
 #[path = "contracts/workspace_trigger_contracts.rs"]

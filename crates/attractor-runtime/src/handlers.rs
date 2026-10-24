@@ -464,7 +464,8 @@ pub struct ChildRunRequest {
     pub child_run_id: String,
     pub child_flow: FlowDefinition,
     pub child_flow_name: String,
-    pub child_flow_path: PathBuf,
+    /// The child's flow name, resolved from its `flow_ref`.
+    pub child_flow_ref: String,
     pub child_workdir: PathBuf,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_map: BTreeMap<String, String>,

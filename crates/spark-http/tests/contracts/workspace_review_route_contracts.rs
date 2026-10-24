@@ -14,20 +14,13 @@ use unified_llm_adapter::{
     Request as LlmRequest, Response, StreamEvents, Usage,
 };
 
-fn agent_requestable(settings: &SparkSettings, flow: &str, content: &str) {
-    write_flow(settings, flow, content);
-    spark_storage::set_flow_launch_policy(&settings.config_dir, flow, "agent_requestable")
-        .expect("launch policy");
-}
-
 #[tokio::test]
 async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    agent_requestable(&settings, "ops/review", simple_flow());
-    write_flow(&settings, "ops/private", simple_flow());
+    write_flow(&settings, "ops/review", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -55,19 +48,6 @@ async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
         .expect("run id")
         .starts_with("run-"));
     assert!(created.1["flow_launch_id"].as_str().is_some());
-
-    let private = request_json(
-        app.clone(),
-        "POST",
-        "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
-        Some(json!({"flow_name": "ops/private", "summary": "Run"})),
-    )
-    .await;
-    assert_eq!(private.0, StatusCode::BAD_REQUEST);
-    assert!(private.1["detail"]
-        .as_str()
-        .expect("detail")
-        .contains("not agent-requestable"));
 
     let unknown = request_json(
         app.clone(),
@@ -113,7 +93,7 @@ async fn run_request_executes_codergen_through_injected_rust_llm_client() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    agent_requestable(&settings, "ops/review-rust-boundary", codergen_flow());
+    write_flow(&settings, "ops/review-rust-boundary", codergen_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -362,11 +342,10 @@ fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> &'static str {
@@ -392,7 +371,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }

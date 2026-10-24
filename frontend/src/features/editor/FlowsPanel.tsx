@@ -12,7 +12,8 @@ import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
 
 /** The installed flows, grouped by folder, for the Flows panel. */
 function useFlowCatalogPanel() {
-    const { confirm, prompt } = useDialogController()
+    const { alert, confirm, prompt } = useDialogController()
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const activeFlow = useStore((state) => state.activeFlow)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const uiDefaults = useStore((state) => state.uiDefaults)
@@ -31,7 +32,7 @@ function useFlowCatalogPanel() {
         }
 
         try {
-            const data = await loadFlowCatalog()
+            const data = await loadFlowCatalog(activeProjectPath)
             if (!isMountedRef.current || requestId !== refreshRequestIdRef.current) {
                 return
             }
@@ -57,7 +58,7 @@ function useFlowCatalogPanel() {
         return () => {
             isMountedRef.current = false
         }
-    }, [])
+    }, [activeProjectPath])
 
     const createNewFlow = async () => {
         const name = await prompt({
@@ -113,14 +114,22 @@ edges:
         e.stopPropagation();
         const confirmed = await confirm({
             title: 'Delete flow?',
-            description: `Are you sure you want to delete ${fileName}?`,
+            description: `Are you sure you want to delete ${fileName}? A project copy of a bundled flow reverts to the bundled flow.`,
             confirmLabel: 'Delete',
             cancelLabel: 'Keep flow',
             confirmVariant: 'destructive',
         })
         if (!confirmed) return;
 
-        await deleteFlowCatalogEntry(fileName);
+        try {
+            await deleteFlowCatalogEntry(fileName, activeProjectPath);
+        } catch (error) {
+            await alert({
+                title: 'Flow not deleted',
+                description: error instanceof Error ? error.message : String(error),
+            })
+            return;
+        }
 
         if (activeFlow === fileName) {
             setActiveFlow(null);

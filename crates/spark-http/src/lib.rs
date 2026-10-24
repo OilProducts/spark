@@ -763,7 +763,6 @@ mod incremental_usage_tests {
             projects_dir: data.join("workspace/projects"),
             attractor_dir: data.join("attractor"),
             runs_dir: data.join("attractor/runs"),
-            flows_dir: data.join("flows"),
             ui_dir: None,
             project_roots: vec![root.to_path_buf()],
         }

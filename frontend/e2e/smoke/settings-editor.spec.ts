@@ -28,14 +28,14 @@ test('runtime settings Save, Discard, validation, navigation guard, live conflic
     await page.goto('/')
     await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'System', exact: true }).click()
-    const input = page.getByLabel('Flows directory', { exact: true })
+    const input = page.getByLabel('Runs directory', { exact: true })
     await expect(input).toBeVisible()
     const second = await context.newPage()
     try {
         await second.goto('/')
         await second.getByTestId('activity-settings').click()
         await second.getByRole('tab', { name: 'System', exact: true }).click()
-        const otherInput = second.getByLabel('Flows directory', { exact: true })
+        const otherInput = second.getByLabel('Runs directory', { exact: true })
         await expect(otherInput).toBeVisible()
         await input.fill('/tmp/spark-settings-draft')
         expect((await read()).runtime.stored).toEqual(original)
@@ -43,7 +43,7 @@ test('runtime settings Save, Discard, validation, navigation guard, live conflic
         await expect(page.getByText('Each project root must be an absolute path.')).toBeVisible()
         await expect(card(page, 'Runtime paths').getByRole('button', { name: /^Save\b/ })).toBeDisabled()
         await card(page, 'Runtime paths').getByRole('button', { name: /^Discard\b/ }).click()
-        await expect(input).toHaveValue(original.flows_dir ?? '')
+        await expect(input).toHaveValue(original.runs_dir ?? '')
         await input.fill('/tmp/spark-settings-first')
         await page.getByTestId('activity-chats').click()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
@@ -58,12 +58,12 @@ test('runtime settings Save, Discard, validation, navigation guard, live conflic
         await card(page, 'Runtime paths').getByRole('button', { name: /^Save\b/ }).click()
         await expect(page.getByText('Settings changed since this document was read. Reload before saving.', { exact: false })).toBeVisible()
         await expect(input).toHaveValue('/tmp/spark-settings-first')
-        expect((await read()).runtime.stored.flows_dir).toBe('/tmp/spark-settings-second')
+        expect((await read()).runtime.stored.runs_dir).toBe('/tmp/spark-settings-second')
         await card(page, 'Runtime paths').getByRole('button', { name: /^Discard\b/ }).click()
         await expect(input).toHaveValue('/tmp/spark-settings-second')
         await page.reload()
         await page.getByRole('tab', { name: 'System', exact: true }).click()
-        await expect(page.getByLabel('Flows directory', { exact: true })).toHaveValue('/tmp/spark-settings-second')
+        await expect(page.getByLabel('Runs directory', { exact: true })).toHaveValue('/tmp/spark-settings-second')
     } finally {
         const current = await read()
         const restored = await page.request.patch('/workspace/api/settings', { data: {
@@ -504,7 +504,7 @@ test('scoped configuration links open existing flow and trigger editors with nav
     await page.goto('/')
     await page.getByTestId('activity-settings').click()
     await page.getByRole('tab', { name: 'System', exact: true }).click()
-    const draft = page.getByLabel('Flows directory', { exact: true })
+    const draft = page.getByLabel('Runs directory', { exact: true })
     await draft.fill('/tmp/scoped-link-draft')
     await page.getByRole('tab', { name: 'Execution', exact: true }).click()
     await page.getByRole('button', { name: 'Open flow editor', exact: true }).click()
@@ -723,6 +723,12 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     let hydrate!: () => void
     const hydrated = new Promise<void>((resolve) => { hydrate = resolve })
     await page.route(`**${conversationPath}?*`, async (route) => {
+        await hydrated
+        await route.continue()
+    })
+    // The chat's live stream also opens with its snapshot; hold it too.
+    await page.route((url) => url.pathname === '/workspace/api/live/events'
+        && url.searchParams.get('conversation_id') === 'cr0125-browser-chat', async (route) => {
         await hydrated
         await route.continue()
     })

@@ -29,7 +29,7 @@ test.afterEach(async ({ page }) => {
 
 test("primary UI shells render and can be navigated", async ({ page }) => {
   const projectPath = "/tmp/ui-smoke-project"
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-shell")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-shell", projectPath)
 
   try {
     await stubProjectRegistration(page, projectPath)
@@ -96,7 +96,7 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
   const projectPath = `/tmp/ui-smoke-project-live-${Date.now()}`
   const promptToken = `instruction-live-prompt-${Date.now()}`
   const diagnosticMessage = `Live prompt diagnostic ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-live-prompt")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-live-prompt", projectPath)
 
   try {
     await page.route("**/attractor/preview", async (route) => {
@@ -151,7 +151,7 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
 
 test("medium graph performance profile renders optimizations for item 13.3-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-medium-${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-medium-graph")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-medium-graph", projectPath)
   const nodeCount = 30
   const nodes = Array.from({ length: nodeCount }, (_, index) => ({
     id: `node_${index}`,
@@ -207,7 +207,7 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
   const warningLateMessage = `Validation warning late ${Date.now()}`
   const warningEarlyMessage = `Validation warning early ${Date.now()} with enough detail to verify that a diagnostic wraps within the validation panel instead of forcing the fixed-width surface to overflow horizontally.`
   const errorMessage = `Validation error ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-validation-panel")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-validation-panel", projectPath)
 
   try {
     await page.route("**/attractor/preview", async (route) => {
@@ -291,7 +291,7 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
   const promptToken = `instruction-inline-badges-${Date.now()}`
   const nodeDiagnosticMessage = `Node diagnostic ${Date.now()}`
   const edgeDiagnosticMessage = `Edge diagnostic ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-inline-badges")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-inline-badges", projectPath)
   let nodeId: string | null = null
 
   try {
@@ -371,7 +371,7 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
   const edgeDiagnosticMessage = `Condition syntax is invalid ${Date.now()}`
   const nodeFallbackDiagnosticMessage = `Fallback retry target missing ${Date.now()}`
   const edgeFidelityDiagnosticMessage = `Edge fidelity value not recognized ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-field-diags")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-field-diags", projectPath)
   let selectedNodeId: string | null = null
   const selectedEdgeSource = "audit_human_gate"
   const selectedEdgeTarget = "audit_rework"
@@ -471,7 +471,7 @@ test("validation diagnostics navigate to matching canvas entities for item 7.3-0
   const edgeDiagnosticMessage = `Edge navigation diagnostic ${Date.now()}`
   const edgeSource = "audit_human_gate"
   const edgeTarget = "audit_rework"
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-nav")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-nav", projectPath)
   let selectedNodeId: string | null = null
 
   try {
@@ -557,7 +557,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
   const projectPath = `/tmp/ui-smoke-project-metadata-${Date.now()}`
   const token = `annotation-value-${Date.now()}`
   const diagnosticMessage = "Metadata diagnostic"
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata", projectPath)
   try {
     await page.route("**/attractor/preview", async (route) => {
       if ((route.request().postData() || "").includes(token)) {
@@ -583,7 +583,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
 
 test("flow metadata round trips through YAML without legacy stylesheet controls", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-metadata-roundtrip-${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata-roundtrip")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata-roundtrip", projectPath)
   try {
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()

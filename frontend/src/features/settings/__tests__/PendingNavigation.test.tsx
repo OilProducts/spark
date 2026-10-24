@@ -7,11 +7,11 @@ import { RuntimeSettingsEditor } from '@/features/settings/RuntimeSettingsEditor
 vi.mock('@/lib/api/settingsApi', () => ({ fetchRuntimeSettings: vi.fn(), saveRuntimeSettings: vi.fn() }))
 afterEach(() => {cleanup(); vi.resetAllMocks()})
 it(' navigation must stay blocked while a runtime save is pending', async () => {
- const view={scope:'workspace',revision:'one',restart_fields:['flows_dir'],stored:{flows_dir:'/saved',runs_dir:null,ui_dir:null,project_roots:[]},effective:{flows_dir:'/saved',runs_dir:null,ui_dir:null,project_roots:[]}}
+ const view={scope:'workspace',revision:'one',restart_fields:['runs_dir'],stored:{runs_dir:'/saved',ui_dir:null,project_roots:[]},effective:{runs_dir:'/saved',ui_dir:null,project_roots:[]}}
  vi.mocked(fetchRuntimeSettings).mockResolvedValue(view)
  vi.mocked(saveRuntimeSettings).mockImplementation(()=>new Promise(()=>{}))
  render(<DialogProvider><RuntimeSettingsEditor/></DialogProvider>)
- const user=userEvent.setup();const field=await screen.findByLabelText('Flows directory')
+ const user=userEvent.setup();const field=await screen.findByLabelText('Runs directory')
  await user.clear(field);await user.type(field,'/draft')
  await user.click(screen.getByRole('button',{name: /^Save/}))
  expect(screen.getByRole('button',{name: /^Save/})).toBeDisabled()

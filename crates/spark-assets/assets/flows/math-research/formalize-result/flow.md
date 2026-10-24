@@ -3,6 +3,10 @@ type: Flow
 id: formalize_result
 title: Formalize Result
 description: Formalize a stated mathematical result in Lean 4 against the math-lab container's pinned Mathlib, gate on a kernel-checked build with no sorry and no new axioms, and adversarially verify that the formal statement faithfully encodes the requested claim. Launch with execution_profile_id math-lab.
+execution_lock:
+  scope: project
+  key: math-research
+  conflict_policy: queue
 schema_version: '1'
 inputs:
 - key: context.request.statement

@@ -53,7 +53,7 @@ export function LaunchPanel({
     const isNarrowViewport = useNarrowViewport()
     const { startFlow, logUnexpectedLaunchError } = useStartPipeline()
     const placement = useExecutionPlacement(true, projectPath)
-    const lockMetadata = useFlowLaunchMetadata(target.previewSource.kind === 'flow' ? target.flowName : null)
+    const lockMetadata = useFlowLaunchMetadata(target.previewSource.kind === 'flow' ? target.flowName : null, projectPath)
     const {
         isLoadingPreview,
         previewLoadError,
@@ -61,7 +61,7 @@ export function LaunchPanel({
         diagnostics,
         hasValidationErrors,
         graphAttrs,
-    } = useLaunchPreview(target.previewSource)
+    } = useLaunchPreview(target.previewSource, projectPath)
 
     const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>(initialInputValues ?? {})
     const [launchInputsCollapsed, setLaunchInputsCollapsed] = useState(false)
@@ -265,7 +265,7 @@ export function LaunchPanel({
                     className="border-warning px-3 py-2 text-warning"
                 >
                     <AlertDescription className="text-inherit">
-                        Execution lock: {lockMetadata.execution_lock.scope} / {lockMetadata.execution_lock.key} / {lockMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in YAML.
+                        Execution lock: {lockMetadata.execution_lock.scope} / {lockMetadata.execution_lock.key} / {lockMetadata.execution_lock.conflict_policy}. Runs holding this lock key in the project queue one at a time.
                     </AlertDescription>
                 </Alert>
             ) : null}

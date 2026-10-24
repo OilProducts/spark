@@ -322,8 +322,8 @@ fn write_flow(settings: &SparkSettings, name: &str) {
         "schema_version: '1'\nid: trigger-flow\ntitle: Trigger Flow\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     )
     .expect("valid flow");
-    attractor_dsl::write_flow_dir(&settings.flows_dir.join(name), &flow).expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
+    attractor_dsl::write_flow_dir(&settings.bundled_dir().join("flows").join(name), &flow)
+        .expect("write flow");
 }
 
 fn settings(root: &Path) -> SparkSettings {
@@ -341,7 +341,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -557,8 +556,6 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
 
     // The mission's agent launches directly from its conversation.
     write_flow(&settings, "work/parse");
-    spark_storage::set_flow_launch_policy(&settings.config_dir, "work/parse", "agent_requestable")
-        .unwrap();
     let snapshot: Value = client
         .get(format!(
             "{}/workspace/api/conversations/{id}",
@@ -642,7 +639,7 @@ async fn settings_cli_validates_and_saves_through_the_real_revision_checked_rout
         &payload,
         json!({
             "expected_revision": first["runtime"]["revision"],
-            "section": "runtime", "value": {"flows_dir": "/from-cli", "project_roots": []}
+            "section": "runtime", "value": {"runs_dir": "/from-cli", "project_roots": []}
         })
         .to_string(),
     )
@@ -673,7 +670,7 @@ async fn settings_cli_validates_and_saves_through_the_real_revision_checked_rout
     );
     assert!(saved.status.success(), "{}", stderr(&saved));
     let document: Value = serde_json::from_slice(&saved.stdout).unwrap();
-    assert_eq!(document["runtime"]["stored"]["flows_dir"], "/from-cli");
+    assert_eq!(document["runtime"]["stored"]["runs_dir"], "/from-cli");
     let stale = run_spark(
         temp.path(),
         [

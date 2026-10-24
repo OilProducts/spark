@@ -53,7 +53,7 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
   const projectPath = `/tmp/ui-smoke-project-warning-only-${Date.now()}`
   const promptToken = `warning-only-${Date.now()}`
   const warningMessage = `Warning-only diagnostic ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-warning-only")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-warning-only", projectPath)
 
   try {
     await page.route("**/attractor/preview", async (route) => {
@@ -78,7 +78,7 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
       await route.continue()
     })
 
-    await page.route(`**/attractor/api/flows/${encodeURIComponent(flowName)}`, async (route) => {
+    await page.route(`**/attractor/api/flows/${encodeURIComponent(flowName)}?*`, async (route) => {
       if (route.request().method() !== 'GET') {
         await route.continue()
         return
@@ -123,9 +123,9 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
   const errorToken = `diagnostic-error-${Date.now()}`
   const warningToken = `diagnostic-warning-${Date.now()}`
   const cleanToken = `diagnostic-clean-${Date.now()}`
-  const errorFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-error")
-  const warningFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-warning")
-  const cleanFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-clean")
+  const errorFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-error", projectPath)
+  const warningFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-warning", projectPath)
+  const cleanFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-clean", projectPath)
 
   try {
     await page.route("**/attractor/preview", async (route) => {
@@ -189,12 +189,12 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
       [cleanFlowName]: diagnosticFlowYaml('diagnostic_clean', cleanToken),
     }
 
-    await page.route('**/attractor/api/flows/*', async (route) => {
+    await page.route('**/attractor/api/flows/*?*', async (route) => {
       if (route.request().method() !== 'GET') {
         await route.continue()
         return
       }
-      const flowName = decodeURIComponent(route.request().url().split('/attractor/api/flows/')[1] ?? '')
+      const flowName = decodeURIComponent(new URL(route.request().url()).pathname.split('/attractor/api/flows/')[1] ?? '')
       const content = flowContentByName[flowName]
       if (!content) {
         await route.continue()
@@ -255,7 +255,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
 
 test("launch failures surface diagnostics and retry affordances for direct runs", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-launch-failure-${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-launch-failure")
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-launch-failure", projectPath)
   let pipelineStartAttempts = 0
 
   try {

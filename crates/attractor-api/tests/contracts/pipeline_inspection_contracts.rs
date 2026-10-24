@@ -699,7 +699,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }

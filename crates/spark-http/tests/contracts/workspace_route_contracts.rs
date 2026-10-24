@@ -488,8 +488,6 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
     write_flow(&settings, "ops/review", "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n");
-    spark_storage::set_flow_launch_policy(&settings.config_dir, "ops/review", "agent_requestable")
-        .unwrap();
     let project = root.join("bound-project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy().into_owned();
@@ -656,7 +654,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -785,8 +782,6 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
         "work/ok",
         "schema_version: \"1\"\nid: ok\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     );
-    spark_storage::set_flow_launch_policy(&settings.config_dir, "work/ok", "agent_requestable")
-        .unwrap();
     let agent = std::sync::Arc::new(ScriptedMissionAgent {
         app: std::sync::OnceLock::new(),
         runtime: tokio::runtime::Handle::current(),
@@ -1068,7 +1063,7 @@ async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_scope_i
     let app = build_app(config.clone());
     let first = request_json(app.clone(), "GET", "/workspace/api/settings", None).await;
     let revision = first.1["runtime"]["revision"].clone();
-    let payload = json!({"expected_revision": revision, "section": "runtime", "value": {"flows_dir": "/new/flows", "project_roots": []}});
+    let payload = json!({"expected_revision": revision, "section": "runtime", "value": {"runs_dir": "/new/runs", "project_roots": []}});
     let valid = request_json(
         app.clone(),
         "POST",
@@ -1091,10 +1086,10 @@ async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_scope_i
     )
     .await;
     assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
-    assert_eq!(saved.1["runtime"]["stored"]["flows_dir"], "/new/flows");
+    assert_eq!(saved.1["runtime"]["stored"]["runs_dir"], "/new/runs");
     assert_eq!(
-        saved.1["runtime"]["effective"]["flows_dir"],
-        config.flows_dir.to_string_lossy().as_ref()
+        saved.1["runtime"]["effective"]["runs_dir"],
+        config.runs_dir.to_string_lossy().as_ref()
     );
     assert_ne!(saved.1["runtime"]["revision"], revision);
     let persisted = fs::read_to_string(&path).unwrap();
@@ -2153,9 +2148,8 @@ async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }

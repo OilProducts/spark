@@ -1,22 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "Attribution": {
-      "description": "Who produced or verified a file (OKF §5.2): `by` is an OKF §7 actor (`human:<id>`, `<producer>/<version>` or `process:<id>`), `at` an ISO 8601 timestamp with an explicit offset.",
-      "properties": {
-        "at": {
-          "type": "string"
-        },
-        "by": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "at",
-        "by"
-      ],
-      "type": "object"
-    },
     "ExecutionConfig": {
       "properties": {
         "llm_model": {
@@ -183,6 +167,26 @@
       ],
       "type": "object"
     },
+    "FlowExecutionLock": {
+      "description": "A flow's execution lock (`execution_lock` in `flow.md`). Scope `project` resolves identity from the repository containing the working directory, so linked git worktrees share one lock; `conflict_policy` is `queue`.",
+      "properties": {
+        "conflict_policy": {
+          "default": "queue",
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "scope"
+      ],
+      "type": "object"
+    },
     "FlowInput": {
       "properties": {
         "default": true,
@@ -255,17 +259,6 @@
           "additionalProperties": true,
           "type": "object"
         },
-        "generated": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Attribution"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
-        },
         "kind": {
           "$ref": "#/definitions/NodeKind"
         },
@@ -310,9 +303,6 @@
             }
           ]
         },
-        "status": {
-          "$ref": "#/definitions/TrustStatus"
-        },
         "ui": {
           "anyOf": [
             {
@@ -320,19 +310,6 @@
             },
             {
               "type": "null"
-            }
-          ]
-        },
-        "verified": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Attribution"
-            },
-            {
-              "items": {
-                "$ref": "#/definitions/Attribution"
-              },
-              "type": "array"
             }
           ]
         }
@@ -772,14 +749,6 @@
       },
       "type": "object"
     },
-    "TrustStatus": {
-      "enum": [
-        "draft",
-        "stable",
-        "deprecated"
-      ],
-      "type": "string"
-    },
     "UiConfig": {
       "properties": {
         "x": {
@@ -814,20 +783,20 @@
       },
       "type": "array"
     },
-    "extensions": {
-      "additionalProperties": true,
-      "type": "object"
-    },
-    "generated": {
+    "execution_lock": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Attribution"
+          "$ref": "#/definitions/FlowExecutionLock"
         },
         {
           "type": "null"
         }
       ],
-      "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
+      "description": "Runs of flows sharing a lock identity queue and execute one at a time."
+    },
+    "extensions": {
+      "additionalProperties": true,
+      "type": "object"
     },
     "goal": {
       "default": "",
@@ -857,25 +826,9 @@
       "default": "1",
       "type": "string"
     },
-    "status": {
-      "$ref": "#/definitions/TrustStatus"
-    },
     "title": {
       "default": "",
       "type": "string"
-    },
-    "verified": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/Attribution"
-        },
-        {
-          "items": {
-            "$ref": "#/definitions/Attribution"
-          },
-          "type": "array"
-        }
-      ]
     }
   },
   "required": [

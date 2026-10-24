@@ -320,7 +320,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
 fn reset_clears_only_runs_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let flow_dir = settings.flows_dir.clone();
+    let flow_dir = settings.bundled_dir().join("flows").clone();
     attractor_dsl::write_flow_dir(
         &flow_dir.join("kept"),
         &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
@@ -427,7 +427,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }

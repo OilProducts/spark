@@ -49,43 +49,34 @@ fn runtime_choices_keep_cli_environment_persisted_default_precedence() {
         ..Default::default()
     };
     let persisted = RuntimeSettings {
-        flows_dir: Some(root.join("persisted-flows")),
         runs_dir: Some(root.join("persisted-runs")),
         ..Default::default()
     };
-    let mut env = BTreeMap::new();
+    let env = BTreeMap::new();
     let settings = resolve_settings_with_persisted(&overrides, &env, &persisted).unwrap();
-    assert_eq!(settings.flows_dir, persisted.flows_dir.clone().unwrap());
-    assert_eq!(settings.runs_dir, persisted.runs_dir.unwrap());
+    assert_eq!(Some(settings.runs_dir), persisted.runs_dir.clone());
     assert_eq!(settings.config_dir, root.join("home/config"));
-    env.insert(
-        "SPARK_FLOWS_DIR".into(),
-        root.join("env-flows").to_string_lossy().into_owned(),
-    );
-    let settings =
-        resolve_settings_with_persisted(&overrides, &env, &RuntimeSettings::default()).unwrap();
-    assert_eq!(settings.flows_dir, root.join("env-flows"));
     let overrides = SettingsOverrides {
-        flows_dir: Some(root.join("cli-flows")),
+        runs_dir: Some(root.join("cli-runs")),
         ..overrides
     };
     assert_eq!(
-        resolve_settings_with_persisted(&overrides, &env, &RuntimeSettings::default())
+        resolve_settings_with_persisted(&overrides, &env, &persisted)
             .unwrap()
-            .flows_dir,
-        root.join("cli-flows")
+            .runs_dir,
+        root.join("cli-runs")
     );
 }
 
 #[test]
 fn invalid_persisted_runtime_paths_are_rejected_even_when_overridden() {
     let overrides = SettingsOverrides {
-        flows_dir: Some("/override".into()),
+        runs_dir: Some("/override".into()),
         ..Default::default()
     };
     let env = BTreeMap::new();
     let empty = RuntimeSettings {
-        flows_dir: Some("".into()),
+        runs_dir: Some("".into()),
         ..Default::default()
     };
     assert!(resolve_settings_with_persisted(&overrides, &env, &empty).is_err());

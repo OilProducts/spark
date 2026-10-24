@@ -257,7 +257,6 @@ fn run_flow_domain(
 
     match command {
         "format" => run_flow_format_command(args, env),
-        "promote" | "accept" => run_flow_trust_command(command, args, env),
         "validate" if has_option(&args[2..], "--file") => run_flow_validate_file_command(args, env),
         "list" | "describe" | "get" | "validate" => match build_request_plan(args, env, stdin) {
             Ok(plan) => execute_request_plan(&plan),
@@ -595,7 +594,7 @@ fn build_flow_plan(
         "list" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--base-url"],
+                &["--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
@@ -603,7 +602,7 @@ fn build_flow_plan(
             Ok(ApiRequestPlan {
                 method: HttpMethod::Get,
                 base_url,
-                path: "/workspace/api/flows?surface=agent".to_string(),
+                path: format!("/workspace/api/flows{}", project_query(&options)),
                 body: None,
                 text: options.bool("--text"),
             })
@@ -611,7 +610,7 @@ fn build_flow_plan(
         "describe" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--flow", "--base-url"],
+                &["--flow", "--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
@@ -622,8 +621,9 @@ fn build_flow_plan(
                 method: HttpMethod::Get,
                 base_url,
                 path: format!(
-                    "/workspace/api/flows/{}?surface=agent",
-                    percent_encode_component(&flow)
+                    "/workspace/api/flows/{}{}",
+                    percent_encode_component(&flow),
+                    project_query(&options)
                 ),
                 body: None,
                 text: options.bool("--text"),
@@ -632,7 +632,7 @@ fn build_flow_plan(
         "get" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--flow", "--base-url"],
+                &["--flow", "--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
@@ -643,8 +643,9 @@ fn build_flow_plan(
                 method: HttpMethod::Get,
                 base_url,
                 path: format!(
-                    "/workspace/api/flows/{}/raw?surface=agent",
-                    percent_encode_component(&flow)
+                    "/workspace/api/flows/{}/raw{}",
+                    percent_encode_component(&flow),
+                    project_query(&options)
                 ),
                 body: None,
                 text: options.bool("--text"),
@@ -653,7 +654,7 @@ fn build_flow_plan(
         "validate" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--flow", "--file", "--base-url"],
+                &["--flow", "--file", "--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
@@ -668,8 +669,9 @@ fn build_flow_plan(
                 method: HttpMethod::Get,
                 base_url,
                 path: format!(
-                    "/workspace/api/flows/{}/validate",
-                    percent_encode_component(&flow)
+                    "/workspace/api/flows/{}/validate{}",
+                    percent_encode_component(&flow),
+                    project_query(&options)
                 ),
                 body: None,
                 text: options.bool("--text"),
@@ -677,6 +679,13 @@ fn build_flow_plan(
         }
         _ => Err(usage_error("Unknown command")),
     }
+}
+
+/// `?project_path=<--project>`, so flows resolve through that project's org.
+fn project_query(options: &ParsedOptions) -> String {
+    trimmed_option(options, "--project")
+        .map(|project| format!("?project_path={}", percent_encode_component(&project)))
+        .unwrap_or_default()
 }
 
 fn build_trigger_plan(
@@ -1085,7 +1094,7 @@ fn format_validation_error(value: &Value) -> String {
 fn flow_list_text(payload: &Value) -> String {
     let rows = payload.as_array().map(Vec::as_slice).unwrap_or(&[]);
     if rows.is_empty() {
-        return "No agent-requestable flows found.\n".to_string();
+        return "No flows found.\n".to_string();
     }
     let mut text = String::new();
     for row in rows {
@@ -1150,10 +1159,6 @@ fn describe_flow_text(payload: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim();
-    let launch_policy = object
-        .get("effective_launch_policy")
-        .and_then(Value::as_str)
-        .unwrap_or("disabled");
     let features = object.get("features").and_then(Value::as_object);
     let mut text = String::new();
     writeln!(&mut text, "Name: {name}").expect("writing to String cannot fail");
@@ -1168,7 +1173,6 @@ fn describe_flow_text(payload: &Value) -> String {
         }
     )
     .expect("writing to String cannot fail");
-    writeln!(&mut text, "Launch Policy: {launch_policy}").expect("writing to String cannot fail");
     writeln!(
         &mut text,
         "Graph Label: {}",
@@ -1284,21 +1288,28 @@ fn is_run_events_path(path: &str) -> bool {
     path.starts_with("/workspace/api/live/events?")
 }
 
+fn without_query(path: &str) -> &str {
+    path.split_once('?').map_or(path, |(path, _)| path)
+}
+
 fn is_flow_list_path(path: &str) -> bool {
-    path == "/workspace/api/flows?surface=agent"
+    without_query(path) == "/workspace/api/flows"
 }
 
 fn is_flow_describe_path(path: &str) -> bool {
+    let path = without_query(path);
     path.starts_with("/workspace/api/flows/")
-        && path.ends_with("?surface=agent")
-        && !path.contains("/raw?")
+        && !path.ends_with("/raw")
+        && !path.ends_with("/validate")
 }
 
 fn is_flow_raw_path(path: &str) -> bool {
-    path.starts_with("/workspace/api/flows/") && path.contains("/raw?")
+    let path = without_query(path);
+    path.starts_with("/workspace/api/flows/") && path.ends_with("/raw")
 }
 
 fn is_flow_validate_path(path: &str) -> bool {
+    let path = without_query(path);
     path.starts_with("/workspace/api/flows/") && path.ends_with("/validate")
 }
 
@@ -1311,9 +1322,9 @@ fn is_trigger_describe_path(path: &str) -> bool {
 }
 
 fn flow_name_from_raw_path(path: &str) -> Option<String> {
-    let raw = path
+    let raw = without_query(path)
         .strip_prefix("/workspace/api/flows/")?
-        .strip_suffix("/raw?surface=agent")?;
+        .strip_suffix("/raw")?;
     Some(percent_decode_component(raw))
 }
 
@@ -1352,11 +1363,9 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "flow" => match domain_matches.subcommand_name() {
-            Some("list" | "describe" | "get" | "validate" | "format" | "promote" | "accept") => {
-                Ok(CommandPath {
-                    domain: CommandDomain::Flow,
-                })
-            }
+            Some("list" | "describe" | "get" | "validate" | "format") => Ok(CommandPath {
+                domain: CommandDomain::Flow,
+            }),
             _ => Err(usage_error("Unknown command")),
         },
         "mission" => match domain_matches.subcommand_name() {
@@ -1427,9 +1436,7 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("describe"))
                 .subcommand(clap_command_leaf("get"))
                 .subcommand(clap_command_leaf("validate"))
-                .subcommand(clap_command_leaf("format"))
-                .subcommand(clap_command_leaf("promote"))
-                .subcommand(clap_command_leaf("accept")),
+                .subcommand(clap_command_leaf("format")),
         )
         .subcommand(
             Command::new("settings")
@@ -1881,53 +1888,6 @@ fn run_flow_format_command(args: &[String], env: &impl Environment) -> CommandOu
     }
 }
 
-/// `spark flow promote <candidate>` and `spark flow accept <live file>`:
-/// local approval-log commands for the human at this machine.
-fn run_flow_trust_command(command: &str, args: &[String], env: &impl Environment) -> CommandOutput {
-    let options = match parse_options(&args[2..], &[], &["--text"], PositionalMode::Exact(1)) {
-        Ok(options) => options,
-        Err(message) => return usage_error(message),
-    };
-    let settings = match local_settings(env) {
-        Ok(settings) => settings,
-        Err(error) => return json_error(error, EXIT_GENERAL_FAILURE),
-    };
-    let path = expand_user_path(&options.positionals[0], env);
-    let trust = attractor_dsl::TrustStore::for_settings(&settings);
-    let by = spark_storage::settings::human_actor(&settings.config_dir);
-    let result = if command == "promote" {
-        attractor_dsl::promote(&trust, &settings.data_dir.join("candidates"), &path, &by)
-    } else {
-        attractor_dsl::accept(&trust, &path, &by)
-    };
-    match result {
-        Ok(entries) if options.bool("--text") => CommandOutput::stdout(
-            0,
-            entries
-                .iter()
-                .map(|entry| format!("{} {} {}\n", entry.event, entry.path, entry.sha256))
-                .collect::<String>(),
-        ),
-        Ok(entries) => success_json(&json!({"ok": true, "approvals": entries})),
-        Err(error) => json_error(error.detail(), EXIT_GENERAL_FAILURE),
-    }
-}
-
-/// Settings for commands that act on `$SPARK_HOME` directly, honoring the
-/// runtime paths in spark.toml.
-fn local_settings(env: &impl Environment) -> Result<spark_common::settings::SparkSettings, String> {
-    use spark_common::settings::{resolve_settings_with_env, resolve_settings_with_persisted};
-    let bootstrap =
-        resolve_settings_with_env(&Default::default(), env).map_err(|error| error.to_string())?;
-    let core = bootstrap.config_dir.join("spark.toml");
-    let runtime = spark_storage::settings::read_settings_document(&core)
-        .and_then(|document| document.section(&core, "runtime"))
-        .map_err(|error| error.to_string())?
-        .unwrap_or_default();
-    resolve_settings_with_persisted(&Default::default(), env, &runtime)
-        .map_err(|error| error.to_string())
-}
-
 fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> CommandOutput {
     let options = match parse_flow_file_options(&args[2..], true) {
         Ok(options) => options,
@@ -1935,11 +1895,19 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     };
 
     let flow_path = expand_user_path(&options.file, env);
-    let roles_dir =
-        match spark_common::settings::resolve_settings_with_env(&Default::default(), env) {
-            Ok(settings) => settings.roles_dir(),
-            Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
-        };
+    // A file inside `<project>/.spark/agent-org` resolves roles through that
+    // project's org, then the bundled library.
+    let project = flow_path.ancestors().find_map(|dir| {
+        let spark = dir.parent()?;
+        (dir.file_name()? == "agent-org" && spark.file_name()? == ".spark")
+            .then(|| spark.parent())
+            .flatten()
+            .map(Path::to_path_buf)
+    });
+    let roots = match spark_common::settings::resolve_settings_with_env(&Default::default(), env) {
+        Ok(settings) => attractor_dsl::FlowRoots::new(settings.bundled_dir(), project.as_deref()),
+        Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
+    };
     // A flow directory validates as the loader assembles it.
     let loaded = if flow_path.is_dir() {
         attractor_dsl::read_flow_dir(&flow_path).map_err(flow_source_validation_error)
@@ -1970,7 +1938,7 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     };
     // Referenced roles must resolve; the preview keeps the authored form.
     let loaded = loaded.and_then(|flow| {
-        attractor_dsl::resolve_flow_roles(&flow, &roles_dir)
+        attractor_dsl::resolve_flow_roles(&flow, &roots)
             .map(|_| flow)
             .map_err(flow_source_validation_error)
     });

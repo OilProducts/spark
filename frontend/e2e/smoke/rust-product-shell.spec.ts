@@ -49,24 +49,26 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
   expect(missingApi.headers()['content-type']).toContain('application/json')
   await expect(missingApi.json()).resolves.toEqual({ detail: 'Not Found' })
 
-  const flowName = `rust-shell-${Date.now()}.yaml`
+  const flowName = `rust-shell-${Date.now()}`
   const projectRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'spark-rust-shell-project-')))
   mkdirSync(projectRoot, { recursive: true })
+  const projectQuery = `project_path=${encodeURIComponent(projectRoot)}`
   try {
     const saveFlow = await page.request.post('/attractor/api/flows', {
-      data: { name: flowName, content: smokeFlowContent },
+      data: { name: flowName, content: smokeFlowContent, project_path: projectRoot },
     })
     expect(saveFlow.ok()).toBeTruthy()
 
-    const listFlows = await page.request.get('/attractor/api/flows')
+    const listFlows = await page.request.get(`/attractor/api/flows?${projectQuery}`)
     expect(listFlows.ok()).toBeTruthy()
     await expect(listFlows.json()).resolves.toContain(flowName)
 
-    const readFlow = await page.request.get(`/attractor/api/flows/${encodeURIComponent(flowName)}`)
+    const readFlow = await page.request.get(`/attractor/api/flows/${encodeURIComponent(flowName)}?${projectQuery}`)
     expect(readFlow.ok()).toBeTruthy()
     await expect(readFlow.json()).resolves.toMatchObject({
       name: flowName,
       content: expect.stringContaining('rust_product_shell'),
+      layer: 'org',
     })
 
     const registerProject = await page.request.post('/workspace/api/projects/register', {
@@ -93,7 +95,7 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
     await expect(page.getByTestId('runs-panel')).toBeVisible()
     await page.screenshot({ path: screenshotPath('00-rust-product-shell.png'), fullPage: true })
   } finally {
-    await page.request.delete(`/attractor/api/flows/${encodeURIComponent(flowName)}`).catch(() => undefined)
+    await page.request.delete(`/attractor/api/flows/${encodeURIComponent(flowName)}?${projectQuery}`).catch(() => undefined)
     rmSync(projectRoot, { recursive: true, force: true })
   }
 })

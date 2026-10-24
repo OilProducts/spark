@@ -125,7 +125,7 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
         .recv_timeout(Duration::from_secs(2))
         .expect("request");
     assert_eq!(request.method, "GET");
-    assert_eq!(request.path, "/workspace/api/flows?surface=agent");
+    assert_eq!(request.path, "/workspace/api/flows");
     assert_eq!(request.body, "");
 }
 
@@ -368,7 +368,6 @@ fn flow_describe_and_validate_text_match_python_labels() {
           "name":"software-development/implement-change-request",
           "title":"Implement Change Request",
           "description":"Execute approved work items.",
-          "effective_launch_policy":"agent_requestable",
           "graph_label":"Implement Change Request",
           "graph_goal":"Implement approved changes",
           "node_count":6,
@@ -383,6 +382,8 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "describe",
             "--flow",
             "software-development/implement-change-request",
+            "--project",
+            "/work/app",
             "--text",
             "--base-url",
             describe_base_url.as_str(),
@@ -390,9 +391,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
         &env,
     );
     assert_eq!(describe_output.exit_code, 0);
-    assert!(describe_output
-        .stdout
-        .contains("Launch Policy: agent_requestable"));
+    assert!(!describe_output.stdout.contains("Launch Policy"));
     assert!(describe_output.stdout.contains("Has Human Gate: False"));
     assert!(describe_output.stdout.contains("Has Manager Loop: True"));
     assert_eq!(
@@ -400,7 +399,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             .recv_timeout(Duration::from_secs(2))
             .expect("describe request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request?project_path=%2Fwork%2Fapp"
     );
 
     let (validate_base_url, validate_requests) = serve_once(HttpResponse::json(
@@ -472,7 +471,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
             .recv_timeout(Duration::from_secs(2))
             .expect("json request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/raw"
     );
 
     let text_flow_yaml = "schema_version: \"1\"\nid: plain\n";
@@ -1148,7 +1147,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
         .expect("flow list plan");
     assert_eq!(env_plan.method, HttpMethod::Get);
     assert_eq!(env_plan.base_url, "http://127.0.0.1:8010");
-    assert_eq!(env_plan.path, "/workspace/api/flows?surface=agent");
+    assert_eq!(env_plan.path, "/workspace/api/flows");
 
     let explicit_plan = request_plan_with_args_env_and_stdin(
         [
@@ -1165,7 +1164,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
     assert_eq!(explicit_plan.base_url, "http://127.0.0.1:8020");
     assert_eq!(
         explicit_plan.path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request"
     );
 }
 
@@ -1855,7 +1854,7 @@ fn settings_commands_use_scoped_http_and_preserve_explicit_target_safeguards() {
         ),
     ] {
         let payload =
-            r#"{"expected_revision":"rev-1","section":"runtime","value":{"flows_dir":"/chosen"}}"#;
+            r#"{"expected_revision":"rev-1","section":"runtime","value":{"runs_dir":"/chosen"}}"#;
         let plan = spark_cli::request_plan_with_args_env_and_stdin(
             [
                 "spark",

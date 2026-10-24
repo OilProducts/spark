@@ -39,20 +39,21 @@ test.beforeAll(() => {
 test('every activity-bar view opens its panel with items from more than one project, and no top tabs or project selector remain', async ({ page }, testInfo) => {
     const { alpha, beta, home } = await seedProjects(page, testInfo)
     const stamp = Date.now()
-    const flowName = await createFlowForSmokeTest(page, 'activity-bar')
+    const flowName = await createFlowForSmokeTest(page, 'activity-bar', home)
     await createChat(page, home, `conversation-home-${stamp}`)
     await createChat(page, alpha, `conversation-alpha-${stamp}`)
     await createMission(page, alpha, `Alpha mission ${stamp}`)
     await createMission(page, beta, `Beta mission ${stamp}`)
+    // Triggers in other projects use a bundled flow, which every project sees.
     const trigger = await page.request.post('/workspace/api/triggers', { data: {
         name: `Unregistered target ${stamp}`, enabled: false, source_type: 'schedule',
-        action: { flow_name: flowName, project_path: '/tmp/not-a-registered-project', static_context: {} },
+        action: { flow_name: 'examples/simple-linear', project_path: '/tmp/not-a-registered-project', static_context: {} },
         source: { kind: 'interval', interval_seconds: 3600 },
     } })
     expect(trigger.ok(), await trigger.text()).toBeTruthy()
     const alphaTrigger = await page.request.post('/workspace/api/triggers', { data: {
         name: `Alpha target ${stamp}`, enabled: false, source_type: 'schedule',
-        action: { flow_name: flowName, project_path: alpha, static_context: {} },
+        action: { flow_name: 'examples/simple-linear', project_path: alpha, static_context: {} },
         source: { kind: 'interval', interval_seconds: 3600 },
     } })
     expect(alphaTrigger.ok(), await alphaTrigger.text()).toBeTruthy()
@@ -248,7 +249,7 @@ test('a chat keeps its unsent draft across its project page, and a cancelled lea
 
 test('a new mission and a flow run ask which project, suggesting the last used and the chat\'s project', async ({ page }, testInfo) => {
     const { alpha, beta } = await seedProjects(page, testInfo)
-    const flowName = await createFlowForSmokeTest(page, 'activity-run-picker')
+    const flowName = await createFlowForSmokeTest(page, 'activity-run-picker', beta)
     try {
         await page.goto('/')
         await page.getByTestId('activity-chats').click()

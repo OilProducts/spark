@@ -3,12 +3,12 @@
 //! Converts retired YAML flow files into flow directories, using the same
 //! writer as editor saves.
 //!
-//! cargo run -p attractor-dsl --example convert-yaml-flows -- <yaml-root> <flows-dir> [--catalog <flow-catalog.toml>]
+//! cargo run -p attractor-dsl --example convert-yaml-flows -- <yaml-root> <flows-dir>
 //!
 //! Each `<yaml-root>/<name>.yaml` becomes `<flows-dir>/<name>/`. Flows whose
 //! directory already exists are skipped and reported. Subflow `flow_ref`s
 //! drop their extension. Each written directory is read back and must equal
-//! the converted flow. `--catalog` rewrites `flows."<name>.yaml"` keys.
+//! the converted flow.
 
 use std::path::{Path, PathBuf};
 
@@ -19,15 +19,9 @@ fn main() {
     let (yaml_root, flows_dir) = match args.as_slice() {
         [yaml_root, flows_dir, ..] => (PathBuf::from(yaml_root), PathBuf::from(flows_dir)),
         _ => {
-            eprintln!(
-                "usage: convert-yaml-flows <yaml-root> <flows-dir> [--catalog <flow-catalog.toml>]"
-            );
+            eprintln!("usage: convert-yaml-flows <yaml-root> <flows-dir>");
             std::process::exit(2);
         }
-    };
-    let catalog = match args.get(2).map(String::as_str) {
-        Some("--catalog") => args.get(3).map(PathBuf::from),
-        _ => None,
     };
     let mut files = Vec::new();
     collect_yaml(&yaml_root, &mut files);
@@ -47,12 +41,6 @@ fn main() {
                 failed = true;
                 eprintln!("failed {name}: {error}");
             }
-        }
-    }
-    if let Some(catalog) = catalog {
-        if let Err(error) = rewrite_catalog(&catalog) {
-            failed = true;
-            eprintln!("failed to rewrite {}: {error}", catalog.display());
         }
     }
     if failed {
@@ -80,23 +68,6 @@ fn convert(file: &Path, target: &Path) -> Result<(), String> {
             target.display()
         ));
     }
-    Ok(())
-}
-
-fn rewrite_catalog(path: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let mut document = text
-        .parse::<toml::Table>()
-        .map_err(|error| error.to_string())?;
-    if let Some(toml::Value::Table(flows)) = document.get_mut("flows") {
-        *flows = std::mem::take(flows)
-            .into_iter()
-            .map(|(name, entry)| (strip_extension(&name), entry))
-            .collect();
-    }
-    let text = toml::to_string_pretty(&document).map_err(|error| error.to_string())?;
-    std::fs::write(path, text).map_err(|error| error.to_string())?;
-    println!("rewrote flow names in {}", path.display());
     Ok(())
 }
 

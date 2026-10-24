@@ -1,10 +1,30 @@
 # Spark Flow Authoring Guide
 
-A Spark flow is a directory under `$SPARK_HOME/flows` with one markdown file
-per node, following the Open Knowledge Format (OKF) v0.2: each file has YAML
-frontmatter, a markdown body, and a required `type`. The flow's name is the
-directory's path relative to the flows root, with no extension, for example
-`examples/simple-linear`. YAML flow files are not loaded.
+A Spark flow is a directory with one markdown file per node, following the
+Open Knowledge Format (OKF) v0.2: each file has YAML frontmatter, a markdown
+body, and a required `type`. The flow's name is the directory's path relative
+to the flows root, with no extension, for example `examples/simple-linear`.
+YAML flow files are not loaded.
+
+## Where Flows Live
+
+Flows and roles resolve through two roots, in order:
+
+1. The project's org repo, `<project>/.spark/agent-org/` (`flows/` and
+   `roles/`). It is a git repository; its history is the audit trail.
+2. The bundled library, `$SPARK_HOME/bundled/` (`flows/` and `roles/`). Spark
+   rewrites it from its packaged assets on every start, so never edit it.
+
+A project file with the same name as a bundled one replaces it. A launch with
+no project uses bundled flows only, and a project without an org repo sees
+the bundled library. Every flow can be launched, by people and by agents.
+
+Editor saves write into the project's org repo, creating it on the first
+write (with `<project>/.spark/.gitignore` holding `*`), and commit only the
+files that changed with the message `Edit <flow> in the flow editor`, under
+the repo's normal git identity. Saving a bundled flow first copies it into the
+org. Deleting a project copy reverts to the bundled flow; bundled flows cannot
+be deleted.
 
 The Rust `FlowDefinition` type is the assembled form of a flow, and
 `assets/schemas/flow-definition.schema.json` describes it. The editor loads and
@@ -110,7 +130,8 @@ directory, hidden ones included, is an error.
 
 ## Roles
 
-A role is `$SPARK_HOME/roles/<name>.md` with `type: Role`. Its body is a
+A role is `roles/<name>.md` in the org repo or the bundled library, with
+`type: Role`. Its body is a
 persona; its frontmatter may set `execution` with the same fields as a node's
 `execution`.
 
@@ -130,25 +151,38 @@ then behave like node settings, so they also beat launch-time model and
 reasoning overrides. The editor shows the authored form (`role` set, prompt
 without role text); runs execute and snapshot the resolved form.
 
-## Trust and Approval
+## Execution Locks
 
-`flow.md`, node files and role files may carry the OKF trust fields:
-`generated: { by, at }`, `verified` (a list of `{ by, at }`, or one bare
-mapping) and `status` (`draft`, `stable` (the default) or `deprecated`). `by`
-is `human:<id>`, `<producer>/<version>` or `process:<id>`; `at` is ISO 8601
-with an explicit offset. Editor saves set `generated: human:<id>` (`human_id`
-in `spark.toml`, else the OS username) on the files they change and keep each
-file's `verified`.
+`flow.md` may declare an execution lock. Runs whose locks resolve to the same
+identity queue and execute one at a time:
 
-A run starts only from approved live files. Every file it uses must have an
-entry for its exact bytes in `$SPARK_HOME/config/approvals.jsonl`, and none may
-be `deprecated`; otherwise the launch, a `flow_name` continue or a subflow child
-is refused, naming each file. Bundled seeding and editor saves log their
-writes. After editing a live file by hand, run `spark flow accept <path>`.
-Agents write proposals under `$SPARK_HOME/candidates/` (mirroring
-`flows/<flow>/<node>.md` or `roles/<name>.md`) with `generated` and
-`status: draft`; `spark flow promote <path>` validates and installs them.
-Each run records the hash of every file it used in `artifacts/flow/files.json`.
+```yaml
+execution_lock:
+  scope: project
+  key: software-development-integration
+  conflict_policy: queue
+```
+
+`scope` must be `project`: identity comes from the repository containing the
+run's working directory, so linked git worktrees share one lock. `key` must be
+non-empty. `conflict_policy` is `queue`, the default. Child runs inherit their
+parent's lock.
+
+## Run Manifests
+
+Each run records the files it used in `artifacts/flow/files.json`:
+
+```json
+{
+  "files": {"org/flows/<flow>/<node>.md": "<sha256>", "bundled/roles/<name>.md": "<sha256>"},
+  "org": {"commit": "<org HEAD>", "dirty": false},
+  "spark_version": "<version>"
+}
+```
+
+`org` is null when the run has no org repo. Launches, `flow_name` continues and
+subflow children compute their own manifest; snapshot continues keep the
+source run's.
 
 ## Tool Context Bindings
 
@@ -219,6 +253,8 @@ A `subflow` node's `config.flow_ref` names another flow directory. It resolves
 relative to the directory that contains the parent flow's directory, so
 `software-development/implement-change` refers to
 `software-development/workers/implement-task` as `workers/implement-task`.
+The resulting name resolves through the roots like any flow, so a project copy
+of a bundled child replaces it.
 
 A subflow's child run normally inherits the parent's working directory, or an
 authored static `manager.child_workdir`. To bind the child to a directory
@@ -263,14 +299,17 @@ spark flow validate --file crates/spark-assets/assets/flows/examples/simple-line
 
 Validation assembles the directory into a `FlowDefinition`, applies semantic
 rules, and then verifies the runtime graph derived from the typed model.
+A file inside `<project>/.spark/agent-org` resolves roles through that
+project's org, then the bundled library. `spark flow list|describe|get|validate`
+take `--project <path>` to include a project's org flows.
 
 ## Converting YAML Flows
 
 Older single-file YAML flows convert with the same writer the editor uses:
 
 ```bash
-cargo run -p attractor-dsl --example convert-yaml-flows -- <yaml-root> <flows-dir> [--catalog <flow-catalog.toml>]
+cargo run -p attractor-dsl --example convert-yaml-flows -- <yaml-root> <flows-dir>
 ```
 
-It skips flows whose directory already exists, drops the extension from
-subflow `flow_ref`s, and with `--catalog` rewrites flow catalog names.
+It skips flows whose directory already exists and drops the extension from
+subflow `flow_ref`s.

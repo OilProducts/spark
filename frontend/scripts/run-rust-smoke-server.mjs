@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -27,10 +28,11 @@ if (!existsSync(indexPath)) {
 
 const tmpRoot = path.join(frontendRoot, '.tmp-ui-smoke')
 const dataDir = path.join(tmpRoot, 'spark-home')
-const flowsDir = path.join(tmpRoot, 'flows')
+// Home is a project: its org repo is $HOME/.spark/agent-org, so the server gets its own HOME.
+const homeDir = path.join(tmpRoot, 'home')
 rmSync(tmpRoot, { recursive: true, force: true })
 mkdirSync(dataDir, { recursive: true })
-mkdirSync(flowsDir, { recursive: true })
+mkdirSync(homeDir, { recursive: true })
 
 const cargo = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
 // Chat turns run against the repo's fake Codex app-server; the live-turn smoke opens its gates.
@@ -55,8 +57,6 @@ const child = spawn(
     String(port),
     '--data-dir',
     dataDir,
-    '--flows-dir',
-    flowsDir,
     '--ui-dir',
     distDir,
   ],
@@ -64,8 +64,15 @@ const child = spawn(
     cwd: repoRoot,
     env: {
       ...process.env,
+      HOME: homeDir,
+      CARGO_HOME: process.env.CARGO_HOME ?? path.join(os.homedir(), '.cargo'),
+      RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(os.homedir(), '.rustup'),
+      // Editor saves commit to the project's org repo; the isolated HOME has no git identity.
+      GIT_AUTHOR_NAME: 'Spark Smoke',
+      GIT_AUTHOR_EMAIL: 'smoke@spark.invalid',
+      GIT_COMMITTER_NAME: 'Spark Smoke',
+      GIT_COMMITTER_EMAIL: 'smoke@spark.invalid',
       SPARK_HOME: dataDir,
-      SPARK_FLOWS_DIR: flowsDir,
       SPARK_UI_DIR: distDir,
       SPARK_CODEX_APP_SERVER_BIN: path.join(targetDir, 'debug', fakeCodex),
       SPARK_FAKE_CODEX_APP_SERVER_MODE: 'gated',

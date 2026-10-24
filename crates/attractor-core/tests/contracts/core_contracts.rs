@@ -704,32 +704,30 @@ edges:
 }
 
 #[test]
-fn attribution_timestamps_require_real_rfc3339_values_with_an_offset() {
-    let problem = |at: &str| {
-        attractor_core::Attribution {
-            by: "human:lead".to_string(),
-            at: at.to_string(),
-        }
-        .problem()
+fn execution_locks_require_project_scope_a_key_and_queue_policy() {
+    let rules = |lock: &str| {
+        attractor_core::FlowDefinition::from_yaml_str(&format!(
+            "id: locked\nexecution_lock: {lock}\nnodes:\n  start: {{ kind: start }}\n  done: {{ kind: exit }}\nedges:\n- {{ from: start, to: done }}\n"
+        ))
+        .unwrap()
+        .diagnostics()
+        .into_iter()
+        .filter(|d| d.rule_id == "execution_lock")
+        .map(|d| d.message)
+        .collect::<Vec<_>>()
     };
-    for valid in [
-        "2026-10-20T12:00:00Z",
-        "2026-10-20T12:00:00.123+05:30",
-        "2024-02-29T23:59:59-08:00",
-    ] {
-        assert_eq!(problem(valid), None, "{valid}");
-    }
-    for invalid in [
-        "202é-1-01T00:00:00Z",
-        "2026-10-20T12:00:0é+00:00",
-        "2026-99-99T99:99:99+99:99",
-        "2026-02-30T00:00:00Z",
-        "2026-10-20T24:00:00Z",
-        "2026-10-20T12:00:00+24:00",
-        "2026-10-20T12:00:00",
-        "2026-10-20",
-        "",
-    ] {
-        assert!(problem(invalid).is_some(), "{invalid}");
-    }
+    assert_eq!(
+        rules("{ scope: project, key: integration }"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        rules("{ scope: Project, key: integration, conflict_policy: QUEUE }"),
+        Vec::<String>::new()
+    );
+    assert_eq!(rules("{ scope: global, key: integration }").len(), 1);
+    assert_eq!(rules("{ scope: project, key: ' ' }").len(), 1);
+    assert_eq!(
+        rules("{ scope: project, key: integration, conflict_policy: reject }").len(),
+        1
+    );
 }

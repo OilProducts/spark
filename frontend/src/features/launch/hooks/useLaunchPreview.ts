@@ -25,6 +25,7 @@ export interface LaunchPreviewState {
 
 export function useLaunchPreview(
     source: LaunchPreviewSource | null,
+    projectPath: string | null,
     expandChildFlows = false,
 ): LaunchPreviewState {
     const uiDefaults = useStore((state) => state.uiDefaults)
@@ -75,7 +76,7 @@ export function useLaunchPreview(
                         { expandChildren: expandChildFlows },
                     )
                 } else {
-                    const payload = await fetchFlowPayloadValidated(source.flowName, { signal: loadAbort.signal })
+                    const payload = await fetchFlowPayloadValidated(source.flowName, projectPath, { signal: loadAbort.signal })
                     if (cancelled) {
                         return
                     }
@@ -86,6 +87,7 @@ export function useLaunchPreview(
                         { signal: loadAbort.signal },
                         {
                             flowName: source.flowName,
+                            projectPath,
                             expandChildren: expandChildFlows,
                         },
                     )
@@ -130,7 +132,7 @@ export function useLaunchPreview(
             loadAbort.abort()
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- sourceKey captures the source identity
-    }, [sourceKey, expandChildFlows, uiDefaults])
+    }, [sourceKey, projectPath, expandChildFlows, uiDefaults])
 
     const hasValidationErrors = useMemo(
         () => diagnostics.some((diagnostic) => diagnostic.severity === 'error'),

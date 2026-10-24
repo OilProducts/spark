@@ -47,13 +47,8 @@ fn settings_resolution_preserves_precedence_and_derived_paths() {
     let (_temp, root) = canonical_tempdir();
     let env_home = root.join("env-home");
     let cli_home = root.join("cli-home");
-    let flows = root.join("flows");
     let ui = root.join("ui");
-    let env = env(&[
-        ("SPARK_HOME", &env_home),
-        ("SPARK_FLOWS_DIR", &flows),
-        ("SPARK_UI_DIR", &ui),
-    ]);
+    let env = env(&[("SPARK_HOME", &env_home), ("SPARK_UI_DIR", &ui)]);
 
     let settings = resolve_settings_with_env(
         &SettingsOverrides {
@@ -75,7 +70,7 @@ fn settings_resolution_preserves_precedence_and_derived_paths() {
     );
     assert_eq!(settings.attractor_dir, settings.data_dir.join("attractor"));
     assert_eq!(settings.runs_dir, settings.data_dir.join("attractor/runs"));
-    assert_eq!(settings.flows_dir, flows);
+    assert_eq!(settings.bundled_dir(), settings.data_dir.join("bundled"));
     assert_eq!(settings.ui_dir, Some(ui));
 }
 
@@ -138,7 +133,6 @@ fn validate_settings_creates_runtime_directories_and_checks_ui_index() {
         &settings.projects_dir,
         &settings.attractor_dir,
         &settings.runs_dir,
-        &settings.flows_dir,
     ] {
         assert!(path.is_dir(), "{} should be created", path.display());
         assert!(!path.join(WRITABLE_DIRECTORY_PROBE).exists());

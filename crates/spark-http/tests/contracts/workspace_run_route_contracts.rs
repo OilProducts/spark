@@ -73,7 +73,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         json!(["body", "flow_name"])
     );
 
-    let invalid_dir = settings.flows_dir.join("ops/invalid");
+    let invalid_dir = settings.bundled_dir().join("flows").join("ops/invalid");
     fs::create_dir_all(&invalid_dir).expect("invalid flow dir");
     fs::write(
         invalid_dir.join("flow.md"),
@@ -440,11 +440,10 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
-        &settings.flows_dir.join(name),
+        &settings.bundled_dir().join("flows").join(name),
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
-    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> &'static str {
@@ -466,7 +465,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("flows"),
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }

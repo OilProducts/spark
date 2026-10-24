@@ -53,11 +53,11 @@ export function RunContinuationPanel({
         diagnostics,
         hasValidationErrors,
         graphAttrs,
-    } = useLaunchPreview(previewSource)
+    } = useLaunchPreview(previewSource, projectPath)
 
     useEffect(() => {
         let cancelled = false
-        loadFlowCatalog()
+        loadFlowCatalog(projectPath)
             .then((flows) => {
                 if (!cancelled) {
                     setFlowCatalog(flows)
@@ -71,7 +71,7 @@ export function RunContinuationPanel({
         return () => {
             cancelled = true
         }
-    }, [])
+    }, [projectPath])
 
     const startNodeMissingFromOverride = Boolean(
         isInstalledFlowMode

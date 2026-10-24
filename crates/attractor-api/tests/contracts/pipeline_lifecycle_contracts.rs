@@ -260,7 +260,10 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     );
 
     // Broken files on disk fail the launch with the loader's error.
-    let broken = settings.flows_dir.join("tests/unparseable");
+    let broken = settings
+        .bundled_dir()
+        .join("flows")
+        .join("tests/unparseable");
     fs::create_dir_all(&broken).expect("broken flow dir");
     fs::write(broken.join("flow.md"), "---\nnodes: [\n---\n").expect("flow.md");
     let parse_error = service.start_pipeline(PipelineStartRequest {
@@ -275,7 +278,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
         .as_str()
         .is_some_and(|error| error.starts_with("flow.md:")));
 
-    let invalid = settings.flows_dir.join("tests/broken");
+    let invalid = settings.bundled_dir().join("flows").join("tests/broken");
     attractor_dsl::write_flow_dir(
         &invalid,
         &attractor_core::FlowDefinition::from_yaml_str(
@@ -294,7 +297,6 @@ edges:
         .expect("yaml"),
     )
     .expect("write");
-    crate::approve_flow(&settings, &invalid);
     let validation_error = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-validation-error".to_string()),
@@ -393,7 +395,6 @@ fn settings(root: &Path) -> SparkSettings {
         projects_dir: root.join("spark-home/workspace/projects"),
         attractor_dir: root.join("spark-home/attractor"),
         runs_dir: root.join("spark-home/attractor/runs"),
-        flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
     }
