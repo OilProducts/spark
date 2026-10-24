@@ -241,6 +241,7 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
             llm_provider: None,
             llm_profile: None,
             reasoning_effort: None,
+            execution_lock: None,
         })
         .unwrap();
     assert_eq!(started.run_id, "continued");

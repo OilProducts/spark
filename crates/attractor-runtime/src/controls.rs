@@ -92,6 +92,9 @@ pub struct ContinueRunRequest {
     pub llm_profile: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// The flow's lock resolved against the new run's project; none clears it.
+    #[serde(default)]
+    pub execution_lock: Option<attractor_core::RunExecutionLock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -299,6 +302,7 @@ impl RuntimeControls {
         record.llm_provider = provider.clone();
         record.llm_profile = llm_profile.clone();
         record.reasoning_effort = reasoning_effort.clone();
+        record.execution_lock = request.execution_lock.clone();
         record.started_at = crate::events::utc_timestamp();
         record.ended_at = None;
         record.continued_from_run_id = Some(source_record.run_id.clone());

@@ -607,3 +607,131 @@ fn launches_naming_one_project_share_lock_identity_across_checkouts() {
             && read_status(&settings, "run-proj-b") == "completed"
     });
 }
+
+#[test]
+fn continuations_resolve_the_effective_flows_lock_against_their_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project_a = temp.path().join("cont-a");
+    let project_b = temp.path().join("cont-b");
+    init_git_repo(&project_a);
+    init_git_repo(&project_b);
+    let service = AttractorApiService::new(settings.clone());
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+    let holder = crate::install_flow(
+        &settings,
+        tool_flow(
+            "cont-holder",
+            &wait_for_release_file_command("release-cont"),
+        ) + &project_lock("integration"),
+    );
+    let waiter = crate::install_flow(
+        &settings,
+        tool_flow("cont-waiter", "printf done") + &project_lock("integration"),
+    );
+    let unlocked = crate::install_flow(&settings, tool_flow("cont-free", "printf done"));
+    let continue_run = |source: &str, mode: &str, flow: Option<&str>, project: Option<&Path>| {
+        let response = service.continue_pipeline_route(
+            source,
+            attractor_api::ContinuePipelineRequest {
+                start_node: "work".to_string(),
+                flow_source_mode: mode.to_string(),
+                flow_name: flow.map(str::to_string),
+                project_path: project.map(path),
+                working_directory: project.map(path),
+                ..Default::default()
+            },
+        );
+        assert_eq!(response.body["status"], "started", "{}", response.body);
+        response.body["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string()
+    };
+
+    let started = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("cont-src".to_string()),
+        flow_name: Some(unlocked.clone()),
+        working_directory: path(&project_a),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+    assert_eq!(read_lock(&settings, "cont-src"), None);
+
+    // Unlocked to locked: the continuation takes the flow's lock in its project.
+    let locked = continue_run("cont-src", "flow_name", Some(&holder), None);
+    wait_until("continuation holds the newly declared lock", || {
+        read_lock(&settings, &locked).is_some_and(|lock| lock.state == "holding")
+    });
+    start_locked_run(
+        &settings,
+        &service,
+        "cont-probe-a",
+        &project_a,
+        tool_flow("cont-probe", "printf done"),
+        Some(project_lock("integration")),
+    );
+    wait_until("a fresh launch in the project queues behind it", || {
+        read_status(&settings, "cont-probe-a") == "queued"
+    });
+    let identity_a = read_lock(&settings, &locked).expect("lock").identity;
+    assert_eq!(
+        read_lock(&settings, "cont-probe-a")
+            .expect("probe")
+            .identity,
+        identity_a
+    );
+    fs::write(project_a.join("release-cont"), "go").expect("release");
+    wait_until("continuation and probe complete", || {
+        read_status(&settings, &locked) == "completed"
+            && read_status(&settings, "cont-probe-a") == "completed"
+    });
+
+    // Snapshot keeps the source's flow and project, and so its lock identity.
+    let snapshot = continue_run(&locked, "snapshot", None, None);
+    wait_until("snapshot continuation completes", || {
+        read_status(&settings, &snapshot) == "completed"
+    });
+    assert_eq!(
+        read_lock(&settings, &snapshot).expect("lock").identity,
+        identity_a
+    );
+
+    // Locked to unlocked: the inherited lock is cleared.
+    let freed = continue_run(&locked, "flow_name", Some(&unlocked), None);
+    wait_until("unlocked continuation completes", || {
+        read_status(&settings, &freed) == "completed"
+    });
+    assert_eq!(read_lock(&settings, &freed), None);
+
+    // Another project: the lock moves to that project and queues there.
+    start_locked_run(
+        &settings,
+        &service,
+        "cont-holder-b",
+        &project_b,
+        tool_flow("cont-holder-b", &wait_for_release_file_command("release-b")),
+        Some(project_lock("integration")),
+    );
+    wait_until("project B holder takes its lock", || {
+        read_lock(&settings, "cont-holder-b").is_some_and(|lock| lock.state == "holding")
+    });
+    let moved = continue_run(&locked, "flow_name", Some(&waiter), Some(&project_b));
+    wait_until("moved continuation queues in project B", || {
+        read_status(&settings, &moved) == "queued"
+    });
+    let identity_b = read_lock(&settings, "cont-holder-b")
+        .expect("lock")
+        .identity;
+    assert_ne!(identity_a, identity_b);
+    assert_eq!(
+        read_lock(&settings, &moved).expect("lock").identity,
+        identity_b
+    );
+    fs::write(project_b.join("release-b"), "go").expect("release b");
+    wait_until("moved continuation runs after project B releases", || {
+        read_status(&settings, &moved) == "completed"
+    });
+}

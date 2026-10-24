@@ -442,6 +442,8 @@ pub struct ResolvedContinueFlow {
     pub flow_files: Option<attractor_dsl::FlowManifest>,
     #[serde(default)]
     pub flow_name: Option<String>,
+    #[serde(default)]
+    pub execution_lock: Option<RunExecutionLock>,
 }
 
 #[derive(Debug, Clone)]
@@ -502,6 +504,7 @@ impl RuntimeControlService {
             llm_provider: request.llm_provider,
             llm_profile: request.llm_profile,
             reasoning_effort: request.reasoning_effort,
+            execution_lock: resolved_flow.execution_lock,
         };
         match self.controls.continue_from_snapshot(request) {
             Ok(started) => RuntimeRouteResponse::json(200, json!(started)),
@@ -2358,6 +2361,26 @@ impl AttractorApiService {
         };
         // Snapshot keeps the source's roots; flow_name moves to the resolved project.
         request.project_path = project_path;
+        // The effective flow's lock, keyed to the new run's project as the runtime records it.
+        let lock_project = request
+            .project_path
+            .clone()
+            .or_else(|| source_record.map(|record| record.project_path.clone()))
+            .and_then(|path| trimmed_option(Some(&path)))
+            .or_else(|| trimmed_option(request.working_directory.as_deref()))
+            .or_else(|| {
+                source_record.and_then(|record| trimmed_option(Some(&record.working_directory)))
+            })
+            .unwrap_or_default();
+        let execution_lock = match flow
+            .execution_lock
+            .as_ref()
+            .map(|spec| resolve_execution_lock(spec, &absolutize_path(&lock_project)))
+            .transpose()
+        {
+            Ok(lock) => lock,
+            Err(error) => return validation_error_response(error),
+        };
         let response = RuntimeControlService::new(self.observed_store()).continue_pipeline(
             pipeline_id,
             request,
@@ -2367,6 +2390,7 @@ impl AttractorApiService {
                 flow_definition_json: Some(flow.to_canonical_json_string()),
                 flow_files,
                 flow_name: Some(flow_name),
+                execution_lock,
             },
         );
         self.execute_prepared_route_response(&response, flow);
