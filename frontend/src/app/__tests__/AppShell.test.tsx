@@ -594,6 +594,8 @@ describe('App shell behavior', () => {
 
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
+    expect(useStore.getState().viewMode).toBe('org')
+    await user.keyboard('{ArrowDown}')
     expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
     await user.keyboard('{ArrowDown}')

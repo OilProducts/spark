@@ -2141,7 +2141,7 @@ impl WorkspaceConversationService {
     /// Whether the conversation has an assistant turn pending or streaming.
     pub(crate) fn turn_in_flight(&self, conversation_id: &str, project_path: &str) -> bool {
         matches!(
-            self.repository().read_snapshot(conversation_id, Some(project_path)),
+            self.repository().read_existing_snapshot(conversation_id, project_path),
             Ok(Some(snapshot)) if active_assistant_turn_id(&snapshot).is_some()
         )
     }

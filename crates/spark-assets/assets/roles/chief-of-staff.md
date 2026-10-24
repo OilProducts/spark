@@ -12,7 +12,7 @@ When a run fails, triage before you diagnose. Set aside failures you already kno
 
 To diagnose a real failure, launch the `software-development/run-retrospective` flow on the run. Do not take its conclusion on trust: verify it against the run's own artifacts, logs, and transcripts before you act on it.
 
-Fix the cause in the project's flows and roles directly. Never edit a bundled file: to change a bundled flow or role, copy it into the org repo under the same name and change the copy, which overrides the bundled one. Commit each change in the org repo with its reason in the commit message. For work that takes several steps or runs, open a mission rather than carrying it in this conversation.
+Fix the cause in the project's flows and roles directly. Never edit a bundled file: to change a bundled flow or role, copy it into the org repo under the same name, commit the unmodified copy first (`Copy <name> from bundled`), then change the copy, which overrides the bundled one. Commit each change in the org repo with its reason in the commit message. For work that takes several steps or runs, open a mission rather than carrying it in this conversation.
 
 Report what you found and changed to the Coordinator with `spark role send --role coordinator`, briefly: the failure, the cause, the change, and its commit.
 

@@ -11,6 +11,7 @@ import { DialogProvider } from "@/components/app/dialog-controller"
 import { Sheet } from "@/components/app/view-layout"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
 import { OverviewPanel } from "@/features/overview/OverviewPanel"
+import { OrgPanel } from "@/features/org/OrgPanel"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isNarrowViewport = useNarrowViewport()
@@ -71,6 +72,7 @@ function App() {
             <div className="absolute inset-0 flex"><Sheet><OverviewPanel /></Sheet></div>
           ) : null}
           <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
+          {viewMode === 'org' ? <div className="absolute inset-0"><OrgPanel /></div> : null}
           {isSettingsMode ? (
             <SettingsPanel />
           ) : null}

@@ -3199,7 +3199,8 @@ fn dispatch_pipeline_route(
 }
 
 /// Writes the changed files of a flow into the project's org repo and
-/// commits them. Saving a bundled flow copies it into the org first.
+/// commits them. Saving a bundled flow first copies it into the org and
+/// commits the copy unmodified.
 fn save_flow_request(
     roots: &FlowRoots,
     project: &Path,
@@ -3235,16 +3236,6 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    if !flow_path.join(FLOW_FILE).is_file() {
-        if let Ok(Some(bundled)) = roots.find_flow(&name) {
-            if let Err(error) = copy_flow_files(&bundled.path, &flow_path) {
-                return RuntimeRouteResponse::json(500, json!({"detail": error}));
-            }
-        }
-    }
-    if let Err(error) = write_flow_dir(&flow_path, flow) {
-        return flow_source_error_response(error);
-    }
     // Every flow file the editor owns (the directory's own `.md` files, which
     // it writes, copies and deletes), so a retry records what a failed commit
     // left behind; other files, and the reserved ones, are not the editor's.
@@ -3266,6 +3257,42 @@ fn save_flow_request(
             .iter()
             .map(|file| format!(":(exclude,literal){dir}/{file}")),
     );
+    // The first save of a bundled flow commits the unmodified copy first, so
+    // the copy's first commit is exactly the bundled version it came from.
+    // Until HEAD holds the copy (say its commit failed), a save that finds
+    // the bundled files still unmodified on disk recopies them. A project
+    // flow whose files differ is the project's own, never replaced by a copy.
+    let committed = spark_common::project::run_git(
+        &org,
+        &["cat-file", "-e", &format!("HEAD:{dir}/{FLOW_FILE}")],
+    )
+    .is_ok();
+    if !committed {
+        let bundled = FlowRoots::new(roots.bundled.clone(), None)
+            .find_flow(&name)
+            .ok()
+            .flatten()
+            .filter(|bundled| {
+                let Ok(texts) = attractor_dsl::read_flow_dir_texts(&flow_path) else {
+                    return !flow_path.join(FLOW_FILE).is_file();
+                };
+                attractor_dsl::read_flow_dir_texts(&bundled.path).is_ok_and(|bundled| {
+                    bundled
+                        .iter()
+                        .all(|(file, text)| texts.get(file) == Some(text))
+                })
+            });
+        if let Some(bundled) = bundled {
+            if let Err(error) = copy_flow_files(&bundled.path, &flow_path).and_then(|()| {
+                commit_org_paths(&org, &pathspecs, &format!("Copy {name} from bundled"))
+            }) {
+                return RuntimeRouteResponse::json(500, json!({"detail": error}));
+            }
+        }
+    }
+    if let Err(error) = write_flow_dir(&flow_path, flow) {
+        return flow_source_error_response(error);
+    }
     if let Err(error) =
         commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
     {
@@ -3280,11 +3307,23 @@ fn save_flow_request(
     )
 }
 
-/// Copies a flow directory's files into `target`.
+/// Makes `target`'s flow files exactly `source`'s: copies each and removes
+/// any other flow file.
 fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
     let texts =
         attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(target).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let file = path.file_name().unwrap_or_default().to_string_lossy();
+        if file.ends_with(".md")
+            && !texts.contains_key(file.as_ref())
+            && !attractor_dsl::RESERVED_FILES.contains(&file.as_ref())
+            && path.is_file()
+        {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+    }
     texts.into_iter().try_for_each(|(file, text)| {
         fs::write(target.join(file), text).map_err(|error| error.to_string())
     })

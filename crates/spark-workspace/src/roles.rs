@@ -162,9 +162,13 @@ impl WorkspaceRoleService {
             .map(|role| self.with_derived(role))
             .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
     }
-    /// The project's standing roles, the Coordinator first.
+    /// The project's standing roles, the Coordinator first. Reads only: an
+    /// unseen project gets no workspace directories.
     pub fn list(&self, project: &str) -> WorkspaceResult<Vec<RoleRecord>> {
-        let scope = self.scope(project)?;
+        if project.trim().is_empty() {
+            return Err(invalid("Project path is required"));
+        }
+        let scope = ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project)?;
         let mut roles: Vec<RoleRecord> = RecordRepository::roles(&scope.root)
             .list()?
             .into_iter()

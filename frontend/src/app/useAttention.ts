@@ -43,10 +43,12 @@ export function useAttentionItems() {
 }
 
 /** Opens a chat in the Chats view; leaving a project page asks first, so a cancelled leave keeps the shown chat. */
-export function openChat(projectPath: string, conversationId: string) {
+/** Opens a chat; a `draft` replaces its composer text, unsent. */
+export function openChat(projectPath: string, conversationId: string, draft?: string) {
     const open = () => {
         useStore.setState({ projectPagePath: null })
         useStore.getState().updateProjectSessionState(projectPath, { conversationId })
+        if (draft !== undefined) useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: draft })
         useStore.getState().setActiveProjectPath(projectPath)
         useStore.getState().setViewMode('home')
     }
