@@ -515,3 +515,61 @@ fn recovery_delivers_a_role_runs_missing_terminal_event() {
     harness.roles.recover().unwrap();
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
 }
+
+#[test]
+fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs() {
+    let harness = Harness::new();
+    harness
+        .roles
+        .start(&harness.project, CHIEF_OF_STAFF)
+        .unwrap();
+    harness.request(0);
+    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.edit_record(CHIEF_OF_STAFF, |role| {
+        let entry = |id: String, status: &str| json!({"run_id": id, "flow_name": "work/seeded", "summary": "Seeded work", "launched_at": "t", "status": status});
+        let mut runs: Vec<Value> = (0..50)
+            .map(|index| entry(format!("run-done-{index}"), "completed"))
+            .collect();
+        runs.insert(10, entry("run-other".into(), "running"));
+        runs.push(entry("run-lost".into(), "running"));
+        role["runs"] = json!(runs);
+    });
+    let mut record = attractor_core::RunRecord::new("run-lost", &harness.project);
+    record.status = "failed".into();
+    record.launch_context = Some(
+        [(
+            "context.spark_owner".to_string(),
+            json!({"kind": "role", "id": CHIEF_OF_STAFF}),
+        )]
+        .into(),
+    );
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .write_result(
+            &paths,
+            &attractor_core::RunResult::pending("run-lost", "failed"),
+        )
+        .unwrap();
+    // Recovery reconciles the run to its terminal status, which trims.
+    harness.roles.recover().unwrap();
+    harness.request(1);
+    let runs = harness.get(CHIEF_OF_STAFF).inbox.runs;
+    let ids: Vec<&str> = runs.iter().map(|run| run.run_id.as_str()).collect();
+    assert_eq!(runs.iter().filter(|run| !run.in_flight()).count(), 50);
+    assert!(!ids.contains(&"run-done-0"), "{ids:?}");
+    assert!(ids.contains(&"run-done-1"), "{ids:?}");
+    assert!(runs
+        .iter()
+        .any(|run| run.run_id == "run-other" && run.in_flight()));
+    assert!(runs
+        .iter()
+        .any(|run| run.run_id == "run-lost" && run.status == "failed"));
+    // run-other stays in flight, so the role keeps working after the turn.
+    harness.agent.release(1);
+}

@@ -220,6 +220,21 @@ impl WorkspaceRoleService {
             if deliver {
                 self.deliver_pending(repo, &mut role, None)?;
             }
+            // ponytail: keeps in-flight runs plus the newest 50 finished; older ones leave the roster.
+            let finished = role
+                .inbox
+                .runs
+                .iter()
+                .filter(|run| !run.in_flight())
+                .count();
+            let mut dropped = finished.saturating_sub(FINISHED_RUNS_KEPT);
+            role.inbox.runs.retain(|run| {
+                if dropped == 0 || run.in_flight() {
+                    return true;
+                }
+                dropped -= 1;
+                false
+            });
             let after = stored(&role);
             if saved.as_ref() != Some(&after)
                 && (saved.is_some() || create || after != stored(&default))
@@ -323,16 +338,6 @@ impl WorkspaceRoleService {
             let owner = Owner::Role(role.name.clone());
             response = inbox::launch_recorded(&mut role.inbox, &owner, request, start)?;
             role.recent_launches.push(now);
-            // ponytail: keeps in-flight runs plus the newest 50 finished; older ones leave the roster.
-            let finished = role.inbox.runs.iter().filter(|run| !run.in_flight()).count();
-            let mut dropped = finished.saturating_sub(FINISHED_RUNS_KEPT);
-            role.inbox.runs.retain(|run| {
-                if dropped == 0 || run.in_flight() {
-                    return true;
-                }
-                dropped -= 1;
-                false
-            });
             Ok(())
         })?;
         Ok(response)
