@@ -14,13 +14,9 @@ pub struct RecordRepository {
 }
 impl RecordRepository {
     pub fn missions(project_root: &Path) -> Self {
-        let root = project_root.join("missions");
-        let tasks = project_root.join("tasks");
-        // Missions supersede tasks: an existing task directory is adopted as-is.
-        if !root.exists() && tasks.is_dir() {
-            let _ = fs::rename(&tasks, &root);
+        Self {
+            root: project_root.join("missions"),
         }
-        Self { root }
     }
     pub fn roles(project_root: &Path) -> Self {
         Self {

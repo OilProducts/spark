@@ -230,85 +230,19 @@ pub(crate) fn tool_flow(command: &str) -> String {
 }
 
 #[test]
-fn legacy_records_load_and_unstarted_finished_cards_are_archived() {
+fn listing_missions_leaves_an_obsolete_tasks_directory_untouched() {
     let harness = Harness::new();
     let root = mission_root(&harness.settings, &harness.project);
-    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
-        .ensure_project_paths(&harness.project)
-        .unwrap()
-        .project_id;
     std::fs::create_dir_all(root.join("tasks")).unwrap();
-    for (id, stage, started) in [
-        ("task-done", "done", Value::Null),
-        ("task-review", "review", Value::Null),
-        ("task-ready", "ready", Value::Null),
-        ("task-running", "review", json!("2026-01-01")),
-    ] {
-        let legacy = json!({
-            "id": id, "project_id": project_id, "project_path": harness.project,
-            "created_at": format!("2026-01-01 {id}"), "updated_at": "2026-01-01", "revision": 1,
-            "fields": {"title": id, "description": "Kept", "stage": stage, "archived": false,
-                "reaction_flow": "missions/react", "hooks": [{"on": "run.completed", "do": "ignore"}],
-                "budget": {"concurrent_runs": 2, "total_runs": 5, "reactions": 10}},
-            "activity": [{"revision": 1, "actor": "human", "note": ""}],
-            "state": "old state", "execution": {"substate": "attention", "reason": "held"},
-            "paused": true, "hold": {"substate": "attention", "reason": "held", "actions": [], "event": ""},
-            "pending_events": [], "reaction_events": [], "started_at": started,
-            "runs": [{"run_id": "run-old", "label": "build", "role": "reaction", "launched_at": "t", "launched_by_event": "e", "status": "completed"}],
-        });
-        std::fs::write(root.join(format!("tasks/{id}.json")), legacy.to_string()).unwrap();
-    }
+    std::fs::write(root.join("tasks/task-old.json"), "{}").unwrap();
+    let mission = harness.create(json!({"title": "Current", "description": "Kept"}));
     let missions = harness.missions.list(&harness.project).unwrap();
-    assert!(root.join("missions/task-done.json").exists());
-    let archived: Vec<_> = missions
-        .iter()
-        .map(|mission| (mission.id.as_str(), mission.fields.archived))
-        .collect();
     assert_eq!(
-        archived,
-        [
-            ("task-done", true),
-            ("task-ready", false),
-            ("task-review", true),
-            ("task-running", false)
-        ]
+        missions.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        [mission.id.as_str()]
     );
-    let ready = &missions[1];
-    assert_eq!(ready.status, MissionStatus::Draft);
-    assert_eq!(
-        (
-            ready.fields.budget.concurrent_runs,
-            ready.fields.budget.total_runs
-        ),
-        (2, 5)
-    );
-    assert_eq!(ready.inbox.runs[0].run_id, "run-old");
-    let updated = harness
-        .missions
-        .update(
-            &harness.project,
-            "task-done",
-            mutation(json!({"revision": 1, "fields": {"title": "Renamed"}})),
-        )
-        .unwrap();
-    // A write drops the removed fields and keeps the archive.
-    let stored: Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("missions/task-done.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(updated.fields.archived);
-    for removed in [
-        "state",
-        "execution",
-        "paused",
-        "hold",
-        "pending_events",
-        "status",
-    ] {
-        assert!(stored.get(removed).is_none(), "{removed}");
-    }
-    assert!(stored["fields"].get("stage").is_none());
-    assert!(stored["fields"].get("hooks").is_none());
+    assert!(root.join("tasks/task-old.json").exists());
+    assert!(root.join(format!("missions/{}.json", mission.id)).exists());
 }
 
 #[test]

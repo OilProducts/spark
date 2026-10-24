@@ -142,14 +142,6 @@ impl MissionRecord {
     }
 }
 
-fn decode_record(value: Value) -> WorkspaceResult<MissionRecord> {
-    // Finished cards from the stage board must not reappear as drafts.
-    let finished = value["started_at"].is_null()
-        && matches!(value["fields"]["stage"].as_str(), Some("done" | "review"));
-    let mut mission: MissionRecord = decode(value)?;
-    mission.fields.archived |= finished;
-    Ok(mission)
-}
 fn stored(mission: &MissionRecord) -> Value {
     let mut value = serde_json::to_value(mission).unwrap();
     value.as_object_mut().unwrap().remove("status");
@@ -181,7 +173,7 @@ impl WorkspaceMissionService {
         let value = repo
             .read(id)?
             .ok_or_else(|| WorkspaceError::NotFound("Unknown project mission".into()))?;
-        let mission = decode_record(value)?;
+        let mission: MissionRecord = decode(value)?;
         if mission.project_id != scope.project_id {
             return Err(invalid("Mission belongs to another project"));
         }
@@ -284,7 +276,7 @@ impl WorkspaceMissionService {
         let mut missions: Vec<MissionRecord> = RecordRepository::missions(&scope.root)
             .list()?
             .into_iter()
-            .map(decode_record)
+            .map(decode::<MissionRecord>)
             .collect::<WorkspaceResult<_>>()?;
         if missions.iter().any(|m| m.project_id != scope.project_id) {
             return Err(invalid("Mission belongs to another project"));
@@ -404,9 +396,9 @@ impl WorkspaceMissionService {
         let mut updated = None;
         let value = RecordRepository::missions(&scope.root).transact::<WorkspaceError>(id, |previous| {
             let now = now();
-            let mut mission = match previous {
-                Some(value) if !create => decode_record(value)?,
-                None if create => decode_record(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "source_conversation_id": source_conversation_id}))?,
+            let mut mission: MissionRecord = match previous {
+                Some(value) if !create => decode(value)?,
+                None if create => decode(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "source_conversation_id": source_conversation_id}))?,
                 _ => return Err(WorkspaceError::NotFound("Unknown project mission".into())),
             };
             if !create && mutation.revision != Some(mission.revision) { return Err(WorkspaceError::Conflict(format!("Mission changed; reload revision {} and reconcile your edits", mission.revision))); }
@@ -434,7 +426,7 @@ impl WorkspaceMissionService {
             mission.record_activity(&mutation.actor, &mutation.note, before);
             Ok(stored(&mission))
         })?;
-        let mission = self.with_status(decode_record(value)?);
+        let mission = self.with_status(decode(value)?);
         if let Some(payload) = updated {
             let post = InboxPost {
                 id: Some(format!("{}:updated:{}", mission.id, mission.revision)),
