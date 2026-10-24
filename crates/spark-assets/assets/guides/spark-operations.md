@@ -2,7 +2,7 @@
 
 This guide is the packaged control-surface reference for agents operating Spark through its CLI and HTTP API.
 
-Use it for launch, inspection, human-gate, trigger, and mission tasks. OpenAPI remains the exhaustive schema source:
+Use it for launch, inspection, human-gate, trigger, mission, and standing-role tasks. OpenAPI remains the exhaustive schema source:
 
 - Attractor: `/attractor/docs`, `/attractor/openapi.json`
 - Workspace: `/workspace/docs`, `/workspace/openapi.json`
@@ -440,6 +440,7 @@ Trigger operation notes:
 - Trigger definitions are project-scoped and persisted through the Workspace trigger API.
 - Protected triggers reject edits and deletes through the same CLI and HTTP surfaces.
 - Webhook triggers use the shared Workspace webhook ingress route and validate their configured secret before dispatch.
+- An action's `mode` is `static` (launch `flow_name`, the default), `mission` (deliver to `mission_id` in `project_path`), or `role` (deliver to the standing role `role` in `project_path`).
 - Production trigger runtime state, dispatch provenance, and live trigger events are emitted by the Rust trigger runtime. The browser/operator stream observes trigger changes through `/workspace/api/live/events` with `triggers_project_path`.
 - Trigger-launched repository mutation policy is compatibility behavior, not a new safety policy defined by this guide.
 
@@ -498,7 +499,7 @@ Create with `--conversation <handle>` instead of `--project` to make a mission f
 
 Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID; `GET /workspace/api/missions` without `project_path` lists every project's missions.
 
-Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.question`, `run.waiting` (recovery decisions), and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_mission`, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
+Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.question`, `run.waiting` (recovery decisions), and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_owner` (`{"kind": "mission", "id": ...}`), so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
 
 Questions from all descendants return to the mission with their owning run ID. List open questions with `spark run questions --run <id>`. Answer using `spark run answer --run <owning run id> --question <question id> --option <value>` or `--text <text>`. The mission agent answers every question itself when the objective, playbook, run results and logs, and the repository give it the information, stating its reasoning; only when that information is missing does it ask the user for exactly what is missing, end the turn, and relay their reply without guessing. A mission is Running during its question-handling turn and Needs you if it ends with an unanswered question. Answers from the Runs view also clear the roster wait.
 
@@ -520,3 +521,18 @@ To run a playbook against an issue, list the playbooks, create a mission with th
 Create rejects an unknown playbook. On start, the mission snapshots the playbook into its record (`playbook`: name, title, description, and text), so later edits to the file do not change it, and the agent's pinned instructions include the playbook text after the objective.
 
 `status` is derived on read: `draft` (not started), `running` (a turn or run is in flight or events are pending, and no run waits on a human gate), `needs_you` (a run waits on a human gate, or nothing is in flight or pending), or `closed`.
+
+## Standing roles
+
+A standing role is a role file (`roles/<name>.md`, resolved from the project's org repo, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. Two are bundled: the `coordinator`, the agent the user talks to, which exists in every project and is saved on first use, and the `chief-of-staff`, which owns and approves the org repo and starts only when asked. Each role keeps its memory in `<org>/memory/<name>/` (`index.md`, `log.md`), versioned in the org repo.
+
+```bash
+spark role list --project /absolute/project
+spark role start --project /absolute/project --role chief-of-staff
+spark role stop --project /absolute/project --role chief-of-staff
+spark role send --project /absolute/project --role coordinator --conversation <sender handle> --message "Fixed the review flow"
+```
+
+The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop|send?project_path=...` (`send` takes `{"conversation_handle", "message"}`).
+
+A role wakes on a new turn when the user writes in its conversation, when a run launched from it reports back (launches carry `context.spark_owner` with `kind` `role`), when a `role`-mode trigger fires, when a mission created from its conversation closes, and when another conversation sends it a message; a message from another role names that role. Launches count against `budget` (`{"concurrent_runs":4,"runs_per_day":20}` by default). A stopped role still records events but delivers none until it starts again; its triggers stay enabled, and a `role` trigger skips runs the role launched itself and runs of other projects. A role file's `execution` settings apply to its conversation below the conversation's own model settings and above the project's.

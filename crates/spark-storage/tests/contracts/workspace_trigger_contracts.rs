@@ -187,7 +187,10 @@ fn persisted_trigger_definitions_are_validated_and_malformed_files_are_skipped_b
     draft.action.mode = "workspace_draft".to_string();
     match repository.put(&draft) {
         Err(StorageError::InvalidRepositoryPath { reason, .. }) => {
-            assert_eq!(reason, "Trigger action mode must be static or mission.")
+            assert_eq!(
+                reason,
+                "Trigger action mode must be static, mission, or role."
+            )
         }
         other => panic!("expected workspace_draft creation to be rejected, got {other:?}"),
     }
@@ -218,7 +221,7 @@ secret_hash = "hash""#,
 statuses = ["completed"]"#,
             )
             .replace("[action]\n", "[action]\nmode = \"workspace_draft\"\n"),
-            "Trigger action mode must be static or mission.",
+            "Trigger action mode must be static, mission, or role.",
         ),
         (
             "trigger-unknown-source",
@@ -359,6 +362,7 @@ fn definition_with_source(
         source_type: source_type.to_string(),
         action: TriggerAction {
             mission_id: None,
+            role: None,
             mode: "static".to_string(),
             flow_name: "ops/run.dot".to_string(),
             // A prefix that exists on no platform: /tmp is a symlink on macOS and

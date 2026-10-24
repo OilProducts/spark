@@ -94,7 +94,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
     await page.getByTestId('activity-chats').click()
     const liveGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
-    await liveGroup.getByTestId('chats-chat-row').first().click()
+    await liveGroup.locator('[data-testid="chats-chat-row"]:not([data-standing-role])').first().click()
     await expect(history).toContainText('Half done. Still going. All done.')
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)

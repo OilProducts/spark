@@ -14,6 +14,7 @@ export type TriggerFormState = {
     sourceType: TriggerSourceType
     actionMode: string
     missionId: string
+    roleName: string
     flowName: string
     targetMode: TriggerTargetMode
     projectPath: string
@@ -39,6 +40,7 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'targetMode' | 'projectPath'> = 
     sourceType: 'schedule',
     actionMode: 'static',
     missionId: '',
+    roleName: '',
     flowName: '',
     staticContextText: '{}',
     scheduleKind: 'interval',
@@ -150,6 +152,7 @@ export function buildTriggerSourcePayload(form: TriggerFormState): Record<string
 
 export function buildTriggerActionPayload(form: TriggerFormState): Record<string, unknown> {
     if (form.actionMode === 'mission') return { mode: 'mission', mission_id: form.missionId, project_path: form.targetMode === 'none' ? null : form.projectPath.trim() || null }
+    if (form.actionMode === 'role') return { mode: 'role', role: form.roleName.trim(), project_path: form.targetMode === 'none' ? null : form.projectPath.trim() || null }
 
     return {
         flow_name: form.flowName.trim(),
@@ -167,6 +170,7 @@ export function triggerToFormState(trigger: TriggerResponse, registry: Registry)
         sourceType: trigger.source_type,
         actionMode: trigger.action.mode ?? 'static',
         missionId: trigger.action.mission_id ?? '',
+        roleName: trigger.action.role ?? '',
         flowName: trigger.action.flow_name,
         targetMode: resolveTriggerTargetMode(projectPath, registry),
         projectPath,

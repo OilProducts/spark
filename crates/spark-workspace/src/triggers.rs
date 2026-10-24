@@ -205,7 +205,7 @@ impl WorkspaceTriggerService {
             // Serialize target validation and persistence with mission closure.
             let scope = spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
                 .ensure_project_paths(action.project_path.as_deref().unwrap())?;
-            spark_storage::workspace_missions::MissionRepository::new(&scope.root)
+            spark_storage::workspace_records::RecordRepository::missions(&scope.root)
                 .locked::<_, WorkspaceError>(|_| {
                     self.validate_action(action)?;
                     work()
@@ -226,6 +226,12 @@ impl WorkspaceTriggerService {
             if mission.closed.is_some() {
                 return Err(WorkspaceError::Validation("Mission is closed".into()));
             }
+        } else if action.mode == "role" {
+            crate::roles::role_file(
+                &self.settings,
+                action.project_path.as_deref().unwrap(),
+                action.role.as_deref().unwrap(),
+            )?;
         } else if action.mode == "static" {
             WorkspaceFlowService::new(self.settings.clone())
                 .ensure_flow_exists(&action.flow_name, action.project_path.as_deref())?;
@@ -257,6 +263,11 @@ impl TriggerActivationSink for WorkspaceTriggerActivationSink {
     ) -> spark_triggers::TriggerResult<TriggerActivationSinkOutcome> {
         if request.action.mode == "mission" {
             return crate::missions::WorkspaceMissionService::new(self.settings.clone())
+                .deliver_trigger(&request)
+                .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
+        }
+        if request.action.mode == "role" {
+            return crate::roles::WorkspaceRoleService::new(self.settings.clone())
                 .deliver_trigger(&request)
                 .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
         }

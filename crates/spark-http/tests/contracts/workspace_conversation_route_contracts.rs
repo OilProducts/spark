@@ -211,9 +211,12 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
     )
     .await;
     assert_eq!(listed.0, StatusCode::OK);
-    assert_eq!(listed.1.as_array().expect("list").len(), 1);
-    assert_eq!(listed.1[0]["conversation_id"], "conversation-empty");
-    assert_eq!(listed.1[0]["revision"], created.1["revision"]);
+    // The Coordinator's placeholder row is pinned first.
+    let listed = listed.1.as_array().expect("list");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["standing_role"]["name"], "coordinator");
+    assert_eq!(listed[1]["conversation_id"], "conversation-empty");
+    assert_eq!(listed[1]["revision"], created.1["revision"]);
     let reloaded = request_json(
         reloaded_app.clone(),
         "GET",
@@ -243,7 +246,8 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
         None,
     )
     .await;
-    assert_eq!(listed.1, json!([]));
+    assert_eq!(listed.1.as_array().unwrap().len(), 1);
+    assert_eq!(listed.1[0]["standing_role"]["name"], "coordinator");
 }
 
 #[tokio::test]
@@ -285,7 +289,7 @@ async fn project_conversation_list_allocates_missing_summary_handles() {
     .await;
 
     assert_eq!(listed.0, StatusCode::OK);
-    let handle = listed.1[0]["conversation_handle"].as_str().expect("handle");
+    let handle = listed.1[1]["conversation_handle"].as_str().expect("handle");
     assert_eq!(handle.split('-').count(), 2);
     let index: Value = serde_json::from_str(
         &fs::read_to_string(settings.workspace_dir.join("conversation-handles.json"))

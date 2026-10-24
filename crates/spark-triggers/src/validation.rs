@@ -60,6 +60,11 @@ pub fn normalize_trigger_update(
                     "Protected triggers do not allow mission target changes.",
                 ));
             }
+            if next_action.role != existing.action.role {
+                return Err(validation(
+                    "Protected triggers do not allow role target changes.",
+                ));
+            }
             if next_action.project_path != existing.action.project_path {
                 return Err(validation(
                     "Protected triggers do not allow project target changes.",
@@ -206,6 +211,7 @@ fn merge_action(
 fn action_to_map(action: &TriggerAction) -> Map<String, Value> {
     let mut payload = Map::new();
     payload.insert("mission_id".into(), serde_json::json!(action.mission_id));
+    payload.insert("role".into(), serde_json::json!(action.role));
     payload.insert("mode".to_string(), Value::String(action.mode.clone()));
     payload.insert(
         "flow_name".to_string(),

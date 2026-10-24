@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button'
 import { ProjectModelSettingsEditor } from '@/features/settings/ProjectModelSettingsEditor'
 
 import { ProjectExecutionSettings } from './ProjectExecutionSettings'
+import { StandingRoleChip } from './ProjectsSidebar'
 import type { ProjectConversationSummary } from '../model/types'
 import { isFolderMissing, projectLabel } from '../model/projectChoices'
+import { sortConversationSummaries } from '../model/conversationState'
 import { useRemoveProject } from '../hooks/useRemoveProject'
 
 /** One project: its path, all its chats, and its settings. */
@@ -35,7 +37,7 @@ export function ProjectPage({
     const { removeProject, removeError, removing } = useRemoveProject(projectPath)
     const label = projectLabel(registry, projectPath)
     const missing = isFolderMissing(project)
-    const sortedChats = [...chats].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+    const sortedChats = sortConversationSummaries(chats)
 
     if (!project) {
         // Until the registry loads, a restored page has nothing to show yet.
@@ -82,16 +84,17 @@ export function ProjectPage({
                                         <button
                                             type="button"
                                             data-testid="project-page-chat"
+                                            data-standing-role={chat.standing_role?.name}
                                             onClick={() => onSelectConversationThread(projectPath, chat.conversation_id)}
                                             className="flex min-w-0 flex-1 flex-col gap-px rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                         >
                                             <span className="truncate text-sm font-medium">{chat.title}</span>
                                             <span className="truncate text-xs text-muted-foreground">
                                                 {chat.conversation_handle ? <><span className="font-mono">{chat.conversation_handle}</span> · </> : null}
-                                                {formatConversationAgeShort(chat.updated_at)}
+                                                {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : formatConversationAgeShort(chat.updated_at)}
                                             </span>
                                         </button>
-                                        <Button
+                                        {chat.standing_role ? null : <Button
                                             type="button"
                                             variant="ghost"
                                             size="icon-sm"
@@ -102,7 +105,7 @@ export function ProjectPage({
                                             className="mr-1 text-muted-foreground hover:text-destructive"
                                         >
                                             <Trash2 className="size-3.5" />
-                                        </Button>
+                                        </Button>}
                                     </li>
                                 ))}
                             </ul>

@@ -207,6 +207,21 @@ export interface ConversationSummaryResponse {
     last_message_preview?: string | null
     /** The runs this chat launched, oldest first. */
     launched_run_ids?: string[]
+    /** Set on a standing role's conversation, pinned first in the Threads list. */
+    standing_role?: StandingRoleSummary | null
+}
+
+export interface StandingRoleSummary {
+    name: string
+    title: string
+    state: 'idle' | 'working' | 'stopped'
+}
+
+function parseStandingRole(value: unknown): StandingRoleSummary | null {
+    const record = asUnknownRecord(value)
+    if (!record || typeof record.name !== 'string' || typeof record.title !== 'string') return null
+    const state = record.state === 'working' || record.state === 'stopped' ? record.state : 'idle'
+    return { name: record.name, title: record.title, state }
 }
 
 export interface ConversationDeleteResponse {
@@ -635,6 +650,7 @@ export function parseConversationSummaryResponse(value: unknown): ConversationSu
         launched_run_ids: Array.isArray(record.launched_run_ids)
             ? record.launched_run_ids.filter((id): id is string => typeof id === 'string')
             : [],
+        standing_role: parseStandingRole(record.standing_role),
     }
 }
 

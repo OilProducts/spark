@@ -36,6 +36,9 @@ pub struct TriggerAction {
     pub flow_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_id: Option<String>,
+    /// The standing role a `role` action delivers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub project_path: Option<String>,
     pub static_context: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -444,10 +447,10 @@ fn normalize_trigger_action_payload_at(
         .unwrap_or(ACTION_MODE_STATIC)
         .trim()
         .to_ascii_lowercase();
-    if !matches!(mode.as_str(), ACTION_MODE_STATIC | "mission") {
+    if !matches!(mode.as_str(), ACTION_MODE_STATIC | "mission" | "role") {
         return Err(invalid_trigger(
             path,
-            "Trigger action mode must be static or mission.",
+            "Trigger action mode must be static, mission, or role.",
         ));
     }
     let flow_name = payload
@@ -485,7 +488,21 @@ fn normalize_trigger_action_payload_at(
             "Mission actions require mission_id and project_path.",
         ));
     }
-    let flow_name = if mode == "mission" {
+    let role = payload
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(str::to_string)
+        .filter(|_| mode == "role");
+    let mission_id = mission_id.filter(|_| mode == "mission");
+    if mode == "role" && (role.is_none() || project_path.is_none()) {
+        return Err(invalid_trigger(
+            path,
+            "Role actions require role and project_path.",
+        ));
+    }
+    let flow_name = if mode != ACTION_MODE_STATIC {
         String::new()
     } else {
         flow_name
@@ -523,6 +540,7 @@ fn normalize_trigger_action_payload_at(
     Ok(TriggerAction {
         mode,
         mission_id,
+        role,
         flow_name,
         project_path,
         static_context,
@@ -842,6 +860,9 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
     }
     if let Some(id) = &definition.action.mission_id {
         lines.push(format!("mission_id = {}", toml_string(id)));
+    }
+    if let Some(role) = &definition.action.role {
+        lines.push(format!("role = {}", toml_string(role)));
     }
     if !definition.action.flow_name.is_empty() {
         lines.push(format!(

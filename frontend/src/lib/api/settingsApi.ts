@@ -186,7 +186,7 @@ export interface ModelSettingsView {
     repair_defaults?: ModelSettings
     effective: ModelSettings | null
     validation_errors?: string[]
-    source: 'workspace' | 'project' | 'conversation'
+    source: 'workspace' | 'project' | 'role' | 'conversation'
 }
 
 // `utility_models` is the workspace utility model; a null group turns utility inference off.
@@ -205,7 +205,7 @@ export function parseModelSettingsView(payload: unknown, endpoint: string, secti
     const scope = record.scope
     const source = record.source
     if (scope !== 'workspace' && scope !== 'project' && scope !== 'conversation') throw new ApiSchemaError(endpoint, 'Invalid settings scope.')
-    if (source !== 'workspace' && source !== 'project' && source !== 'conversation') throw new ApiSchemaError(endpoint, 'Invalid settings source.')
+    if (source !== 'workspace' && source !== 'project' && source !== 'role' && source !== 'conversation') throw new ApiSchemaError(endpoint, 'Invalid settings source.')
     return { scope, source, revision: expectString(record.revision, endpoint, 'revision'), ...parseRepairableStored(record, group), effective: record.effective == null ? null : group(record.effective), ...parseSettingsFeedback(record, endpoint) }
 }
 

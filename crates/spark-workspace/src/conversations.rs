@@ -57,6 +57,16 @@ pub struct ConversationSummary {
     pub last_message_preview: Option<String>,
     /// The runs this chat launched, oldest first, from its flow launches.
     pub launched_run_ids: Vec<String>,
+    /// Set on a standing role's conversation, which the Threads list pins first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_role: Option<StandingRoleSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingRoleSummary {
+    pub name: String,
+    pub title: String,
+    pub state: crate::roles::RoleState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -615,18 +625,32 @@ impl WorkspaceConversationService {
         project_path: &str,
     ) -> WorkspaceResult<Option<ConversationSummary>> {
         let project_paths = self.repository().project_paths(project_path)?;
-        if spark_storage::workspace_missions::MissionRepository::new(&project_paths.root)
+        if spark_storage::workspace_records::RecordRepository::missions(&project_paths.root)
             .read(conversation_id)?
             .is_some()
         {
             return Ok(None);
         }
         let snapshot = self.get_snapshot(conversation_id, Some(project_path))?;
-        Ok(conversation_summary_from_snapshot(
-            &snapshot,
-            conversation_id,
-            project_path,
-        ))
+        Ok(
+            conversation_summary_from_snapshot(&snapshot, conversation_id, project_path)
+                .map(|summary| self.with_standing_role(summary)),
+        )
+    }
+
+    /// Marks a standing role's conversation and titles it after the role.
+    fn with_standing_role(&self, mut summary: ConversationSummary) -> ConversationSummary {
+        if let Some(role) = crate::roles::WorkspaceRoleService::new(self.settings.clone())
+            .conversation_role(&summary.project_path, &summary.conversation_id)
+        {
+            summary.title = role.title.clone();
+            summary.standing_role = Some(StandingRoleSummary {
+                name: role.name,
+                title: role.title,
+                state: role.state,
+            });
+        }
+        summary
     }
 
     pub fn list_project_conversations(
@@ -638,7 +662,7 @@ impl WorkspaceConversationService {
         let project_paths = repository.project_paths(&project_path)?;
         // A mission's conversation belongs to its mission, not the Threads list.
         let mission_ids: std::collections::HashSet<String> =
-            spark_storage::workspace_missions::MissionRepository::new(&project_paths.root)
+            spark_storage::workspace_records::RecordRepository::missions(&project_paths.root)
                 .list()
                 .unwrap_or_default()
                 .iter()
@@ -666,7 +690,7 @@ impl WorkspaceConversationService {
                                 &summary.created_at,
                                 preferred_handle,
                             )?;
-                        summaries.push(summary);
+                        summaries.push(self.with_standing_role(summary));
                     }
                 }
                 Ok(None) => {}
@@ -674,10 +698,47 @@ impl WorkspaceConversationService {
                 Err(error) => return Err(error.into()),
             }
         }
+        // A standing role without a conversation yet, such as the Coordinator
+        // before its first message, shows as a placeholder row.
+        for role in crate::roles::WorkspaceRoleService::new(self.settings.clone())
+            .list(&project_path)
+            .unwrap_or_default()
+        {
+            if summaries
+                .iter()
+                .all(|summary| summary.conversation_id != role.conversation_id)
+            {
+                summaries.push(ConversationSummary {
+                    conversation_id: role.conversation_id,
+                    conversation_handle: String::new(),
+                    project_path: project_path.clone(),
+                    title: role.title.clone(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                    revision: 0,
+                    last_message_preview: None,
+                    launched_run_ids: vec![],
+                    standing_role: Some(StandingRoleSummary {
+                        name: role.name,
+                        title: role.title,
+                        state: role.state,
+                    }),
+                });
+            }
+        }
+        // Standing roles are pinned first, the Coordinator leading.
+        let pin = |summary: &ConversationSummary| match &summary.standing_role {
+            Some(role) => (
+                false,
+                role.name != crate::roles::COORDINATOR,
+                role.name.clone(),
+            ),
+            None => (true, false, String::new()),
+        };
         summaries.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
+            pin(left)
+                .cmp(&pin(right))
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.conversation_id.cmp(&right.conversation_id))
         });
         Ok(summaries)
@@ -699,6 +760,7 @@ impl WorkspaceConversationService {
         let (mut group, _) = crate::settings::conversation_model_settings(
             &self.settings,
             project_path,
+            self.role_model_settings(snapshot).as_ref(),
             current.as_ref(),
         )?;
         if profile.is_some()
@@ -725,12 +787,44 @@ impl WorkspaceConversationService {
         Ok(Some(group))
     }
 
+    /// The `execution` settings of the role file behind a standing role's conversation.
+    fn role_model_settings(&self, snapshot: &Value) -> Option<ModelSettings> {
+        let conversation_id = snapshot["conversation_id"].as_str()?;
+        let project_path = snapshot_project_path(snapshot)?;
+        let role = crate::roles::WorkspaceRoleService::new(self.settings.clone())
+            .conversation_role(&project_path, conversation_id)?;
+        crate::roles::role_model_settings(
+            &crate::roles::role_file(&self.settings, &project_path, &role.name).ok()?,
+        )
+    }
+
+    /// The frame for a mission's conversation, a standing role's, or an ordinary chat.
+    fn conversation_frame(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        handle: &str,
+    ) -> String {
+        if let Some(mission) = crate::missions::WorkspaceMissionService::new(self.settings.clone())
+            .conversation_mission(project_path, conversation_id)
+        {
+            return crate::missions::mission_frame(&mission, handle);
+        }
+        if let Some(role) = crate::roles::WorkspaceRoleService::new(self.settings.clone())
+            .conversation_role(project_path, conversation_id)
+        {
+            return crate::roles::role_frame(&self.settings, &role, handle);
+        }
+        workspace_assistant_frame(&self.settings, project_path, handle)
+    }
+
     fn attach_model_settings(&self, snapshot: &mut Value) -> WorkspaceResult<()> {
         let project_path = snapshot_project_path(snapshot).unwrap_or_default();
         let group = snapshot_model_group(snapshot)?;
         let (effective, source) = match crate::settings::conversation_model_settings(
             &self.settings,
             &project_path,
+            self.role_model_settings(snapshot).as_ref(),
             group.as_ref(),
         ) {
             Ok(resolved) => resolved,
@@ -1199,6 +1293,7 @@ impl WorkspaceConversationService {
         let (effective, source) = crate::settings::conversation_model_settings(
             &self.settings,
             &project_path,
+            self.role_model_settings(&snapshot).as_ref(),
             group.as_ref(),
         )?;
         let (mut execution_settings, profile_contents) =
@@ -1306,6 +1401,26 @@ impl WorkspaceConversationService {
             self.attach_model_settings(&mut snapshot)?;
             return Ok((None, snapshot));
         }
+        // The handle is fixed before the commit so the frame, and its hash, are final.
+        let handle = repository.handle_repository().ensure_conversation_handle(
+            conversation_id,
+            &repository.project_paths(&project_path)?.project_id,
+            &project_path,
+            snapshot["created_at"].as_str().unwrap_or_default(),
+            snapshot["conversation_handle"]
+                .as_str()
+                .filter(|handle| !handle.is_empty()),
+        )?;
+        let instructions = self.conversation_frame(&project_path, conversation_id, &handle);
+        let instructions_sha256 = spark_common::project::sha256_hex(instructions.as_bytes());
+        // Providers that resume a thread keep its first instructions, so a change is announced once.
+        let instructions_changed = snapshot["turns"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .find_map(|turn| turn["instructions_sha256"].as_str())
+            .is_some_and(|previous| previous != instructions_sha256);
         let assistant_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
             "role": "assistant",
@@ -1315,6 +1430,7 @@ impl WorkspaceConversationService {
             "kind": "message",
             "execution_settings": execution_settings,
             "parent_turn_id": user_turn.get("id").and_then(Value::as_str).unwrap_or(""),
+            "instructions_sha256": instructions_sha256,
         });
         let user_turn_id = user_turn
             .get("id")
@@ -1427,22 +1543,11 @@ impl WorkspaceConversationService {
                 );
             }
         }
-        let handle = snapshot
-            .get("conversation_handle")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let instructions =
-            match crate::missions::WorkspaceMissionService::new(self.settings.clone())
-                .conversation_mission(&project_path, conversation_id)
-            {
-                Some(mission) => crate::missions::mission_frame(&mission, handle),
-                None => workspace_assistant_frame(&project_path, handle),
-            };
         metadata.insert(
             spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
             json!(instructions),
         );
-        let prompt = if rejection_notes.is_empty() {
+        let mut prompt = if rejection_notes.is_empty() {
             message.clone()
         } else {
             format!(
@@ -1450,6 +1555,9 @@ impl WorkspaceConversationService {
                 rejection_notes.join("\n\n")
             )
         };
+        if instructions_changed {
+            prompt = format!("Your instructions changed since your last turn; the system instructions now in effect replace the earlier ones.\n\n{prompt}");
+        }
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -2489,7 +2597,7 @@ impl WorkspaceConversationService {
     }
 
     /// An agent's flow launch from its conversation: runs immediately, and a
-    /// mission's conversation launches through its mission.
+    /// mission's or standing role's conversation launches through its owner.
     pub fn create_flow_run_request_by_handle(
         &self,
         conversation_handle: &str,
@@ -2522,17 +2630,20 @@ impl WorkspaceConversationService {
             reasoning_effort: request.reasoning_effort,
             execution_profile_id: request.execution_profile_id,
         };
+        let (project, conversation) = (&handle_match.project_path, &handle_match.conversation_id);
         let missions = crate::missions::WorkspaceMissionService::new(self.settings.clone());
-        match missions
-            .conversation_mission(&handle_match.project_path, &handle_match.conversation_id)
-        {
-            Some(mission) => {
-                missions.launch(&handle_match.project_path, &mission.id, launch, |launch| {
-                    self.launch_workspace_run(launch)
-                })
-            }
-            None => self.launch_workspace_run(launch),
+        if let Some(mission) = missions.conversation_mission(project, conversation) {
+            return missions.launch(project, &mission.id, launch, |launch| {
+                self.launch_workspace_run(launch)
+            });
         }
+        let roles = crate::roles::WorkspaceRoleService::new(self.settings.clone());
+        if let Some(role) = roles.conversation_role(project, conversation) {
+            return roles.launch(project, &role.name, launch, |launch| {
+                self.launch_workspace_run(launch)
+            });
+        }
+        self.launch_workspace_run(launch)
     }
 
     pub fn review_flow_run_request(
@@ -4274,27 +4385,42 @@ fn active_assistant_turn_id(snapshot: &Value) -> Option<String> {
         })
 }
 
-/// The fixed instruction frame for workspace conversation agents, pinned as
-/// system instructions on every turn. Without it the agent is a bare coding
+/// The fixed instruction frame for ordinary chats, pinned as system
+/// instructions on every turn: the Coordinator's persona, though an ordinary
+/// chat is not the standing Coordinator. Without it the agent is a bare coding
 /// session that knows nothing about Spark's control surface and will improvise
 /// one from whatever it finds on disk.
-fn workspace_assistant_frame(project_path: &str, conversation_handle: &str) -> String {
+fn workspace_assistant_frame(
+    settings: &SparkSettings,
+    project_path: &str,
+    conversation_handle: &str,
+) -> String {
+    let persona = crate::roles::role_file(settings, project_path, crate::roles::COORDINATOR)
+        .map(|role| role.persona)
+        .unwrap_or_else(|error| format!("You are the Spark workspace assistant. (The coordinator role file could not be read: {error})"));
     format!(
-        "You are the Spark workspace assistant.\n\n\
-        Spark is a workspace system that helps a user work on the active software project through conversation. Inspect the relevant project files and workspace-visible state, answer questions about the current work, and use the Spark control surface for workspace actions.\n\n\
-        Treat the active project repository as the source of truth for project questions. Prefer directly observed facts over assumptions, and say plainly when something is inferred. For simple factual questions, answer directly after the minimum required inspection; do not turn them into planning theater or workflow artifacts.\n\n\
-        Don't add requirements the user didn't request unless they're necessary for correctness. Keep optional implementation suggestions out of acceptance criteria.\n\n\
-        To run a playbook against an issue: `spark playbook list` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`.\n\n\
+        "{persona}\n\n\
+        This project's standing Coordinator keeps its memory in {memory}. Read it when it bears on the work, but never edit it.\n\n\
+        {playbooks}\n\n\
         {control}\n\n\
         Conversation handle: {handle}\n\
         Project path: {project_path}",
+        memory = crate::roles::memory_dir(project_path, crate::roles::COORDINATOR).display(),
+        playbooks = playbook_instructions(conversation_handle, project_path),
         control = spark_control_surface(conversation_handle, project_path),
         handle = conversation_handle,
         project_path = project_path,
     )
 }
 
-/// How a conversation agent drives Spark, shared by the workspace and mission frames.
+/// How a chat or standing role runs a playbook through a mission.
+pub(crate) fn playbook_instructions(conversation_handle: &str, project_path: &str) -> String {
+    format!(
+        "To run a playbook against an issue: `spark playbook list` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {conversation_handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`."
+    )
+}
+
+/// How a conversation agent drives Spark, shared by the chat, role, and mission frames.
 pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
         "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's org repo {org} (flows/ and roles/) replaces any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
@@ -4302,7 +4428,7 @@ pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &st
         - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
         Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
         - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
-        Change files in the org repo only when the user asks you to, and commit each change there with its reason in the commit message. Never edit $SPARK_HOME/bundled.\n\n\
+        Only the Chief of Staff role changes files in the org repo, committing each change there with its reason in the commit message; any other agent sends it the change it needs with `spark role send --project {project_path} --role chief-of-staff --conversation {handle} --message <text>`. The one exception: when the Chief of Staff is not running (`spark role list --project {project_path}`) and the user asks for an org change, the Coordinator makes it and commits it with its reason. Never edit $SPARK_HOME/bundled.\n\n\
         Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",
         handle = conversation_handle,
         org = spark_common::project::org_dir(Path::new(project_path)).display(),
@@ -6247,6 +6373,7 @@ pub(crate) fn conversation_summary_from_snapshot(
         revision,
         last_message_preview,
         launched_run_ids,
+        standing_role: None,
     })
 }
 

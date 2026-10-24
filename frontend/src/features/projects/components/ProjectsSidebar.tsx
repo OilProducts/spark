@@ -30,6 +30,18 @@ type ProjectsSidebarProps = {
     formatConversationAgeShort: (value: string) => string
 }
 
+/** A standing role's state, shown on its pinned row in place of the age. */
+export function StandingRoleChip({ state }: { state: 'idle' | 'working' | 'stopped' }) {
+    return (
+        <span data-testid="standing-role-state" className={cn(
+            "shrink-0 rounded-full px-1.5 py-px text-xs font-medium",
+            state === 'working' ? "bg-primary/10 text-primary" : state === 'stopped' ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground",
+        )}>
+            {state}
+        </span>
+    )
+}
+
 const iconButtonClassName = "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
 
 /** Chats grouped by project: collapsible project rows, thread rows underneath, a quiet "N more". */
@@ -72,7 +84,9 @@ export function ProjectsSidebar({
                 const missing = isFolderMissing(project)
                 const expanded = expandedByPath[projectPath] ?? Boolean(project.isDefault || projectPath === activeProjectPath)
                 const status = conversationSummariesStatusByProjectPath[projectPath] ?? 'idle'
-                const recentChats = chats.slice(0, RECENT_CHATS_PER_PROJECT)
+                // Standing roles stay pinned above the recent chats.
+                const ordinaryChats = chats.filter((chat) => !chat.standing_role)
+                const recentChats = [...chats.filter((chat) => chat.standing_role), ...ordinaryChats.slice(0, RECENT_CHATS_PER_PROJECT)]
                 return (
                     <li
                         key={projectPath}
@@ -144,19 +158,20 @@ export function ProjectsSidebar({
                                             <SidePanelRow
                                                 data-testid="chats-chat-row"
                                                 data-conversation-id={conversation.conversation_id}
+                                                data-standing-role={conversation.standing_role?.name}
                                                 onClick={() => onSelectConversationThread(projectPath, conversation.conversation_id)}
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
                                                 title={conversation.title}
                                                 meta={conversation.conversation_handle ? <span className="font-mono">{conversation.conversation_handle}</span> : null}
-                                                trailing={(
+                                                trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : (
                                                     <span className="transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
                                                         {formatConversationAgeShort(conversation.updated_at)}
                                                     </span>
                                                 )}
                                                 className="py-1.5 pl-7 pr-8"
                                             />
-                                            <button
+                                            {conversation.standing_role ? null : <button
                                                 type="button"
                                                 aria-label={`Delete thread ${conversation.title}`}
                                                 data-testid={`project-thread-delete-${conversation.conversation_id}`}
@@ -167,11 +182,11 @@ export function ProjectsSidebar({
                                                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover/thread:opacity-100 group-focus-within/thread:opacity-100"
                                             >
                                                 <Trash2 className="size-3.5" />
-                                            </button>
+                                            </button>}
                                         </li>
                                     )
                                 })}
-                                {chats.length > RECENT_CHATS_PER_PROJECT ? (
+                                {ordinaryChats.length > RECENT_CHATS_PER_PROJECT ? (
                                     <li>
                                         <Button
                                             type="button"
@@ -181,7 +196,7 @@ export function ProjectsSidebar({
                                             onClick={() => openProjectPage(projectPath)}
                                             className="ml-7 text-muted-foreground"
                                         >
-                                            {chats.length - RECENT_CHATS_PER_PROJECT} more
+                                            {ordinaryChats.length - RECENT_CHATS_PER_PROJECT} more
                                         </Button>
                                     </li>
                                 ) : null}

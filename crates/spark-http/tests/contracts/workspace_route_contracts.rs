@@ -405,6 +405,7 @@ async fn home_project_is_default_and_lists_span_projects() {
             .as_array()
             .unwrap()
             .iter()
+            .filter(|item| item.get("standing_role").is_none())
             .map(|item| item["project_path"].as_str().unwrap().to_string())
             .collect();
         paths.sort();
@@ -437,7 +438,7 @@ async fn home_project_is_default_and_lists_span_projects() {
     let one = request_json(app.clone(), "GET", &scoped, None).await;
     assert_eq!(project_paths(&one.1["missions"]), [paths[1].clone()]);
 
-    let handle = chats.1[0]["conversation_handle"]
+    let handle = chats.1[1]["conversation_handle"]
         .as_str()
         .unwrap()
         .to_string();
@@ -769,6 +770,92 @@ async fn wait_for_mission(app: &axum::Router, uri: &str, status: &str) -> Value 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("mission never reached {status}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn role_routes_list_start_send_and_stop_standing_roles() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).unwrap();
+    for (name, text) in [
+        (
+            "coordinator",
+            include_str!("../../../spark-assets/assets/roles/coordinator.md"),
+        ),
+        (
+            "chief-of-staff",
+            include_str!("../../../spark-assets/assets/roles/chief-of-staff.md"),
+        ),
+    ] {
+        fs::write(roles.join(format!("{name}.md")), text).unwrap();
+    }
+    let project = temp.path().join("roles-project");
+    fs::create_dir_all(&project).unwrap();
+    let agent = std::sync::Arc::new(GatedAgent::default());
+    agent.release();
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent);
+    let project = project.to_string_lossy().to_string();
+    let at = |suffix: &str| {
+        format!(
+            "/workspace/api/roles{suffix}?project_path={}",
+            crate::encode_query(&project)
+        )
+    };
+    let listed = request_json(app.clone(), "GET", &at(""), None).await;
+    assert_eq!(listed.0, StatusCode::OK, "{}", listed.1);
+    assert_eq!(listed.1["roles"].as_array().unwrap().len(), 1);
+    assert_eq!(listed.1["roles"][0]["name"], "coordinator");
+    assert_eq!(listed.1["roles"][0]["title"], "Coordinator");
+    let unknown = request_json(app.clone(), "POST", &at("/coordinator/pause"), None).await;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    let missing = request_json(app.clone(), "POST", &at("/no-such-role/start"), None).await;
+    assert_eq!(missing.0, StatusCode::BAD_REQUEST, "{}", missing.1);
+
+    let started = request_json(app.clone(), "POST", &at("/chief-of-staff/start"), None).await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    assert_eq!(started.1["title"], "Chief of Staff");
+    let listed = request_json(app.clone(), "GET", &at(""), None).await;
+    let names: Vec<_> = listed.1["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|role| role["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("coordinator"), json!("chief-of-staff")]);
+    let conversation = request_json(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/conversations/{}?project_path={}",
+            started.1["conversation_id"].as_str().unwrap(),
+            crate::encode_query(&project)
+        ),
+        None,
+    )
+    .await;
+    let handle = conversation.1["conversation_handle"].as_str().unwrap();
+    assert!(!handle.is_empty());
+    let sent = request_json(
+        app.clone(),
+        "POST",
+        &at("/coordinator/send"),
+        Some(json!({"conversation_handle": handle, "message": "Fixed it"})),
+    )
+    .await;
+    assert_eq!(sent.0, StatusCode::OK, "{}", sent.1);
+    assert_eq!(sent.1["event_seq"], 1);
+    let unsent = request_json(
+        app.clone(),
+        "POST",
+        &at("/coordinator/send"),
+        Some(json!({"message": "No sender"})),
+    )
+    .await;
+    assert_eq!(unsent.0, StatusCode::BAD_REQUEST);
+    let stopped = request_json(app.clone(), "POST", &at("/chief-of-staff/stop"), None).await;
+    assert_eq!(stopped.0, StatusCode::OK, "{}", stopped.1);
+    assert_eq!(stopped.1["state"], "stopped");
 }
 
 #[tokio::test(flavor = "multi_thread")]

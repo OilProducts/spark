@@ -79,6 +79,7 @@ describe('you were last in', () => {
 
     it('has nothing to show without chats', () => {
         expect(lastChat([], [run('run-a', 'completed', '2026-10-01T08:00:00Z')], [])).toBeNull()
+        expect(lastChat([chat('placeholder', '')], [], [])).toBeNull()
     })
 })
 

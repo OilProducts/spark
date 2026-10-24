@@ -302,6 +302,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         source_type: "webhook".to_string(),
         action: TriggerAction {
             mission_id: None,
+            role: None,
             mode: "static".to_string(),
             flow_name: "ops/run".to_string(),
             project_path: Some("/tmp/project".to_string()),
@@ -487,7 +488,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         .unwrap()
         .root;
     assert_eq!(
-        spark_storage::workspace_missions::MissionRepository::new(&root)
+        spark_storage::workspace_records::RecordRepository::missions(&root)
             .read(id)
             .unwrap()
             .unwrap()["activity"]
@@ -855,4 +856,107 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
         .map(|mission| mission["project_path"].as_str().unwrap())
         .collect();
     assert_eq!(projects, [paths.project_path.as_str(); 2]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).unwrap();
+    for (name, text) in [
+        (
+            "coordinator",
+            include_str!("../../../spark-assets/assets/roles/coordinator.md"),
+        ),
+        (
+            "chief-of-staff",
+            include_str!("../../../spark-assets/assets/roles/chief-of-staff.md"),
+        ),
+    ] {
+        fs::write(roles.join(format!("{name}.md")), text).unwrap();
+    }
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_str().unwrap();
+    let server = serve(spark_http::build_app_with_agent_turn_backend(
+        settings.clone(),
+        std::sync::Arc::new(QuietAgent),
+    ))
+    .await;
+    let role_cli = |args: &[&str]| {
+        let mut argv = vec!["role"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&["--project", project, "--base-url", &server.base_url]);
+        run_spark(temp.path(), argv)
+    };
+    let json_of = |output: Output| {
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let listed = json_of(role_cli(&["list"]));
+    assert_eq!(listed["roles"][0]["name"], "coordinator");
+    assert_ne!(role_cli(&["start"]).status.code(), Some(0));
+    let started = json_of(role_cli(&["start", "--role", "chief-of-staff"]));
+    assert_eq!(started["name"], "chief-of-staff");
+    let conversation: Value = reqwest::Client::new()
+        .get(format!(
+            "{}/workspace/api/conversations/{}",
+            server.base_url,
+            started["conversation_id"].as_str().unwrap()
+        ))
+        .query(&[("project_path", project)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let handle = conversation["conversation_handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sent = json_of(role_cli(&[
+        "send",
+        "--role",
+        "coordinator",
+        "--conversation",
+        &handle,
+        "--message",
+        "Fixed it",
+    ]));
+    assert_eq!(sent["event_seq"], 1);
+    let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
+    assert_eq!(stopped["state"], "stopped");
+
+    let payload = temp.path().join("role-trigger.json");
+    fs::write(
+        &payload,
+        json!({"name": "Failures", "source_type": "flow_event",
+            "action": {"mode": "role", "role": "chief-of-staff", "project_path": project},
+            "source": {"statuses": ["failed", "validation_error"]}})
+        .to_string(),
+    )
+    .unwrap();
+    let created = run_spark(
+        temp.path(),
+        [
+            "trigger",
+            "create",
+            "--json",
+            payload.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(created.status.code(), Some(0), "{}", stderr(&created));
+    let listed = run_spark(
+        temp.path(),
+        ["trigger", "list", "--text", "--base-url", &server.base_url],
+    );
+    assert!(
+        stdout(&listed).contains("Failures [flow_event] -> chief-of-staff"),
+        "{}",
+        stdout(&listed)
+    );
 }

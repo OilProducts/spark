@@ -435,7 +435,7 @@ for (const transition of ['switch', 'chat']) {
             }
             const group = chatsGroup(page, projects[1])
             if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
-            await group.getByTestId('chats-chat-row').first().click()
+            await group.locator('[data-testid="chats-chat-row"]:not([data-standing-role])').first().click()
         }
         await navigate()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()

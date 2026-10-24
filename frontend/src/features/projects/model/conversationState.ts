@@ -85,8 +85,16 @@ export function sanitizeStreamingTurnUpsert(
     }
 }
 
+/** Standing roles first, the Coordinator leading; then newest first. */
+export function pinRank(item: { standing_role?: { name: string } | null }): string {
+    const role = item.standing_role
+    return role ? `0${role.name === 'coordinator' ? '0' : '1'}${role.name}` : '1'
+}
+
 export function sortConversationSummaries(items: ConversationSummaryResponse[]): ConversationSummaryResponse[] {
     return [...items].sort((left, right) => {
+        const pinCompare = pinRank(left).localeCompare(pinRank(right))
+        if (pinCompare !== 0) return pinCompare
         const updatedAtCompare = right.updated_at.localeCompare(left.updated_at)
         return updatedAtCompare !== 0 ? updatedAtCompare : right.revision - left.revision
     })

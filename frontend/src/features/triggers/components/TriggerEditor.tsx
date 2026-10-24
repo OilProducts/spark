@@ -102,7 +102,7 @@ export function TriggerEditor({
                 </TriggerField>
                 <TriggerField label="Action" htmlFor={fieldId('action')}>
                     <NativeSelect id={fieldId('action')} value={form.actionMode} disabled={protectedTrigger} onChange={e => onChange({ ...form, actionMode: e.target.value })}>
-                        <option value="static">Launch flow</option><option value="mission">Deliver to mission</option>
+                        <option value="static">Launch flow</option><option value="mission">Deliver to mission</option><option value="role">Deliver to standing role</option>
                     </NativeSelect>
                 </TriggerField>
                 {form.actionMode === 'mission' ? <TriggerField label="Mission" htmlFor={fieldId('mission')}>
@@ -111,6 +111,15 @@ export function TriggerEditor({
                         {missions.map(m => <option key={m.id} value={m.id}>{m.fields.title}</option>)}
                     </NativeSelect>
                     {missionError && <p role="alert">{missionError}</p>}
+                </TriggerField> : form.actionMode === 'role' ? <TriggerField label="Role" htmlFor={fieldId('role')} className="text-sm">
+                    <Input
+                        id={fieldId('role')}
+                        value={form.roleName}
+                        disabled={protectedTrigger}
+                        placeholder="chief-of-staff"
+                        onChange={(event) => onChange({ ...form, roleName: event.target.value })}
+                        className="text-sm font-mono"
+                    />
                 </TriggerField> : <TriggerField label="Target flow" htmlFor={fieldId('target-flow')} className="text-sm">
                     <Input
                         id={fieldId('target-flow')}
@@ -348,7 +357,7 @@ export function TriggerEditor({
                 </Well>
             ) : null}
 
-            {form.actionMode !== 'mission' && <TriggerField label="Static context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
+            {form.actionMode === 'static' && <TriggerField label="Static context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
                 <Textarea
                     id={fieldId('static-context-json')}
                     value={form.staticContextText}

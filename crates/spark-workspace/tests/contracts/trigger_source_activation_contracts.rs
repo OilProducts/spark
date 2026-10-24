@@ -326,6 +326,60 @@ fn flow_event_trigger_keeps_static_context_nested() {
     assert!(!context.contains_key("context.request.problem"));
 }
 
+#[test]
+fn role_triggers_skip_the_roles_own_runs_and_other_projects_runs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_path = root.join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().into_owned();
+    let mut trigger = flow_event_definition("role-event", &project_path, Map::new());
+    trigger.action.mode = "role".into();
+    trigger.action.role = Some("coordinator".into());
+    trigger.action.flow_name = String::new();
+    trigger.source = Map::from_iter([("statuses".to_string(), json!(["failed"]))]);
+    spark_storage::TriggerRepositories::from_settings(&settings)
+        .definitions
+        .put(&trigger)
+        .expect("put trigger");
+    let mut own = attractor_core::RunRecord::new("run-own", &project);
+    own.launch_context = Some(
+        [(
+            "context.spark_owner".to_string(),
+            json!({"kind": "role", "id": "coordinator"}),
+        )]
+        .into(),
+    );
+    RunStore::for_settings(&settings)
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: own,
+            ..Default::default()
+        })
+        .expect("own run");
+    let service = WorkspaceTriggerService::new(settings.clone());
+    let emit = |run_id: &str, project: &str| {
+        service
+            .emit_flow_event(Map::from_iter([
+                ("run_id".to_string(), json!(run_id)),
+                ("flow_name".to_string(), json!("ops/run")),
+                ("project_path".to_string(), json!(project)),
+                ("status".to_string(), json!("failed")),
+            ]))
+            .expect("emit event")[0]
+            .message
+            .clone()
+    };
+    let other = root.join("other").to_string_lossy().into_owned();
+    assert!(emit("run-elsewhere", &other).contains("another project"));
+    assert!(emit("run-own", &project).contains("launched by this role"));
+    assert_eq!(emit("run-other", &project), "Trigger delivered to role.");
+    let role = spark_workspace::roles::WorkspaceRoleService::new(settings.clone())
+        .get(&project, "coordinator")
+        .expect("role");
+    assert_eq!(role.inbox.event_seq, 1);
+}
+
 fn write_flow(settings: &SparkSettings, name: &str) {
     attractor_dsl::write_flow_dir(
         &settings.bundled_dir().join("flows").join(name),
@@ -351,6 +405,7 @@ fn flow_event_definition(
         source_type: "flow_event".to_string(),
         action: spark_storage::TriggerAction {
             mission_id: None,
+            role: None,
             mode: "static".to_string(),
             flow_name: "ops/run".to_string(),
             project_path: Some(project_path.to_string_lossy().into_owned()),

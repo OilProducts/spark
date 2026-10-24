@@ -153,15 +153,17 @@ fn build_app_with_live_hub(
         let _ = spark_workspace::WorkspaceConversationService::new((*state.settings).clone())
             .settle_orphaned_turns();
         let live_hub = state.live_hub.clone();
-        spark_workspace::missions::install_runtime(
+        spark_workspace::inbox::install_runtime(
             &state.settings,
-            spark_workspace::missions::MissionRuntime {
+            spark_workspace::inbox::InboxRuntime {
                 agent_turn_backend: state.agent_turn_backend.clone(),
                 publish: Arc::new(move |envelope| live_hub.publish(envelope)),
             },
         );
         let _ = spark_workspace::missions::WorkspaceMissionService::new((*state.settings).clone())
             .recover();
+        let _ =
+            spark_workspace::roles::WorkspaceRoleService::new((*state.settings).clone()).recover();
     }
     Router::new()
         .route("/", get(serve_index))
@@ -1057,11 +1059,10 @@ fn publish_terminal_run_trigger_events(
     if let Ok(outcomes) = service.emit_terminal_flow_event_for_run(run_id) {
         publish_trigger_activation_outcomes(settings, live_hub, outcomes);
     }
-    // Mission delivery rides the observed publish path only, so every run a
-    // mission launches is itself observed and reports back.
+    // Inbox delivery rides the observed publish path only, so every run a
+    // mission or role launches is itself observed and reports back.
     if run_event_observer.is_some() {
-        let _ = spark_workspace::missions::WorkspaceMissionService::new(settings.clone())
-            .deliver_run_events(run_id);
+        let _ = spark_workspace::inbox::deliver_run_events(settings, run_id);
     }
 }
 

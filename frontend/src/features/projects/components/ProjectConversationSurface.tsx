@@ -67,12 +67,13 @@ interface ProjectConversationSurfaceProps {
     onChatComposerSubmit: (event: FormEvent<HTMLFormElement>) => void
     onChatComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
     onChatDraftChange: (value: string) => void
-    modelSettingsSource?: 'workspace' | 'project' | 'conversation'
+    modelSettingsSource?: 'workspace' | 'project' | 'role' | 'conversation'
     onUseModelDefaults?: () => void
 }
 
 const MODEL_SOURCE_LABELS = {
     conversation: 'Conversation override',
+    role: 'Role default',
     project: 'Project default',
     workspace: 'Workspace default',
 } as const
