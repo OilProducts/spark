@@ -117,6 +117,8 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await page.getByTestId('overview-needs-you-item').first().click()
     await expect(page.getByTestId('activity-runs')).toHaveAttribute('aria-current', 'page')
     await opened
+    // Focus refetches can still be proxying through route.fetch; let them finish before the page closes.
+    await page.unrouteAll({ behavior: 'wait' })
 })
 
 const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')

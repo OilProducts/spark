@@ -1637,10 +1637,14 @@ impl AttractorApiService {
             Err(error) => return validation_error_response(error),
         };
         let working_directory = absolutize_path(&request.working_directory);
+        // The project the flows resolve through; a run's checkout may sit elsewhere.
+        let project_path = trimmed_option(request.project_path.as_deref())
+            .map(|path| absolutize_path(&path))
+            .unwrap_or_else(|| working_directory.clone());
         let execution_lock = match flow
             .execution_lock
             .as_ref()
-            .map(|spec| resolve_execution_lock(spec, &working_directory))
+            .map(|spec| resolve_execution_lock(spec, &project_path))
             .transpose()
         {
             Ok(lock) => lock,
@@ -1764,10 +1768,7 @@ impl AttractorApiService {
         let mut record = RunRecord::new(&run_id, &working_directory);
         record.flow_name = flow_name.clone();
         record.working_directory = working_directory.clone();
-        // The project the flows resolve through; a run's checkout may sit elsewhere.
-        record.project_path = trimmed_option(request.project_path.as_deref())
-            .map(|path| absolutize_path(&path))
-            .unwrap_or_else(|| working_directory.clone());
+        record.project_path = project_path;
         record.model = display_model.clone();
         record.provider = selected_provider.clone();
         record.llm_provider = selected_provider.clone();

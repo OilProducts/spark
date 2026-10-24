@@ -545,3 +545,65 @@ fn write_flow(dir: &Path, yaml: &str) {
     )
     .expect("write flow");
 }
+
+#[test]
+fn launches_naming_one_project_share_lock_identity_across_checkouts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project = temp.path().join("project");
+    let checkouts = [
+        temp.path().join("checkout-0"),
+        temp.path().join("checkout-1"),
+    ];
+    for dir in std::iter::once(&project).chain(&checkouts) {
+        fs::create_dir_all(dir).expect("create dir");
+    }
+    let service = AttractorApiService::new(settings.clone());
+    let start = |run_id: &str, checkout: &Path, flow: String| {
+        let response = service.start_pipeline(PipelineStartRequest {
+            run_id: Some(run_id.to_string()),
+            flow_name: Some(crate::install_flow(
+                &settings,
+                flow + &project_lock("shared"),
+            )),
+            working_directory: checkout.to_string_lossy().to_string(),
+            project_path: Some(project.to_string_lossy().to_string()),
+            ..PipelineStartRequest::default()
+        });
+        assert_eq!(
+            response.body["status"],
+            json!("started"),
+            "{:?}",
+            response.body
+        );
+    };
+
+    start(
+        "run-proj-a",
+        &checkouts[0],
+        tool_flow("holder", &wait_for_release_file_command("release-proj")),
+    );
+    wait_until("first checkout holds the lock", || {
+        read_lock(&settings, "run-proj-a").is_some_and(|lock| lock.state == "holding")
+    });
+    start(
+        "run-proj-b",
+        &checkouts[1],
+        tool_flow("waiter", "printf done"),
+    );
+    wait_until("second checkout queues behind the first", || {
+        read_lock(&settings, "run-proj-b").is_some_and(|lock| lock.state == "queued")
+    });
+    assert_eq!(
+        read_lock(&settings, "run-proj-a").expect("lock a").identity,
+        read_lock(&settings, "run-proj-b").expect("lock b").identity,
+        "launches naming one project must resolve to one lock identity"
+    );
+
+    fs::write(checkouts[0].join("release-proj"), "go").expect("release holder");
+    wait_until("both runs complete after release", || {
+        read_status(&settings, "run-proj-a") == "completed"
+            && read_status(&settings, "run-proj-b") == "completed"
+    });
+}
