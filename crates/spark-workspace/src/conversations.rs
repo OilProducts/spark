@@ -38,6 +38,7 @@ use crate::errors::{WorkspaceError, WorkspaceResult};
 
 const UI_TOOL_OUTPUT_PREVIEW_BYTES: usize = 8 * 1024;
 const ACTIVE_ASSISTANT_TURN_MESSAGE: &str = "An assistant turn is still in progress for this conversation. Wait for it to finish before sending another message.";
+const ROLE_STOPPED_MESSAGE: &str = "This role is stopped. Start it to run a turn.";
 const REQUEST_USER_INPUT_EXPIRED_ERROR: &str =
     "The requested input expired before the answer could be used.";
 const MISSING_FINAL_ANSWER_ERROR: &str =
@@ -1153,7 +1154,7 @@ impl WorkspaceConversationService {
 
     /// Starts the oldest queued message once no turn runs. A queued message
     /// that cannot start is marked failed, never left behind.
-    fn start_queued_turn(
+    pub(crate) fn start_queued_turn(
         &self,
         conversation_id: &str,
         project_path: &str,
@@ -1166,7 +1167,9 @@ impl WorkspaceConversationService {
             else {
                 return Ok(None);
             };
-            if active_assistant_turn_id(&snapshot).is_some() {
+            if active_assistant_turn_id(&snapshot).is_some()
+                || self.role_stopped(project_path, conversation_id)
+            {
                 return Ok(None);
             }
             let Some(queued) = first_queued_turn(&snapshot).cloned() else {
@@ -1330,12 +1333,17 @@ impl WorkspaceConversationService {
             settings_patch.reasoning_effort = Some(effective_reasoning_effort.clone());
         }
         let queued_ahead = first_queued_turn(&snapshot).is_some();
-        let busy = active_assistant_turn_id(&snapshot).is_some()
+        // A stopped standing role holds messages until it is started again.
+        let held = self.role_stopped(&project_path, conversation_id);
+        let busy = held
+            || active_assistant_turn_id(&snapshot).is_some()
             || (queued_ahead && !matches!(mode, TurnStart::Queued(_)));
         if busy && !matches!(mode, TurnStart::Send) {
-            return Err(WorkspaceError::Conflict(
-                ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
-            ));
+            return Err(WorkspaceError::Conflict(if held {
+                ROLE_STOPPED_MESSAGE.to_string()
+            } else {
+                ACTIVE_ASSISTANT_TURN_MESSAGE.to_string()
+            }));
         }
         let attachments =
             self.resolve_turn_attachments(conversation_id, &project_path, &attachment_ids)?;
@@ -1379,7 +1387,8 @@ impl WorkspaceConversationService {
                 &message,
                 &attachments,
             );
-            let delivered = !queued_ahead
+            let delivered = !held
+                && !queued_ahead
                 && self.deliver_live(conversation_id, &project_path, &user_turn_id, &live_message);
             if !delivered {
                 user_turn["status"] = json!("queued");
@@ -2137,6 +2146,13 @@ impl WorkspaceConversationService {
         )
     }
 
+    /// Whether this is a stopped standing role's conversation.
+    fn role_stopped(&self, project_path: &str, conversation_id: &str) -> bool {
+        crate::roles::WorkspaceRoleService::new(self.settings.clone())
+            .conversation_role(project_path, conversation_id)
+            .is_some_and(|role| role.stopped_at.is_some())
+    }
+
     /// Startup recovery: settles every chat turn a previous process left in
     /// flight. Assumes one server per Spark home.
     pub fn settle_orphaned_turns(&self) -> WorkspaceResult<()> {
@@ -2151,7 +2167,10 @@ impl WorkspaceConversationService {
             };
             for conversation_id in conversation_ids {
                 let _ = self.abandon_active_turn(&conversation_id, &project.project_path);
-                let _ = self.fail_queued_turns(&conversation_id, &project.project_path);
+                // A stopped role's held messages wait for it to start again.
+                if !self.role_stopped(&project.project_path, &conversation_id) {
+                    let _ = self.fail_queued_turns(&conversation_id, &project.project_path);
+                }
             }
         }
         Ok(())

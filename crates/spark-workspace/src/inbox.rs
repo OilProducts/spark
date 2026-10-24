@@ -4,7 +4,8 @@
 //! under the record store's project lock. A run's owner is fixed at launch in
 //! `context.spark_owner`.
 use crate::conversations::{
-    ConversationTurnRequest, RunLaunchRequest, WorkspaceConversationService,
+    ConversationTurnRequest, PreparedConversationTurn, RunLaunchRequest,
+    WorkspaceConversationService,
 };
 use crate::live::LiveEnvelope;
 use crate::{WorkspaceError, WorkspaceResult};
@@ -225,10 +226,17 @@ pub(crate) fn deliver_inbox(
     let Some(runtime) = runtime(settings) else {
         return Ok(false);
     };
-    if begin.is_none() && inbox.event_seq <= inbox.cursor {
-        return Ok(false);
-    }
     let conversations = conversations(settings, &runtime);
+    if begin.is_none() && inbox.event_seq <= inbox.cursor {
+        // Messages held while a role was stopped start once it delivers again.
+        return match conversations.start_queued_turn(conversation, project_path)? {
+            Some((prepared, snapshot)) => {
+                complete_in_background(settings, runtime, conversations, prepared, snapshot, after);
+                Ok(true)
+            }
+            None => Ok(false),
+        };
+    }
     let lines: Vec<String> = read_events(repo, id)?
         .iter()
         .filter(|event| event.seq > inbox.cursor)
@@ -253,8 +261,11 @@ pub(crate) fn deliver_inbox(
     };
     let (prepared, snapshot) = match conversations.send_turn(conversation, request) {
         Ok((Some(prepared), snapshot)) => (prepared, snapshot),
-        // Queued behind a turn that started meanwhile; it starts after it.
-        Ok((None, _)) => return Ok(false),
+        // Queued behind a running turn, or behind held messages that start now.
+        Ok((None, _)) => match conversations.start_queued_turn(conversation, project_path)? {
+            Some(started) => started,
+            None => return Ok(false),
+        },
         // Only the user can move an inbox whose turn cannot start.
         Err(error) => {
             conversations.append_notice(
@@ -265,9 +276,25 @@ pub(crate) fn deliver_inbox(
             return Ok(false);
         }
     };
-    if let Ok(envelope) =
-        crate::live::conversation_snapshot_envelope(settings, conversation, project_path)
-    {
+    complete_in_background(settings, runtime, conversations, prepared, snapshot, after);
+    Ok(true)
+}
+
+/// Publishes a started turn, then completes it and each message queued
+/// behind it on its own thread.
+fn complete_in_background(
+    settings: &SparkSettings,
+    runtime: InboxRuntime,
+    conversations: WorkspaceConversationService,
+    prepared: PreparedConversationTurn,
+    snapshot: Value,
+    after: impl FnOnce() + Send + 'static,
+) {
+    if let Ok(envelope) = crate::live::conversation_snapshot_envelope(
+        settings,
+        &prepared.conversation_id,
+        &prepared.project_path,
+    ) {
         (runtime.publish)(envelope);
     }
     let settings = settings.clone();
@@ -299,7 +326,6 @@ pub(crate) fn deliver_inbox(
         }
         after();
     });
-    Ok(true)
 }
 
 /// A run tree's owner and root record.

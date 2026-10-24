@@ -858,6 +858,123 @@ async fn role_routes_list_start_send_and_stop_standing_roles() {
     assert_eq!(stopped.1["state"], "stopped");
 }
 
+/// Answers every turn at once and records each prompt it was given.
+#[derive(Default)]
+struct RecordingAgent {
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+impl spark_agent_adapter::AgentTurnBackend for RecordingAgent {
+    fn run_turn(
+        &self,
+        request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        self.prompts.lock().unwrap().push(request.prompt);
+        Ok(final_answer("Noted."))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_role_holds_user_messages_until_it_is_started_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).unwrap();
+    fs::write(
+        roles.join("coordinator.md"),
+        include_str!("../../../spark-assets/assets/roles/coordinator.md"),
+    )
+    .unwrap();
+    let project = temp.path().join("held-project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().to_string();
+    let agent = std::sync::Arc::new(RecordingAgent::default());
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
+    let control = |action: &str| {
+        format!(
+            "/workspace/api/roles/coordinator/{action}?project_path={}",
+            crate::encode_query(&project)
+        )
+    };
+    let prompts = || agent.prompts.lock().unwrap().clone();
+    let settled = |conversation: Value| {
+        conversation["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|turn| turn["status"] == "complete")
+    };
+    let get = |id: &str| {
+        format!(
+            "/workspace/api/conversations/{id}?project_path={}",
+            crate::encode_query(&project)
+        )
+    };
+    let wait_settled = |id: String| {
+        let (app, uri) = (app.clone(), get(&id));
+        async move {
+            for _ in 0..600 {
+                let conversation = request_json(app.clone(), "GET", &uri, None).await.1;
+                if settled(conversation.clone()) {
+                    return conversation;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            panic!("conversation {id} never settled");
+        }
+    };
+    let send = |id: &str, message: &str| {
+        let (app, uri) = (
+            app.clone(),
+            format!("/workspace/api/conversations/{id}/turns"),
+        );
+        let body = json!({"project_path": project, "message": message});
+        async move { request_json(app, "POST", &uri, Some(body)).await }
+    };
+
+    let started = request_json(app.clone(), "POST", &control("start"), None).await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    let role_chat = started.1["conversation_id"].as_str().unwrap().to_string();
+    wait_settled(role_chat.clone()).await;
+    assert_eq!(prompts().len(), 1);
+    let stopped = request_json(app.clone(), "POST", &control("stop"), None).await;
+    assert_eq!(stopped.1["state"], "stopped");
+
+    // Held: recorded as queued, no assistant turn, nothing reaches the backend.
+    for message in ["First held", "Second held"] {
+        let (status, snapshot, _) = send(&role_chat, message).await;
+        assert_eq!(status, StatusCode::OK, "{snapshot}");
+        let turns = snapshot["turns"].as_array().unwrap();
+        let last = turns.last().unwrap();
+        assert_eq!(
+            (last["content"].as_str(), last["status"].as_str()),
+            (Some(message), Some("queued"))
+        );
+        assert!(turns.iter().all(|turn| turn["status"] != "pending"));
+    }
+    // An ordinary chat still runs while the role is stopped.
+    send("ordinary-chat", "Hello").await;
+    let ordinary = wait_settled("ordinary-chat".into()).await;
+    assert_eq!(ordinary["turns"].as_array().unwrap().len(), 2);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(prompts()[1..], ["Hello".to_string()]);
+
+    // Started again, the held messages run in order, each exactly once.
+    let resumed = request_json(app.clone(), "POST", &control("start"), None).await;
+    assert_eq!(resumed.0, StatusCode::OK, "{}", resumed.1);
+    let conversation = wait_settled(role_chat.clone()).await;
+    assert_eq!(conversation["turns"].as_array().unwrap().len(), 6);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        prompts()[2..],
+        ["First held".to_string(), "Second held".to_string()]
+    );
+    // And a message to the running role starts a turn again.
+    send(&role_chat, "After").await;
+    wait_settled(role_chat).await;
+    assert_eq!(prompts().last().unwrap(), "After");
+    assert_eq!(prompts().len(), 5);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission() {
     let temp = tempfile::tempdir().unwrap();
