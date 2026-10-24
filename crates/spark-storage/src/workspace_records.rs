@@ -1,5 +1,6 @@
-//! Project mission records and inboxes: record writes are atomic replacements,
-//! inbox events are appended, and both happen under one project lock.
+//! Project records with inboxes (missions, standing roles): record writes are
+//! atomic replacements, inbox events are appended, and both happen under one
+//! lock per project and kind.
 use crate::{append_jsonl_record, write_text_atomic, StorageError};
 use fs2::FileExt;
 use serde_json::Value;
@@ -8,24 +9,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub struct MissionRepository {
+pub struct RecordRepository {
     root: PathBuf,
 }
-impl MissionRepository {
-    pub fn new(project_root: &Path) -> Self {
-        let root = project_root.join("missions");
-        let tasks = project_root.join("tasks");
-        // Missions supersede tasks: an existing task directory is adopted as-is.
-        if !root.exists() && tasks.is_dir() {
-            let _ = fs::rename(&tasks, &root);
+impl RecordRepository {
+    pub fn missions(project_root: &Path) -> Self {
+        Self {
+            root: project_root.join("missions"),
         }
-        Self { root }
     }
+    pub fn roles(project_root: &Path) -> Self {
+        Self {
+            root: project_root.join("roles"),
+        }
+    }
+    /// Record ids are file stems: mission ids and role file names alike.
     fn checked(&self, id: &str) -> Result<(), StorageError> {
-        if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        if !crate::conversation::is_safe_segment_file_id(id) {
             return Err(StorageError::InvalidRepositoryPath {
                 path: self.root.clone(),
-                reason: "Invalid mission ID".into(),
+                reason: "Invalid record ID".into(),
             });
         }
         Ok(())
@@ -45,29 +48,27 @@ impl MissionRepository {
                 .map(Some)
                 .map_err(|source| StorageError::JsonRead { path, source }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StorageError::io("read mission", path, e)),
+            Err(e) => Err(StorageError::io("read record", path, e)),
         }
     }
     pub fn list(&self) -> Result<Vec<Value>, StorageError> {
         if !self.root.exists() {
             return Ok(vec![]);
         }
-        let mut missions = vec![];
-        for entry in fs::read_dir(&self.root)
-            .map_err(|e| StorageError::io("list missions", &self.root, e))?
+        let mut records = vec![];
+        for entry in
+            fs::read_dir(&self.root).map_err(|e| StorageError::io("list records", &self.root, e))?
         {
             let path = entry
-                .map_err(|e| StorageError::io("list missions", &self.root, e))?
+                .map_err(|e| StorageError::io("list records", &self.root, e))?
                 .path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(mission) =
-                    self.read(path.file_stem().unwrap().to_str().unwrap_or(""))?
-                {
-                    missions.push(mission);
+                if let Some(record) = self.read(path.file_stem().unwrap().to_str().unwrap_or(""))? {
+                    records.push(record);
                 }
             }
         }
-        Ok(missions)
+        Ok(records)
     }
     pub fn write(&self, id: &str, value: &Value) -> Result<(), StorageError> {
         write_text_atomic(self.path(id)?, value.to_string())
@@ -77,7 +78,7 @@ impl MissionRepository {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(e) => return Err(StorageError::io("read mission events", path, e)),
+            Err(e) => return Err(StorageError::io("read inbox events", path, e)),
         };
         text.lines()
             .filter(|line| !line.trim().is_empty())
@@ -92,14 +93,14 @@ impl MissionRepository {
     pub fn append_event(&self, id: &str, event: &Value) -> Result<(), StorageError> {
         append_jsonl_record(self.events_path(id)?, event)
     }
-    /// Runs `work` while holding the project's mission lock.
+    /// Runs `work` while holding the project's lock for this kind of record.
     pub fn locked<T, E: From<StorageError>>(
         &self,
         work: impl FnOnce(&Self) -> Result<T, E>,
     ) -> Result<T, E> {
         fs::create_dir_all(&self.root)
-            .map_err(|e| StorageError::io("create missions", &self.root, e))?;
-        // ponytail: one project lock; use mission locks if write throughput requires it.
+            .map_err(|e| StorageError::io("create records", &self.root, e))?;
+        // ponytail: one lock per project and kind; use record locks if write throughput requires it.
         let lock_path = self.root.join(".lock");
         let file = OpenOptions::new()
             .create(true)
@@ -107,9 +108,9 @@ impl MissionRepository {
             .read(true)
             .write(true)
             .open(&lock_path)
-            .map_err(|e| StorageError::io("open mission lock", &lock_path, e))?;
+            .map_err(|e| StorageError::io("open record lock", &lock_path, e))?;
         file.lock_exclusive()
-            .map_err(|e| StorageError::io("lock missions", &lock_path, e))?;
+            .map_err(|e| StorageError::io("lock records", &lock_path, e))?;
         // Closing the file also releases the cross-process lock on every error path.
         work(self)
     }

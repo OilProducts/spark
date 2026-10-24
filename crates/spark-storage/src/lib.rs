@@ -75,4 +75,4 @@ pub use workspace_triggers::{
     TriggerDefinitionRepository, TriggerRepositories, TriggerRuntimeStateRepository, TriggerState,
     TriggerStateHistoryEntry,
 };
-pub mod workspace_missions;
+pub mod workspace_records;

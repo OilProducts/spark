@@ -843,6 +843,35 @@ describe('thread-list summaries the Overview reads', () => {
   })
 })
 
+describe('a standing role\'s thread-list row', () => {
+  const projectPath = '/tmp/project-contract-behavior'
+  const role = { name: 'coordinator', title: 'Coordinator', state: 'idle' as const }
+
+  it('keeps its role and title through opening it and later snapshot and stream updates', () => {
+    const seeded = {
+      ...EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      summariesByProjectPath: {
+        [projectPath]: [{
+          conversation_id: 'conversation-1', project_path: projectPath, title: 'Coordinator',
+          created_at: '', updated_at: '', revision: 0, standing_role: role,
+        }],
+      },
+    }
+    // Opening the placeholder loads a fresh shell titled like any new thread.
+    const opened = applyConversationSnapshotToCache(seeded, projectPath, buildSnapshot({ revision: 1, title: 'New thread', turns: [], segments: [] })).cache
+    expect(opened.summariesByProjectPath[projectPath]).toEqual([expect.objectContaining({ title: 'Coordinator', standing_role: role })])
+
+    const streamed = applyConversationStreamEventToCache(opened, projectPath, {
+      type: 'turn_upsert', revision: 2, conversation_id: 'conversation-1', project_path: projectPath, title: 'New thread',
+      updated_at: '2026-03-06T15:02:00Z', turn: buildTurn({ id: 'turn-next', role: 'user', content: 'Hello.' }),
+    })
+    if (streamed.status !== 'applied') throw new Error('turn not applied')
+    expect(streamed.cache.summariesByProjectPath[projectPath]).toEqual([
+      expect.objectContaining({ title: 'Coordinator', standing_role: role, last_message_preview: 'Hello.' }),
+    ])
+  })
+})
+
 describe('applyTransientConversationEventToCache', () => {
   const buildDelta = (
     overrides: Partial<ConversationStreamDeltaEventResponse> = {},

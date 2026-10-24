@@ -3,6 +3,7 @@ import { normalizeProjectPath } from '@/lib/projectPaths'
 import { DEFAULT_WORKING_DIRECTORY } from '@/state/store-helpers'
 
 import { formatProjectListLabel } from './projectsHomeState'
+import { pinRank } from './conversationState'
 
 type Registry = Record<string, RegisteredProject>
 
@@ -52,14 +53,14 @@ export function launchWorkingDirectory(workingDir: string, workingDirProjectPath
 export type ChatGroup<Chat> = { project: RegisteredProject; chats: Chat[] }
 
 /** Each registered project with its chats, newest first, in project order. */
-export function groupChatsByProject<Chat extends { updated_at: string }>(
+export function groupChatsByProject<Chat extends { updated_at: string, standing_role?: { name: string } | null }>(
     registry: Registry,
     chatsByProjectPath: Record<string, Chat[]>,
 ): ChatGroup<Chat>[] {
     return orderProjects(registry).map((project) => ({
         project,
         chats: [...(chatsByProjectPath[project.directoryPath] ?? [])]
-            .sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
+            .sort((left, right) => pinRank(left).localeCompare(pinRank(right)) || right.updated_at.localeCompare(left.updated_at)),
     }))
 }
 

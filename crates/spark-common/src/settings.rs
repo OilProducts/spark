@@ -452,6 +452,8 @@ impl ModelSettings {
 pub enum ModelSettingsSource {
     Workspace,
     Project,
+    /// A standing role's file.
+    Role,
     Conversation,
 }
 

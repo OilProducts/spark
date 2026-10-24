@@ -36,17 +36,18 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,mission,playbook,settings} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,mission,playbook,settings}\n",
+    "  {convo,run,flow,trigger,mission,role,playbook,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
     "    mission             Project mission management\n",
+    "    role                Standing role management\n",
     "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
     "\n",
@@ -102,6 +103,7 @@ enum CommandDomain {
     Flow,
     Trigger,
     Mission,
+    Role,
     Playbook,
     Settings,
 }
@@ -236,6 +238,7 @@ fn run_agent_shell(
             Err(output) => output,
         },
         CommandDomain::Mission
+        | CommandDomain::Role
         | CommandDomain::Playbook
         | CommandDomain::Trigger
         | CommandDomain::Settings => match build_request_plan(args, env, stdin) {
@@ -278,6 +281,7 @@ fn build_request_plan(
         CommandDomain::Flow => build_flow_plan(args, env),
         CommandDomain::Trigger => build_trigger_plan(args, env, stdin),
         CommandDomain::Mission => build_mission_plan(args, env, stdin),
+        CommandDomain::Role => build_role_plan(args, env),
         CommandDomain::Playbook => build_playbook_plan(args, env),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
     }
@@ -1376,6 +1380,12 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }
             _ => Err(usage_error("Unknown command")),
         },
+        "role" => match domain_matches.subcommand_name() {
+            Some("list" | "start" | "stop" | "send") => Ok(CommandPath {
+                domain: CommandDomain::Role,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
         "playbook" => match domain_matches.subcommand_name() {
             Some("list" | "get") => Ok(CommandPath {
                 domain: CommandDomain::Playbook,
@@ -1400,7 +1410,7 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
     };
     match domain {
-        "convo" | "run" | "flow" | "trigger" | "mission" | "playbook" | "settings" => {
+        "convo" | "run" | "flow" | "trigger" | "mission" | "role" | "playbook" | "settings" => {
             usage_error("Unknown command")
         }
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
@@ -1454,6 +1464,13 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("wait"))
                 .subcommand(clap_command_leaf("send"))
                 .subcommand(clap_command_leaf("close")),
+        )
+        .subcommand(
+            Command::new("role")
+                .subcommand(clap_command_leaf("list"))
+                .subcommand(clap_command_leaf("start"))
+                .subcommand(clap_command_leaf("stop"))
+                .subcommand(clap_command_leaf("send")),
         )
         .subcommand(
             Command::new("playbook")
@@ -2224,6 +2241,15 @@ fn validate_flow_text(payload: &Value) -> String {
     text
 }
 
+/// The action field naming a trigger's target: its mission, role, or flow.
+fn action_target_key(action: &serde_json::Map<String, Value>) -> &'static str {
+    match action.get("mode").and_then(Value::as_str) {
+        Some("mission") => "mission_id",
+        Some("role") => "role",
+        _ => "flow_name",
+    }
+}
+
 fn trigger_list_text(payload: &Value) -> String {
     let rows = payload.as_array().map(Vec::as_slice).unwrap_or(&[]);
     let mut text = String::new();
@@ -2254,15 +2280,7 @@ fn trigger_list_text(payload: &Value) -> String {
         let flow_name = row
             .get("action")
             .and_then(Value::as_object)
-            .and_then(|action| {
-                action.get(
-                    if action.get("mode").and_then(Value::as_str) == Some("mission") {
-                        "mission_id"
-                    } else {
-                        "flow_name"
-                    },
-                )
-            })
+            .and_then(|action| action.get(action_target_key(action)))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
@@ -2351,19 +2369,13 @@ fn describe_trigger_text(payload: &Value) -> String {
     writeln!(
         &mut text,
         "{} Target: {}",
-        if action.and_then(|a| a.get("mode")).and_then(Value::as_str) == Some("mission") {
-            "Mission"
-        } else {
-            "Flow"
+        match action.and_then(|a| a.get("mode")).and_then(Value::as_str) {
+            Some("mission") => "Mission",
+            Some("role") => "Role",
+            _ => "Flow",
         },
         action
-            .and_then(|action| action.get(
-                if action.get("mode").and_then(Value::as_str) == Some("mission") {
-                    "mission_id"
-                } else {
-                    "flow_name"
-                }
-            ))
+            .and_then(|action| action.get(action_target_key(action)))
             .and_then(Value::as_str)
             .unwrap_or_default()
     )
@@ -2710,6 +2722,55 @@ fn build_mission_plan(
             _ => return Err(usage_error("Unknown command")),
         },
         base_url: resolve_base_url(&options, "spark mission", env)?,
+        path,
+        body,
+        text: false,
+    })
+}
+
+fn build_role_plan(
+    args: &[String],
+    env: &impl Environment,
+) -> Result<ApiRequestPlan, CommandOutput> {
+    let command = args.get(1).map(String::as_str).unwrap_or("");
+    let options = parse_api_options(
+        &args[2..],
+        &[
+            "--project",
+            "--role",
+            "--conversation",
+            "--message",
+            "--base-url",
+        ],
+        &[],
+        PositionalMode::None,
+    )?;
+    require_values(&options, &["--project"])?;
+    let project = non_empty_value(&options, "--project", "Project is required")?;
+    let mut path = "/workspace/api/roles".to_string();
+    if command != "list" {
+        let role = non_empty_value(&options, "--role", "Role is required")?;
+        path.push_str(&format!("/{}/{command}", percent_encode_component(&role)));
+    }
+    path.push_str(&format!(
+        "?project_path={}",
+        percent_encode_component(&project)
+    ));
+    let body = match command {
+        "list" => None,
+        "send" => Some(json!({
+            "conversation_handle": non_empty_value(&options, "--conversation", "Conversation handle is required")?,
+            "message": non_empty_value(&options, "--message", "Message is required")?,
+        })),
+        _ => Some(json!({})),
+    };
+    Ok(ApiRequestPlan {
+        method: if command == "list" {
+            HttpMethod::Get
+        } else {
+            HttpMethod::Post
+        },
+        base_url: resolve_base_url(&options, "spark role", env)?,
         path,
         body,
         text: false,

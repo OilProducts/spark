@@ -160,3 +160,12 @@ it('keeps the launch-input title fallback through initial load, live updates and
   upsert(record('b', 'changes/CR-2/request.md'))
   expect(titles()).toEqual(['changes/CR-2/request.md', 'changes/CR-1/request.md'])
 })
+
+it('keeps a live upsert that arrives while an older list fetch is out', async () => {
+  const { result } = mount()
+  act(() => {
+    window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run: { run_id: 'launched', status: 'completed' } } }))
+  })
+  await complete(0)
+  expect(result.current.scopedRuns.map((run) => [run.run_id, run.status])).toContainEqual(['launched', 'completed'])
+})

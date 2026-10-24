@@ -8,10 +8,8 @@ use spark_agent_adapter::{
 };
 use spark_common::settings::SparkSettings;
 use spark_workspace::{
-    missions::{
-        install_runtime, MissionEventPost, MissionMutation, MissionRecord, MissionRuntime,
-        MissionStatus, WorkspaceMissionService,
-    },
+    inbox::{install_runtime, InboxPost, InboxRuntime},
+    missions::{MissionMutation, MissionRecord, MissionStatus, WorkspaceMissionService},
     ConversationSettingsUpdate, FlowRunRequestCreateByHandleRequest, WorkspaceConversationService,
     WorkspaceError,
 };
@@ -21,14 +19,14 @@ use std::time::{Duration, Instant};
 fn mutation(value: Value) -> MissionMutation {
     serde_json::from_value(value).unwrap()
 }
-fn message(text: &str) -> MissionEventPost {
+fn message(text: &str) -> InboxPost {
     serde_json::from_value(json!({"kind": "human.message", "payload": {"message": text}})).unwrap()
 }
-fn project(settings: &SparkSettings) -> String {
+pub(crate) fn project(settings: &SparkSettings) -> String {
     std::fs::create_dir_all(&settings.project_root).unwrap();
     settings.project_root.to_str().unwrap().to_string()
 }
-fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+pub(crate) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -39,18 +37,18 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 /// An agent whose turns finish only when the test opens its gate; it records
 /// every request.
 #[derive(Default)]
-struct GatedAgent {
-    requests: Mutex<Vec<AgentTurnRequest>>,
+pub(crate) struct GatedAgent {
+    pub(crate) requests: Mutex<Vec<AgentTurnRequest>>,
     gate: Mutex<usize>,
     opened: Condvar,
 }
 impl GatedAgent {
     /// Lets the next `count` turns finish.
-    fn release(&self, count: usize) {
+    pub(crate) fn release(&self, count: usize) {
         *self.gate.lock().unwrap() += count;
         self.opened.notify_all();
     }
-    fn prompts(&self) -> Vec<String> {
+    pub(crate) fn prompts(&self) -> Vec<String> {
         let requests = self.requests.lock().unwrap();
         requests
             .iter()
@@ -86,7 +84,7 @@ impl Harness {
         let agent = Arc::new(GatedAgent::default());
         install_runtime(
             &settings,
-            MissionRuntime {
+            InboxRuntime {
                 agent_turn_backend: agent.clone(),
                 publish: Arc::new(|_| {}),
             },
@@ -155,7 +153,7 @@ impl Harness {
     }
 }
 
-fn wait_terminal(settings: &SparkSettings, run_id: &str) -> String {
+pub(crate) fn wait_terminal(settings: &SparkSettings, run_id: &str) -> String {
     let store = attractor_runtime::RunStore::for_settings(settings);
     let mut status = String::new();
     wait_for(&format!("run {run_id}"), || {
@@ -189,7 +187,7 @@ fn owned_run(
     run_id: &str,
     status: &str,
 ) {
-    spark_storage::workspace_missions::MissionRepository::new(&mission_root(settings, project))
+    spark_storage::workspace_records::RecordRepository::missions(&mission_root(settings, project))
         .transact::<WorkspaceError>(mission_id, |value| {
             let mut value = value.unwrap();
             value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"flow_name":"work/seeded","summary":"Seeded work","launched_at":"t","status":"running"}));
@@ -200,8 +198,8 @@ fn owned_run(
     record.status = status.into();
     record.launch_context = Some(
         [(
-            "context.spark_mission".to_string(),
-            json!({"mission_id": mission_id}),
+            "context.spark_owner".to_string(),
+            json!({"kind": "mission", "id": mission_id}),
         )]
         .into(),
     );
@@ -217,7 +215,7 @@ fn owned_run(
         .unwrap();
 }
 
-fn tool_flow(command: &str) -> String {
+pub(crate) fn tool_flow(command: &str) -> String {
     json!({
         "schema_version": "1",
         "id": "tool",
@@ -232,85 +230,19 @@ fn tool_flow(command: &str) -> String {
 }
 
 #[test]
-fn legacy_records_load_and_unstarted_finished_cards_are_archived() {
+fn listing_missions_leaves_an_obsolete_tasks_directory_untouched() {
     let harness = Harness::new();
     let root = mission_root(&harness.settings, &harness.project);
-    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
-        .ensure_project_paths(&harness.project)
-        .unwrap()
-        .project_id;
     std::fs::create_dir_all(root.join("tasks")).unwrap();
-    for (id, stage, started) in [
-        ("task-done", "done", Value::Null),
-        ("task-review", "review", Value::Null),
-        ("task-ready", "ready", Value::Null),
-        ("task-running", "review", json!("2026-01-01")),
-    ] {
-        let legacy = json!({
-            "id": id, "project_id": project_id, "project_path": harness.project,
-            "created_at": format!("2026-01-01 {id}"), "updated_at": "2026-01-01", "revision": 1,
-            "fields": {"title": id, "description": "Kept", "stage": stage, "archived": false,
-                "reaction_flow": "missions/react", "hooks": [{"on": "run.completed", "do": "ignore"}],
-                "budget": {"concurrent_runs": 2, "total_runs": 5, "reactions": 10}},
-            "activity": [{"revision": 1, "actor": "human", "note": ""}],
-            "state": "old state", "execution": {"substate": "attention", "reason": "held"},
-            "paused": true, "hold": {"substate": "attention", "reason": "held", "actions": [], "event": ""},
-            "pending_events": [], "reaction_events": [], "started_at": started,
-            "runs": [{"run_id": "run-old", "label": "build", "role": "reaction", "launched_at": "t", "launched_by_event": "e", "status": "completed"}],
-        });
-        std::fs::write(root.join(format!("tasks/{id}.json")), legacy.to_string()).unwrap();
-    }
+    std::fs::write(root.join("tasks/task-old.json"), "{}").unwrap();
+    let mission = harness.create(json!({"title": "Current", "description": "Kept"}));
     let missions = harness.missions.list(&harness.project).unwrap();
-    assert!(root.join("missions/task-done.json").exists());
-    let archived: Vec<_> = missions
-        .iter()
-        .map(|mission| (mission.id.as_str(), mission.fields.archived))
-        .collect();
     assert_eq!(
-        archived,
-        [
-            ("task-done", true),
-            ("task-ready", false),
-            ("task-review", true),
-            ("task-running", false)
-        ]
+        missions.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        [mission.id.as_str()]
     );
-    let ready = &missions[1];
-    assert_eq!(ready.status, MissionStatus::Draft);
-    assert_eq!(
-        (
-            ready.fields.budget.concurrent_runs,
-            ready.fields.budget.total_runs
-        ),
-        (2, 5)
-    );
-    assert_eq!(ready.runs[0].run_id, "run-old");
-    let updated = harness
-        .missions
-        .update(
-            &harness.project,
-            "task-done",
-            mutation(json!({"revision": 1, "fields": {"title": "Renamed"}})),
-        )
-        .unwrap();
-    // A write drops the removed fields and keeps the archive.
-    let stored: Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("missions/task-done.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(updated.fields.archived);
-    for removed in [
-        "state",
-        "execution",
-        "paused",
-        "hold",
-        "pending_events",
-        "status",
-    ] {
-        assert!(stored.get(removed).is_none(), "{removed}");
-    }
-    assert!(stored["fields"].get("stage").is_none());
-    assert!(stored["fields"].get("hooks").is_none());
+    assert!(root.join("tasks/task-old.json").exists());
+    assert!(root.join(format!("missions/{}.json", mission.id)).exists());
 }
 
 #[test]
@@ -538,6 +470,7 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
         .unwrap();
     let launched = harness.get(&mission.id);
     let roster: Vec<_> = launched
+        .inbox
         .runs
         .iter()
         .map(|run| {
@@ -563,8 +496,8 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
         .unwrap()
         .launch_context;
     assert_eq!(
-        json!(context)["context.spark_mission"],
-        json!({"mission_id": mission.id})
+        json!(context)["context.spark_owner"],
+        json!({"kind": "mission", "id": mission.id})
     );
     harness.settle(&first);
     harness.settle(&second);
@@ -595,7 +528,7 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
     )));
     assert_eq!(lines[2], "User: Prefer the smaller fix");
     let mission = harness.get(&mission.id);
-    assert_eq!(mission.cursor, mission.event_seq);
+    assert_eq!(mission.inbox.cursor, mission.inbox.event_seq);
     assert_eq!(mission.status, MissionStatus::NeedsYou);
     // The transcript shows both launches inline.
     assert_eq!(
@@ -624,7 +557,7 @@ fn launches_over_budget_are_refused() {
         refused.to_string().contains("concurrent_runs (1)"),
         "{refused}"
     );
-    assert_eq!(harness.get(&mission.id).runs.len(), 1);
+    assert_eq!(harness.get(&mission.id).inbox.runs.len(), 1);
     let canceled = harness
         .missions
         .cancel(&harness.project, &mission.id)
@@ -676,7 +609,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     assert_eq!(wait_terminal(&harness.settings, &run), "canceled");
     harness.missions.deliver_run_events(&run).unwrap();
     let mission = harness.get(&mission.id);
-    assert_eq!(mission.runs[0].status, "canceled");
+    assert_eq!(mission.inbox.runs[0].status, "canceled");
     assert_eq!(mission.status, MissionStatus::Closed);
     // Nothing more is delivered once closed.
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
@@ -803,11 +736,59 @@ fn recovery_fails_stale_turns_and_delivers_missing_terminal_events() {
     );
     harness.wait_idle(&mission.id);
     let mission = harness.get(&mission.id);
-    assert_eq!(mission.runs[0].status, "failed");
+    assert_eq!(mission.inbox.runs[0].status, "failed");
     assert_eq!(mission.status, MissionStatus::NeedsYou);
     // A second recovery finds nothing new to deliver.
     harness.missions.recover().unwrap();
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
+    let harness = Harness::new();
+    super::role_contracts::seed_bundled_roles(&harness.settings);
+    let roles = spark_workspace::roles::WorkspaceRoleService::new(harness.settings.clone());
+    let coordinator = roles.get(&harness.project, "coordinator").unwrap();
+    roles
+        .post(
+            &harness.project,
+            "coordinator",
+            serde_json::from_value(
+                json!({"kind": "role.message", "payload": {"from": "a test", "message": "Hi"}}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    let idle = || {
+        roles.get(&harness.project, "coordinator").unwrap().state
+            != spark_workspace::roles::RoleState::Working
+    };
+    wait_for("an idle coordinator", idle);
+    let mission = harness
+        .missions
+        .create_from_conversation(
+            &harness.handle(&coordinator.conversation_id),
+            None,
+            mutation(json!({"fields": {"title": "Ship"}})),
+        )
+        .unwrap();
+    harness
+        .missions
+        .close(
+            &harness.project,
+            &mission.id,
+            serde_json::from_value(json!({"reason": "Shipped"})).unwrap(),
+        )
+        .unwrap();
+    harness.wait_turns(2);
+    assert_eq!(
+        harness.agent.prompts()[1],
+        format!("Mission \"Ship\" ({}) closed as done: Shipped", mission.id)
+    );
+    harness.agent.release(1);
+    wait_for("an idle coordinator", idle);
 }
 
 #[test]
@@ -865,7 +846,7 @@ fn ordinary_conversations_launch_directly_without_mission_integration() {
 }
 
 /// A final answer as a codex turn reports it.
-fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
+pub(crate) fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
     static ITEMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let item = ITEMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut event = spark_common::events::TurnStreamEvent::content_delta(
@@ -1004,7 +985,7 @@ fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
         assert!(prompt.contains("\"question_id\":\"gate-0\""), "{prompt}");
         assert!(harness.missions.deliver_run_events(id).unwrap().is_none());
         assert!(harness.missions.deliver_run_events(root).unwrap().is_none());
-        assert_eq!(harness.get(&mission.id).event_seq, (index + 1) as u64);
+        assert_eq!(harness.get(&mission.id).inbox.event_seq, (index + 1) as u64);
         harness.agent.release(1);
         harness.wait_idle(&mission.id);
     }
@@ -1056,7 +1037,7 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
             )
             .unwrap();
         harness.missions.deliver_run_events("child").unwrap();
-        assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+        assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
         assert!(harness
             .launch(&mission.id, "work/next", "Blocked")
             .unwrap_err()
@@ -1086,8 +1067,8 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
             .unwrap();
         harness.missions.deliver_run_events("child").unwrap();
         let reconciled = harness.get(&mission.id);
-        assert_eq!(reconciled.runs[0].status, status);
-        assert_eq!(reconciled.event_seq, 2);
+        assert_eq!(reconciled.inbox.runs[0].status, status);
+        assert_eq!(reconciled.inbox.event_seq, 2);
         assert!(harness
             .missions
             .deliver_run_events("root")
@@ -1157,8 +1138,8 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
     harness.wait_turns(2);
     harness.missions.deliver_run_events("grandchild").unwrap();
     harness.missions.deliver_run_events("root").unwrap();
-    assert_eq!(harness.get(&mission.id).event_seq, 1);
-    assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+    assert_eq!(harness.get(&mission.id).inbox.event_seq, 1);
+    assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
     let prompt = &harness.agent.prompts()[1];
     for content in [
@@ -1203,8 +1184,8 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
         );
     assert_eq!(response.status_code, 200);
     harness.missions.deliver_run_events("grandchild").unwrap();
-    assert_eq!(harness.get(&mission.id).runs[0].status, "running");
-    assert_eq!(harness.get(&mission.id).event_seq, 2);
+    assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "running");
+    assert_eq!(harness.get(&mission.id).inbox.event_seq, 2);
     harness.agent.release(1);
     wait_for("reply turn completion", || {
         harness.transcript(&mission.id)["turns"]
@@ -1312,7 +1293,7 @@ fn the_offered_question_is_one_still_unanswered() {
     harness.wait_idle(&mission.id);
     let recovery = harness.get(&mission.id);
     assert_eq!(recovery.status, MissionStatus::NeedsYou);
-    assert_eq!(recovery.runs[0].status, "waiting");
+    assert_eq!(recovery.inbox.runs[0].status, "waiting");
     assert!(recovery.question.is_none());
 }
 
@@ -1385,7 +1366,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     let child = question["run_id"].as_str().unwrap();
     assert_ne!(child, root);
     harness.missions.deliver_run_events(child).unwrap();
-    assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+    assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     harness.agent.release(1);
     harness.wait_turns(2);
     let response = api.answer_pipeline_question(
@@ -1395,7 +1376,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     );
     assert_eq!(response.status_code, 200);
     harness.missions.deliver_run_events(child).unwrap();
-    assert_ne!(harness.get(&mission.id).runs[0].status, "waiting");
+    assert_ne!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     assert_eq!(wait_terminal(&harness.settings, child), "completed");
     assert_eq!(wait_terminal(&harness.settings, &root), "completed");
     harness.missions.deliver_run_events(&root).unwrap();
@@ -1525,7 +1506,7 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         .message
         .contains("skipped"));
     assert!(noop.message.contains("not started"));
-    assert_eq!(h.get(id).event_seq, 0);
+    assert_eq!(h.get(id).inbox.event_seq, 0);
     assert!(h.missions.wait(&h.project, id, " ").is_err());
     h.missions.start(&h.project, id).unwrap();
     h.wait_turns(1);
@@ -1565,7 +1546,7 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     let scope = spark_storage::ProjectRegistry::new(h.settings.data_dir.clone())
         .ensure_project_paths(&h.project)
         .unwrap();
-    let inbox = spark_storage::workspace_missions::MissionRepository::new(&scope.root)
+    let inbox = spark_storage::workspace_records::RecordRepository::missions(&scope.root)
         .read_events(id)
         .unwrap();
     assert_eq!(inbox.last().unwrap()["payload"]["source_payload"], full);
@@ -1594,7 +1575,7 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     assert!(outcomes.iter().all(|o| o.status == "success"));
     assert_eq!(triggers.emit_flow_event(json!({"flow_name": "work", "run_id": "external-run", "status": "completed", "project_path": h.project}).as_object().unwrap().clone()).unwrap().len(), 1);
     assert_eq!(h.agent.prompts().len(), 2);
-    assert_eq!(h.get(id).event_seq - h.get(id).cursor, 3);
+    assert_eq!(h.get(id).inbox.event_seq - h.get(id).inbox.cursor, 3);
     h.agent.release(1);
     h.wait_turns(3);
     let prompt = h.agent.prompts()[2].clone();
@@ -1673,7 +1654,7 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
         let published = events.clone();
         install_runtime(
             &h.settings,
-            MissionRuntime {
+            InboxRuntime {
                 agent_turn_backend: h.agent.clone(),
                 publish: Arc::new(move |event| published.lock().unwrap().push(event)),
             },
@@ -1772,17 +1753,17 @@ fn a_retried_webhook_delivery_reaches_the_mission_once() {
             })
             .unwrap();
     };
-    let seq = h.get(&mission.id).event_seq;
+    let seq = h.get(&mission.id).inbox.event_seq;
     deliver("delivery-1");
     deliver("delivery-1");
     assert_eq!(
-        h.get(&mission.id).event_seq,
+        h.get(&mission.id).inbox.event_seq,
         seq + 1,
         "a retry is the same event"
     );
     deliver("delivery-2");
     assert_eq!(
-        h.get(&mission.id).event_seq,
+        h.get(&mission.id).inbox.event_seq,
         seq + 2,
         "a new delivery is a new event"
     );

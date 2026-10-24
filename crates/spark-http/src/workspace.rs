@@ -82,6 +82,8 @@ pub fn router() -> Router<HttpAppState> {
         )
         .route("/missions/{mission_id}/events", post(post_mission_event))
         .route("/missions/{mission_id}/{control}", post(control_mission))
+        .route("/roles", get(list_roles))
+        .route("/roles/{name}/{control}", post(control_role))
         .route("/playbooks", get(list_playbooks))
         .route("/playbooks/{name}", get(get_playbook))
         .route("/projects", get(list_projects).delete(delete_project))
@@ -471,6 +473,8 @@ async fn run_conversation_turn(
         let completion_conversation_id = prepared_for_completion.conversation_id.clone();
         let completion_project_path = prepared_for_completion.project_path.clone();
         let missions = mission_service(&settings_for_completion);
+        let roles =
+            spark_workspace::roles::WorkspaceRoleService::new((*settings_for_completion).clone());
         let (mission_project, mission_id) = (
             completion_project_path.clone(),
             completion_conversation_id.clone(),
@@ -499,6 +503,10 @@ async fn run_conversation_turn(
                 .is_some()
             {
                 let _ = missions.process(&mission_project, &mission_id);
+            }
+            // So is a standing role's.
+            if let Some(role) = roles.conversation_role(&mission_project, &mission_id) {
+                let _ = roles.process(&mission_project, &role.name);
             }
             completed
         })
@@ -1755,7 +1763,7 @@ async fn post_mission_event(
     State(settings): State<Arc<SparkSettings>>,
     AxumPath(id): AxumPath<String>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
-    payload: Result<Json<spark_workspace::missions::MissionEventPost>, JsonRejection>,
+    payload: Result<Json<spark_workspace::inbox::InboxPost>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let post = json_payload(payload)?;
@@ -1784,6 +1792,51 @@ async fn control_mission(
         }
     })
     .await
+}
+
+async fn list_roles(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(payload)?;
+    let roles = spark_workspace::roles::WorkspaceRoleService::new((*settings).clone())
+        .list(&query.project_path)?;
+    Ok(Json(json!({ "roles": roles })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoleSendRequest {
+    conversation_handle: String,
+    message: String,
+}
+
+async fn control_role(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath((name, control)): AxumPath<(String, String)>,
+    query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    body: Bytes,
+) -> ApiResult<spark_workspace::roles::RoleRecord> {
+    let query = query_payload(query)?;
+    let send: Option<RoleSendRequest> = (control == "send")
+        .then(|| serde_json::from_slice(&body))
+        .transpose()
+        .map_err(|error| WorkspaceError::Validation(format!("Invalid send request: {error}")))?;
+    let role = tokio::task::spawn_blocking(move || {
+        let service = spark_workspace::roles::WorkspaceRoleService::new((*settings).clone());
+        let project = query.project_path.as_str();
+        match (control.as_str(), send) {
+            ("start", _) => service.start(project, &name),
+            ("stop", _) => service.stop(project, &name),
+            ("send", Some(send)) => {
+                service.send(project, &name, &send.conversation_handle, &send.message)
+            }
+            _ => Err(WorkspaceError::NotFound("Unknown role control".into())),
+        }
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("role task failed: {error}")))??;
+    Ok(Json(role))
 }
 
 #[derive(Deserialize)]

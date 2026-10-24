@@ -52,6 +52,8 @@ export function startedBy(chat: Chat, runs: RunRecord[], missions: Mission[]): S
 export function lastChat(chats: Chat[], runs: RunRecord[], missions: Mission[]) {
     let best: { chat: Chat; at: number; started: Started[] } | null = null
     for (const chat of chats) {
+        // A standing role's placeholder row has no conversation yet.
+        if (!chat.updated_at) continue
         const started = startedBy(chat, runs, missions)
         const at = Math.max(timeOf(chat.updated_at), ...started.map((item) => item.at))
         if (!best || at > best.at) best = { chat, at, started }

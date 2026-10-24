@@ -42,6 +42,14 @@ describe('parseTriggerResponse', () => {
     expect(trigger.action.flow_name).toBe('')
   })
 
+  it('accepts role actions that name a role and no flow', () => {
+    const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode: 'role', role: 'chief-of-staff', project_path: '/project' } })
+    expect(trigger.action.mode).toBe('role')
+    expect(trigger.action.role).toBe('chief-of-staff')
+    expect(trigger.action.flow_name).toBe('')
+    expect(() => parseTriggerResponse({ ...baseTriggerResponse, action: { project_path: '/project' } })).toThrow(ApiSchemaError)
+  })
+
   it('rejects unsupported trigger source types', () => {
     expect(() => parseTriggerResponse({
       ...baseTriggerResponse,

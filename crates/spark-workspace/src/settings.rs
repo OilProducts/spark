@@ -753,19 +753,50 @@ pub fn project_model_settings_view(
     Ok(json!({"models":models, "execution":execution}))
 }
 
+/// A conversation's own settings win, then its standing role's file
+/// (`role`, unset fields `None`), then project defaults.
 pub fn conversation_model_settings(
     settings: &SparkSettings,
     project_path: &str,
+    role: Option<&ModelSettings>,
     conversation: Option<&ModelSettings>,
 ) -> WorkspaceResult<(ModelSettings, ModelSettingsSource)> {
     let (defaults, defaults_source) =
         spark_agent_adapter::config::read_project_model_defaults(settings, project_path)
             .map_err(WorkspaceError::Validation)?;
+    // A role naming its provider or profile starts from it, not from the project's model.
+    let role = role.map(|role| {
+        let mut group = if role.provider.is_some() || role.llm_profile.is_some() {
+            ModelSettings {
+                provider: role.provider.clone(),
+                llm_profile: role.llm_profile.clone(),
+                model: None,
+                reasoning_effort: None,
+                thinking: None,
+                thinking_budget_tokens: None,
+                reasoning_mode: None,
+                reasoning_summary: None,
+            }
+        } else {
+            defaults.clone()
+        };
+        group.model = role.model.clone().or(group.model);
+        group.reasoning_effort = role.reasoning_effort.clone().or(group.reasoning_effort);
+        group.thinking = role.thinking.clone().or(group.thinking);
+        group.thinking_budget_tokens = role.thinking_budget_tokens.or(group.thinking_budget_tokens);
+        group.reasoning_mode = role.reasoning_mode.clone().or(group.reasoning_mode);
+        group.reasoning_summary = role.reasoning_summary.clone().or(group.reasoning_summary);
+        group
+    });
     let (effective, source) = if let Some(conversation) = conversation {
         conversation
             .validate()
             .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
         (conversation, ModelSettingsSource::Conversation)
+    } else if let Some(role) = &role {
+        role.validate()
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+        (role, ModelSettingsSource::Role)
     } else {
         (&defaults, defaults_source)
     };

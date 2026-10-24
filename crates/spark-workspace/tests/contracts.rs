@@ -6,6 +6,8 @@ mod mission_contracts;
 mod project_registry_contracts;
 #[path = "contracts/review_artifact_contracts.rs"]
 mod review_artifact_contracts;
+#[path = "contracts/role_contracts.rs"]
+mod role_contracts;
 #[path = "contracts/run_orchestration_contracts.rs"]
 mod run_orchestration_contracts;
 #[path = "contracts/trigger_source_activation_contracts.rs"]

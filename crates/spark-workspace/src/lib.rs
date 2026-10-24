@@ -20,7 +20,7 @@ pub use conversations::{
     ConversationSettingsUpdate, ConversationSummary, ConversationTurnRequest,
     FlowRunRequestCreateByHandleRequest, FlowRunRequestReviewRequest, PreparedConversationTurn,
     ProposedPlanReviewRequest, RunContinueRequest, RunLaunchRequest, RunRetryRequest,
-    WorkspaceConversationService,
+    StandingRoleSummary, WorkspaceConversationService,
 };
 pub use errors::{WorkspaceError, WorkspaceResult};
 pub use flows::{
@@ -43,5 +43,7 @@ pub use workflow_log::{
     project_run_milestones, read_workflow_log_tail, workflow_log_envelope,
     workflow_log_tail_envelopes, WorkflowLogEntry, WORKFLOW_LOG_TAIL_LIMIT,
 };
+pub mod inbox;
 pub mod missions;
 pub mod playbooks;
+pub mod roles;

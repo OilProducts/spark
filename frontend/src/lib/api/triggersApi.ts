@@ -12,6 +12,7 @@ export type TriggerSourceType = 'schedule' | 'poll' | 'webhook' | 'flow_event'
 export interface TriggerActionResponse {
     mode?: string
     mission_id?: string | null
+    role?: string | null
     flow_name: string
     project_path?: string | null
     static_context?: Record<string, unknown>
@@ -92,7 +93,9 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
         action: {
             mode: asOptionalNullableString(actionRecord.mode) ?? 'static',
             mission_id: asOptionalNullableString(actionRecord.mission_id),
-            flow_name: actionRecord.mode === 'mission' ? asOptionalNullableString(actionRecord.flow_name) ?? '' : expectString(actionRecord.flow_name, endpoint, 'action.flow_name'),
+            role: asOptionalNullableString(actionRecord.role),
+            // Only a static action launches a flow, so only it must name one.
+            flow_name: (actionRecord.mode ?? 'static') === 'static' ? expectString(actionRecord.flow_name, endpoint, 'action.flow_name') : asOptionalNullableString(actionRecord.flow_name) ?? '',
             project_path: asOptionalNullableString(actionRecord.project_path),
             static_context: asUnknownRecord(actionRecord.static_context) ?? {},
         },

@@ -72,9 +72,9 @@ test('every activity-bar view opens its panel with items from more than one proj
 
         // Chats: grouped by project, Home first.
         await expect(page.getByTestId('chats-project-group').first()).toHaveAttribute('data-project-path', home)
-        await expect(group(page, home).getByTestId('chats-chat-row')).not.toHaveCount(0)
+        await expect(group(page, home).locator('[data-testid="chats-chat-row"]:not([data-standing-role])')).not.toHaveCount(0)
         await group(page, alpha).getByTestId('chats-project-toggle').click()
-        await expect(group(page, alpha).getByTestId('chats-chat-row')).toHaveCount(1)
+        await expect(group(page, alpha).locator('[data-testid="chats-chat-row"]:not([data-standing-role])')).toHaveCount(1)
         await page.screenshot({ path: screenshotPath('20a-activity-chats.png'), fullPage: true })
 
         // Missions: every project's missions, each naming its project.
@@ -180,7 +180,7 @@ test('each chat keeps its unsent draft across chats in other projects, and a new
     await page.getByTestId('activity-chats').click()
     const composer = page.getByTestId('project-ai-conversation-input')
     const openChat = async (projectPath: string, id: string) => {
-        const rows = group(page, projectPath).getByTestId('chats-chat-row')
+        const rows = group(page, projectPath).locator('[data-testid="chats-chat-row"]:not([data-standing-role])')
         if (await rows.count() === 0) await group(page, projectPath).getByTestId('chats-project-toggle').click()
         await group(page, projectPath).locator(`button[data-conversation-id="${id}"]`).click()
     }
@@ -331,7 +331,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await group(page, alpha).getByTestId('chats-project-name').click()
     const projectPage = page.getByTestId('project-page')
     await expect(projectPage.getByTestId('project-page-path')).toHaveText(alpha)
-    await expect(projectPage.getByTestId('project-page-chat')).toHaveCount(1)
+    await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(1)
     await expect(projectPage.getByTestId('project-default-execution-profile')).toBeVisible()
     await expect(projectPage.getByRole('heading', { name: 'Project model defaults' })).toBeVisible()
     await expect(projectPage.getByTestId('project-page-remove')).toBeEnabled()
@@ -410,16 +410,16 @@ test('chats beyond the recent five can be deleted from the project page', async 
     await page.goto('/')
     await page.getByTestId('activity-chats').click()
     await group(page, alpha).getByRole('button', { name: 'Expand alpha-project' }).click()
-    await expect(group(page, alpha).getByTestId('chats-chat-row')).toHaveCount(5)
-    const shown = await group(page, alpha).getByTestId('chats-chat-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-conversation-id')))
+    await expect(group(page, alpha).locator('[data-testid="chats-chat-row"]:not([data-standing-role])')).toHaveCount(5)
+    const shown = await group(page, alpha).locator('[data-testid="chats-chat-row"]:not([data-standing-role])').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-conversation-id')))
     const hidden = ids.find((id) => !shown.includes(id))!
 
     await group(page, alpha).getByTestId('chats-project-more').click()
     const projectPage = page.getByTestId('project-page')
-    await expect(projectPage.getByTestId('project-page-chat')).toHaveCount(6)
+    await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(6)
     await projectPage.getByTestId(`project-page-chat-delete-${hidden}`).click()
     await page.getByTestId('shared-dialog-confirm').click()
-    await expect(projectPage.getByTestId('project-page-chat')).toHaveCount(5)
+    await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(5)
     await expect.poll(async () => (await (await page.request.get(`/workspace/api/projects/conversations?project_path=${encodeURIComponent(alpha)}`)).json())
         .map((chat: { conversation_id: string }) => chat.conversation_id)).not.toContain(hidden)
 })

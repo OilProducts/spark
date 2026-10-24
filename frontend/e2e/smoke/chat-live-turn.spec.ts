@@ -94,7 +94,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
     await page.getByTestId('activity-chats').click()
     const liveGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
-    await liveGroup.getByTestId('chats-chat-row').first().click()
+    await liveGroup.locator('[data-testid="chats-chat-row"]:not([data-standing-role])').first().click()
     await expect(history).toContainText('Half done. Still going. All done.')
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
@@ -207,4 +207,30 @@ test('reopening on Runs finds a running chat behind three newer finished ones, a
 
     finished = true
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0, { timeout: 10_000 })
+})
+
+test('an opened standing role keeps its row, and its state chip follows stop and start live', async ({ page }) => {
+    const projectPath = path.join(tmpRoot, 'projects', 'standing-role-row')
+    mkdirSync(projectPath, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
+    await page.addInitScript(({ projectPath }) => {
+        localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
+    }, { projectPath })
+    await page.goto('/')
+    await page.getByTestId('activity-chats').click()
+    const group = page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
+    const row = group.locator('[data-testid="chats-chat-row"][data-standing-role="coordinator"]')
+    await row.click()
+    await expect(page.getByTestId('project-ai-conversation-input')).toBeVisible()
+    await expect(row).toContainText('Coordinator')
+    await expect(row.getByTestId('standing-role-state')).toHaveText('idle')
+    const conversationId = await row.getAttribute('data-conversation-id')
+    await expect(page.getByTestId(`project-thread-delete-${conversationId}`)).toHaveCount(0)
+
+    const control = (action: string) => page.request.post(`/workspace/api/roles/coordinator/${action}?project_path=${encodeURIComponent(projectPath)}`)
+    expect((await control('stop')).ok()).toBe(true)
+    await expect(row.getByTestId('standing-role-state')).toHaveText('stopped')
+    expect((await control('start')).ok()).toBe(true)
+    await expect(row.getByTestId('standing-role-state')).toHaveText('idle')
+    await expect(row).toContainText('Coordinator')
 })

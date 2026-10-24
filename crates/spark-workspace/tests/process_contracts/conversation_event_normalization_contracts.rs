@@ -3971,7 +3971,8 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
 
 #[test]
 fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
-    use spark_workspace::missions::{install_runtime, MissionRuntime, WorkspaceMissionService};
+    use spark_workspace::inbox::{install_runtime, InboxRuntime};
+    use spark_workspace::missions::WorkspaceMissionService;
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let project = temp
@@ -3989,7 +3990,7 @@ fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
     let config = settings(temp.path());
     install_runtime(
         &config,
-        MissionRuntime {
+        InboxRuntime {
             agent_turn_backend: WorkspaceConversationService::default_agent_turn_backend(&config),
             publish: Arc::new(|_| {}),
         },

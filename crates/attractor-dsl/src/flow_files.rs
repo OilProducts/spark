@@ -105,7 +105,17 @@ struct RoleFile {
     #[serde(rename = "type")]
     file_type: String,
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
     execution: Option<ExecutionConfig>,
+}
+
+/// A parsed role file: its persona (the body) and execution defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Role {
+    pub title: Option<String>,
+    pub persona: String,
+    pub execution: Option<ExecutionConfig>,
 }
 
 /// Loads a flow directory in its authored form (roles unresolved), validated
@@ -317,8 +327,9 @@ pub(crate) fn resolve_flow_roles_with(
         let Some(role) = node.role.take() else {
             continue;
         };
-        let (persona, execution) = match role_text(&role).and_then(|text| parse_role(&role, &text))
-        {
+        let Role {
+            persona, execution, ..
+        } = match role_text(&role).and_then(|text| parse_role(&role, &text)) {
             Ok(role) => role,
             Err(message) => {
                 errors.push(FlowDiagnostic {
@@ -360,11 +371,8 @@ pub(crate) fn resolve_flow_roles_with(
     Ok(resolved.normalize())
 }
 
-/// Parses a role file into its persona and execution defaults.
-pub(crate) fn parse_role(
-    name: &str,
-    text: &str,
-) -> Result<(String, Option<ExecutionConfig>), String> {
+/// Parses a role file.
+pub fn parse_role(name: &str, text: &str) -> Result<Role, String> {
     let (frontmatter, body) =
         split_frontmatter(text).map_err(|error| format!("{name}.md: {error}"))?;
     let role: RoleFile = serde_yaml::from_str(frontmatter)
@@ -372,7 +380,11 @@ pub(crate) fn parse_role(
     if role.file_type != "Role" {
         return Err(format!("role file {name}.md must declare type: Role"));
     }
-    Ok((body.trim().to_string(), role.execution))
+    Ok(Role {
+        title: role.title,
+        persona: body.trim().to_string(),
+        execution: role.execution,
+    })
 }
 
 fn merge_execution(
