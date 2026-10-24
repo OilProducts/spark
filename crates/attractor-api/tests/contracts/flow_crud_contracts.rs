@@ -435,11 +435,15 @@ fn a_failed_editor_delete_keeps_the_copy_for_a_retry() {
     let project = temp.path().join("project");
     let org = init_org(&project);
     write_flow(&settings.bundled_dir().join("flows/shared"), VALID_FLOW);
+    write_flow(
+        &settings.bundled_dir().join("flows/team/shared"),
+        VALID_FLOW,
+    );
     let service = AttractorApiService::new(settings);
     let project_path = project.to_str();
     let edited = VALID_FLOW.replace("prompt: Do work", "prompt: Project work");
     let local = VALID_FLOW.replace("prompt: Do work", "prompt: Local work");
-    for name in ["work", "shared"] {
+    for name in ["work", "shared", "team/shared"] {
         let saved = service.save_flow(save(name, &edited, &project));
         assert_eq!(saved.status_code, 200, "{}", saved.body);
         // Local, uncommitted edits to the copy survive a failed delete.
@@ -448,7 +452,7 @@ fn a_failed_editor_delete_keeps_the_copy_for_a_retry() {
     fs::write(org.join("notes.md"), "draft\n").expect("notes");
     let hook = reject_commits(&org);
 
-    for name in ["work", "shared"] {
+    for name in ["work", "shared", "team/shared"] {
         let failed = service.delete_flow(name, project_path);
         assert_eq!(failed.status_code, 500, "{}", failed.body);
         let copy = org.join(format!("flows/{name}"));
@@ -460,11 +464,11 @@ fn a_failed_editor_delete_keeps_the_copy_for_a_retry() {
     }
     assert_eq!(
         git(&org, &["status", "--porcelain"]),
-        "M flows/shared/task.md\n M flows/work/task.md\n?? notes.md"
+        "M flows/shared/task.md\n M flows/team/shared/task.md\n M flows/work/task.md\n?? notes.md"
     );
 
     fs::remove_file(&hook).expect("unhook");
-    for name in ["work", "shared"] {
+    for name in ["work", "shared", "team/shared"] {
         let retried = service.delete_flow(name, project_path);
         assert_eq!(retried.status_code, 200, "{}", retried.body);
         assert!(!org.join(format!("flows/{name}")).exists());
@@ -473,10 +477,12 @@ fn a_failed_editor_delete_keeps_the_copy_for_a_retry() {
             format!("Delete {name} in the flow editor\nflows/{name}/done.md\nflows/{name}/flow.md\nflows/{name}/start.md\nflows/{name}/task.md")
         );
     }
-    assert_eq!(
-        service.get_flow("shared", project_path).body["layer"],
-        "bundled"
-    );
+    for name in ["shared", "team/shared"] {
+        assert_eq!(
+            service.get_flow(name, project_path).body["layer"],
+            "bundled"
+        );
+    }
     assert_eq!(service.get_flow("work", project_path).status_code, 404);
     assert_eq!(git(&org, &["status", "--porcelain"]), "?? notes.md");
 }

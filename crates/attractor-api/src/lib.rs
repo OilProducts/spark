@@ -1549,11 +1549,13 @@ impl AttractorApiService {
         let org = roots.org.clone().unwrap_or_default();
         // Set the copy aside (inside .git, so git ignores it) until the
         // deletion commits, and put it back if the commit fails.
-        let aside = org
-            .join(".git")
-            .join(format!("spark-deleting-{}", resolved.name));
+        // Nest it by name, so namespaced flows (`team/flow`) set aside too.
+        let aside = org.join(".git/spark-deleting").join(&resolved.name);
         let _ = fs::remove_dir_all(&aside);
-        let result = fs::rename(&resolved.path, &aside)
+        let result = aside
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::rename(&resolved.path, &aside))
             .map_err(|error| error.to_string())
             .and_then(|()| {
                 commit_org_paths(
