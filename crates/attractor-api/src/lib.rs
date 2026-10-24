@@ -1547,7 +1547,13 @@ impl AttractorApiService {
             );
         }
         let org = roots.org.clone().unwrap_or_default();
-        let result = fs::remove_dir_all(&resolved.path)
+        // Set the copy aside (inside .git, so git ignores it) until the
+        // deletion commits, and put it back if the commit fails.
+        let aside = org
+            .join(".git")
+            .join(format!("spark-deleting-{}", resolved.name));
+        let _ = fs::remove_dir_all(&aside);
+        let result = fs::rename(&resolved.path, &aside)
             .map_err(|error| error.to_string())
             .and_then(|()| {
                 commit_org_paths(
@@ -1562,6 +1568,12 @@ impl AttractorApiService {
                     )],
                     &format!("Delete {} in the flow editor", resolved.name),
                 )
+                .inspect_err(|_| {
+                    let _ = fs::rename(&aside, &resolved.path);
+                })
+            })
+            .map(|()| {
+                let _ = fs::remove_dir_all(&aside);
             });
         match result {
             Ok(()) => RuntimeRouteResponse::json(200, json!({"status": "deleted"})),

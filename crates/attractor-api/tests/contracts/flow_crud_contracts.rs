@@ -410,14 +410,7 @@ fn a_failed_editor_commit_is_reported_and_recorded_by_the_retry() {
     let org = init_org(&project);
     let service = AttractorApiService::new(settings(temp.path()));
     fs::write(org.join("notes.md"), "draft\n").expect("notes");
-    let hook = org.join(".git/hooks/pre-commit");
-    fs::create_dir_all(hook.parent().expect("hooks")).expect("hooks dir");
-    fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("hook");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
+    let hook = reject_commits(&org);
 
     let failed = service.save_flow(save("work", VALID_FLOW, &project));
     assert_eq!(failed.status_code, 500, "{}", failed.body);
@@ -432,6 +425,59 @@ fn a_failed_editor_commit_is_reported_and_recorded_by_the_retry() {
         last_commit(&org),
         "Edit work in the flow editor\nflows/work/done.md\nflows/work/flow.md\nflows/work/start.md\nflows/work/task.md"
     );
+    assert_eq!(git(&org, &["status", "--porcelain"]), "?? notes.md");
+}
+
+#[test]
+fn a_failed_editor_delete_keeps_the_copy_for_a_retry() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    write_flow(&settings.bundled_dir().join("flows/shared"), VALID_FLOW);
+    let service = AttractorApiService::new(settings);
+    let project_path = project.to_str();
+    let edited = VALID_FLOW.replace("prompt: Do work", "prompt: Project work");
+    let local = VALID_FLOW.replace("prompt: Do work", "prompt: Local work");
+    for name in ["work", "shared"] {
+        let saved = service.save_flow(save(name, &edited, &project));
+        assert_eq!(saved.status_code, 200, "{}", saved.body);
+        // Local, uncommitted edits to the copy survive a failed delete.
+        write_flow(&org.join(format!("flows/{name}")), &local);
+    }
+    fs::write(org.join("notes.md"), "draft\n").expect("notes");
+    let hook = reject_commits(&org);
+
+    for name in ["work", "shared"] {
+        let failed = service.delete_flow(name, project_path);
+        assert_eq!(failed.status_code, 500, "{}", failed.body);
+        let copy = org.join(format!("flows/{name}"));
+        assert_eq!(
+            read_flow_dir(&copy).expect("copy"),
+            parse_flow_definition(&local).expect("flow")
+        );
+        assert_eq!(service.get_flow(name, project_path).body["layer"], "org");
+    }
+    assert_eq!(
+        git(&org, &["status", "--porcelain"]),
+        "M flows/shared/task.md\n M flows/work/task.md\n?? notes.md"
+    );
+
+    fs::remove_file(&hook).expect("unhook");
+    for name in ["work", "shared"] {
+        let retried = service.delete_flow(name, project_path);
+        assert_eq!(retried.status_code, 200, "{}", retried.body);
+        assert!(!org.join(format!("flows/{name}")).exists());
+        assert_eq!(
+            last_commit(&org),
+            format!("Delete {name} in the flow editor\nflows/{name}/done.md\nflows/{name}/flow.md\nflows/{name}/start.md\nflows/{name}/task.md")
+        );
+    }
+    assert_eq!(
+        service.get_flow("shared", project_path).body["layer"],
+        "bundled"
+    );
+    assert_eq!(service.get_flow("work", project_path).status_code, 404);
     assert_eq!(git(&org, &["status", "--porcelain"]), "?? notes.md");
 }
 
@@ -509,6 +555,19 @@ fn init_org(project: &Path) -> std::path::PathBuf {
     git(&org, &["config", "user.name", "Editor Test"]);
     git(&org, &["config", "user.email", "editor@example.com"]);
     org
+}
+
+/// Installs a pre-commit hook that rejects every commit in the org repo.
+fn reject_commits(org: &Path) -> std::path::PathBuf {
+    let hook = org.join(".git/hooks/pre-commit");
+    fs::create_dir_all(hook.parent().expect("hooks")).expect("hooks dir");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("hook");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    hook
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
