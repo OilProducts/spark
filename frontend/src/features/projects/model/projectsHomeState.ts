@@ -249,6 +249,16 @@ function mergeArtifactList<T extends { id: string }>(
     return { ids: nextIds, byId: nextById }
 }
 
+/** Snapshots don't carry a standing role, so its row keeps the role and title the server listed. */
+function upsertRecordSummary(
+    items: ConversationSummaryResponse[],
+    record: NormalizedConversationRecord,
+): ConversationSummaryResponse[] {
+    const summary = buildConversationSummaryFromRecord(record)
+    const role = items.find((item) => item.conversation_id === record.conversation_id)?.standing_role
+    return upsertConversationSummary(items, role ? { ...summary, title: role.title, standing_role: role } : summary)
+}
+
 function buildConversationSummaryFromRecord(record: NormalizedConversationRecord): ConversationSummaryResponse {
     const lastMessageTurn = record.orderedTurnIds
         .map((turnId) => record.turnsById[turnId])
@@ -531,10 +541,7 @@ export function applyConversationSnapshotToCache(
             },
             summariesByProjectPath: {
                 ...current.summariesByProjectPath,
-                [projectPath]: upsertConversationSummary(
-                    current.summariesByProjectPath[projectPath] || [],
-                    buildConversationSummaryFromRecord(record),
-                ),
+                [projectPath]: upsertRecordSummary(current.summariesByProjectPath[projectPath] || [], record),
             },
         },
     }
@@ -668,10 +675,7 @@ export function applyConversationStreamEventToCache(
             },
             summariesByProjectPath: {
                 ...current.summariesByProjectPath,
-                [projectPath]: upsertConversationSummary(
-                    current.summariesByProjectPath[projectPath] || [],
-                    buildConversationSummaryFromRecord(mergedRecord),
-                ),
+                [projectPath]: upsertRecordSummary(current.summariesByProjectPath[projectPath] || [], mergedRecord),
             },
         },
     }

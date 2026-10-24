@@ -1809,6 +1809,73 @@ async fn live_route_streams_mission_upserts_through_turn_delivery() {
 }
 
 #[tokio::test]
+async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).expect("roles");
+    fs::write(
+        roles.join("chief-of-staff.md"),
+        include_str!("../../../spark-assets/assets/roles/chief-of-staff.md"),
+    )
+    .expect("role file");
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    let app = build_app_with_agent_turn_backend(
+        settings,
+        Arc::new(StaticAgentTurnBackend::new("On it.")),
+    );
+    let live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_conversations=true",
+        None,
+    )
+    .await;
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    let control = |control: &str| {
+        format!(
+            "/workspace/api/roles/chief-of-staff/{control}?project_path={}",
+            url_encode(&project)
+        )
+    };
+    // The role's summary reaching `state`, skipping other frames.
+    async fn summary_state(stream: &mut axum::body::BodyDataStream, state: &str) -> Value {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(tokio::time::Instant::now() < deadline, "role never {state}");
+            let frame = next_sse_chunk(stream).await;
+            if !frame.contains("data: ") {
+                continue;
+            }
+            let envelope = sse_data_json(&frame);
+            let conversation = &envelope["payload"]["conversation"];
+            if envelope["type"] == "conversation.summary_upsert"
+                && conversation["standing_role"]["name"] == "chief-of-staff"
+                && conversation["standing_role"]["state"] == state
+            {
+                return conversation.clone();
+            }
+        }
+    }
+
+    let started = request(app.clone(), "POST", &control("start"), None).await;
+    assert_eq!(started.status(), StatusCode::OK);
+    // A newly started role appears, works its first turn, and settles.
+    let working = summary_state(&mut live_stream, "working").await;
+    assert_eq!(working["title"], "Chief of Staff");
+    summary_state(&mut live_stream, "idle").await;
+    let stopped = request(app.clone(), "POST", &control("stop"), None).await;
+    assert_eq!(json_body(stopped).await["state"], "stopped");
+    summary_state(&mut live_stream, "stopped").await;
+    let resumed = request(app.clone(), "POST", &control("start"), None).await;
+    assert_eq!(resumed.status(), StatusCode::OK);
+    summary_state(&mut live_stream, "idle").await;
+}
+
+#[tokio::test]
 async fn live_route_streams_source_activation_trigger_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

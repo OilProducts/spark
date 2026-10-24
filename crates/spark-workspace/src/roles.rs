@@ -192,7 +192,8 @@ impl WorkspaceRoleService {
     }
 
     /// Runs `work` on the role under the project's role lock, delivers
-    /// pending inbox events when `deliver` is set, and saves a changed record.
+    /// pending inbox events when `deliver` is set, saves a changed record,
+    /// and publishes the role's summary once the lock is released.
     /// `create` admits a role that is not saved yet; a record is saved once
     /// it differs from its default or is created.
     fn locked(
@@ -243,7 +244,18 @@ impl WorkspaceRoleService {
             }
             Ok(role)
         })?;
-        Ok(self.with_derived(role))
+        let role = self.with_derived(role);
+        // Thread lists follow the role's state and turns through its summary.
+        if let Some(runtime) = inbox::runtime(&self.settings) {
+            if let Ok(Some(envelope)) = crate::live::conversation_summary_envelope_for(
+                &self.settings,
+                &role.conversation_id,
+                &role.project_path,
+            ) {
+                (runtime.publish)(envelope);
+            }
+        }
+        Ok(role)
     }
     pub fn process(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         self.locked(project, name, false, true, |_, _| Ok(()))
