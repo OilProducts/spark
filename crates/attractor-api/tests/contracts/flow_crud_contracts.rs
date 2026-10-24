@@ -360,6 +360,50 @@ edges:
 }
 
 #[test]
+fn editor_save_leaves_other_files_in_the_flow_directory_alone() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let service = AttractorApiService::new(settings(temp.path()));
+    assert_eq!(
+        service
+            .save_flow(save("work", VALID_FLOW, &project))
+            .status_code,
+        200
+    );
+    let head = git(&org, &["rev-parse", "HEAD"]);
+    fs::write(org.join("flows/work/unrelated.txt"), "draft\n").expect("unstaged");
+    fs::write(org.join("flows/work/staged.txt"), "draft\n").expect("staged");
+    git(&org, &["add", "flows/work/staged.txt"]);
+
+    // An unchanged save commits nothing.
+    assert_eq!(
+        service
+            .save_flow(save("work", VALID_FLOW, &project))
+            .status_code,
+        200
+    );
+    assert_eq!(git(&org, &["rev-parse", "HEAD"]), head);
+
+    // A changed save commits only the flow's own files.
+    let edited = VALID_FLOW.replace("prompt: Do work", "prompt: Do better work");
+    assert_eq!(
+        service
+            .save_flow(save("work", &edited, &project))
+            .status_code,
+        200
+    );
+    assert_eq!(
+        last_commit(&org),
+        "Edit work in the flow editor\nflows/work/task.md"
+    );
+    assert_eq!(
+        git(&org, &["status", "--porcelain"]),
+        "A  flows/work/staged.txt\n?? flows/work/unrelated.txt"
+    );
+}
+
+#[test]
 fn a_failed_editor_commit_is_reported_and_recorded_by_the_retry() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project = temp.path().join("project");

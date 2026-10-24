@@ -1549,12 +1549,14 @@ impl AttractorApiService {
             .and_then(|()| {
                 commit_org_paths(
                     &org,
-                    &[resolved
-                        .path
-                        .strip_prefix(&org)
-                        .unwrap_or(&resolved.path)
-                        .to_string_lossy()
-                        .to_string()],
+                    &[format!(
+                        ":(literal){}",
+                        resolved
+                            .path
+                            .strip_prefix(&org)
+                            .unwrap_or(&resolved.path)
+                            .to_string_lossy()
+                    )],
                     &format!("Delete {} in the flow editor", resolved.name),
                 )
             });
@@ -3200,18 +3202,26 @@ fn save_flow_request(
     if let Err(error) = write_flow_dir(&flow_path, flow) {
         return flow_source_error_response(error);
     }
-    // The whole flow directory, so a retry records what a failed commit left
-    // behind; the reserved files are not the editor's to commit.
+    // Every flow file the editor owns (the directory's own `.md` files, which
+    // it writes, copies and deletes), so a retry records what a failed commit
+    // left behind; other files, and the reserved ones, are not the editor's.
     let dir = flow_path
         .strip_prefix(&org)
         .unwrap_or(&flow_path)
         .to_string_lossy()
         .to_string();
-    let mut pathspecs = vec![dir.clone()];
+    let mut escaped = String::new();
+    for c in dir.chars() {
+        if "\\*?[".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    let mut pathspecs = vec![format!(":(glob){escaped}/*.md")];
     pathspecs.extend(
         attractor_dsl::RESERVED_FILES
             .iter()
-            .map(|file| format!(":(exclude){dir}/{file}")),
+            .map(|file| format!(":(exclude,literal){dir}/{file}")),
     );
     if let Err(error) =
         commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
