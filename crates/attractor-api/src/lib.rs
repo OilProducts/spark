@@ -3259,16 +3259,30 @@ fn save_flow_request(
     );
     // The first save of a bundled flow commits the unmodified copy first, so
     // the copy's first commit is exactly the bundled version it came from.
-    // Until HEAD holds the copy (say its commit failed), a save recopies it:
-    // whatever the editor owns on disk is replaced by this save anyway.
+    // Until HEAD holds the copy (say its commit failed), a save that finds
+    // the bundled files still unmodified on disk recopies them. A project
+    // flow whose files differ is the project's own, never replaced by a copy.
     let committed = spark_common::project::run_git(
         &org,
         &["cat-file", "-e", &format!("HEAD:{dir}/{FLOW_FILE}")],
     )
     .is_ok();
     if !committed {
-        let bundled = FlowRoots::new(roots.bundled.clone(), None).find_flow(&name);
-        if let Ok(Some(bundled)) = bundled {
+        let bundled = FlowRoots::new(roots.bundled.clone(), None)
+            .find_flow(&name)
+            .ok()
+            .flatten()
+            .filter(|bundled| {
+                let Ok(texts) = attractor_dsl::read_flow_dir_texts(&flow_path) else {
+                    return !flow_path.join(FLOW_FILE).is_file();
+                };
+                attractor_dsl::read_flow_dir_texts(&bundled.path).is_ok_and(|bundled| {
+                    bundled
+                        .iter()
+                        .all(|(file, text)| texts.get(file) == Some(text))
+                })
+            });
+        if let Some(bundled) = bundled {
             if let Err(error) = copy_flow_files(&bundled.path, &flow_path).and_then(|()| {
                 commit_org_paths(&org, &pathspecs, &format!("Copy {name} from bundled"))
             }) {

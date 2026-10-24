@@ -233,6 +233,7 @@ impl WorkspaceOrgService {
         let Ok(log) = run_git(
             &org,
             &[
+                "--literal-pathspecs",
                 "log",
                 "-p",
                 "--no-color",
@@ -433,11 +434,36 @@ fn first_commit_texts(
     path: &str,
     kind: &str,
 ) -> Option<WorkspaceResult<BTreeMap<String, String>>> {
-    let log = run_git(org, &["log", "--reverse", "--format=%H", "--", path]).ok()?;
+    // Paths are literal, and listed unquoted (NUL-separated).
+    let log = run_git(
+        org,
+        &[
+            "--literal-pathspecs",
+            "log",
+            "--reverse",
+            "--format=%H",
+            "--",
+            path,
+        ],
+    )
+    .ok()?;
     let commit = log.lines().next()?;
-    let listed = run_git(org, &["ls-tree", "-r", "--name-only", commit, "--", path]).ok()?;
+    let listed = run_git(
+        org,
+        &[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            commit,
+            "--",
+            path,
+        ],
+    )
+    .ok()?;
     let mut files = BTreeMap::new();
-    for file in listed.lines() {
+    for file in listed.split('\0').filter(|file| !file.is_empty()) {
         let name = Path::new(file)
             .file_name()
             .unwrap_or_default()

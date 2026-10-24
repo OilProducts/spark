@@ -375,6 +375,92 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     assert_eq!(git(&["status", "--porcelain"]), "?? memory/\n?? roles/");
 }
 
+#[tokio::test]
+async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let bundled = settings.bundled_dir().join("roles");
+    std::fs::create_dir_all(&bundled).expect("roles dir");
+    let project = temp.path().join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    std::fs::create_dir_all(org.join("roles")).expect("org roles");
+    let git = |args: &[&str]| {
+        spark_common::project::run_git(
+            &org,
+            &[
+                &[
+                    "-c",
+                    "user.name=Org Test",
+                    "-c",
+                    "user.email=org@example.com",
+                ],
+                args,
+            ]
+            .concat(),
+        )
+        .expect("git")
+    };
+    // `review1` is committed first, so a glob `review[1]` would match it.
+    for name in ["review1", "review[1]", "réviseur"] {
+        let text = format!("---\ntype: Role\n---\n\n{name} reviews.\n");
+        std::fs::write(bundled.join(format!("{name}.md")), &text).expect("bundled role");
+        std::fs::write(org.join(format!("roles/{name}.md")), &text).expect("copy");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", &format!("Copy {name}")]);
+    }
+    std::fs::write(
+        bundled.join("réviseur.md"),
+        "---\ntype: Role\n---\n\nMoved on.\n",
+    )
+    .expect("bundled moves on");
+
+    let app = build_app(settings);
+    let query = format!("project_path={}", project.display());
+    let get = |uri: String| {
+        let app = app.clone();
+        async move { request_json(app, "GET", &uri, None).await }
+    };
+    let (status, history, _) = get(format!(
+        "/workspace/api/org/history?{query}&path=roles/review%5B1%5D.md"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let messages: Vec<_> = history["commits"]
+        .as_array()
+        .expect("commits")
+        .iter()
+        .map(|commit| commit["message"].clone())
+        .collect();
+    assert_eq!(messages, vec![json!("Copy review[1]")]);
+    let (status, bracketed, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=role&name=review%5B1%5D"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{bracketed}");
+    assert_eq!(bracketed["layer"], "project_copy");
+    assert_eq!(bracketed["bundled_changed"], false);
+
+    let (status, unicode, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=role&name=r%C3%A9viseur"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unicode}");
+    assert_eq!(unicode["layer"], "project_copy");
+    assert_eq!(
+        unicode["files"],
+        json!([{
+            "name": "réviseur.md",
+            "content": "---\ntype: Role\n---\n\nréviseur reviews.\n",
+            "status": null,
+        }])
+    );
+    assert_eq!(unicode["bundled_changed"], true);
+    assert!(unicode["bundled_diff"]
+        .as_str()
+        .expect("diff")
+        .contains("-Moved on."));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_retried_save_after_a_failed_copy_commit_keeps_the_pristine_copy() {

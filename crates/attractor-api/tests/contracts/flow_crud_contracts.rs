@@ -598,6 +598,42 @@ fn a_failed_copy_commit_is_recopied_by_the_retry() {
     );
 }
 
+#[test]
+fn a_failed_save_keeps_an_uncommitted_project_override() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let bundled = settings.bundled_dir().join("flows/shared");
+    write_flow(&bundled, VALID_FLOW);
+    let service = AttractorApiService::new(settings);
+    let copy = org.join("flows/shared");
+    let override_flow = VALID_FLOW.replace("prompt: Do work", "prompt: Override work");
+    write_flow(&copy, &override_flow);
+    let hook = reject_commits(&org);
+
+    // The override is the project's own, not a bundled copy to recopy.
+    let edited = VALID_FLOW.replace("prompt: Do work", "prompt: Project work");
+    let failed = service.save_flow(save("shared", &edited, &project));
+    assert_eq!(failed.status_code, 500, "{}", failed.body);
+    assert_eq!(
+        read_flow_dir(&copy).expect("override"),
+        parse_flow_definition(&edited).expect("flow")
+    );
+
+    fs::remove_file(&hook).expect("unhook");
+    let untouched = service.save_flow(save("shared", &override_flow, &project));
+    assert_eq!(untouched.status_code, 200, "{}", untouched.body);
+    assert_eq!(
+        git(&org, &["log", "--format=%s"]),
+        "Edit shared in the flow editor"
+    );
+    assert_eq!(
+        read_flow_dir(&copy).expect("override"),
+        parse_flow_definition(&override_flow).expect("flow")
+    );
+}
+
 fn save(name: &str, content: &str, project: &Path) -> SaveFlowRequest {
     SaveFlowRequest {
         name: name.to_string(),
