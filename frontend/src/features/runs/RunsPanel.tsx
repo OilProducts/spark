@@ -34,6 +34,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import { openRun } from '@/features/missions/MissionTranscript'
+import { requestNavigation } from '@/state/workspaceSlice'
 
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
@@ -108,9 +109,6 @@ export function RunsPanel() {
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
-    // The editor opens flows from the active project.
-    const flowCatalog = useFlowCatalog(activeProjectPath, Boolean(selectedRunId))
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
     const selectedRunSummary = useStore((state) => (
@@ -121,6 +119,9 @@ export function RunsPanel() {
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
     ))
     const selectedRun = selectedRunDetailSession?.record ?? selectedRunSummary
+    // The editor opens a run's flow from the run's own project.
+    const runProjectPath = selectedRun?.project_path ?? null
+    const flowCatalog = useFlowCatalog(runProjectPath, Boolean(selectedRunId))
     const selectedRunTimelineId = selectedRun?.run_id ?? null
     const {
         artifactDownloadHref,
@@ -494,18 +495,21 @@ export function RunsPanel() {
                                     if (!flowName || !flowCatalog.flows.includes(flowName)) {
                                         return
                                     }
-                                    setActiveFlow(flowName)
-                                    setPendingEditorNodeSelection({
-                                        flowName,
-                                        nodeId: selectedNodeId ?? currentNodeForSummary ?? null,
-                                    })
-                                    setViewMode('editor')
+                                    const nodeId = selectedNodeId ?? currentNodeForSummary ?? null
+                                    const open = () => {
+                                        useStore.getState().setActiveProjectPath(runProjectPath)
+                                        setActiveFlow(flowName)
+                                        setPendingEditorNodeSelection({ flowName, nodeId })
+                                        setViewMode('editor')
+                                    }
+                                    if (useStore.getState().projectPagePath) requestNavigation(open)
+                                    else open()
                                 }}
                                 openInEditorDisabledReason={
                                     selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
                                         ? null
                                         : flowCatalog.isLoaded
-                                            ? "This run's flow is not in the active project's flows."
+                                            ? "This run's flow is not in its project's flows."
                                             : 'Loading the project flows…'
                                 }
                                 fillHeight={!isNarrowViewport}
