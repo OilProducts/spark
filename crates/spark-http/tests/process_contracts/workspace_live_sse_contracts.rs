@@ -1808,7 +1808,7 @@ async fn live_route_streams_mission_upserts_through_turn_delivery() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -1822,9 +1822,16 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project = project_path.to_string_lossy().to_string();
+    // Hold each turn until the test has seen the role working.
+    let (open_gate, gate) = std::sync::mpsc::channel();
     let app = build_app_with_agent_turn_backend(
         settings,
-        Arc::new(StaticAgentTurnBackend::new("On it.")),
+        Arc::new(GatedStreamingBackend {
+            before: Vec::new(),
+            after: Vec::new(),
+            output: StaticAgentTurnBackend::new("On it.").output,
+            gate: std::sync::Mutex::new(gate),
+        }),
     );
     let live = request(
         app.clone(),
@@ -1866,6 +1873,9 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     // A newly started role appears, works its first turn, and settles.
     let working = summary_state(&mut live_stream, "working").await;
     assert_eq!(working["title"], "Chief of Staff");
+    // Release the first turn and any turn the resume below starts.
+    open_gate.send(()).expect("gate");
+    open_gate.send(()).expect("gate");
     summary_state(&mut live_stream, "idle").await;
     let stopped = request(app.clone(), "POST", &control("stop"), None).await;
     assert_eq!(json_body(stopped).await["state"], "stopped");

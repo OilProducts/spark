@@ -55,6 +55,8 @@ export function useRunsList({
 
         let activeRequest: AbortController | null = null
         let pendingRefresh = false
+        // Live upserts that arrive while a fetch is out may be newer than its snapshot.
+        let liveDuringRequest = new Map<string, RunRecord>()
         let closed = false
 
         const handleLiveRunUpsert = (event: Event) => {
@@ -63,6 +65,7 @@ export function useRunsList({
             if (!nextRun) {
                 return
             }
+            if (activeRequest) liveDuringRequest.set(nextRun.run_id, nextRun)
             useStore.getState().reconcileRunRecord(nextRun.run_id, 'live', nextRun)
             updateRunsListSession({
                 runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
@@ -81,6 +84,7 @@ export function useRunsList({
             }
             const request = new AbortController()
             activeRequest = request
+            liveDuringRequest = new Map()
             updateRunsListSession({
                 status: 'loading',
                 error: null,
@@ -92,7 +96,7 @@ export function useRunsList({
                 const data = await fetchRunsListValidated(null, request.signal)
                 if (activeRequest !== request || request.signal.aborted) return
                 updateRunsListSession({
-                    runs: data.runs,
+                    runs: [...liveDuringRequest.values()].reduce(mergeRunUpsert, data.runs),
                     fetched: true,
                     status: 'ready',
                     error: null,
