@@ -311,6 +311,17 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     .await;
     assert_eq!(same["bundled_changed"], false);
     assert_eq!(same["bundled_diff"], "");
+    // A whitespace-only change to bundled still counts.
+    let bundled_flow = bundled.join("flows/shared/flow.md");
+    let text = std::fs::read_to_string(&bundled_flow).expect("bundled flow");
+    std::fs::write(&bundled_flow, format!("{text}\n")).expect("append newline");
+    let (_, spaced, _) = get(format!(
+        "/workspace/api/org/item?{query}&kind=flow&name=shared"
+    ))
+    .await;
+    assert_eq!(spaced["bundled_changed"], true);
+    assert_ne!(spaced["bundled_diff"], "");
+    write_flow(&settings, "shared", &simple_flow("shared"));
 
     let (status, history, _) = get(format!(
         "/workspace/api/org/history?{query}&path=flows/shared"
@@ -362,6 +373,128 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     // Nothing above wrote to the org repo.
     assert_eq!(git(&["rev-parse", "HEAD"]), head);
     assert_eq!(git(&["status", "--porcelain"]), "?? memory/\n?? roles/");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let bundled = settings.bundled_dir();
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(outside.join("flow")).expect("outside");
+    std::fs::write(outside.join("secret.md"), "secret\n").expect("secret");
+    std::fs::write(
+        outside.join("flow/flow.md"),
+        std::fs::read_to_string(bundled.join("flows/shared/flow.md")).expect("flow"),
+    )
+    .expect("outside flow");
+    std::fs::create_dir_all(bundled.join("roles")).expect("bundled roles");
+    symlink(outside.join("secret.md"), bundled.join("roles/bleak.md")).expect("link");
+    symlink(outside.join("flow"), bundled.join("flows/linked")).expect("link");
+
+    let project = temp.path().join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    std::fs::create_dir_all(org.join("roles")).expect("org roles");
+    symlink(outside.join("secret.md"), org.join("roles/leak.md")).expect("link");
+    // A project copy whose node file leads outside, and a linked flow directory.
+    let copy = org.join("flows/shared");
+    std::fs::create_dir_all(&copy).expect("copy");
+    std::fs::copy(bundled.join("flows/shared/flow.md"), copy.join("flow.md")).expect("copy");
+    symlink(outside.join("secret.md"), copy.join("node.md")).expect("link");
+    symlink(outside.join("flow"), org.join("flows/own")).expect("link");
+    std::fs::create_dir_all(org.join("memory")).expect("memory");
+    symlink(&outside, org.join("memory/coordinator")).expect("link");
+
+    let app = build_app(settings);
+    let query = format!("project_path={}", project.display());
+    for uri in [
+        format!("/workspace/api/org/item?{query}&kind=role&name=leak"),
+        format!("/workspace/api/org/item?{query}&kind=role&name=bleak"),
+        format!("/workspace/api/org/item?{query}&kind=flow&name=shared"),
+        format!("/workspace/api/org/item?{query}&kind=flow&name=own"),
+        format!("/workspace/api/org/item?{query}&kind=flow&name=linked"),
+    ] {
+        let (status, body, _) = request_json(app.clone(), "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert!(!body.to_string().contains("secret\\n"), "{uri}: {body}");
+    }
+    let (status, files, _) = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/org/memory?{query}&role=coordinator"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, files["files"].clone()),
+        (StatusCode::OK, json!([]))
+    );
+    let (status, body, _) = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/org/memory?{query}&role=coordinator&file=secret.md"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+#[tokio::test]
+async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    let roles = settings.bundled_dir().join("roles");
+    std::fs::create_dir_all(&roles).expect("roles");
+    std::fs::write(
+        roles.join("coordinator.md"),
+        "---\ntype: Role\n---\n\nYou coordinate.\n",
+    )
+    .expect("role");
+    let app = build_app(settings);
+    let tree = || {
+        let mut paths: Vec<_> = walk(temp.path());
+        paths.sort();
+        paths
+    };
+    let before = tree();
+    let project = temp.path().join("unseen");
+    let (status, list, _) = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/org?project_path={}", project.display()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let coordinator = list["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["name"] == "coordinator")
+        .expect("coordinator")
+        .clone();
+    assert_eq!(coordinator["standing"]["state"], "idle");
+    assert_eq!(tree(), before);
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|entry| {
+            let path = entry.path();
+            let mut paths = vec![path.clone()];
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                paths.extend(walk(&path));
+            }
+            paths
+        })
+        .collect()
 }
 
 async fn request_json(

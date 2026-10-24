@@ -137,8 +137,7 @@ impl WorkspaceOrgService {
     }
 
     fn standing_roles(&self, project: &str) -> WorkspaceResult<BTreeMap<String, StandingRole>> {
-        let scope =
-            ProjectRegistry::new(self.settings.data_dir.clone()).ensure_project_paths(project)?;
+        let scope = ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project)?;
         let repo = RecordRepository::roles(&scope.root);
         WorkspaceRoleService::new(self.settings.clone())
             .list(project)?
@@ -179,7 +178,7 @@ impl WorkspaceOrgService {
         } else {
             &org
         };
-        let files = item_files(&root.join(&item.path), kind)?
+        let files = item_files(root, &item.path, kind)?
             .into_iter()
             .map(|(file, content)| {
                 let path = file_path(&item.path, kind, &file);
@@ -193,11 +192,15 @@ impl WorkspaceOrgService {
             })
             .collect();
         let (bundled_diff, bundled_changed) = if item.layer == "project_copy" {
-            let bundled = roots.bundled.join(&item.path);
+            // Read (and so contain) the bundled files before diffing them.
+            let bundled = item_files(&roots.bundled, &item.path, kind)?;
             (
-                Some(diff_no_index(&bundled, &org.join(&item.path))?),
+                Some(diff_no_index(
+                    &roots.bundled.join(&item.path),
+                    &org.join(&item.path),
+                )?),
                 match first_commit_texts(&org, &item.path, kind).transpose()? {
-                    Some(copied) => Some(copied != trimmed(item_files(&bundled, kind)?)),
+                    Some(copied) => Some(copied != bundled),
                     None => None,
                 },
             )
@@ -257,7 +260,18 @@ impl WorkspaceOrgService {
         if !valid_role_name(role) {
             return Err(invalid(format!("Invalid role name: {role}")));
         }
+        // A symlinked memory directory must not lead out of the org repo.
         let dir = memory_dir(project.trim(), role);
+        let org = spark_common::project::org_dir(Path::new(project.trim()));
+        let dir = match (dir.canonicalize(), org.canonicalize()) {
+            (Ok(dir), Ok(org)) if dir.starts_with(&org) && dir.is_dir() => dir,
+            _ if file.is_none() => return Ok(json!({ "role": role, "files": [] })),
+            _ => {
+                return Err(WorkspaceError::NotFound(format!(
+                    "No memory for role {role}"
+                )))
+            }
+        };
         let Some(file) = file else {
             let mut files = Vec::new();
             list_files(&dir, &dir, &mut files);
@@ -266,11 +280,7 @@ impl WorkspaceOrgService {
         };
         let path = dir.join(relative_path(file)?);
         // A symlink must not lead out of the memory directory either.
-        let inside = match (path.canonicalize(), dir.canonicalize()) {
-            (Ok(path), Ok(dir)) => path.starts_with(dir) && path.is_file(),
-            _ => false,
-        };
-        if !inside {
+        if !inside(&dir, &path) || !path.is_file() {
             return Err(WorkspaceError::NotFound(format!(
                 "No memory file {file} for role {role}"
             )));
@@ -377,23 +387,33 @@ fn role_names(roots: &FlowRoots) -> BTreeSet<String> {
         .collect()
 }
 
-/// A flow's own files (file name -> text), or a role's single file.
-fn item_files(path: &Path, kind: &str) -> WorkspaceResult<BTreeMap<String, String>> {
-    if kind == "flow" {
-        return attractor_dsl::read_flow_dir_texts(path).map_err(flow_error);
+/// Whether `path`, symlinks resolved, exists inside `root`.
+fn inside(root: &Path, path: &Path) -> bool {
+    match (path.canonicalize(), root.canonicalize()) {
+        (Ok(path), Ok(root)) => path.starts_with(root),
+        _ => false,
     }
-    let text = fs::read_to_string(path)
+}
+
+/// A flow's own files (file name -> text), or a role's single file, at
+/// `rel` under `root`; no file may resolve outside `root`.
+fn item_files(root: &Path, rel: &str, kind: &str) -> WorkspaceResult<BTreeMap<String, String>> {
+    let path = root.join(rel);
+    let escaped = || invalid(format!("{rel} leads outside {}", root.display()));
+    if !inside(root, &path) {
+        return Err(escaped());
+    }
+    if kind == "flow" {
+        let files = attractor_dsl::read_flow_dir_texts(&path).map_err(flow_error)?;
+        if files.keys().any(|name| !inside(root, &path.join(name))) {
+            return Err(escaped());
+        }
+        return Ok(files);
+    }
+    let text = fs::read_to_string(&path)
         .map_err(|error| WorkspaceError::Internal(format!("Unable to read role: {error}")))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     Ok(BTreeMap::from([(name.to_string(), text)]))
-}
-
-// `run_git` trims its output, so texts read through it compare trimmed.
-fn trimmed(files: BTreeMap<String, String>) -> BTreeMap<String, String> {
-    files
-        .into_iter()
-        .map(|(name, text)| (name, text.trim().to_string()))
-        .collect()
 }
 
 /// The item's files as its first org commit recorded them; None before any commit.
@@ -417,9 +437,9 @@ fn first_commit_texts(
         if !own {
             continue;
         }
-        match run_git(org, &["show", &format!("{commit}:{file}")]) {
+        match git_blob(org, &format!("{commit}:{file}")) {
             Ok(text) => files.insert(name, text),
-            Err(error) => return Some(Err(WorkspaceError::Internal(error))),
+            Err(error) => return Some(Err(error)),
         };
     }
     Some(Ok(files))
@@ -443,6 +463,23 @@ fn uncommitted_paths(org: &Path) -> BTreeMap<String, &'static str> {
         }
     }
     paths
+}
+
+/// A blob's exact text; `run_git` would trim it.
+fn git_blob(org: &Path, spec: &str) -> WorkspaceResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(org)
+        .args(["show", spec])
+        .output()
+        .map_err(|error| WorkspaceError::Internal(format!("Unable to run git: {error}")))?;
+    if !output.status.success() {
+        return Err(WorkspaceError::Internal(format!(
+            "git show {spec} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// `git diff --no-index` from `from` to `to`; exit 1 just means they differ.
