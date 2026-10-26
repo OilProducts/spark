@@ -623,7 +623,13 @@ test("flow metadata round trips through the file view without legacy stylesheet 
     await page.getByTestId("flow-files-save").click()
     await expect(page.getByTestId("flow-files-error")).toContainText("ingest_spec.md")
 
-    // Back in the structured view, the canvas holds the saved file, not the refused draft.
+    // Leaving retries the refused draft, so the file view stays with the draft and its error.
+    await page.getByRole("button", { name: "Structured", exact: true }).click()
+    await expect(page.getByTestId("flow-files-error")).toContainText("ingest_spec.md")
+    await expect(fileEditor).toHaveValue(/missing_node/)
+
+    // With the draft put back, the structured view holds the saved file.
+    await fileEditor.fill(nodeFile.replace("title: Ingest Spec", "title: Ingest Spec Edited"))
     await page.getByRole("button", { name: "Structured", exact: true }).click()
     await expect(page.getByTestId("flow-files-view")).toHaveCount(0)
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toContainText("Ingest Spec Edited")

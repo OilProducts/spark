@@ -4539,6 +4539,110 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(saveCalls).toHaveLength(0)
   })
 
+  it('[CID:11.3.04] saves file edits before leaving the file view and keeps them when the save is refused', async () => {
+    const flowFile = '---\nid: contract_behavior\n---\n'
+    const editedFile = '---\nid: contract_behavior\ntitle: Edited\n---\n'
+    let storedFile = flowFile
+    let refuseSave = true
+    const savedFiles: Array<Array<{ name: string; content: string }>> = []
+    const previewPayload = {
+      graph: { graph_attrs: {}, defaults: { node: {}, edge: {} }, subgraphs: [], nodes: [{ id: 'start', label: 'Start', shape: 'box' }], edges: [] },
+      diagnostics: [],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
+        return jsonResponse({ files: [{ name: 'flow.md', content: storedFile }], flow: { id: 'contract_behavior' } })
+      }
+      if (url.endsWith('/attractor/preview')) {
+        return jsonResponse(previewPayload)
+      }
+      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
+        const { files } = JSON.parse(String(init.body)) as { files: Array<{ name: string; content: string }> }
+        savedFiles.push(files)
+        if (refuseSave) {
+          return jsonResponse({ detail: { status: 'validation_error', error: 'flow.md is invalid' } }, { status: 422 })
+        }
+        storedFile = files[0].content
+        return jsonResponse({ status: 'saved' })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const user = userEvent.setup()
+    renderWithFlowProvider(<Editor />)
+
+    await screen.findByTestId('editor-mode-toggle')
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    expect(await screen.findByTestId('flow-file-editor')).toHaveValue(flowFile)
+    fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: editedFile } })
+
+    // A refused save keeps the file view, the draft and the error.
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    expect(await screen.findByTestId('flow-files-error')).toHaveTextContent('flow.md is invalid')
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(editedFile)
+    expect(screen.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'true')
+
+    // A successful save completes the switch, and the saved text is what the files show next.
+    refuseSave = false
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    await waitFor(() => {
+      expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
+    })
+    expect(savedFiles).toEqual([[{ name: 'flow.md', content: editedFile }], [{ name: 'flow.md', content: editedFile }]])
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('flow-file-editor')).toHaveValue(editedFile)
+    })
+    expect(screen.queryByTestId('flow-files-error')).not.toBeInTheDocument()
+    expect(savedFiles).toHaveLength(2)
+  })
+
+  it('[CID:11.3.04] stays in the structured view without reloading when its save is refused', async () => {
+    const previewPayload = {
+      graph: { graph_attrs: {}, defaults: { node: {}, edge: {} }, subgraphs: [], nodes: [{ id: 'start', label: 'Start', shape: 'box' }], edges: [] },
+      diagnostics: [],
+    }
+    let flowRequestCount = 0
+    let saveRequestCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
+        flowRequestCount += 1
+        return jsonResponse({ files: [{ name: 'flow.md', content: '---\nid: contract_behavior\n---\n' }], flow: { id: 'contract_behavior' } })
+      }
+      if (url.endsWith('/attractor/preview')) {
+        return jsonResponse(previewPayload)
+      }
+      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
+        saveRequestCount += 1
+        return jsonResponse({ detail: { status: 'validation_error', error: 'flow has no start node' } }, { status: 422 })
+      }
+      return jsonResponse({}, { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const user = userEvent.setup()
+    renderWithFlowProvider(<Editor />)
+
+    await screen.findByTestId('editor-mode-toggle')
+    await screen.findByText('Start')
+    const nodeCount = () => document.querySelectorAll('.react-flow__node').length
+    const loadedNodes = nodeCount()
+    await user.click(screen.getByRole('button', { name: '+ Node' }))
+    await waitFor(() => expect(nodeCount()).toBe(loadedNodes + 1))
+
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    await waitFor(() => expect(saveRequestCount).toBeGreaterThanOrEqual(1))
+    await waitFor(() => expect(useStore.getState().saveErrorMessage).toContain('flow has no start node'))
+
+    expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Structured' })).toHaveAttribute('aria-pressed', 'true')
+    expect(flowRequestCount).toBe(1)
+    expect(nodeCount()).toBe(loadedNodes + 1)
+  })
+
   it('[CID:11.3.02] preserves unsurfaced canonical data through structured edits and the file view', async () => {
     const previewPayload = {
       graph: {

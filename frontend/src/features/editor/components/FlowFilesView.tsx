@@ -5,21 +5,37 @@ import { SidePanelRow } from '@/components/app/side-panel-row'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { FlowFile } from '@/lib/attractorClient'
-import { useStore } from '@/store'
 
-/** The flow's files beside an editor holding the selected file's exact text. */
-export function FlowFilesView({ files, selectedNodeId, onSave }: {
+export interface FlowFilesError {
+    files: string[]
+    message: string
+}
+
+/** The files whose draft differs from their saved text. */
+export function editedFlowFiles(files: FlowFile[], drafts: Record<string, string>): FlowFile[] {
+    // A draft matching its file (as after a save and reload) is not an edit.
+    return files
+        .filter((file) => drafts[file.name] !== undefined && drafts[file.name] !== file.content)
+        .map((file) => ({ name: file.name, content: drafts[file.name] }))
+}
+
+/**
+ * The flow's files beside an editor holding the selected file's exact text. The drafts and
+ * the save error belong to the editor, so they outlive this view across mode switches.
+ */
+export function FlowFilesView({ files, drafts, error, selectedNodeId, onDraftChange, onSave }: {
     files: FlowFile[]
+    drafts: Record<string, string>
+    error: FlowFilesError | null
     /** A node selected on the canvas selects its `<node>.md`. */
     selectedNodeId: string | null
-    /** Saves the edited files; resolves false when the save was refused. */
-    onSave: (files: FlowFile[]) => Promise<boolean>
+    onDraftChange: (name: string, content: string) => void
+    /** Saves the edited files. */
+    onSave: () => Promise<unknown>
 }) {
     const nodeFile = (nodeId: string | null) => (nodeId ? `${nodeId}.md` : null)
     const [selectedName, setSelectedName] = useState(() => nodeFile(selectedNodeId))
     const [lastNodeId, setLastNodeId] = useState(selectedNodeId)
-    const [drafts, setDrafts] = useState<Record<string, string>>({})
-    const [error, setError] = useState<{ files: string[]; message: string } | null>(null)
     const [saving, setSaving] = useState(false)
 
     if (selectedNodeId !== lastNodeId) {
@@ -28,19 +44,13 @@ export function FlowFilesView({ files, selectedNodeId, onSave }: {
     }
 
     const selected = files.find((file) => file.name === selectedName) ?? files[0] ?? null
-    // A draft matching its file (as after a save and reload) is not an edit.
-    const edited = files.filter((file) => drafts[file.name] !== undefined && drafts[file.name] !== file.content)
+    const edited = editedFlowFiles(files, drafts)
     const isEdited = (name: string) => edited.some((file) => file.name === name)
 
     const save = async () => {
-        const changed = edited.map((file) => ({ name: file.name, content: drafts[file.name] }))
         setSaving(true)
-        const saved = await onSave(changed)
+        await onSave()
         setSaving(false)
-        setError(saved ? null : {
-            files: changed.map((file) => file.name),
-            message: useStore.getState().saveErrorMessage || 'The files were not saved.',
-        })
     }
 
     return (
@@ -65,10 +75,7 @@ export function FlowFilesView({ files, selectedNodeId, onSave }: {
                         data-testid="flow-file-editor"
                         aria-label={selected.name}
                         value={drafts[selected.name] ?? selected.content}
-                        onChange={(event) => {
-                            const content = event.target.value
-                            setDrafts((current) => ({ ...current, [selected.name]: content }))
-                        }}
+                        onChange={(event) => onDraftChange(selected.name, event.target.value)}
                         className="min-h-0 flex-1 resize-none font-mono text-sm leading-5"
                         spellCheck={false}
                     />

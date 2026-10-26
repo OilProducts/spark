@@ -76,7 +76,7 @@ import {
 } from './services/editorPreview';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
-import { FlowFilesView } from './components/FlowFilesView';
+import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './components/FlowFilesView';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -252,6 +252,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     });
     const [isDragging, setIsDragging] = useState(false);
     const [flowFiles, setFlowFiles] = useState<FlowFile[]>([]);
+    // The file view's unsaved edits by file name, kept here so a mode switch cannot drop them.
+    const [fileDrafts, setFileDrafts] = useState<Record<string, string>>({});
+    const [fileSaveError, setFileSaveError] = useState<FlowFilesError | null>(null);
     // Bumped to reload the active flow, e.g. after the file view saves.
     const [flowReloadToken, setFlowReloadToken] = useState(0);
     const reloadRequestedRef = useRef(false);
@@ -681,6 +684,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             canonicalFlowRef.current = null;
             clearDiagnostics();
             setFlowFiles([]);
+            setFileDrafts({});
+            setFileSaveError(null);
             setEditorMode('structured');
             hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
@@ -735,6 +740,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 reason: 'flow-load reset',
             });
             setFlowFiles([]);
+            setFileDrafts({});
+            setFileSaveError(null);
             setEditorMode('structured');
             setLastLayoutMs(0);
             setLastPreviewMs(0);
@@ -1125,33 +1132,51 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         setFlowReloadToken((token) => token + 1);
     }, []);
 
-    const selectEditorMode = useCallback((mode: EditorMode, fromPreference = false) => {
+    /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
+    const saveFileDrafts = useCallback(async () => {
+        if (!flowName) return false;
+        const changed = editedFlowFiles(flowFiles, fileDrafts);
+        if (changed.length === 0) return true;
+        const saved = await saveFlowContent(flowName, { files: changed });
+        setFileSaveError(saved ? null : {
+            files: changed.map((file) => file.name),
+            message: useStore.getState().saveErrorMessage || 'The files were not saved.',
+        });
+        if (saved) reloadFlow();
+        return saved;
+    }, [fileDrafts, flowFiles, flowName, reloadFlow]);
+
+    const selectEditorMode = useCallback(async (mode: EditorMode, fromPreference = false) => {
         if (!flowName || editorMode === mode) return;
-        flushPendingSave();
+        if (fromPreference) {
+            setEditorMode(mode);
+            return;
+        }
+        // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
+        if (editorMode === 'files') {
+            if (!(await saveFileDrafts())) return;
+            setFileDrafts({});
+            setFileSaveError(null);
+        } else {
+            // The files show the structured state as saved: save it (a no-op when unchanged, and it
+            // covers edits still debounced elsewhere, such as graph settings), then read the files.
+            // A refused save is reported by the save indicator.
+            flushPendingSave();
+            await waitForFlowSaves();
+            if (!(await saveNow({ nodes, edges }))) return;
+            reloadFlow();
+        }
         setEditorMode(mode);
-        if (fromPreference) return;
         useStore.setState({ preferredEditorMode: mode });
         completePreferenceInteraction({ editor_mode: mode });
-        if (mode !== 'files') return;
-        // The files show the structured state as saved: save it (a no-op when unchanged, and it
-        // covers edits still debounced elsewhere, such as graph settings), then read the files.
-        void waitForFlowSaves().then(() => saveNow({ nodes, edges })).then(reloadFlow);
-    }, [editorMode, edges, flowName, flushPendingSave, nodes, reloadFlow, saveNow, setEditorMode]);
+    }, [editorMode, edges, flowName, flushPendingSave, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
 
     useEffect(() => {
         if (!isHydrated) { initialModeFlowRef.current = null; return; }
         if (!clientPreferencesLoaded || hydratedFlowNameRef.current !== flowName || initialModeFlowRef.current === flowName) return;
         initialModeFlowRef.current = flowName;
-        if (useStore.getState().preferredEditorMode === 'files') selectEditorMode('files', true);
+        if (useStore.getState().preferredEditorMode === 'files') void selectEditorMode('files', true);
     }, [clientPreferencesLoaded, selectEditorMode, flowName, isHydrated]);
-
-    /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
-    const saveFlowFiles = useCallback(async (files: FlowFile[]) => {
-        if (!flowName) return false;
-        const saved = await saveFlowContent(flowName, { files });
-        if (saved) reloadFlow();
-        return saved;
-    }, [flowName, reloadFlow]);
 
     const onSelectionChange = useCallback(({ nodes, edges }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);
@@ -1328,8 +1353,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     mode={editorMode}
                     childFlowsExpanded={expandChildFlows}
                     runDisabledReason={runDisabledReason}
-                    onSelectStructured={() => selectEditorMode('structured')}
-                    onSelectFiles={() => selectEditorMode('files')}
+                    onSelectStructured={() => void selectEditorMode('structured')}
+                    onSelectFiles={() => void selectEditorMode('files')}
                     onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
                     onArrange={() => {
                         void onAutoArrange()
@@ -1474,7 +1499,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 ) : null}
             </div>
             {flowName && editorMode === 'files' ? (
-                <FlowFilesView files={flowFiles} selectedNodeId={selectedNodeId} onSave={saveFlowFiles} />
+                <FlowFilesView
+                    files={flowFiles}
+                    drafts={fileDrafts}
+                    error={fileSaveError}
+                    selectedNodeId={selectedNodeId}
+                    onDraftChange={(name, content) => setFileDrafts((current) => ({ ...current, [name]: content }))}
+                    onSave={saveFileDrafts}
+                />
             ) : null}
             </div>
         </div>
