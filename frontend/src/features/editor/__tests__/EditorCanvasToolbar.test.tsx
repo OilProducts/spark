@@ -8,6 +8,7 @@ import { EditorCanvasToolbar } from '../components/EditorCanvasToolbar'
 function renderToolbar(overrides: Partial<React.ComponentProps<typeof EditorCanvasToolbar>> = {}) {
     const props: React.ComponentProps<typeof EditorCanvasToolbar> = {
         mode: 'structured',
+        modeDisabled: false,
         childFlowsExpanded: false,
         runDisabledReason: null,
         onSelectStructured: vi.fn(),

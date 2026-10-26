@@ -1147,7 +1147,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     }, [fileDrafts, flowFiles, flowName, reloadFlow]);
 
     const selectEditorMode = useCallback(async (mode: EditorMode, fromPreference = false) => {
-        if (!flowName || editorMode === mode) return;
+        // Before hydration the canvas is empty; saving it would overwrite the flow.
+        if (!flowName || !isHydrated || editorMode === mode) return;
         if (fromPreference) {
             setEditorMode(mode);
             return;
@@ -1169,7 +1170,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         setEditorMode(mode);
         useStore.setState({ preferredEditorMode: mode });
         completePreferenceInteraction({ editor_mode: mode });
-    }, [editorMode, edges, flowName, flushPendingSave, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
+    }, [editorMode, edges, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
 
     useEffect(() => {
         if (!isHydrated) { initialModeFlowRef.current = null; return; }
@@ -1351,6 +1352,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             {flowName && (
                 <EditorCanvasToolbar
                     mode={editorMode}
+                    modeDisabled={!isHydrated}
                     childFlowsExpanded={expandChildFlows}
                     runDisabledReason={runDisabledReason}
                     onSelectStructured={() => void selectEditorMode('structured')}

@@ -934,6 +934,7 @@ describe('Frontend contract behavior', () => {
 
     await screen.findByTestId('editor-mode-toggle')
     await waitFor(() => expect(previewRequestCount).toBe(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     const fileEditor = await screen.findByTestId('flow-file-editor')
     fireEvent.change(fileEditor, { target: { value: editedFile } })
@@ -4510,6 +4511,8 @@ useStore.getState().setRunsSelectedRunId(runId);
         return jsonResponse({ files: [{ name: 'flow.md', content: flowFile }], flow: { id: 'contract_behavior' } })
       }
       if (url.endsWith('/attractor/preview')) {
+        // Slow enough that the toggle is seen before the flow is loaded.
+        await new Promise((resolve) => setTimeout(resolve, 50))
         return jsonResponse(previewPayload)
       }
       if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
@@ -4523,10 +4526,14 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
+    // Switching before the flow is loaded would save the empty canvas over it.
+    expect(screen.getByRole('button', { name: 'Files' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     expect(await screen.findByTestId('flow-file-editor')).toHaveValue(flowFile)
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => {
       expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
@@ -4574,11 +4581,13 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     expect(await screen.findByTestId('flow-file-editor')).toHaveValue(flowFile)
     fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: editedFile } })
 
     // A refused save keeps the file view, the draft and the error.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     expect(await screen.findByTestId('flow-files-error')).toHaveTextContent('flow.md is invalid')
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(editedFile)
@@ -4586,11 +4595,13 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     // A successful save completes the switch, and the saved text is what the files show next.
     refuseSave = false
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => {
       expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
     })
     expect(savedFiles).toEqual([[{ name: 'flow.md', content: editedFile }], [{ name: 'flow.md', content: editedFile }]])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     await waitFor(() => {
       expect(screen.getByTestId('flow-file-editor')).toHaveValue(editedFile)
@@ -4731,8 +4742,10 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(structuredSave).toContain('"x_unsurfaced_node":"keep-node"')
     expect(structuredSave).toContain('"x_unsurfaced_edge":"keep-edge"')
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     await screen.findByTestId('flow-file-editor')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => {
       expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
