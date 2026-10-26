@@ -197,7 +197,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                     <span className="h-16 w-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
                                 </div>
                             ) : null}
-                            <div data-testid="editor-panel" className="flex-1 min-w-0 w-full h-full">
+                            <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
                                 <Editor isActive={isActive} />
                             </div>
                         </EditorGraphBridgeProvider>

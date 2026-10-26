@@ -397,10 +397,10 @@ pub struct FlowDefinitionError {
 }
 
 impl FlowDefinition {
-    pub fn from_yaml_str(source: &str) -> Result<Self, FlowDefinitionError> {
-        serde_yaml::from_str::<Self>(source).map_err(|source| FlowDefinitionError {
+    pub fn from_json_str(source: &str) -> Result<Self, FlowDefinitionError> {
+        serde_json::from_str::<Self>(source).map_err(|source| FlowDefinitionError {
             count: 1,
-            detail: format!("invalid YAML flow definition: {source}"),
+            detail: format!("invalid JSON flow definition: {source}"),
             diagnostics: vec![FlowDiagnostic {
                 rule_id: "parse_error".to_string(),
                 message: source.to_string(),

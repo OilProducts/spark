@@ -105,4 +105,4 @@ fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{install_flow, install_org_flow};
+pub(crate) use flow_install::{install_flow, install_named_flow, install_org_flow};

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
-import { generateFlowYaml } from '@/lib/flowYamlUtils'
+import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
@@ -92,12 +92,14 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const { clearPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<typeof flowNodes>({
         flowName: activeFlow,
         debounceMs: 200,
-        buildContent: (nextNodes, currentFlowName) => generateFlowYaml(
-            currentFlowName,
-            nextNodes ?? readNodes(),
-            readEdges(),
-            flowMetadata,
-        ),
+        buildContent: (nextNodes, currentFlowName) => ({
+            flow: buildFlowDefinitionFromCanonicalFlowModel(currentFlowName, buildCanonicalFlowModelFromEditorState(currentFlowName, {
+                nodes: nextNodes ?? readNodes(),
+                edges: readEdges(),
+                flowMetadata,
+                flow: editorGraphBridgeRef?.current?.getFlow(),
+            })),
+        }),
     })
 
     const applyDefaultsToNodes = () => {

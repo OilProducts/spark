@@ -121,7 +121,6 @@ function RunGraphCanvasInner({
                         llm_profile: '',
                         reasoning_effort: '',
                     },
-                    undefined,
                     { expandChildren: runDetailSession?.expandChildFlows ?? false },
                 )
                 if (!hydratedGraph) {

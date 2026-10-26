@@ -73,8 +73,6 @@ pub struct ContinueRunRequest {
     pub new_run_id: Option<String>,
     pub flow: FlowDefinition,
     #[serde(default)]
-    pub flow_source: Option<String>,
-    #[serde(default)]
     pub flow_definition_json: Option<String>,
     /// The new run's manifest (`artifacts/flow/files.json`).
     #[serde(default)]
@@ -119,6 +117,23 @@ impl RuntimeControls {
 
     pub fn store(&self) -> &RunStore {
         &self.store
+    }
+
+    /// The flow a run captured, for retrying it.
+    fn saved_flow(&self, paths: &crate::paths::RunRootPaths) -> ControlResult<FlowDefinition> {
+        match self.store.read_graph_source(paths) {
+            Ok(Some(flow)) => Ok(flow),
+            Ok(None) => Err(RuntimeControlError::Conflict(
+                "retry_missing_saved_flow".to_string(),
+            )),
+            Err(
+                error @ (RuntimeStorageError::Json { .. }
+                | RuntimeStorageError::InvalidRuntimeGraph { .. }),
+            ) => Err(RuntimeControlError::Conflict(format!(
+                "retry_invalid_saved_flow: {error}"
+            ))),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn get_checkpoint(&self, run_id: &str) -> ControlResult<CheckpointState> {
@@ -344,7 +359,6 @@ impl RuntimeControls {
                 started_at: crate::events::utc_timestamp(),
                 extra: BTreeMap::new(),
             }),
-            flow_source: request.flow_source,
             flow_definition_json: request.flow_definition_json,
             flow_files: request.flow_files,
         })?;
@@ -403,18 +417,7 @@ impl RuntimeControls {
             let parent_record = parent
                 .record
                 .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_parent".into()))?;
-            let source = self
-                .store
-                .read_graph_source(&parent.paths)?
-                .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_saved_flow".into()))?;
-            let flow = FlowDefinition::from_yaml_str(&source)
-                .map_err(|e| {
-                    RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}"))
-                })?
-                .normalize();
-            flow.validate().map_err(|e| {
-                RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}"))
-            })?;
+            let flow = self.saved_flow(&parent.paths)?;
             if record.root_run_id.as_deref()
                 != Some(parent_record.root_run_id.as_deref().unwrap_or(parent_id))
                 || !record.parent_node_id.as_ref().is_some_and(|node| {
@@ -487,15 +490,7 @@ impl RuntimeControls {
         .checked_add(1)
         .ok_or_else(|| RuntimeControlError::Conflict("Execution attempt overflow".to_string()))?;
         crate::retry::saved_retry_request(&checkpoint.context)?;
-        let source = self
-            .store
-            .read_graph_source(&bundle.paths)?
-            .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_saved_flow".to_string()))?;
-        let flow = FlowDefinition::from_yaml_str(&source)
-            .map_err(|e| RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}")))?
-            .normalize();
-        flow.validate()
-            .map_err(|e| RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}")))?;
+        let flow = self.saved_flow(&bundle.paths)?;
         if checkpoint
             .completed_nodes
             .iter()

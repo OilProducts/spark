@@ -27,9 +27,10 @@ org. Deleting a project copy reverts to the bundled flow; bundled flows cannot
 be deleted.
 
 The Rust `FlowDefinition` type is the assembled form of a flow, and
-`assets/schemas/flow-definition.schema.json` describes it. The editor loads and
-saves that assembled form as one YAML document; the server splits it into the
-directory on save.
+`assets/schemas/flow-definition.schema.json` describes its JSON form. The
+editor's structured mode loads and saves that form as JSON, and the server
+writes it into the directory, rewriting only the files that changed. The
+editor's file view shows and saves the flow's files with their exact text.
 
 ## Minimal Flow
 
@@ -294,7 +295,7 @@ condition: outcome=fail && preferred_label=Rewrite
 Validate a flow directory before launching:
 
 ```bash
-spark flow validate --file crates/spark-assets/assets/flows/examples/simple-linear --text
+spark flow validate --dir crates/spark-assets/assets/flows/examples/simple-linear --text
 ```
 
 Validation assembles the directory into a `FlowDefinition`, applies semantic
@@ -302,14 +303,3 @@ rules, and then verifies the runtime graph derived from the typed model.
 A file inside `<project>/.spark/agent-org` resolves roles through that
 project's org, then the bundled library. `spark flow list|describe|get|validate`
 take `--project <path>` to include a project's org flows.
-
-## Converting YAML Flows
-
-Older single-file YAML flows convert with the same writer the editor uses:
-
-```bash
-cargo run -p attractor-dsl --example convert-yaml-flows -- <yaml-root> <flows-dir>
-```
-
-It skips flows whose directory already exists and drops the extension from
-subflow `flow_ref`s.

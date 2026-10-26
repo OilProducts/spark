@@ -280,7 +280,6 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
- "serde_yaml",
  "spark-common",
  "thiserror 1.0.69",
 ]

@@ -130,7 +130,6 @@ fn spawn_gate_run(
         &flow,
         None,
         None,
-        None,
         &LaunchContext::empty(),
         &Default::default(),
     )
@@ -146,7 +145,6 @@ fn spawn_gate_run(
             store: executor_store,
             record: run_record,
             flow,
-            flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),

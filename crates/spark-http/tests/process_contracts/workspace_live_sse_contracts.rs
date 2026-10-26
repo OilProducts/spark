@@ -2529,13 +2529,21 @@ fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation
 fn write_flow(settings: &SparkSettings, name: &str) {
     attractor_dsl::write_flow_dir(
         &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
+        &attractor_dsl::validated_flow(serde_json::from_value(simple_flow()).expect("flow JSON"))
+            .expect("valid flow"),
     )
     .expect("write flow");
 }
 
-fn simple_flow() -> String {
-    "schema_version: '1'\nid: live-route\ntitle: Live Route\ngoal: Run live route\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n".to_string()
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "live-route",
+        "title": "Live Route",
+        "goal": "Run live route",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
 }
 
 fn seed_parent_child_run_journals(settings: &SparkSettings, project_path: &Path) {
@@ -2665,7 +2673,22 @@ async fn live_route_streams_detached_run_progress_mid_flight() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n"),
+            "flow_name": crate::install_flow(&settings, json!({
+                "schema_version": "1",
+                "id": "slow_live",
+                "title": "Slow Live",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "a": {"kind": "tool", "config": {"kind": "tool", "command": "sleep 1"}},
+                    "b": {"kind": "tool", "config": {"kind": "tool", "command": "sleep 1"}},
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "a"},
+                    {"from": "a", "to": "b"},
+                    {"from": "b", "to": "done"}
+                ]
+            })),
             "working_directory": project_path_text,
             "run_id": "run-mid-flight",
             "model": "compat-model"
@@ -2734,7 +2757,22 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: gate_live\ntitle: Gate Live\nnodes:\n  start:\n    kind: start\n  review:\n    kind: human_gate\n    config:\n      kind: human_gate\n      prompt: Ship it?\n  approved:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: ship\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: approved\n    label: Approve\n  - from: approved\n    to: done\n"),
+            "flow_name": crate::install_flow(&settings, json!({
+                "schema_version": "1",
+                "id": "gate_live",
+                "title": "Gate Live",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "review": {"kind": "human_gate", "config": {"kind": "human_gate", "prompt": "Ship it?"}},
+                    "approved": {"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "ship"}},
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "review"},
+                    {"from": "review", "to": "approved", "label": "Approve"},
+                    {"from": "approved", "to": "done"}
+                ]
+            })),
             "working_directory": project_path_text,
             "run_id": "run-gate-live",
             "model": "compat-model"
@@ -2892,19 +2930,13 @@ async fn live_route_streams_execution_transcript_upserts_through_the_publisher()
     );
     record.flow_name = "segment-live".to_string();
     record.status = "failed".to_string();
-    let flow = concat!(
-        "schema_version: '1'\n",
-        "id: seg_live\n",
-        "title: Seg Live\n",
-        "nodes:\n",
-        "  start:\n",
-        "    kind: start\n",
-        "  done:\n",
-        "    kind: exit\n",
-        "edges:\n",
-        "  - from: start\n",
-        "    to: done\n",
-    );
+    let flow = json!({
+        "schema_version": "1",
+        "id": "seg_live",
+        "title": "Seg Live",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    });
     let checkpoint = attractor_core::CheckpointState {
         timestamp: "2026-07-08T12:00:00Z".to_string(),
         current_node: "start".to_string(),
@@ -2917,8 +2949,7 @@ async fn live_route_streams_execution_transcript_upserts_through_the_publisher()
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint),
-            flow_source: Some(flow.to_string()),
-            flow_definition_json: None,
+            flow_definition_json: Some(flow.to_string()),
             ..CreateRunRequest::default()
         })
         .expect("seed run");
@@ -3071,7 +3102,20 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: mid_node\ntitle: Mid Node\nnodes:\n  start:\n    kind: start\n  work:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: stream\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: work\n  - from: work\n    to: done\n"),
+            "flow_name": crate::install_flow(&settings, json!({
+                "schema_version": "1",
+                "id": "mid_node",
+                "title": "Mid Node",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "work": {"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "stream"}},
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "done"}
+                ]
+            })),
             "working_directory": project_path_text,
             "run_id": "run-mid-node",
             "model": "compat-model"

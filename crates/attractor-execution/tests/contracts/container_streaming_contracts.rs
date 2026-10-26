@@ -117,21 +117,18 @@ fn fixture(
             record: RunRecord::new(run_id, temp.path().to_string_lossy()),
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
         .unwrap();
-    let flow = attractor_dsl::parse_flow_definition(
-        r#"
-schema_version: "1"
-id: stream
-nodes:
-  task: { kind: start }
-  done: { kind: exit }
-edges:
-  - { from: task, to: done }
-"#,
+    let flow = attractor_dsl::validated_flow(
+        serde_json::from_value(json!({
+            "schema_version": "1",
+            "id": "stream",
+            "nodes": { "task": { "kind": "start" }, "done": { "kind": "exit" } },
+            "edges": [{ "from": "task", "to": "done" }]
+        }))
+        .unwrap(),
     )
     .unwrap();
     let delivered = Arc::new(Mutex::new(0));
@@ -309,23 +306,22 @@ fn worker_protocol_preserves_repeated_visit_and_retry_execution_identity() {
             record: RunRecord::new(run_id, temp.path().to_string_lossy()),
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
         .unwrap();
-    let flow = attractor_dsl::parse_flow_definition(
-        r#"
-schema_version: "1"
-id: worker-identity
-nodes:
-  start: { kind: start }
-  task: { kind: agent_task }
-  done: { kind: exit }
-edges:
-  - { from: start, to: task }
-  - { from: task, to: done }
-"#,
+    let flow = attractor_dsl::validated_flow(
+        serde_json::from_value(json!({
+            "schema_version": "1",
+            "id": "worker-identity",
+            "nodes": {
+                "start": { "kind": "start" },
+                "task": { "kind": "agent_task" },
+                "done": { "kind": "exit" }
+            },
+            "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+        }))
+        .unwrap(),
     )
     .unwrap();
 
@@ -512,18 +508,24 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
             ..Default::default()
         })
         .unwrap();
-    let flow = attractor_dsl::parse_flow_definition(
-        r#"
-schema_version: "1"
-id: worker-clarify
-nodes:
-  start: { kind: start }
-  task: { kind: agent_task, config: { kind: agent_task, prompt: Pick an audience } }
-  done: { kind: exit }
-edges:
-  - { from: start, to: task }
-  - { from: task, to: done }
-"#,
+    let flow = attractor_dsl::validated_flow(
+        serde_json::from_value(json!({
+            "schema_version": "1",
+            "id": "worker-clarify",
+            "nodes": {
+                "start": { "kind": "start" },
+                "task": {
+                    "kind": "agent_task",
+                    "config": {
+                        "kind": "agent_task",
+                        "prompt": "Pick an audience"
+                    }
+                },
+                "done": { "kind": "exit" }
+            },
+            "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+        }))
+        .unwrap(),
     )
     .unwrap();
     let request = WorkerNodeRequest {

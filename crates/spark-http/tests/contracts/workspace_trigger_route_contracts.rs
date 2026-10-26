@@ -4,7 +4,7 @@ use std::path::Path;
 use attractor_runtime::RunStore;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 use spark_common::settings::SparkSettings;
 use spark_http::build_app;
 use spark_storage::{
@@ -17,7 +17,7 @@ use tower::ServiceExt;
 async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run");
+    install_run_flow(&settings);
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
@@ -34,7 +34,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run",
+                "flow_name": RUN_FLOW,
                 "project_path": project_dir,
                 "static_context": {"origin": "compat"}
             },
@@ -132,7 +132,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
     // Canonicalize: dispatched run records hold canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    write_flow(&settings, "ops/run");
+    install_run_flow(&settings);
     let project_dir = root.join("webhook-project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
@@ -145,7 +145,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run",
+                "flow_name": RUN_FLOW,
                 "project_path": project_dir,
                 "static_context": {"origin": "route"}
             },
@@ -265,7 +265,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
         .expect("read webhook run")
         .expect("webhook run");
     let record = run.record.expect("run record");
-    assert_eq!(record.flow_name, "ops/run");
+    assert_eq!(record.flow_name, RUN_FLOW);
     assert_eq!(record.project_path, project_dir.to_string_lossy());
     let context = run.checkpoint.expect("checkpoint").context;
     assert_eq!(
@@ -290,8 +290,8 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
 async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknown_flow() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run");
-    write_flow(&settings, "ops/other");
+    install_run_flow(&settings);
+    crate::install_flow(&settings, trigger_flow("trigger-other"));
     spark_storage::write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -353,7 +353,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
                 "name": "bad",
                 "enabled": true,
                 "source_type": "webhook",
-                "action": {"flow_name": "ops/run"},
+                "action": {"flow_name": RUN_FLOW},
                 "source": {},
                 "extra": true
             })
@@ -396,7 +396,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
 async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run");
+    install_run_flow(&settings);
     spark_storage::write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -487,7 +487,7 @@ secret_hash = "hash""#,
         &settings,
         "trigger-unknown-source",
         "unknown",
-        "ops/run",
+        RUN_FLOW,
         r#"kind = "once"
 run_at = "2026-06-23T10:00:00Z""#,
     );
@@ -495,14 +495,14 @@ run_at = "2026-06-23T10:00:00Z""#,
         &settings,
         "trigger-missing-secret",
         "webhook",
-        "ops/run",
+        RUN_FLOW,
         r#"webhook_key = "key""#,
     );
     write_persisted_trigger_toml(
         &settings,
         "trigger-invalid-schedule",
         "schedule",
-        "ops/run",
+        RUN_FLOW,
         r#"kind = "weekly"
 weekdays = ["mon", "noday"]
 hour = 9
@@ -571,7 +571,7 @@ minute = 0"#,
 async fn poll_trigger_headers_use_python_stringification_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run");
+    install_run_flow(&settings);
     let app = build_app(settings.clone());
 
     let created = request_json(
@@ -581,7 +581,7 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
         Some(json!({
             "name": "Compat poll",
             "source_type": "poll",
-            "action": {"flow_name": "ops/run"},
+            "action": {"flow_name": RUN_FLOW},
             "source": {
                 "url": "https://example.test/items",
                 "interval_seconds": 60,
@@ -706,7 +706,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
             mission_id: None,
             role: None,
             mode: "static".to_string(),
-            flow_name: "ops/run".to_string(),
+            flow_name: RUN_FLOW.to_string(),
             project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
             execution_profile_id: None,
@@ -720,20 +720,23 @@ fn protected_definition(id: &str) -> TriggerDefinition {
     }
 }
 
-fn write_flow(settings: &SparkSettings, name: &str) {
-    write_flow_content(
-        settings,
-        name,
-        "schema_version: '1'\nid: trigger-route\ntitle: Trigger Route\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+const RUN_FLOW: &str = "tests/trigger-route";
+
+fn install_run_flow(settings: &SparkSettings) {
+    assert_eq!(
+        crate::install_flow(settings, trigger_flow("trigger_route")),
+        RUN_FLOW
     );
 }
 
-fn write_flow_content(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
+fn trigger_flow(id: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "title": "Trigger Route",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
 }
 
 fn write_persisted_trigger_toml(
@@ -800,32 +803,27 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     // that never releases it cannot leave the run spinning.
     let release_path = temp.path().join("release-webhook-run");
     let release_path_text = release_path.to_string_lossy().to_string();
-    write_flow_content(
+    let slow_flow = crate::install_flow(
         &settings,
-        "ops/slow-webhook",
-        &format!(
-            concat!(
-                "schema_version: '1'\n",
-                "id: slow_hook\n",
-                "title: Slow Hook\n",
-                "nodes:\n",
-                "  start:\n",
-                "    kind: start\n",
-                "  work:\n",
-                "    kind: tool\n",
-                "    config:\n",
-                "      kind: tool\n",
-                "      command: for i in $(seq 1 600); do [ -f \"{release}\" ] && exit 0; sleep 0.1; done; exit 1\n",
-                "  done:\n",
-                "    kind: exit\n",
-                "edges:\n",
-                "  - from: start\n",
-                "    to: work\n",
-                "  - from: work\n",
-                "    to: done\n",
-            ),
-            release = release_path_text,
-        ),
+        json!({
+            "schema_version": "1",
+            "id": "slow_hook",
+            "title": "Slow Hook",
+            "nodes": {
+                "start": {"kind": "start"},
+                "work": {
+                    "kind": "tool",
+                    "config": {
+                        "kind": "tool",
+                        "command": format!(
+                            "for i in $(seq 1 600); do [ -f \"{release_path_text}\" ] && exit 0; sleep 0.1; done; exit 1"
+                        )
+                    }
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done"}]
+        }),
     );
 
     let app = spark_http::build_app(settings.clone());
@@ -838,7 +836,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
             "name": "Slow webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/slow-webhook",
+                "flow_name": slow_flow,
                 "project_path": project_path_text,
                 "static_context": {"origin": "slow"}
             },
@@ -942,7 +940,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
 async fn trigger_revisions_reject_missing_and_stale_http_writes() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run");
+    install_run_flow(&settings);
     let app = build_app(settings.clone());
     let created = request_json(
         app.clone(),
@@ -950,7 +948,7 @@ async fn trigger_revisions_reject_missing_and_stale_http_writes() {
         "/workspace/api/triggers",
         Some(json!({
             "name": "Original", "source_type": "schedule",
-            "action": {"flow_name": "ops/run"},
+            "action": {"flow_name": RUN_FLOW},
             "source": {"kind": "interval", "interval_seconds": 60}
         })),
     )

@@ -6,8 +6,11 @@ import { expect, type Page } from '@playwright/test'
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const screenshotDir = path.resolve(testDir, '..', '..', 'artifacts', 'ui-smoke')
 const repoRoot = path.resolve(testDir, '..', '..', '..')
-const smokeFixturePath = path.join(repoRoot, 'crates', 'test-fixtures', 'flows', 'flows', 'editor-smoke-base.yaml')
-const smokeFixtureContent = readFileSync(smokeFixturePath, 'utf-8')
+const smokeFixtureDir = path.join(repoRoot, 'crates', 'test-fixtures', 'flows', 'flows')
+/** The smoke flow as the JSON FlowDefinition the editor saves. */
+export const smokeFixtureFlow: Record<string, unknown> = JSON.parse(readFileSync(path.join(smokeFixtureDir, 'editor-smoke-base.json'), 'utf-8'))
+/** The same flow's files as saved: `editor-smoke-base/<file>`. */
+export const smokeFixtureFile = (name: string) => readFileSync(path.join(smokeFixtureDir, 'editor-smoke-base', name), 'utf-8')
 // Flows are per project: each smoke flow remembers the project it was saved in.
 const smokeFlowRegistry = new WeakMap<Page, Map<string, string>>()
 
@@ -151,10 +154,15 @@ export async function gotoWithRegisteredProject(page: Page, projectPath: string)
 }
 
 /** Saves a smoke flow into `projectPath`, the project whose editor lists it. */
-export async function createFlowForSmokeTest(page: Page, flowPrefix: string, projectPath: string): Promise<string> {
+export async function createFlowForSmokeTest(
+  page: Page,
+  flowPrefix: string,
+  projectPath: string,
+  flow: Record<string, unknown> = smokeFixtureFlow,
+): Promise<string> {
   const flowName = `${flowPrefix}-${Date.now()}`
   const saveResponse = await page.request.post('/attractor/api/flows', {
-    data: { name: flowName, content: smokeFixtureContent, project_path: projectPath },
+    data: { name: flowName, flow, project_path: projectPath },
   })
   if (!saveResponse.ok()) {
     throw new Error(`Failed to persist smoke flow ${flowName}: HTTP ${saveResponse.status()}`)

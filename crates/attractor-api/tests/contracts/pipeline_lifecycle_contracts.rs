@@ -7,7 +7,7 @@ use serde_json::json;
 use spark_common::settings::SparkSettings;
 
 #[test]
-fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
+fn start_pipeline_from_a_saved_flow_persists_run_and_returns_launch_metadata() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
@@ -50,15 +50,7 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
         .iter()
         .find(|event| event.event_type == "run_meta")
         .expect("run metadata event");
-    assert_eq!(
-        metadata_event.payload["flow_source_path"],
-        json!(bundle
-            .paths
-            .artifacts_dir()
-            .join("flow/flow-source.yaml")
-            .to_string_lossy()
-            .to_string())
-    );
+    assert!(metadata_event.payload.get("flow_source_path").is_none());
     assert_eq!(
         metadata_event.payload["flow_definition_path"],
         json!(bundle
@@ -74,10 +66,32 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
         .find(|entry| entry.raw_type == "run_meta")
         .expect("run metadata journal entry");
     assert_eq!(
-        metadata_journal_entry.payload["flow_source_path"],
-        metadata_event.payload["flow_source_path"]
+        metadata_journal_entry.payload["flow_definition_path"],
+        metadata_event.payload["flow_definition_path"]
     );
     let record = bundle.record.expect("record");
+    // The run's flow snapshot is the JSON definition, which the hash covers.
+    let flow_dir = bundle.paths.artifacts_dir().join("flow");
+    let mut snapshot = fs::read_dir(&flow_dir)
+        .expect("flow artifacts")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("name")
+        })
+        .collect::<Vec<_>>();
+    snapshot.sort();
+    assert_eq!(snapshot, ["files.json", "flow-definition.json"]);
+    let definition = fs::read(flow_dir.join("flow-definition.json")).expect("definition");
+    assert_eq!(
+        record.effective_flow_hash.as_deref(),
+        Some(spark_common::project::sha256_hex(&definition).as_str())
+    );
+    let definition: attractor_core::FlowDefinition =
+        serde_json::from_slice(&definition).expect("flow-definition.json");
+    assert_eq!(definition.id, "api_lifecycle");
     assert_eq!(record.status, "completed");
     assert_eq!(record.spec_id.as_deref(), Some("spec-1"));
     assert_eq!(record.plan_id.as_deref(), Some("plan-1"));
@@ -115,11 +129,6 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
     assert!(bundle
         .paths
         .artifacts_dir()
-        .join("flow/flow-source.yaml")
-        .is_file());
-    assert!(bundle
-        .paths
-        .artifacts_dir()
         .join("flow/flow-definition.json")
         .is_file());
     assert!(bundle.paths.result_json().is_file());
@@ -147,23 +156,18 @@ models = ["launch-model"]
         run_id: Some("run-api-launch-context".to_string()),
         flow_name: Some(crate::install_flow(
             &settings,
-            r#"schema_version: "1"
-id: api_launch_context
-title: API Launch Context
-defaults:
-  llm_model: graph-model
-  llm_provider: Anthropic
-  llm_profile: graph-profile
-nodes:
-  start:
-    kind: start
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: done
-"#
-            .to_string(),
+            json!({
+                "schema_version": "1",
+                "id": "api_launch_context",
+                "title": "API Launch Context",
+                "defaults": {
+                    "llm_model": "graph-model",
+                    "llm_provider": "Anthropic",
+                    "llm_profile": "graph-profile"
+                },
+                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+                "edges": [{"from": "start", "to": "done"}]
+            }),
         )),
         working_directory: project_path.to_string_lossy().to_string(),
         launch_context: Some(
@@ -281,20 +285,13 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     let invalid = settings.bundled_dir().join("flows").join("tests/broken");
     attractor_dsl::write_flow_dir(
         &invalid,
-        &attractor_core::FlowDefinition::from_yaml_str(
-            r#"schema_version: "1"
-id: broken
-nodes:
-  start:
-    kind: start
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: missing
-"#,
-        )
-        .expect("yaml"),
+        &serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+                "schema_version": "1",
+                "id": "broken",
+                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+                "edges": [{"from": "start", "to": "missing"}]
+        }))
+        .expect("flow definition JSON"),
     )
     .expect("write");
     let validation_error = service.start_pipeline(PipelineStartRequest {
@@ -356,28 +353,28 @@ fn mounted_start_route_accepts_current_json_payload() {
     assert_eq!(response.body["pipeline_id"], json!("run-mounted-start"));
 }
 
-fn simple_flow() -> String {
-    r#"schema_version: "1"
-id: api_lifecycle
-title: API Lifecycle
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    label: Task
-    config:
-      kind: agent_task
-      prompt: Write a lifecycle note
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-"#
-    .to_string()
+fn simple_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "api_lifecycle",
+        "title": "API Lifecycle",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Write a lifecycle note"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "task"},
+            {"from": "task", "to": "done"}
+        ]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {
@@ -478,9 +475,12 @@ fn retry_route_executes_the_prepared_run() {
         project_path.to_string_lossy().to_string(),
     );
     record.execution_profile_id = Some("native".to_string());
-    record.flow_name = "retry-exec.yaml".to_string();
+    record.flow_name = "retry-exec".to_string();
     record.status = "failed".to_string();
-    let flow = attractor_dsl::parse_flow_definition(&simple_flow()).expect("flow");
+    let flow = attractor_dsl::validated_flow(
+        serde_json::from_value(simple_flow()).expect("flow definition JSON"),
+    )
+    .expect("flow");
     let checkpoint = attractor_core::CheckpointState {
         timestamp: "2026-07-08T10:00:00Z".to_string(),
         current_node: "start".to_string(),
@@ -494,7 +494,6 @@ fn retry_route_executes_the_prepared_run() {
             record,
             checkpoint: Some(checkpoint),
             manifest: None,
-            flow_source: Some(simple_flow()),
             flow_definition_json: Some(flow.to_canonical_json_string()),
             flow_files: None,
         })
@@ -538,7 +537,12 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     )
     .unwrap();
     let service = AttractorApiService::new(settings.clone());
-    let flow = "schema_version: '1'\nid: defaults\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n";
+    let flow = json!({
+        "schema_version": "1",
+        "id": "defaults",
+        "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "end"}]
+    });
     for (id, explicit, context, authored, expected) in [
         (
             "explicit",
@@ -561,15 +565,13 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
             wait: Some(true),
             run_id: Some(id.into()),
             working_directory: project.into(),
-            flow_name: Some(crate::install_flow(
-                &settings,
-                format!(
-                    "{flow}{}",
-                    authored
-                        .map(|model| format!("defaults:\n  llm_model: {model}\n"))
-                        .unwrap_or_default()
-                ),
-            )),
+            flow_name: Some(crate::install_flow(&settings, {
+                let mut flow = flow.clone();
+                if let Some(model) = authored {
+                    flow["defaults"] = json!({"llm_model": model});
+                }
+                flow
+            })),
             model: explicit.map(Into::into),
             launch_context: context.map(|model| {
                 [(
@@ -611,7 +613,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("workspace".into()),
-        flow_name: Some(crate::install_flow(&settings, flow)),
+        flow_name: Some(crate::install_flow(&settings, flow.clone())),
         working_directory: project.into(),
         ..Default::default()
     });
@@ -623,7 +625,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("profile".into()),
-        flow_name: Some(crate::install_flow(&settings, flow)),
+        flow_name: Some(crate::install_flow(&settings, flow.clone())),
         working_directory: project.into(),
         ..Default::default()
     });
@@ -646,7 +648,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     assert_eq!(previous.record.unwrap().model, "project-model");
     let invalid = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
-        flow_name: Some(crate::install_flow(&settings, flow)),
+        flow_name: Some(crate::install_flow(&settings, flow.clone())),
         working_directory: project.into(),
         ..Default::default()
     });

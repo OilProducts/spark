@@ -9,10 +9,9 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof EditorCanv
     const props: React.ComponentProps<typeof EditorCanvasToolbar> = {
         mode: 'structured',
         childFlowsExpanded: false,
-        rawHandoffPending: false,
         runDisabledReason: null,
         onSelectStructured: vi.fn(),
-        onSelectYaml: vi.fn(),
+        onSelectFiles: vi.fn(),
         onSetChildFlowsExpanded: vi.fn(),
         onArrange: vi.fn(),
         onReset: vi.fn(),
@@ -31,7 +30,7 @@ describe('EditorCanvasToolbar', () => {
         const props = renderToolbar()
 
         expect(screen.getByRole('button', { name: 'Structured' })).toHaveAttribute('aria-pressed', 'true')
-        expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'false')
+        expect(screen.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'false')
         expect(screen.getByRole('button', { name: 'Parent' })).toHaveAttribute('aria-pressed', 'true')
         expect(screen.getByRole('group', { name: 'Layout' })).toBeInTheDocument()
         expect(screen.getByRole('group', { name: 'Actions' })).toBeInTheDocument()
@@ -52,10 +51,13 @@ describe('EditorCanvasToolbar', () => {
         expect(screen.getByRole('button', { name: 'Run…' })).toHaveAttribute('title', 'Save pending')
     })
 
-    it('shows only the mode choices in YAML mode', () => {
-        renderToolbar({ mode: 'raw' })
+    it('shows only the mode choices in the file view', async () => {
+        const user = userEvent.setup()
+        const props = renderToolbar({ mode: 'files' })
 
-        expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'true')
+        await user.click(screen.getByRole('button', { name: 'Structured' }))
+        expect(props.onSelectStructured).toHaveBeenCalledOnce()
         expect(screen.queryByRole('button', { name: 'Parent' })).not.toBeInTheDocument()
         expect(screen.queryByRole('group', { name: 'Actions' })).not.toBeInTheDocument()
     })

@@ -13,8 +13,9 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    flow_ref_name, load_flow, parse_flow_definition, resolve_flow_roles, write_flow_dir, FlowRoots,
-    FlowSourceError, BUNDLED_LAYER, FLOW_FILE,
+    assemble_flow_files, flow_file_list, flow_ref_name, load_flow, resolve_flow_roles,
+    validated_flow, write_flow_dir, write_flow_files, FlowFileText, FlowRoots, FlowSourceError,
+    BUNDLED_LAYER, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -229,9 +230,11 @@ fn release_execution_lock(identity: &str, run_id: &str, store: &RunStore) {
     });
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Previews `flow` (JSON), or, without one, the saved flow `flow_name`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PreviewRequest {
-    pub flow_content: String,
+    #[serde(default)]
+    pub flow: Option<FlowDefinition>,
     #[serde(default)]
     pub flow_name: Option<String>,
     #[serde(default)]
@@ -314,10 +317,15 @@ impl RuntimeRouteResponse {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Saves either `flow` (the structured editor) or `files` (the file view:
+/// edited files of the flow, written exactly as sent); never both.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SaveFlowRequest {
     pub name: String,
-    pub content: String,
+    #[serde(default)]
+    pub flow: Option<FlowDefinition>,
+    #[serde(default)]
+    pub files: Option<Vec<FlowFileText>>,
     /// The project whose org repo the save writes into.
     #[serde(default)]
     pub project_path: Option<String>,
@@ -435,8 +443,6 @@ pub struct HumanAnswerRequest {
 pub struct ResolvedContinueFlow {
     pub flow: FlowDefinition,
     #[serde(default)]
-    pub flow_source: Option<String>,
-    #[serde(default)]
     pub flow_definition_json: Option<String>,
     #[serde(default)]
     pub flow_files: Option<attractor_dsl::FlowManifest>,
@@ -495,7 +501,6 @@ impl RuntimeControlService {
             flow_name: request.flow_name.or(resolved_flow.flow_name),
             new_run_id: None,
             flow: resolved_flow.flow,
-            flow_source: resolved_flow.flow_source,
             flow_definition_json: resolved_flow.flow_definition_json,
             flow_files: resolved_flow.flow_files,
             project_path: request.project_path,
@@ -1155,12 +1160,10 @@ impl AttractorApiService {
             .checkpoint
             .as_ref()
             .ok_or_else(|| "checkpoint unavailable".to_string())?;
-        let source = store
+        let flow = store
             .read_graph_source(&bundle.paths)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "captured flow source unavailable".to_string())?;
-        let flow = parse_flow_definition(&source)
-            .map_err(|e| format!("captured flow source does not parse: {e}"))?;
+            .map_err(|e| format!("captured flow does not load: {e}"))?
+            .ok_or_else(|| "captured flow unavailable".to_string())?;
         let pause = flow
             .nodes
             .get(&checkpoint.current_node)
@@ -1313,7 +1316,6 @@ impl AttractorApiService {
             store: store.clone(),
             record,
             flow,
-            flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: ContextMap::default(),
@@ -1483,17 +1485,26 @@ impl AttractorApiService {
         }
     }
 
-    /// The flow directory assembled into one YAML document, in its authored
-    /// form (roles referenced, not merged), and the layer it came from.
+    /// A flow's files with their exact text, the flow they assemble into
+    /// (authored form: roles referenced, not merged), and its layer.
     pub fn get_flow(&self, name: &str, project_path: Option<&str>) -> RuntimeRouteResponse {
-        let roots = self.flow_roots(project_path);
-        match roots.read_named_flow_source(name).and_then(|source| {
-            let layer = roots.resolve_flow(&source.name)?.layer;
-            Ok((source, layer))
-        }) {
-            Ok((source, layer)) => RuntimeRouteResponse::json(
+        let loaded = self
+            .flow_roots(project_path)
+            .resolve_flow(name)
+            .and_then(|resolved| {
+                let texts = attractor_dsl::read_flow_dir_texts(&resolved.path)?;
+                let flow = assemble_flow_files(&texts)?;
+                Ok((resolved, texts, flow))
+            });
+        match loaded {
+            Ok((resolved, texts, flow)) => RuntimeRouteResponse::json(
                 200,
-                json!({"name": source.name, "content": source.content, "layer": layer}),
+                json!({
+                    "name": resolved.name,
+                    "layer": resolved.layer,
+                    "files": flow_file_list(texts),
+                    "flow": flow,
+                }),
             ),
             Err(error) => flow_source_error_response(error),
         }
@@ -1507,10 +1518,6 @@ impl AttractorApiService {
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
                 }
             };
-        let flow = match parse_flow_definition(&req.content) {
-            Ok(flow) => flow,
-            Err(error) => return flow_save_definition_error_response(error),
-        };
         let Some(project_path) = trimmed_option(req.project_path.as_deref()) else {
             return RuntimeRouteResponse::json(
                 400,
@@ -1518,6 +1525,25 @@ impl AttractorApiService {
             );
         };
         let roots = self.flow_roots(Some(&project_path));
+        let (flow, files) = match (req.flow, req.files) {
+            (Some(flow), None) => match validated_flow(flow) {
+                Ok(flow) => (flow, None),
+                Err(error) => return flow_save_definition_error_response(error),
+            },
+            (None, Some(files)) => match overlay_flow_files(&roots, &req.name, &files) {
+                Ok(flow) => (flow, Some(files)),
+                Err(error) if error.status_code() == 422 => {
+                    return flow_save_definition_error_response(error)
+                }
+                Err(error) => return flow_source_error_response(error),
+            },
+            _ => {
+                return RuntimeRouteResponse::json(
+                    400,
+                    json!({"detail": "A flow save takes exactly one of flow or files."}),
+                )
+            }
+        };
         // Validate the resolved form, so role-provided profiles are checked too.
         let resolved = match resolve_flow_roles(&flow, &roots) {
             Ok(resolved) => resolved,
@@ -1529,7 +1555,15 @@ impl AttractorApiService {
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(&roots, Path::new(&project_path), req.name, &flow)
+        save_flow_request(
+            &roots,
+            Path::new(&project_path),
+            req.name,
+            |dir| match &files {
+                Some(files) => write_flow_files(dir, files),
+                None => write_flow_dir(dir, &flow).map(|_| ()),
+            },
+        )
     }
 
     /// Deletes a project's copy of a flow, which reverts it to the bundled
@@ -1633,10 +1667,7 @@ impl AttractorApiService {
             flow.goal = goal;
         }
         let flow = flow.normalize();
-        let flow_content = match attractor_dsl::flow_yaml(&flow) {
-            Ok(content) => content,
-            Err(error) => return flow_definition_validation_response(error),
-        };
+        let flow_definition_json = flow.to_canonical_json_string();
 
         let requested_context = request.launch_context.unwrap_or_default();
         let launch_context = match LaunchContext::new(requested_context.clone()) {
@@ -1807,7 +1838,10 @@ impl AttractorApiService {
         record.root_run_id = Some(run_id.clone());
         record.launch_context = Some(launch_context.values().clone());
         record.execution_lock = execution_lock.clone();
-        record.effective_flow_hash = Some(format!("{:x}", Sha256::digest(flow_content.as_bytes())));
+        record.effective_flow_hash = Some(format!(
+            "{:x}",
+            Sha256::digest(flow_definition_json.as_bytes())
+        ));
         attractor_execution::apply_launch_metadata_to_record(&mut record, &execution_metadata);
 
         let mut runtime_context = requested_context;
@@ -1863,14 +1897,12 @@ impl AttractorApiService {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
         }
 
-        let flow_definition_json = flow.to_canonical_json_string();
         // Create the run on disk before responding: the run_id resolves to a
         // real record (and initial journal) the moment the caller sees it.
         let paths = match attractor_runtime::prepare_fresh_run(
             &store,
             &record,
             &flow,
-            Some(flow_content.clone()),
             Some(flow_definition_json),
             Some(flow_files),
             &launch_context,
@@ -1885,7 +1917,6 @@ impl AttractorApiService {
             store: store.clone(),
             record,
             flow: flow.clone(),
-            flow_source: None,
             flow_definition_json: None,
             launch_context,
             runtime_context,
@@ -2254,8 +2285,8 @@ impl AttractorApiService {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
             }
         };
-        let source = match store.read_graph_source(&bundle.paths) {
-            Ok(Some(source)) => source,
+        let flow = match store.read_graph_source(&bundle.paths) {
+            Ok(Some(flow)) => flow,
             Ok(None) => {
                 return RuntimeRouteResponse::json(
                     404,
@@ -2270,21 +2301,18 @@ impl AttractorApiService {
             .record
             .as_ref()
             .map(|record| record.flow_name.as_str());
-        match parse_flow_definition(&source) {
-            Ok(flow) => RuntimeRouteResponse::json(
-                200,
-                flow_preview_payload(
+        RuntimeRouteResponse::json(
+            200,
+            flow_preview_payload(
+                &flow,
+                child_preview_map(
                     &flow,
-                    child_preview_map(
-                        &flow,
-                        flow_name,
-                        expand_children,
-                        Some(&self.flow_roots(run_flow_project(&bundle).as_deref())),
-                    ),
+                    flow_name,
+                    expand_children,
+                    Some(&self.flow_roots(run_flow_project(&bundle).as_deref())),
                 ),
             ),
-            Err(error) => flow_definition_validation_response(error),
-        }
+        )
     }
 
     pub fn continue_pipeline_route(
@@ -2307,7 +2335,7 @@ impl AttractorApiService {
         }
         let source_record = source.record.as_ref();
         let mode = request.flow_source_mode.trim().to_lowercase();
-        let (flow_name, flow_content, flow_files, project_path) = if mode == "snapshot" {
+        let (flow_name, flow, flow_files, project_path) = if mode == "snapshot" {
             let flow_name = source_record
                 .map(|record| record.flow_name.clone())
                 .unwrap_or_default();
@@ -2323,7 +2351,7 @@ impl AttractorApiService {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             match store.read_graph_source(&source.paths) {
-                Ok(Some(source)) => (flow_name, source, flow_files, None),
+                Ok(Some(flow)) => (flow_name, flow, flow_files, None),
                 Ok(None) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2346,13 +2374,8 @@ impl AttractorApiService {
                 .project_path
                 .clone()
                 .or_else(|| run_flow_project(&source));
-            let loaded = load_flow(&self.flow_roots(project_path.as_deref()), &flow_name).and_then(
-                |loaded| {
-                    attractor_dsl::flow_yaml(&loaded.flow).map(|content| (content, loaded.manifest))
-                },
-            );
-            match loaded {
-                Ok((content, files)) => (flow_name, content, Some(files), project_path),
+            match load_flow(&self.flow_roots(project_path.as_deref()), &flow_name) {
+                Ok(loaded) => (flow_name, loaded.flow, Some(loaded.manifest), project_path),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2368,10 +2391,6 @@ impl AttractorApiService {
                 200,
                 json!({"status": "validation_error", "error": "flow_source_mode must be either snapshot or flow_name."}),
             );
-        };
-        let flow = match parse_flow_definition(&flow_content) {
-            Ok(flow) => flow,
-            Err(error) => return flow_definition_validation_response(error),
         };
         // Snapshot keeps the source's roots; flow_name moves to the resolved project.
         request.project_path = project_path;
@@ -2400,7 +2419,6 @@ impl AttractorApiService {
             request,
             ResolvedContinueFlow {
                 flow: flow.clone(),
-                flow_source: Some(flow_content.clone()),
                 flow_definition_json: Some(flow.to_canonical_json_string()),
                 flow_files,
                 flow_name: Some(flow_name),
@@ -2470,8 +2488,7 @@ impl AttractorApiService {
                 .read_run_bundle(pipeline_id)
                 .ok()
                 .flatten()
-                .and_then(|bundle| store.read_graph_source(&bundle.paths).ok().flatten())
-                .and_then(|source| parse_flow_definition(&source).ok());
+                .and_then(|bundle| store.read_graph_source(&bundle.paths).ok().flatten());
             match flow {
                 Some(flow) => {
                     if let Err(error) = self.spawn_prepared_resume(pipeline_id, flow, live) {
@@ -2922,7 +2939,23 @@ pub fn preview_with_config(
     req: PreviewRequest,
     config: &PreviewServiceConfig,
 ) -> PreviewRouteResponse {
-    match parse_flow_definition(&req.flow_content) {
+    let flow = match (req.flow, req.flow_name.as_deref(), config.roots.as_ref()) {
+        (Some(flow), _, _) => validated_flow(flow),
+        (None, Some(name), Some(roots)) => {
+            roots.read_named_flow_source(name).map(|source| source.flow)
+        }
+        (None, Some(_), None) => Err(FlowSourceError::new(
+            400,
+            "Previewing a saved flow needs flow roots.",
+        )),
+        (None, None, _) => {
+            return PreviewRouteResponse::json(
+                400,
+                json!({"detail": "A preview takes flow, or flow_name to preview a saved flow."}),
+            )
+        }
+    };
+    match flow {
         Ok(flow) => PreviewRouteResponse::json(
             200,
             flow_preview_payload(
@@ -2977,21 +3010,6 @@ fn flow_roots_context(roots: &FlowRoots, context: &mut ContextMap) {
 /// A preview response reporting a flow that failed to load.
 pub fn flow_source_error_preview(error: &FlowSourceError) -> PreviewRouteResponse {
     PreviewRouteResponse::json(200, flow_definition_validation_payload(error))
-}
-
-pub fn preview_named_flow_source(
-    roots: &FlowRoots,
-    flow_name: &str,
-    flow_content: &str,
-) -> PreviewRouteResponse {
-    preview_with_roots(
-        PreviewRequest {
-            flow_content: flow_content.to_string(),
-            flow_name: Some(flow_name.to_string()),
-            ..PreviewRequest::default()
-        },
-        roots,
-    )
 }
 
 pub fn handle_preview_request(
@@ -3205,7 +3223,7 @@ fn save_flow_request(
     roots: &FlowRoots,
     project: &Path,
     name: String,
-    flow: &FlowDefinition,
+    write: impl FnOnce(&Path) -> std::result::Result<(), FlowSourceError>,
 ) -> RuntimeRouteResponse {
     let name = match attractor_dsl::normalize_flow_name(&name) {
         Ok(name) => name,
@@ -3290,7 +3308,7 @@ fn save_flow_request(
             }
         }
     }
-    if let Err(error) = write_flow_dir(&flow_path, flow) {
+    if let Err(error) = write(&flow_path) {
         return flow_source_error_response(error);
     }
     if let Err(error) =
@@ -3305,6 +3323,29 @@ fn save_flow_request(
             "name": name,
         }),
     )
+}
+
+/// The flow `files` make when laid over the current files of the flow
+/// `name`. File view saves edit existing files only.
+fn overlay_flow_files(
+    roots: &FlowRoots,
+    name: &str,
+    files: &[FlowFileText],
+) -> std::result::Result<FlowDefinition, FlowSourceError> {
+    let mut texts = attractor_dsl::read_flow_dir_texts(&roots.resolve_flow(name)?.path)?;
+    for file in files {
+        let Some(text) = texts.get_mut(&file.name) else {
+            return Err(FlowSourceError::new(
+                422,
+                format!(
+                    "{} is not a file of flow {name}; the file view edits existing files only.",
+                    file.name
+                ),
+            ));
+        };
+        text.clone_from(&file.content);
+    }
+    assemble_flow_files(&texts)
 }
 
 /// Makes `target`'s flow files exactly `source`'s: copies each and removes
@@ -3573,7 +3614,6 @@ fn start_response_payload(
     if let Some(paths) = graph_paths.and_then(|value| value.as_object().cloned()) {
         payload.extend(paths);
     } else {
-        payload.insert("flow_source_path".to_string(), Value::Null);
         payload.insert("flow_definition_path".to_string(), Value::Null);
     }
     payload.insert("terminal_status".to_string(), json!(terminal_status));
@@ -3752,11 +3792,9 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
 
 fn graph_artifact_paths(paths: &attractor_runtime::RunRootPaths) -> Value {
     let flow_dir = paths.artifacts_dir().join("flow");
-    let source_path = flow_dir.join("flow-source.yaml");
     let definition_path = flow_dir.join("flow-definition.json");
     let files_path = flow_dir.join(attractor_runtime::FLOW_FILES_MANIFEST);
     json!({
-        "flow_source_path": source_path.exists().then(|| source_path.to_string_lossy().to_string()),
         "flow_definition_path": definition_path.exists().then(|| definition_path.to_string_lossy().to_string()),
         "flow_files_path": files_path.exists().then(|| files_path.to_string_lossy().to_string()),
     })
@@ -3946,8 +3984,7 @@ fn artifact_media_type(path: &Path) -> String {
         "svg" => "image/svg+xml",
         "json" => "application/json",
         "md" => "text/markdown; charset=utf-8",
-        "txt" | "log" | "dot" => "text/plain; charset=utf-8",
-        "yaml" | "yml" => "text/yaml; charset=utf-8",
+        "txt" | "log" | "dot" | "yaml" | "yml" => "text/plain; charset=utf-8",
         "html" => "text/html; charset=utf-8",
         "csv" => "text/csv; charset=utf-8",
         _ => "application/octet-stream",
@@ -4022,10 +4059,7 @@ fn running_agent_nodes(
         {
             continue;
         }
-        let Some(flow) = store
-            .read_graph_source(&bundle.paths)?
-            .and_then(|source| parse_flow_definition(&source).ok())
-        else {
+        let Some(flow) = store.read_graph_source(&bundle.paths).ok().flatten() else {
             continue;
         };
         let mut open = std::collections::BTreeSet::new();

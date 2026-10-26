@@ -94,8 +94,6 @@ graphAttrs: {},
 graphAttrErrors: {},
 editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
 editorMode: 'structured',
-rawDotDraft: '',
-rawHandoffError: null,
 editorGraphSettingsPanelOpenByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
 editorLaunchInputDraftsByFlow: {},
@@ -346,16 +344,8 @@ const installCanvasWorkspaceFetchMock = () => {
       if (url.includes(`/attractor/api/flows/${LINEAR_FLOW_NAME}`)) {
         return new Response(JSON.stringify({
           name: LINEAR_FLOW_NAME,
-          content: [
-            'digraph simple_linear {',
-            '  graph [label="Simple Linear Workflow", goal="Inspect the repo."];',
-            '  start [shape=Mdiamond, label="Start"];',
-            '  plan [shape=box, label="Plan", prompt="Plan the work."];',
-            '  done [shape=Msquare, label="Done"];',
-            '  start -> plan;',
-            '  plan -> done;',
-            '}',
-          ].join('\n'),
+          files: [{ name: 'flow.md', content: '---\nid: simple_linear\n---\n' }],
+          flow: { id: 'simple_linear' },
         }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -364,19 +354,8 @@ const installCanvasWorkspaceFetchMock = () => {
       if (url.includes(`/attractor/api/flows/${REVIEW_FLOW_NAME}`)) {
         return new Response(JSON.stringify({
           name: REVIEW_FLOW_NAME,
-          content: [
-            'digraph implement_review_loop {',
-            '  graph [',
-            '    "spark.launch_inputs"="[{\\"key\\":\\"context.request.summary\\",\\"label\\":\\"Request Summary\\",\\"type\\":\\"string\\",\\"required\\":true}]",',
-            '    label="Implementation Review Loop"',
-            '  ];',
-            '  start [shape=Mdiamond, label="Start"];',
-            '  request [shape=box, label="Request", prompt="Review request."];',
-            '  done [shape=Msquare, label="Done"];',
-            '  start -> request;',
-            '  request -> done;',
-            '}',
-          ].join('\n'),
+          files: [{ name: 'flow.md', content: '---\nid: implement_review_loop\n---\n' }],
+          flow: { id: 'implement_review_loop' },
         }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -389,8 +368,8 @@ const installCanvasWorkspaceFetchMock = () => {
         })
       }
       if (url.includes('/attractor/preview') && init?.method === 'POST') {
-        const dot = typeof init.body === 'string' ? init.body : ''
-        if (dot.includes('implement_review_loop')) {
+        const body = typeof init.body === 'string' ? init.body : ''
+        if (body.includes(REVIEW_FLOW_NAME)) {
           return new Response(JSON.stringify({
             status: 'ok',
             flow: {
@@ -2459,16 +2438,8 @@ describe('App shell behavior', () => {
         if (url.includes(`/attractor/api/flows/${LINEAR_FLOW_NAME}`)) {
           return new Response(JSON.stringify({
             name: LINEAR_FLOW_NAME,
-            content: [
-              'digraph simple_linear {',
-              '  graph [label="Simple Linear Workflow", goal="Inspect the repo."];',
-              '  start [shape=Mdiamond, label="Start"];',
-              '  plan [shape=box, label="Plan", prompt="Plan the work."];',
-              '  done [shape=Msquare, label="Done"];',
-              '  start -> plan;',
-              '  plan -> done;',
-              '}',
-            ].join('\n'),
+            files: [{ name: 'flow.md', content: '---\nid: simple_linear\n---\n' }],
+            flow: { id: 'simple_linear' },
           }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -2666,16 +2637,8 @@ describe('App shell behavior', () => {
           sawNestedAttractorFlowRequest = true
           return new Response(JSON.stringify({
             name: NESTED_LINEAR_FLOW_NAME,
-            content: [
-              'digraph simple_linear {',
-              '  graph [label="Team Review Flow", goal="Inspect nested flow loading."];',
-              '  start [shape=Mdiamond, label="Start"];',
-              '  plan [shape=box, label="Plan", prompt="Plan the work."];',
-              '  done [shape=Msquare, label="Done"];',
-              '  start -> plan;',
-              '  plan -> done;',
-              '}',
-            ].join('\n'),
+            files: [{ name: 'flow.md', content: '---\nid: simple_linear\n---\n' }],
+            flow: { id: 'simple_linear' },
           }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -2768,9 +2731,9 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
     })
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
-    await user.type(rawYamlEditor, '\n# editor draft note')
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    const fileEditor = await screen.findByTestId('flow-file-editor')
+    await user.type(fileEditor, '\nAn editor draft note.')
 
     await user.click(screen.getByTestId('activity-runs'))
     expect(screen.getByTestId('runs-panel')).toBeVisible()
@@ -2779,7 +2742,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('triggers-panel')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-flows'))
-    expect((await screen.findByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toContain('# editor draft note')
+    expect(await screen.findByTestId('flow-file-editor')).toHaveValue('---\nid: simple_linear\n---\n\nAn editor draft note.')
   })
 
   it('keeps the editor as the launch surface with the primary action inside the launch panel', async () => {

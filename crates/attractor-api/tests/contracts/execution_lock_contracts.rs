@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use attractor_api::{AttractorApiService, PipelineStartRequest};
 use attractor_core::RunExecutionLock;
 use attractor_runtime::RunStore;
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
 fn settings(root: &Path) -> SparkSettings {
@@ -56,28 +56,24 @@ fn init_git_repo(dir: &Path) {
     git_in(dir, &["commit", "-m", "initial"]);
 }
 
-fn tool_flow(id: &str, command: &str) -> String {
-    format!(
-        r#"schema_version: "1"
-id: {id}
-title: {id}
-nodes:
-  start:
-    kind: start
-  work:
-    kind: tool
-    config:
-      kind: tool
-      command: '{command}'
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: work
-  - from: work
-    to: done
-"#
-    )
+fn tool_flow(id: &str, command: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "title": id,
+        "nodes": {
+            "start": {"kind": "start"},
+            "work": {
+                "kind": "tool",
+                "config": {"kind": "tool", "command": command}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "work"},
+            {"from": "work", "to": "done"}
+        ]
+    })
 }
 
 fn wait_for_release_file_command(marker: &str) -> String {
@@ -86,9 +82,15 @@ fn wait_for_release_file_command(marker: &str) -> String {
     )
 }
 
-/// `flow.md` frontmatter declaring a project-scope lock.
-fn project_lock(key: &str) -> String {
-    format!("execution_lock: {{ scope: project, key: {key}, conflict_policy: queue }}\n")
+/// A flow's `execution_lock` declaring a project-scope lock.
+fn project_lock(key: &str) -> Value {
+    json!({"scope": "project", "key": key, "conflict_policy": "queue"})
+}
+
+/// `flow` declaring `lock`, which installs into its `flow.md`.
+fn locked(mut flow: Value, lock: Value) -> Value {
+    flow["execution_lock"] = lock;
+    flow
 }
 
 fn start_locked_run(
@@ -96,15 +98,18 @@ fn start_locked_run(
     service: &AttractorApiService,
     run_id: &str,
     working_directory: &Path,
-    flow: String,
-    lock: Option<String>,
+    flow: Value,
+    lock: Option<Value>,
 ) {
     // The lock is read from the flow's own flow.md.
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some(run_id.to_string()),
         flow_name: Some(crate::install_flow(
             settings,
-            flow + &lock.unwrap_or_default(),
+            match lock {
+                Some(lock) => locked(flow, lock),
+                None => flow,
+            },
         )),
         working_directory: working_directory.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
@@ -397,7 +402,7 @@ fn unsupported_lock_scope_in_flow_md_is_a_validation_error() {
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     let name = crate::install_flow(
         &settings,
-        tool_flow("bad", "printf done") + &project_lock("integration"),
+        locked(tool_flow("bad", "printf done"), project_lock("integration")),
     );
     let flow_md = settings
         .bundled_dir()
@@ -434,9 +439,9 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     let project = temp.path().join("repo");
     init_git_repo(&project);
     // The parent installs as tests/parent; its flow_ref resolves beside it.
-    write_flow(
-        &settings.bundled_dir().join("flows").join("tests/child"),
-        &tool_flow(
+    let child = crate::install_flow(
+        &settings,
+        tool_flow(
             "child",
             &format!(
                 "({}); test -f retry-child",
@@ -444,26 +449,36 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
             ),
         ),
     );
-    let parent_flow = format!(
-        r#"schema_version: '1'
-id: parent
-nodes:
-  start: {{ kind: start }}
-  child:
-    kind: subflow
-    runtime: {{ error_policy: continue }}
-    config: {{ kind: subflow, flow_ref: child }}
-  wait:
-    kind: tool
-    config: {{ kind: tool, command: '{}' }}
-  done: {{ kind: exit }}
-edges:
-- {{ from: start, to: child }}
-- {{ from: child, to: wait, condition: outcome=fail }}
-- {{ from: wait, to: done }}
-"#,
-        wait_for_release_file_command("release-parent")
-    );
+    assert_eq!(child, "tests/child");
+    let parent_flow = json!({
+        "schema_version": "1",
+        "id": "parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "child": {
+                "kind": "subflow",
+                "runtime": {"error_policy": "continue"},
+                "config": {"kind": "subflow", "flow_ref": "child"}
+            },
+            "wait": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": wait_for_release_file_command("release-parent")
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "child"},
+            {
+                "from": "child",
+                "to": "wait",
+                "condition": "outcome=fail"
+            },
+            {"from": "wait", "to": "done"}
+        ]
+    });
     let service = AttractorApiService::new(settings.clone());
     let store = RunStore::for_settings(&settings);
     start_locked_run(
@@ -538,14 +553,6 @@ edges:
     });
 }
 
-fn write_flow(dir: &Path, yaml: &str) {
-    attractor_dsl::write_flow_dir(
-        dir,
-        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
-    )
-    .expect("write flow");
-}
-
 #[test]
 fn launches_naming_one_project_share_lock_identity_across_checkouts() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -560,12 +567,12 @@ fn launches_naming_one_project_share_lock_identity_across_checkouts() {
         fs::create_dir_all(dir).expect("create dir");
     }
     let service = AttractorApiService::new(settings.clone());
-    let start = |run_id: &str, checkout: &Path, flow: String| {
+    let start = |run_id: &str, checkout: &Path, flow: Value| {
         let response = service.start_pipeline(PipelineStartRequest {
             run_id: Some(run_id.to_string()),
             flow_name: Some(crate::install_flow(
                 &settings,
-                flow + &project_lock("shared"),
+                locked(flow, project_lock("shared")),
             )),
             working_directory: checkout.to_string_lossy().to_string(),
             project_path: Some(project.to_string_lossy().to_string()),
@@ -621,14 +628,20 @@ fn continuations_resolve_the_effective_flows_lock_against_their_project() {
     let path = |path: &Path| path.to_string_lossy().into_owned();
     let holder = crate::install_flow(
         &settings,
-        tool_flow(
-            "cont-holder",
-            &wait_for_release_file_command("release-cont"),
-        ) + &project_lock("integration"),
+        locked(
+            tool_flow(
+                "cont-holder",
+                &wait_for_release_file_command("release-cont"),
+            ),
+            project_lock("integration"),
+        ),
     );
     let waiter = crate::install_flow(
         &settings,
-        tool_flow("cont-waiter", "printf done") + &project_lock("integration"),
+        locked(
+            tool_flow("cont-waiter", "printf done"),
+            project_lock("integration"),
+        ),
     );
     let unlocked = crate::install_flow(&settings, tool_flow("cont-free", "printf done"));
     let continue_run = |source: &str, mode: &str, flow: Option<&str>, project: Option<&Path>| {

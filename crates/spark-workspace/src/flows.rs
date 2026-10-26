@@ -33,10 +33,13 @@ pub struct WorkspaceFlowDescription {
     pub features: WorkspaceFlowFeatures,
 }
 
+/// A flow's files with their exact text, and where they live.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceFlowRaw {
+pub struct WorkspaceFlowFiles {
     pub name: String,
-    pub content: String,
+    pub layer: String,
+    pub path: String,
+    pub files: Vec<attractor_dsl::FlowFileText>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,15 +100,23 @@ impl WorkspaceFlowService {
         })
     }
 
-    pub fn raw_flow(
+    pub fn flow_files(
         &self,
         flow_name: &str,
         project_path: Option<&str>,
-    ) -> WorkspaceResult<WorkspaceFlowRaw> {
-        let source = self.read_existing_flow(flow_name, project_path)?;
-        Ok(WorkspaceFlowRaw {
-            name: source.name,
-            content: source.content,
+    ) -> WorkspaceResult<WorkspaceFlowFiles> {
+        let error = |error| flow_source_error(error, Some(flow_name));
+        let resolved = self
+            .roots(project_path)
+            .resolve_flow(flow_name)
+            .map_err(error)?;
+        let texts = attractor_dsl::read_flow_dir_texts(&resolved.path).map_err(error)?;
+        let path = resolved.path.canonicalize().unwrap_or(resolved.path);
+        Ok(WorkspaceFlowFiles {
+            name: resolved.name,
+            layer: resolved.layer.to_string(),
+            path: path.to_string_lossy().into_owned(),
+            files: attractor_dsl::flow_file_list(texts),
         })
     }
 
@@ -122,11 +133,16 @@ impl WorkspaceFlowService {
         // Referenced roles must resolve; the preview keeps the authored form.
         let preview = match attractor_dsl::read_flow_dir(&resolved.path).and_then(|flow| {
             attractor_dsl::resolve_flow_roles(&flow, &roots)?;
-            attractor_dsl::flow_yaml(&flow)
+            Ok(flow)
         }) {
-            Ok(content) => {
-                attractor_api::preview_named_flow_source(&roots, &resolved.name, &content)
-            }
+            Ok(flow) => attractor_api::preview_with_roots(
+                attractor_api::PreviewRequest {
+                    flow: Some(flow),
+                    flow_name: Some(resolved.name.clone()),
+                    ..Default::default()
+                },
+                &roots,
+            ),
             Err(error) => attractor_api::flow_source_error_preview(&error),
         };
         let path = resolved.path.canonicalize().unwrap_or(resolved.path);

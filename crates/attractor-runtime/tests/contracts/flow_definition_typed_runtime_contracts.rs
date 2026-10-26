@@ -92,7 +92,6 @@ fn executor_enforces_typed_write_contract_without_extension_duplicate() {
             store,
             record,
             flow,
-            flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: ContextMap::new(),
@@ -183,7 +182,6 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
             record: RunRecord::new("run-typed-parallel", temp.path().to_string_lossy()),
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
@@ -432,23 +430,16 @@ fn extension_only_subflow_child_ref_does_not_start_child_pipeline() {
     let temp = tempfile::tempdir().expect("tempdir");
     write_child_flow(
         &temp.path().join("child"),
-        r#"
-schema_version: "1"
-id: child
-title: Child
-nodes:
-  start:
-    kind: start
-    config:
-      kind: start
-  done:
-    kind: exit
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: done
-"#,
+        json!({
+            "schema_version": "1",
+            "id": "child",
+            "title": "Child",
+            "nodes": {
+                "start": { "kind": "start", "config": { "kind": "start" } },
+                "done": { "kind": "exit", "config": { "kind": "exit" } }
+            },
+            "edges": [{ "from": "start", "to": "done" }]
+        }),
     );
     let launched = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&launched);
@@ -496,30 +487,23 @@ edges:
 #[test]
 fn default_subflow_launch_applies_typed_input_map_to_child_context() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let child_source = r#"
-schema_version: "1"
-id: child_input_map
-title: Child Input Map
-nodes:
-  start:
-    kind: start
-    config:
-      kind: start
-  check:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Check mapped context
-  done:
-    kind: exit
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: check
-  - from: check
-    to: done
-"#;
+    let child_source = json!({
+        "schema_version": "1",
+        "id": "child_input_map",
+        "title": "Child Input Map",
+        "nodes": {
+            "start": { "kind": "start", "config": { "kind": "start" } },
+            "check": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Check mapped context"
+                }
+            },
+            "done": { "kind": "exit", "config": { "kind": "exit" } }
+        },
+        "edges": [{ "from": "start", "to": "check" }, { "from": "check", "to": "done" }]
+    });
     write_child_flow(&temp.path().join("child"), child_source);
 
     let parent_flow = FlowDefinition {
@@ -567,7 +551,6 @@ edges:
             record: RunRecord::new("parent-run", temp.path().to_string_lossy()),
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
@@ -640,32 +623,28 @@ edges:
 /// Writes a child flow as a bundled flow: `dir` is `<root>/<name>`, and the
 /// flow lands in `<root>/flows/<name>`, where `internal.bundled_root` =
 /// `<root>` finds it.
-fn write_child_flow(dir: &std::path::Path, source: &str) {
+fn write_child_flow(dir: &std::path::Path, source: serde_json::Value) {
     let root = dir.parent().expect("bundled root");
     attractor_dsl::write_flow_dir(
         &root.join("flows").join(dir.file_name().expect("flow name")),
-        &attractor_dsl::parse_flow_definition(source).expect("valid flow"),
+        &attractor_dsl::validated_flow(serde_json::from_value(source).expect("flow json"))
+            .expect("valid flow"),
     )
     .expect("write flow");
 }
 
-const CHILD_FLOW_SOURCE: &str = r#"
-schema_version: "1"
-id: child
-title: Child
-nodes:
-  start:
-    kind: start
-    config:
-      kind: start
-  done:
-    kind: exit
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: done
-"#;
+fn child_flow_source() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "child",
+        "title": "Child",
+        "nodes": {
+            "start": { "kind": "start", "config": { "kind": "start" } },
+            "done": { "kind": "exit", "config": { "kind": "exit" } }
+        },
+        "edges": [{ "from": "start", "to": "done" }]
+    })
+}
 
 fn git_in(dir: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
@@ -770,7 +749,7 @@ fn execute_dynamic_workdir_subflow(
 #[test]
 fn subflow_child_workdir_from_launches_child_in_context_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let workspace = temp.path().join("workspaces/run-123");
     fs::create_dir_all(&workspace).expect("create workspace dir");
 
@@ -798,7 +777,7 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
     let worktree = project.join("worktree");
     fs::create_dir_all(&worktree).expect("create worktree");
     // flow_ref resolves against the parent flow's directory, not child_workdir.
-    write_child_flow(&project.join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&project.join("child"), child_flow_source());
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let mut parent = RunRecord::new("parent-run", project.to_string_lossy());
     parent.flow_name = "Parent".to_string();
@@ -880,7 +859,7 @@ fn subflow_child_workdir_from_accepts_linked_worktree_of_same_repository() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("create repo dir");
-    write_child_flow(&repo.join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&repo.join("child"), child_flow_source());
     git_in(&repo, &["init"]);
     git_in(&repo, &["add", "--all"]);
     git_in(&repo, &["commit", "-m", "initial"]);
@@ -919,7 +898,7 @@ fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("create repo dir");
-    write_child_flow(&repo.join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&repo.join("child"), child_flow_source());
     git_in(&repo, &["init"]);
     let elsewhere = temp.path().join("elsewhere");
     fs::create_dir_all(&elsewhere).expect("create outside dir");
@@ -947,7 +926,7 @@ fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
 #[test]
 fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
 
     let (outcome, observed) = execute_dynamic_workdir_subflow(
         dynamic_workdir_subflow_node("context.workspace.path"),
@@ -970,7 +949,7 @@ fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
 #[test]
 fn subflow_declaring_both_child_workdir_sources_fails() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let mut node = dynamic_workdir_subflow_node("context.workspace.path");
     if let Some(manager) = node.manager.as_mut() {
         manager.child_workdir = Some(".".to_string());
@@ -1351,7 +1330,6 @@ fn create_parent_run(
             record: RunRecord::new(run_id, temp.to_string_lossy()),
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
@@ -1364,7 +1342,7 @@ fn create_parent_run(
 #[test]
 fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let paths = create_parent_run(&store, "parent-run", temp.path());
@@ -1440,7 +1418,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
 #[test]
 fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let paths = create_parent_run(&store, "parent-run", temp.path());
@@ -1495,7 +1473,7 @@ fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
 #[test]
 fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let source_paths = create_parent_run(&store, "source-run", temp.path());
@@ -1620,7 +1598,6 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
             store,
             record: RunRecord::new("run-retry-loop", temp.path().to_string_lossy()),
             flow,
-            flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: ContextMap::new(),
@@ -1687,7 +1664,6 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
                 store: executor_store,
                 record,
                 flow,
-                flow_source: None,
                 flow_definition_json: None,
                 launch_context: LaunchContext::empty(),
                 runtime_context: ContextMap::new(),

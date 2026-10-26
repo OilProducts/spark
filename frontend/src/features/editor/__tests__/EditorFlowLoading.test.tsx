@@ -1,11 +1,12 @@
 import { Editor } from '@/features/editor/Editor'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
+import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import {
   loadEditorFlowPayload,
   loadEditorPreview,
@@ -136,7 +137,8 @@ describe('Editor flow loading behavior', () => {
     localStorage.setItem('spark.debug.performance', '1')
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
       name: flowName,
-      content: flowName,
+      files: [{ name: 'flow.md', content: `---\nid: ${flowName}\n---\n` }],
+      flow: { id: flowName },
     }))
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
@@ -145,17 +147,24 @@ describe('Editor flow loading behavior', () => {
     vi.restoreAllMocks()
   })
 
-  it('opens the preferred raw mode through serialization after hydration without persisting flow resets', async () => {
+  it('opens the preferred files mode after hydration without persisting flow resets', async () => {
     vi.mocked(loadEditorPreview).mockResolvedValue(buildPreview(1))
-    useStore.setState({ preferredEditorMode: 'raw', clientPreferencesLoaded: true })
+    useStore.setState({ preferredEditorMode: 'files', clientPreferencesLoaded: true })
     const persist = vi.fn()
     window.addEventListener('spark:preferences-completed', persist)
     try {
       renderEditor()
-      await waitFor(() => expect(useStore.getState().editorMode).toBe('raw'))
-      expect(useStore.getState().rawYamlDraft).toContain('node_1')
+      await waitFor(() => expect(useStore.getState().editorMode).toBe('files'))
+      expect(await screen.findByTestId('flow-file-editor')).toHaveValue('---\nid: flow-a.dot\n---\n')
       expect(persist).not.toHaveBeenCalled()
     } finally { window.removeEventListener('spark:preferences-completed', persist) }
+  })
+
+  it('previews the loaded flow as JSON', async () => {
+    vi.mocked(loadEditorPreview).mockResolvedValue(buildPreview(1))
+    renderEditor()
+    await waitFor(() => expect(loadEditorPreview).toHaveBeenCalled())
+    expect(vi.mocked(loadEditorPreview).mock.calls[0][0]).toEqual({ id: 'flow-a.dot' })
   })
 
   it('clears the previous canvas when the next flow load fails', async () => {
@@ -163,10 +172,10 @@ describe('Editor flow loading behavior', () => {
       ['flow-a.dot', createDeferred<EditorPreviewResponse>()],
       ['flow-b.dot', createDeferred<EditorPreviewResponse>()],
     ])
-    vi.mocked(loadEditorPreview).mockImplementation((dot: string) => {
-      const deferred = previewDeferreds.get(dot)
+    vi.mocked(loadEditorPreview).mockImplementation((flow) => {
+      const deferred = previewDeferreds.get(String(flow?.id))
       if (!deferred) {
-        throw new Error(`Unexpected preview request: ${dot}`)
+        throw new Error(`Unexpected preview request: ${flow?.id}`)
       }
       return deferred.promise
     })
@@ -196,10 +205,10 @@ describe('Editor flow loading behavior', () => {
       ['flow-b.dot', createDeferred<EditorPreviewResponse>()],
       ['flow-c.dot', createDeferred<EditorPreviewResponse>()],
     ])
-    vi.mocked(loadEditorPreview).mockImplementation((dot: string) => {
-      const deferred = previewDeferreds.get(dot)
+    vi.mocked(loadEditorPreview).mockImplementation((flow) => {
+      const deferred = previewDeferreds.get(String(flow?.id))
       if (!deferred) {
-        throw new Error(`Unexpected preview request: ${dot}`)
+        throw new Error(`Unexpected preview request: ${flow?.id}`)
       }
       return deferred.promise
     })
@@ -234,7 +243,7 @@ describe('Editor flow loading behavior', () => {
 
   it('reuses child-flow expansion preferences while preserving explicit per-flow choices and read-only previews', async () => {
     const user = userEvent.setup()
-    vi.mocked(loadEditorPreview).mockImplementation(async (_dot: string, _init, options) => {
+    vi.mocked(loadEditorPreview).mockImplementation(async (_flow, _init, options) => {
       const flowName = options?.flowName ?? 'unknown.dot'
       if (flowName === 'flow-a.dot') {
         return buildManagerPreview({ expanded: options?.expandChildren === true })
@@ -303,5 +312,96 @@ describe('Editor flow loading behavior', () => {
     })
     await screen.findByText('Read-only preview. Switch to Parent only to edit.')
     expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Editor file view', () => {
+  const files = [
+    { name: 'flow.md', content: '---\nid: demo\n---\nThe flow.\n' },
+    { name: 'node_1.md', content: '---\nkind: agent_task\n---\nPrompt 1\n' },
+  ]
+
+  beforeEach(() => {
+    resetEditorState('demo')
+    resetFlowSaveBaselines()
+    localStorage.setItem('spark.debug.performance', '1')
+    useStore.setState({
+      editorMode: 'structured',
+      preferredEditorMode: 'files',
+      clientPreferencesLoaded: true,
+      activeProjectPath: '/tmp/project',
+    })
+    vi.mocked(loadEditorFlowPayload).mockReset()
+    vi.mocked(loadEditorFlowPayload).mockResolvedValue({ name: 'demo', layer: 'org', files, flow: { id: 'demo' } })
+    vi.mocked(loadEditorPreview).mockReset()
+    vi.mocked(loadEditorPreview).mockResolvedValue(buildPreview(1))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('lists the flow files and selects the file of the node selected on the canvas', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    const editor = await screen.findByTestId('flow-file-editor')
+    expect(screen.getAllByTestId('flow-file').map((row) => row.getAttribute('data-file'))).toEqual(['flow.md', 'node_1.md'])
+    expect(editor).toHaveValue(files[0].content)
+
+    act(() => useStore.setState({ selectedNodeId: 'node_1' }))
+    await waitFor(() => expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[1].content))
+
+    await user.click(screen.getByRole('button', { name: 'flow.md' }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[0].content)
+  })
+
+  it('saves the edited file as files, then reloads the flow onto the canvas', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'saved', name: 'demo' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderEditor()
+    const editor = await screen.findByTestId('flow-file-editor')
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(editor, { target: { value: edited } })
+    vi.mocked(loadEditorFlowPayload).mockResolvedValue({
+      name: 'demo', layer: 'org', files: [{ name: 'flow.md', content: edited }, files[1]], flow: { id: 'demo' },
+    })
+    vi.mocked(loadEditorPreview).mockResolvedValue(buildPreview(2))
+
+    await user.click(screen.getByTestId('flow-files-save'))
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('/api/flows')
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: 'demo',
+      project_path: '/tmp/project',
+      files: [{ name: 'flow.md', content: edited }],
+    })
+    await waitFor(() => expect(loadEditorFlowPayload).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByTestId('canvas-performance-profile')).toHaveAttribute('data-node-count', '2'))
+    expect(useStore.getState().editorMode).toBe('files')
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+    expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
+  it('shows a validation error against the file and does not reload', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      detail: { status: 'validation_error', error: 'flow.md: missing id', diagnostics: [], errors: [] },
+    }), { status: 422 })))
+    renderEditor()
+    const editor = await screen.findByTestId('flow-file-editor')
+    fireEvent.change(editor, { target: { value: '---\n---\n' } })
+
+    await user.click(screen.getByTestId('flow-files-save'))
+
+    const error = await screen.findByTestId('flow-files-error')
+    expect(error).toHaveTextContent('flow.md')
+    expect(error).toHaveTextContent('missing id')
+    expect(loadEditorFlowPayload).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue('---\n---\n')
   })
 })

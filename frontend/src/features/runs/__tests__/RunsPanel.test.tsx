@@ -1179,13 +1179,7 @@ describe('RunsPanel', () => {
         })
       }
       if (url.includes('/attractor/api/flows/')) {
-        return jsonResponse({ name: selectedRun.flow_name, content: 'schema_version: "1"\nid: rerun_flow\n' })
-      }
-      if (url.includes(`/attractor/pipelines/${runId}/artifacts/artifacts/flow/flow-source.yaml`)) {
-        return new Response('schema_version: "1"\nid: rerun_flow\n', {
-          status: 200,
-          headers: { 'Content-Type': 'text/plain' },
-        })
+        return jsonResponse({ name: selectedRun.flow_name, files: [], flow: { id: 'rerun_flow' } })
       }
       if (url.includes(`/attractor/pipelines/${runId}/checkpoint`)) {
         return jsonResponse({
@@ -1293,7 +1287,6 @@ describe('RunsPanel', () => {
     expect(startCall).toBeDefined()
     // The launch runs the installed flow by name; runs start only from live files.
     const startBody = JSON.parse(String(startCall?.[1]?.body))
-    expect(startBody).not.toHaveProperty('flow_content')
     expect(startBody).toMatchObject({
       flow_name: 'selected.dot',
       working_directory: '/tmp/project-one/worktree',
@@ -1371,7 +1364,7 @@ describe('RunsPanel', () => {
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
     expect(useStore.getState().activeFlow).toBe(flowName)
     expect(useStore.getState().viewMode).toBe('editor')
-    expect(await saveFlowContent(flowName, 'schema_version: "1"\nid: edited\n')).toBe(true)
+    expect(await saveFlowContent(flowName, { flow: { schema_version: '1', id: 'edited' } })).toBe(true)
     const saveCall = fetchMock.mock.calls.find(([input, init]) => (
       resolveRequestUrl(input).endsWith('/attractor/api/flows') && init?.method === 'POST'
     ))

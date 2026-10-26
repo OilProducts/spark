@@ -9,13 +9,13 @@ const initial = useStore.getState()
 afterEach(() => { cleanup(); useStore.setState(initial, true); vi.resetAllMocks() })
 it('applies persisted preferences and saves completed interactions with revisions, retaining failed drafts', async () => {
     const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',
-        stored: { editor_mode: 'raw', editor_sidebar_width: 400 }, effective: { editor_mode: 'raw', editor_sidebar_width: 400, show_advanced_controls: true, expand_child_flows: true, graph_settings_open: true, home_sidebar_primary_split_ratio: 0.6 } }
+        stored: { editor_mode: 'files', editor_sidebar_width: 400 }, effective: { editor_mode: 'files', editor_sidebar_width: 400, show_advanced_controls: true, expand_child_flows: true, graph_settings_open: true, home_sidebar_primary_split_ratio: 0.6 } }
     vi.mocked(fetchClientPreferences).mockResolvedValue(view)
     vi.mocked(saveClientPreferences).mockRejectedValue(new Error('Preferences changed elsewhere.'))
     render(<ClientPreferencesController />)
     await waitFor(() => expect(useStore.getState().editorSidebarWidth).toBe(400))
     expect(useStore.getState().preferredHomeSidebarPrimarySplitRatio).toBe(0.6)
-    expect(useStore.getState().preferredEditorMode).toBe('raw')
+    expect(useStore.getState().preferredEditorMode).toBe('files')
     expect(useStore.getState().preferredAdvancedControls).toBe(true)
     expect(useStore.getState().preferredExpandChildFlows).toBe(true)
     expect(useStore.getState().preferredGraphSettingsOpen).toBe(true)
@@ -32,7 +32,7 @@ it('applies persisted preferences and saves completed interactions with revision
 
 it('ignores a refresh that started before a completed save and keeps the new revision', async () => {
     const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',
-        stored: { editor_mode: 'raw', editor_sidebar_width: 400 }, effective: { editor_mode: 'raw', editor_sidebar_width: 400 } }
+        stored: { editor_mode: 'files', editor_sidebar_width: 400 }, effective: { editor_mode: 'files', editor_sidebar_width: 400 } }
     const saved: ClientPreferencesView = { ...view, revision: 'second',
         stored: { ...view.stored, editor_sidebar_width: 450 }, effective: { ...view.effective, editor_sidebar_width: 450 } }
     vi.mocked(fetchClientPreferences).mockResolvedValueOnce(view)

@@ -107,9 +107,11 @@ pub fn validate_client_id(id: &str) -> Result<()> {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorMode {
+    Files,
+    /// Also any unknown stored mode, such as the old `raw`.
     #[default]
+    #[serde(other)]
     Structured,
-    Raw,
 }
 
 /// Reusable presentation choices only; drafts and selected records stay in session state.

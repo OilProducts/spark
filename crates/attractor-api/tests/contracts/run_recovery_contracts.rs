@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use attractor_api::AttractorApiService;
 use attractor_core::CheckpointState;
+use attractor_core::FlowDefinition;
 use attractor_runtime::{
     human_gate_answered_event, prepare_fresh_run, NodeArtifacts, RunStore, RuntimeHandlerRunner,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
 fn settings(root: &Path) -> SparkSettings {
@@ -30,71 +31,92 @@ fn settings(root: &Path) -> SparkSettings {
     }
 }
 
-const GATE_FLOW: &str = r#"schema_version: "1"
-id: recovery_gate
-title: Recovery Gate
-nodes:
-  start:
-    kind: start
-  review:
-    kind: human_gate
-    config:
-      kind: human_gate
-      prompt: Ship the report?
-  done:
-    kind: exit
-edges:
-- from: start
-  to: review
-- from: review
-  to: done
-  label: Finish
-"#;
+fn gate_flow_json() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "recovery_gate",
+        "title": "Recovery Gate",
+        "nodes": {
+            "start": {"kind": "start"},
+            "review": {
+                "kind": "human_gate",
+                "config": {"kind": "human_gate", "prompt": "Ship the report?"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "review"},
+            {"from": "review", "to": "done", "label": "Finish"}
+        ]
+    })
+}
 
-const PAUSED_RECOVERY_FLOW: &str = r#"schema_version: "1"
-id: paused_recovery
-title: Paused Recovery
-nodes:
-  start: { kind: start }
-  review:
-    kind: human_gate
-    runtime: { recovery_policy: pause }
-    config: { kind: human_gate, prompt: Retry me? }
-    contracts:
-      writes_context: [context.accepted]
-  done: { kind: exit }
-edges:
-- { from: start, to: review }
-- { from: review, to: done, label: Finish }
-"#;
+fn paused_recovery_flow_json() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "paused_recovery",
+        "title": "Paused Recovery",
+        "nodes": {
+            "start": {"kind": "start"},
+            "review": {
+                "kind": "human_gate",
+                "runtime": {"recovery_policy": "pause"},
+                "config": {"kind": "human_gate", "prompt": "Retry me?"},
+                "contracts": {"writes_context": ["context.accepted"]}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "review"},
+            {"from": "review", "to": "done", "label": "Finish"}
+        ]
+    })
+}
 
-const TREE_ROOT_FLOW: &str = r#"schema_version: "1"
-id: tree_root
-title: Tree Root
-nodes:
-  start: { kind: start }
-  branch:
-    kind: subflow
-    runtime: { recovery_policy: pause }
-    config: { kind: subflow, flow_ref: child }
-    manager: { poll_interval: 0s, max_cycles: 1 }
-  done: { kind: exit }
-edges:
-- { from: start, to: branch }
-- { from: branch, to: done }
-"#;
+fn tree_root_flow_json() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "tree_root",
+        "title": "Tree Root",
+        "nodes": {
+            "start": {"kind": "start"},
+            "branch": {
+                "kind": "subflow",
+                "runtime": {"recovery_policy": "pause"},
+                "config": {"kind": "subflow", "flow_ref": "child"},
+                "manager": {"poll_interval": "0s", "max_cycles": 1}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "branch"},
+            {"from": "branch", "to": "done"}
+        ]
+    })
+}
 
-const TREE_CHILD_FLOW: &str = r#"schema_version: "1"
-id: tree_child
-title: Tree Child
-nodes:
-  start:
-    kind: start
-    runtime: { recovery_policy: pause }
-  done: { kind: exit }
-edges:
-- { from: start, to: done }
-"#;
+fn tree_child_flow_json() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "tree_child",
+        "title": "Tree Child",
+        "nodes": {
+            "start": {"kind": "start", "runtime": {"recovery_policy": "pause"}},
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "done"}]
+    })
+}
+
+fn flow(value: Value) -> FlowDefinition {
+    attractor_dsl::validated_flow(serde_json::from_value(value).expect("flow definition JSON"))
+        .expect("valid flow")
+}
+
+/// A run's `artifacts/flow/flow-definition.json` text for `value`.
+fn definition_json(value: Value) -> String {
+    flow(value).to_canonical_json_string()
+}
 
 /// Creates a run whose durable state says "parked at the review gate" with no
 /// executor attached — exactly what a server restart leaves behind.
@@ -104,7 +126,7 @@ fn manufacture_orphaned_waiting_run(
     run_id: &str,
 ) -> RunStore {
     let store = RunStore::for_settings(settings);
-    let flow = attractor_dsl::parse_flow_definition(GATE_FLOW).expect("gate flow parses");
+    let flow = flow(gate_flow_json());
     let mut record = attractor_core::RunRecord::new(run_id, workdir.to_string_lossy());
     record.execution_profile_id = Some("native".to_string());
     record.flow_name = "recovery-gate".to_string();
@@ -117,8 +139,7 @@ fn manufacture_orphaned_waiting_run(
         &store,
         &record,
         &flow,
-        Some(GATE_FLOW.to_string()),
-        None,
+        Some(definition_json(gate_flow_json())),
         None,
         &launch_context,
         &runtime_context,
@@ -178,8 +199,8 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let root_flow = attractor_dsl::parse_flow_definition(TREE_ROOT_FLOW).expect("root flow");
-    let child_flow = attractor_dsl::parse_flow_definition(TREE_CHILD_FLOW).expect("child flow");
+    let root_flow = flow(tree_root_flow_json());
+    let child_flow = flow(tree_child_flow_json());
 
     let mut root = attractor_core::RunRecord::new("tree-root", workdir.to_string_lossy());
     root.flow_name = "tree-root".to_string();
@@ -211,8 +232,7 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
         &store,
         &root,
         &root_flow,
-        Some(TREE_ROOT_FLOW.to_string()),
-        None,
+        Some(definition_json(tree_root_flow_json())),
         None,
         &attractor_core::LaunchContext::empty(),
         &root_context,
@@ -259,8 +279,7 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
         &store,
         &child,
         &child_flow,
-        Some(TREE_CHILD_FLOW.to_string()),
-        None,
+        Some(definition_json(tree_child_flow_json())),
         None,
         &attractor_core::LaunchContext::empty(),
         &child_context,
@@ -365,15 +384,14 @@ fn recovery_pause_with_checkpoint_lag_consumes_the_durable_response() {
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let flow = attractor_dsl::parse_flow_definition(PAUSED_RECOVERY_FLOW).expect("flow");
+    let flow = flow(paused_recovery_flow_json());
     let mut record = attractor_core::RunRecord::new("pause-answered", workdir.to_string_lossy());
     record.execution_profile_id = Some("native".to_string());
     let paths = prepare_fresh_run(
         &store,
         &record,
         &flow,
-        Some(PAUSED_RECOVERY_FLOW.to_string()),
-        None,
+        Some(definition_json(paused_recovery_flow_json())),
         None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
@@ -435,15 +453,14 @@ fn recovery_rejects_incomplete_malformed_and_contract_invalid_durable_responses(
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let flow = attractor_dsl::parse_flow_definition(PAUSED_RECOVERY_FLOW).expect("flow");
+    let flow = flow(paused_recovery_flow_json());
     let node = flow.nodes.get("review").expect("review node");
     let record = attractor_core::RunRecord::new("invalid-durable", workdir.to_string_lossy());
     let paths = prepare_fresh_run(
         &store,
         &record,
         &flow,
-        Some(PAUSED_RECOVERY_FLOW.to_string()),
-        None,
+        Some(definition_json(paused_recovery_flow_json())),
         None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
@@ -547,15 +564,14 @@ fn recovery_pause_survives_two_startups_without_retry_authorization() {
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let flow = attractor_dsl::parse_flow_definition(PAUSED_RECOVERY_FLOW).expect("flow");
+    let flow = flow(paused_recovery_flow_json());
     let mut record = attractor_core::RunRecord::new("paused-twice", workdir.to_string_lossy());
     record.execution_profile_id = Some("native".to_string());
     let paths = prepare_fresh_run(
         &store,
         &record,
         &flow,
-        Some(PAUSED_RECOVERY_FLOW.to_string()),
-        None,
+        Some(definition_json(paused_recovery_flow_json())),
         None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
@@ -755,7 +771,7 @@ fn startup_recovery_marks_orphaned_running_runs_failed() {
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let flow = attractor_dsl::parse_flow_definition(GATE_FLOW).expect("gate flow parses");
+    let flow = flow(gate_flow_json());
     let launch_context = attractor_core::LaunchContext::empty();
     let runtime_context = attractor_core::ContextMap::default();
 
@@ -771,8 +787,7 @@ fn startup_recovery_marks_orphaned_running_runs_failed() {
             &store,
             &record,
             &flow,
-            Some(GATE_FLOW.to_string()),
-            None,
+            Some(definition_json(gate_flow_json())),
             None,
             &launch_context,
             &runtime_context,
@@ -828,7 +843,7 @@ fn ambiguous_child_invocations_leave_parent_terminal_and_never_resume_it() {
     let workdir = temp.path().join("project");
     std::fs::create_dir_all(&workdir).expect("workdir");
     let store = RunStore::for_settings(&settings);
-    let flow = attractor_dsl::parse_flow_definition(GATE_FLOW).expect("flow parses");
+    let flow = flow(gate_flow_json());
 
     for (run_id, parent) in [
         ("ambiguous-parent", None),
@@ -848,8 +863,7 @@ fn ambiguous_child_invocations_leave_parent_terminal_and_never_resume_it() {
             &store,
             &record,
             &flow,
-            Some(GATE_FLOW.to_string()),
-            None,
+            Some(definition_json(gate_flow_json())),
             None,
             &attractor_core::LaunchContext::empty(),
             &attractor_core::ContextMap::default(),
@@ -908,21 +922,21 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
             "retry-root",
             None,
             Some("retry-child"),
-            TREE_ROOT_FLOW,
+            tree_root_flow_json(),
             "branch",
         ),
         (
             "retry-child",
             Some("retry-root"),
             Some("retry-leaf"),
-            TREE_ROOT_FLOW,
+            tree_root_flow_json(),
             "branch",
         ),
         (
             "retry-leaf",
             Some("retry-child"),
             None,
-            TREE_CHILD_FLOW,
+            tree_child_flow_json(),
             "start",
         ),
     ] {
@@ -960,8 +974,7 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
                     logs: vec!["prior log".into()],
                 }),
                 manifest: None,
-                flow_source: Some(source.into()),
-                flow_definition_json: None,
+                flow_definition_json: Some(definition_json(source)),
                 flow_files: None,
             })
             .unwrap();
@@ -1124,8 +1137,11 @@ fn explicit_retry_rejects_invalid_lineage_and_cancellation_before_preparation() 
         if case == "flow" {
             let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
             std::fs::write(
-                bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
-                "invalid: [",
+                bundle
+                    .paths
+                    .root
+                    .join("artifacts/flow/flow-definition.json"),
+                "{\"invalid\": [",
             )
             .unwrap();
         }
@@ -1140,11 +1156,14 @@ fn explicit_retry_rejects_invalid_lineage_and_cancellation_before_preparation() 
     }
 }
 
-fn replace_retry_leaf(store: &RunStore, source: &str, node: &str) {
+fn replace_retry_leaf(store: &RunStore, source: Value, node: &str) {
     let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
     std::fs::write(
-        bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
-        source,
+        bundle
+            .paths
+            .root
+            .join("artifacts/flow/flow-definition.json"),
+        definition_json(source),
     )
     .unwrap();
     let mut checkpoint = bundle.checkpoint.unwrap();
@@ -1164,7 +1183,7 @@ fn retry_preserves_human_wait_and_rejects_execution_overlap_across_ancestors() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let store = seed_failed_retry_tree(&settings);
-    replace_retry_leaf(&store, GATE_FLOW, "review");
+    replace_retry_leaf(&store, gate_flow_json(), "review");
     let service = blocking_gate_service(&settings);
     assert_eq!(service.retry_pipeline_route("retry-root").status_code, 200);
     wait_for_status(&store, "retry-leaf", "waiting");
@@ -1206,10 +1225,10 @@ fn new_child_failure_propagates_once_and_direct_child_retry_gets_a_new_request()
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let store = seed_failed_retry_tree(&settings);
-    let source = GATE_FLOW
-        .replace("kind: human_gate", "kind: tool")
-        .replace("prompt: Ship the report?", "command: exit 1");
-    replace_retry_leaf(&store, &source, "review");
+    let mut source = gate_flow_json();
+    source["nodes"]["review"] =
+        json!({"kind": "tool", "config": {"kind": "tool", "command": "exit 1"}});
+    replace_retry_leaf(&store, source, "review");
     let service = blocking_gate_service(&settings);
     assert_eq!(service.retry_pipeline_route("retry-root").status_code, 200);
     wait_for_status(&store, "retry-root", "failed");
@@ -1313,7 +1332,7 @@ fn direct_child_retry_recovers_all_crash_windows_with_failed_parent() {
         let temp = tempfile::tempdir().unwrap();
         let settings = settings(temp.path());
         let store = seed_failed_retry_tree(&settings);
-        replace_retry_leaf(&store, GATE_FLOW, "review");
+        replace_retry_leaf(&store, gate_flow_json(), "review");
         let controls = attractor_runtime::RuntimeControls::new(store.clone());
         controls.prepare_retry("retry-leaf").unwrap();
         let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
@@ -1435,7 +1454,10 @@ fn direct_child_retry_recovery_preserves_cancellation_validation_and_custom_laun
             "source" => {
                 let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
                 std::fs::write(
-                    bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
+                    bundle
+                        .paths
+                        .root
+                        .join("artifacts/flow/flow-definition.json"),
                     "invalid",
                 )
                 .unwrap();
@@ -1500,8 +1522,10 @@ fn direct_child_retry_rejects_ambiguous_ancestor_invocations_without_mutation() 
                     record,
                     checkpoint: source.checkpoint,
                     manifest: None,
-                    flow_source: store.read_graph_source(&source.paths).unwrap(),
-                    flow_definition_json: None,
+                    flow_definition_json: store
+                        .read_graph_source(&source.paths)
+                        .unwrap()
+                        .map(|flow| flow.to_canonical_json_string()),
                     flow_files: None,
                 })
                 .unwrap();

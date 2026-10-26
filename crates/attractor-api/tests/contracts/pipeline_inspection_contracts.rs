@@ -135,16 +135,15 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         .as_array()
         .expect("artifacts")
         .iter()
-        .any(|artifact| artifact["path"] == json!("artifacts/flow/flow-source.yaml")));
+        .any(|artifact| artifact["path"] == json!("artifacts/flow/flow-definition.json")));
 
     let source =
-        service.get_pipeline_artifact_file("run-inspect", "artifacts/flow/flow-source.yaml");
+        service.get_pipeline_artifact_file("run-inspect", "artifacts/flow/flow-definition.json");
     assert_eq!(source.status_code, 200);
-    assert!(source
-        .body
-        .as_str()
-        .expect("source")
-        .contains("id: api_inspect"));
+    assert_eq!(source.content_type, "application/json");
+    let definition: Value =
+        serde_json::from_str(source.body.as_str().expect("source")).expect("definition JSON");
+    assert_eq!(definition["id"], json!("api_inspect"));
 
     let traversal = service.get_pipeline_artifact_file("run-inspect", "../run.json");
     assert_eq!(traversal.status_code, 400);
@@ -520,7 +519,6 @@ fn run_listing_includes_worktree_child_under_parent_project() {
             record: child,
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
@@ -575,7 +573,6 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
             record: child,
             checkpoint: None,
             manifest: None,
-            flow_source: None,
             flow_definition_json: None,
             flow_files: None,
         })
@@ -653,28 +650,28 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
         .all(|entry| entry["source_scope"] != json!("child")));
 }
 
-fn simple_flow() -> String {
-    r#"schema_version: "1"
-id: api_inspect
-title: API Inspect
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    label: Task
-    config:
-      kind: agent_task
-      prompt: Write an inspection note
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-"#
-    .to_string()
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "api_inspect",
+        "title": "API Inspect",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Write an inspection note"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "task"},
+            {"from": "task", "to": "done"}
+        ]
+    })
 }
 
 fn sse_data_entries(body: &str) -> Vec<Value> {

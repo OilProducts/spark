@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { useClientPreferencesEditor } from './hooks/useClientPreferencesEditor'
 import type { Appearance } from '@/lib/theme'
+import type { EditorMode } from '@/state/store-types'
 import { SaveStatus } from './SaveStatus'
 
 export function ClientPreferencesEditor() {
@@ -26,8 +27,8 @@ export function ClientPreferencesEditor() {
                 <p className="text-xs">Defaults for newly opened flows.</p>
                 <Field><FieldLabel htmlFor="preference-editor-mode">Editor mode</FieldLabel>
                     <NativeSelect id="preference-editor-mode" value={editor.draft?.editor_mode ?? ''}
-                        onChange={(event) => { const mode = event.target.value as 'structured' | 'raw' | ''; editor.setDraft((draft) => draft && ({ ...draft, editor_mode: mode || null })) }}>
-                        <option value="">Default (structured)</option><option value="structured">Structured</option><option value="raw">Raw YAML</option>
+                        onChange={(event) => { const mode = event.target.value as EditorMode | ''; editor.setDraft((draft) => draft && ({ ...draft, editor_mode: mode || null })) }}>
+                        <option value="">Default (structured)</option><option value="structured">Structured</option><option value="files">Files</option>
                     </NativeSelect>
                 </Field>
                 {([

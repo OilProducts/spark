@@ -4,14 +4,14 @@ import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
+import type { EditorMode } from '@/state/store-types'
 
 type EditorCanvasToolbarProps = {
-    mode: 'structured' | 'raw'
+    mode: EditorMode
     childFlowsExpanded: boolean
-    rawHandoffPending: boolean
     runDisabledReason: string | null | undefined
     onSelectStructured: () => void
-    onSelectYaml: () => void
+    onSelectFiles: () => void
     onSetChildFlowsExpanded: (expanded: boolean) => void
     onArrange: () => void
     onReset: () => void
@@ -24,10 +24,9 @@ type EditorCanvasToolbarProps = {
 export function EditorCanvasToolbar({
     mode,
     childFlowsExpanded,
-    rawHandoffPending,
     runDisabledReason,
     onSelectStructured,
-    onSelectYaml,
+    onSelectFiles,
     onSetChildFlowsExpanded,
     onArrange,
     onReset,
@@ -50,8 +49,8 @@ export function EditorCanvasToolbar({
                 aria-label="View"
                 className="shrink-0"
                 options={[
-                    { key: 'structured', label: 'Structured', pressed: isStructured, disabled: !isStructured && rawHandoffPending, onPress: onSelectStructured },
-                    { key: 'yaml', label: 'YAML', pressed: !isStructured, disabled: !isStructured, onPress: onSelectYaml },
+                    { key: 'structured', label: 'Structured', pressed: isStructured, onPress: onSelectStructured },
+                    { key: 'files', label: 'Files', pressed: !isStructured, onPress: onSelectFiles },
                 ]}
             />
 

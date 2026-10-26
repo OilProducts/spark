@@ -1,7 +1,10 @@
 export {
     type ArtifactListEntry,
     type ArtifactListResponse,
+    type FlowDefinitionPayload,
+    type FlowFile,
     type FlowPayloadResponse,
+    type FlowSaveContent,
     type SaveFlowApiResponse,
     type PipelineAnswerResponse,
     type PipelineCancelResponse,

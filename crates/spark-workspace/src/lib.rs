@@ -24,7 +24,7 @@ pub use conversations::{
 };
 pub use errors::{WorkspaceError, WorkspaceResult};
 pub use flows::{
-    WorkspaceFlowDescription, WorkspaceFlowFeatures, WorkspaceFlowRaw, WorkspaceFlowService,
+    WorkspaceFlowDescription, WorkspaceFlowFeatures, WorkspaceFlowFiles, WorkspaceFlowService,
     WorkspaceFlowSummary,
 };
 pub use live::{LiveCursor, LiveEnvelope, LiveQuery, LiveResource, RawLiveQuery};

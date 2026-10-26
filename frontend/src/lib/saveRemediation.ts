@@ -15,7 +15,7 @@ export function resolveSaveRemediation(
 
     if (saveErrorKind === 'parse_error') {
         return {
-            message: 'Fix YAML syntax issues in Raw YAML mode, then save again.',
+            message: 'Fix the flow file syntax in the Files view, then save again.',
             allowRetry: false,
         }
     }

@@ -19,7 +19,7 @@ fn graph() -> DotGraph {
             {"from":"fix","to":"lone"},
             {"from":"lone","to":"end"}]
     });
-    attractor_dsl::parse_flow_definition(&source.to_string())
+    attractor_dsl::validated_flow(serde_json::from_value(source).unwrap())
         .unwrap()
         .to_runtime_dot_graph()
 }

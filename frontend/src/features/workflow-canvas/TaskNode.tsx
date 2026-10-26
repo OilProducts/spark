@@ -16,7 +16,7 @@ import {
 } from '@/lib/workflowNodeShape'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { generateFlowYaml } from '@/lib/flowYamlUtils'
+import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
 import { useEditorGraphBridgeRef } from '@/features/editor/EditorGraphBridgeContext'
 import { statusToneClassName } from '@/features/runs/model/shared'
 
@@ -95,6 +95,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? state.preferredExpandChildFlows)
             : false
     ))
+    const isFilesMode = useStore((state) => isEditorCanvas && state.editorMode === 'files')
     const executionHumanGate = useStore((state) => (runId ? state.runDetailSessionsByRunId[runId]?.humanGate ?? null : null))
     const flowMetadata = useStore((state) => (
         isEditorCanvas ? state.flowMetadata : (runId ? state.runDetailSessionsByRunId[runId]?.graphAttrs ?? EMPTY_GRAPH_ATTRS : EMPTY_GRAPH_ATTRS)
@@ -186,7 +187,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const status = (data.status as string) || 'idle'
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isReadOnlyPreviewNode = derivedPreviewMeta?.kind === 'child-cluster' || derivedPreviewMeta?.kind === 'child-node'
-    const isReadOnlyEditorCanvas = isEditorCanvas && isExpandedChildPreview
+    // In Files mode the file view owns edits; the canvas only selects nodes.
+    const isReadOnlyEditorCanvas = isEditorCanvas && (isExpandedChildPreview || isFilesMode)
     const renderedShape = isEditingDetails ? normalizeWorkflowNodeShape(draftShape) : currentShape
     const handlerType = getHandlerType((data.kind as string) || '')
     const visibility = getNodeFieldVisibility(handlerType)
@@ -247,8 +249,13 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         })
 
         if (updatedNodes.length > 0) {
-            const yaml = generateFlowYaml(flowName, updatedNodes, readEdges(), flowMetadata)
-            void saveFlowContent(flowName, yaml)
+            const flow = buildFlowDefinitionFromCanonicalFlowModel(flowName, buildCanonicalFlowModelFromEditorState(flowName, {
+                nodes: updatedNodes,
+                edges: readEdges(),
+                flowMetadata,
+                flow: editorGraphBridgeRef?.current?.getFlow(),
+            }))
+            void saveFlowContent(flowName, { flow })
         }
     }
 

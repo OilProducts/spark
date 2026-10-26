@@ -346,7 +346,7 @@ export function GraphExecutionDefaultsSection({
                 data-testid="flow-metadata-help"
                 className="text-xs"
             >
-                <p>Leave blank to omit the field from YAML output.</p>
+                <p>Leave blank to omit the field from the flow.</p>
             </GraphSettingsNotice>
             <div className="space-y-3">
                 <div className="space-y-1">

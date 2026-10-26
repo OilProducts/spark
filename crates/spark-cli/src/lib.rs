@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use attractor_dsl::{canonicalize_flow_yaml, FlowDefinition, FlowDefinitionError};
+use attractor_dsl::{FlowDefinition, FlowDefinitionError};
 use clap::{Arg, ArgAction, Command};
 pub use output::CommandOutput;
 use output::{http_error, json_error, success_json, usage_error};
@@ -259,8 +259,7 @@ fn run_flow_domain(
     };
 
     match command {
-        "format" => run_flow_format_command(args, env),
-        "validate" if has_option(&args[2..], "--file") => run_flow_validate_file_command(args, env),
+        "validate" if has_option(&args[2..], "--dir") => run_flow_validate_dir_command(args, env),
         "list" | "describe" | "get" | "validate" => match build_request_plan(args, env, stdin) {
             Ok(plan) => execute_request_plan(&plan),
             Err(output) => output,
@@ -637,7 +636,7 @@ fn build_flow_plan(
             let options = parse_api_options(
                 &args[2..],
                 &["--flow", "--project", "--base-url"],
-                &["--text"],
+                &["--json"],
                 PositionalMode::None,
             )?;
             require_values(&options, &["--flow"])?;
@@ -647,26 +646,22 @@ fn build_flow_plan(
                 method: HttpMethod::Get,
                 base_url,
                 path: format!(
-                    "/workspace/api/flows/{}/raw{}",
+                    "/workspace/api/flows/{}/files{}",
                     percent_encode_component(&flow),
                     project_query(&options)
                 ),
                 body: None,
-                text: options.bool("--text"),
+                text: !options.bool("--json"),
             })
         }
         "validate" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--flow", "--file", "--project", "--base-url"],
+                &["--flow", "--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
-            require_one_of(&options, &["--flow", "--file"])?;
-            reject_mutually_exclusive(&options, &["--flow", "--file"])?;
-            if options.value("--file").is_some() {
-                return Err(usage_error("local file validation is not server-backed"));
-            }
+            require_one_of(&options, &["--flow", "--dir"])?;
             let base_url = resolve_base_url(&options, "spark flow validate", env)?;
             let flow = non_empty_value(&options, "--flow", "Missing required --flow name.")?;
             Ok(ApiRequestPlan {
@@ -820,10 +815,6 @@ fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
     if is_run_events_path(&plan.path) {
         return execute_sse_request(plan);
     }
-    if is_flow_raw_path(&plan.path) {
-        return execute_flow_raw_request(plan);
-    }
-
     let payload = match request_json(plan) {
         Ok(payload) => payload,
         Err(output) => return output,
@@ -834,6 +825,9 @@ fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
         }
         if is_flow_describe_path(&plan.path) {
             return CommandOutput::stdout(0, describe_flow_text(&payload));
+        }
+        if is_flow_files_path(&plan.path) {
+            return CommandOutput::stdout(0, flow_files_text(&payload));
         }
         if is_flow_validate_path(&plan.path) {
             return CommandOutput::stdout(0, validate_flow_text(&payload));
@@ -888,60 +882,6 @@ fn response_json_payload(response: reqwest::blocking::Response) -> Result<Value,
         ));
     }
     Ok(payload)
-}
-
-fn execute_flow_raw_request(plan: &ApiRequestPlan) -> CommandOutput {
-    let response_text = match request_text(plan) {
-        Ok(response_text) => response_text,
-        Err(output) => return output,
-    };
-    if plan.text {
-        let mut stdout = response_text;
-        if !stdout.ends_with('\n') {
-            stdout.push('\n');
-        }
-        return CommandOutput::stdout(0, stdout);
-    }
-    let flow_name = flow_name_from_raw_path(&plan.path).unwrap_or_default();
-    success_json(&json!({
-        "name": flow_name,
-        "content": response_text,
-    }))
-}
-
-fn request_text(plan: &ApiRequestPlan) -> Result<String, CommandOutput> {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return Err(json_error(
-                format!("Request failed: {error}"),
-                EXIT_GENERAL_FAILURE,
-            ))
-        }
-    };
-    let url = workspace_url(&plan.base_url, &plan.path);
-    let request = match plan.method {
-        HttpMethod::Get => client.get(&url),
-        HttpMethod::Post => client.post(&url),
-        HttpMethod::Patch => client.patch(&url),
-        HttpMethod::Delete => client.delete(&url),
-    };
-    let response = request.send().map_err(request_failed)?;
-    let status_code = response.status().as_u16();
-    let is_error = response.status().is_client_error() || response.status().is_server_error();
-    let text = response.text().map_err(request_failed)?;
-    if is_error {
-        let payload = serde_json::from_str::<Value>(&text)
-            .unwrap_or_else(|_| json!({"detail": text.clone()}));
-        return Err(http_error(
-            status_code,
-            error_message_from_payload(&payload, &text),
-        ));
-    }
-    Ok(text)
 }
 
 fn execute_sse_request(plan: &ApiRequestPlan) -> CommandOutput {
@@ -1132,6 +1072,29 @@ fn flow_list_text(payload: &Value) -> String {
     text
 }
 
+/// A flow's layer and directory, then each file under a `==> <file> <==` header.
+fn flow_files_text(payload: &Value) -> String {
+    let field = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default();
+    let mut text = format!("Layer: {}\nPath: {}\n", field("layer"), field("path"));
+    for file in payload
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let content = file
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let name = file.get("name").and_then(Value::as_str).unwrap_or_default();
+        text.push_str(&format!("\n==> {name} <==\n{content}"));
+        if !content.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    text
+}
+
 fn describe_flow_text(payload: &Value) -> String {
     let Some(object) = payload.as_object() else {
         let mut text = payload.to_string();
@@ -1303,13 +1266,13 @@ fn is_flow_list_path(path: &str) -> bool {
 fn is_flow_describe_path(path: &str) -> bool {
     let path = without_query(path);
     path.starts_with("/workspace/api/flows/")
-        && !path.ends_with("/raw")
+        && !path.ends_with("/files")
         && !path.ends_with("/validate")
 }
 
-fn is_flow_raw_path(path: &str) -> bool {
+fn is_flow_files_path(path: &str) -> bool {
     let path = without_query(path);
-    path.starts_with("/workspace/api/flows/") && path.ends_with("/raw")
+    path.starts_with("/workspace/api/flows/") && path.ends_with("/files")
 }
 
 fn is_flow_validate_path(path: &str) -> bool {
@@ -1323,13 +1286,6 @@ fn is_trigger_list_path(path: &str) -> bool {
 
 fn is_trigger_describe_path(path: &str) -> bool {
     path.starts_with("/workspace/api/triggers/") && !path.contains('?')
-}
-
-fn flow_name_from_raw_path(path: &str) -> Option<String> {
-    let raw = without_query(path)
-        .strip_prefix("/workspace/api/flows/")?
-        .strip_suffix("/raw")?;
-    Some(percent_decode_component(raw))
 }
 
 fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput> {
@@ -1367,7 +1323,7 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "flow" => match domain_matches.subcommand_name() {
-            Some("list" | "describe" | "get" | "validate" | "format") => Ok(CommandPath {
+            Some("list" | "describe" | "get" | "validate") => Ok(CommandPath {
                 domain: CommandDomain::Flow,
             }),
             _ => Err(usage_error("Unknown command")),
@@ -1445,8 +1401,7 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("list"))
                 .subcommand(clap_command_leaf("describe"))
                 .subcommand(clap_command_leaf("get"))
-                .subcommand(clap_command_leaf("validate"))
-                .subcommand(clap_command_leaf("format")),
+                .subcommand(clap_command_leaf("validate")),
         )
         .subcommand(
             Command::new("settings")
@@ -1500,26 +1455,6 @@ fn clap_command_leaf(name: &'static str) -> Command {
                 .allow_hyphen_values(true)
                 .trailing_var_arg(true),
         )
-}
-
-fn percent_decode_component(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    decoded.push(byte);
-                    index += 3;
-                    continue;
-                }
-            }
-        }
-        decoded.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn parse_api_options(
@@ -1863,55 +1798,19 @@ fn build_flow_payload(
     Ok(Value::Object(body))
 }
 
-fn run_flow_format_command(args: &[String], env: &impl Environment) -> CommandOutput {
-    let options = match parse_flow_file_options(&args[2..], false) {
+fn run_flow_validate_dir_command(args: &[String], env: &impl Environment) -> CommandOutput {
+    let options = match parse_flow_dir_options(&args[2..]) {
         Ok(options) => options,
         Err(message) => return usage_error(message),
     };
 
-    let flow_path = expand_user_path(&options.file, env);
-    let raw_content = match std::fs::read_to_string(&flow_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return json_error(
-                format!("Flow file not found: {}", options.file),
-                EXIT_GENERAL_FAILURE,
-            );
-        }
-        Err(error) => {
-            return json_error(
-                format!("Unable to read flow file {}: {error}", options.file),
-                EXIT_GENERAL_FAILURE,
-            );
-        }
-    };
-
-    let formatted = match canonicalize_flow_yaml(&raw_content) {
-        Ok(content) => content,
-        Err(error) => {
-            return json_error(error.detail().to_string(), EXIT_GENERAL_FAILURE);
-        }
-    };
-    if options.write {
-        if let Err(error) = std::fs::write(&flow_path, &formatted) {
-            return json_error(
-                format!("Unable to write flow file {}: {error}", options.file),
-                EXIT_GENERAL_FAILURE,
-            );
-        }
-        CommandOutput::stdout(0, "")
-    } else {
-        CommandOutput::stdout(0, formatted)
+    let flow_path = expand_user_path(&options.dir, env);
+    if !flow_path.is_dir() {
+        return json_error(
+            format!("Flow directory not found: {}", options.dir),
+            EXIT_GENERAL_FAILURE,
+        );
     }
-}
-
-fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> CommandOutput {
-    let options = match parse_flow_file_options(&args[2..], true) {
-        Ok(options) => options,
-        Err(message) => return usage_error(message),
-    };
-
-    let flow_path = expand_user_path(&options.file, env);
     // A file inside `<project>/.spark/agent-org` resolves roles through that
     // project's org, then the bundled library.
     let project = flow_path.ancestors().find_map(|dir| {
@@ -1926,33 +1825,7 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
         Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
     };
     // A flow directory validates as the loader assembles it.
-    let loaded = if flow_path.is_dir() {
-        attractor_dsl::read_flow_dir(&flow_path).map_err(flow_source_validation_error)
-    } else {
-        let raw_content = match std::fs::read_to_string(&flow_path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return json_error(
-                    format!("Flow file not found: {}", options.file),
-                    EXIT_GENERAL_FAILURE,
-                );
-            }
-            Err(error) => {
-                return json_error(
-                    format!("Unable to read flow file {}: {error}", options.file),
-                    EXIT_GENERAL_FAILURE,
-                );
-            }
-        };
-        FlowDefinition::from_yaml_str(&raw_content)
-            .map_err(|error| (error, "parse_error"))
-            .and_then(|flow| {
-                let flow = flow.normalize();
-                attractor_dsl::validate_flow_definition(&flow)
-                    .map(|()| flow)
-                    .map_err(|error| (error, "validation_error"))
-            })
-    };
+    let loaded = attractor_dsl::read_flow_dir(&flow_path).map_err(flow_source_validation_error);
     // Referenced roles must resolve; the preview keeps the authored form.
     let loaded = loaded.and_then(|flow| {
         attractor_dsl::resolve_flow_roles(&flow, &roots)
@@ -2104,51 +1977,25 @@ fn flow_definition_preview_payload(flow: &FlowDefinition) -> Value {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FlowFileOptions {
-    file: String,
-    write: bool,
+struct FlowDirOptions {
+    dir: String,
     text: bool,
 }
 
-fn parse_flow_file_options(args: &[String], validate: bool) -> Result<FlowFileOptions, String> {
-    let value_flags = if validate {
-        &["--flow", "--file", "--base-url"][..]
-    } else {
-        &["--file"][..]
-    };
+fn parse_flow_dir_options(args: &[String]) -> Result<FlowDirOptions, String> {
     let options = parse_options(
         args,
-        value_flags,
-        &["--write", "--text"],
+        &["--flow", "--dir", "--base-url"],
+        &["--text"],
         PositionalMode::None,
     )?;
-    if validate {
-        require_one_of_for_local(&options, &["--flow", "--file"])?;
-        if options.value("--flow").is_some() && options.value("--file").is_some() {
-            return Err("argument --file: not allowed with argument --flow".to_string());
-        }
-        if options.value("--flow").is_some() {
-            return Err("local file validation requires --file".to_string());
-        }
-    } else if !options.values.contains_key("--file") {
-        return Err("the following arguments are required: --file".to_string());
+    if options.value("--flow").is_some() {
+        return Err("argument --dir: not allowed with argument --flow".to_string());
     }
-    Ok(FlowFileOptions {
-        file: options.value("--file").unwrap_or_default().to_string(),
-        write: options.bool("--write"),
+    Ok(FlowDirOptions {
+        dir: options.value("--dir").unwrap_or_default().to_string(),
         text: options.bool("--text"),
     })
-}
-
-fn require_one_of_for_local(options: &ParsedOptions, flags: &[&str]) -> Result<(), String> {
-    if flags.iter().any(|flag| options.values.contains_key(*flag)) {
-        Ok(())
-    } else {
-        Err(format!(
-            "one of the arguments {} is required",
-            flags.join(" ")
-        ))
-    }
 }
 
 fn validate_flow_text(payload: &Value) -> String {

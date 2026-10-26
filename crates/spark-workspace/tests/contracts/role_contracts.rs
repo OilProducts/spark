@@ -1,5 +1,5 @@
 use super::mission_contracts::{project, tool_flow, wait_for, wait_terminal, GatedAgent};
-use super::review_artifact_contracts::{settings, write_flow, write_native_execution_profile};
+use super::review_artifact_contracts::{settings, write_native_execution_profile};
 use serde_json::{json, Value};
 use spark_agent_adapter::{AgentTurnRequest, AGENT_INSTRUCTIONS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
@@ -304,7 +304,7 @@ fn the_coordinator_exists_unsaved_until_its_first_write() {
 #[test]
 fn a_run_the_role_launched_reports_back_as_a_turn() {
     let harness = Harness::new();
-    write_flow(&harness.settings, "work/ok", &tool_flow("true"));
+    crate::install_named_flow(&harness.settings, "work/ok", tool_flow("true"));
     harness
         .roles
         .start(&harness.project, CHIEF_OF_STAFF)
@@ -374,7 +374,7 @@ fn a_stopped_role_records_events_and_delivers_them_when_started_again() {
 #[test]
 fn launches_over_either_budget_are_refused() {
     let harness = Harness::new();
-    write_flow(&harness.settings, "work/ok", &tool_flow("true"));
+    crate::install_named_flow(&harness.settings, "work/ok", tool_flow("true"));
     harness
         .roles
         .start(&harness.project, CHIEF_OF_STAFF)

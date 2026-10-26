@@ -208,28 +208,30 @@ fn sent_message(settings: &SparkSettings, run_id: &str, node_id: &str, text: &st
     latest
 }
 
-fn content(settings: &SparkSettings, flow: String) -> PipelineStartRequest {
+fn content(settings: &SparkSettings, flow: Value) -> PipelineStartRequest {
     PipelineStartRequest {
         flow_name: Some(crate::install_flow(settings, flow)),
         ..Default::default()
     }
 }
 
-fn agent_flow(id: &str) -> String {
-    format!(
-        r#"schema_version: "1"
-id: {id}
-nodes:
-  start: {{ kind: start }}
-  work:
-    kind: agent_task
-    config: {{ kind: agent_task, prompt: Do the work }}
-  done: {{ kind: exit }}
-edges:
-- {{ from: start, to: work }}
-- {{ from: work, to: done }}
-"#
-    )
+fn agent_flow(id: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "nodes": {
+            "start": {"kind": "start"},
+            "work": {
+                "kind": "agent_task",
+                "config": {"kind": "agent_task", "prompt": "Do the work"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "work"},
+            {"from": "work", "to": "done"}
+        ]
+    })
 }
 
 #[test]
@@ -411,25 +413,28 @@ fn steer_targets_agent_node_of_child_run() {
     }
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    fs::create_dir_all(&settings.bundled_dir().join("flows")).unwrap();
-    write_flow(
-        &settings.bundled_dir().join("flows").join("child"),
-        &agent_flow("steer_child"),
+    assert_eq!(
+        crate::install_flow(&settings, agent_flow("steer_child")),
+        "tests/steer-child"
     );
-    write_flow(
-        &settings.bundled_dir().join("flows").join("parent"),
-        r#"schema_version: "1"
-id: steer_parent
-nodes:
-  start: { kind: start }
-  branch:
-    kind: subflow
-    config: { kind: subflow, flow_ref: child }
-  done: { kind: exit }
-edges:
-- { from: start, to: branch }
-- { from: branch, to: done }
-"#,
+    let parent = crate::install_flow(
+        &settings,
+        json!({
+            "schema_version": "1",
+            "id": "steer_parent",
+            "nodes": {
+                "start": {"kind": "start"},
+                "branch": {
+                    "kind": "subflow",
+                    "config": {"kind": "subflow", "flow_ref": "steer-child"}
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [
+                {"from": "start", "to": "branch"},
+                {"from": "branch", "to": "done"}
+            ]
+        }),
     );
     let service = service(&settings);
     let log = log_path("SPARK_FAKE_CODEX_APP_SERVER_LOG");
@@ -439,7 +444,7 @@ edges:
         "steer-parent",
         "codex",
         PipelineStartRequest {
-            flow_name: Some("parent".into()),
+            flow_name: Some(parent),
             ..Default::default()
         },
     );
@@ -487,32 +492,38 @@ fn steer_rejects_ambiguous_target_until_a_node_is_named() {
         "codex",
         content(
             &settings,
-            r#"schema_version: "1"
-id: steer_fork
-nodes:
-  start: { kind: start }
-  fork:
-    kind: parallel
-    config: { kind: parallel, join_policy: wait_all }
-  left:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Left work }
-  right:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Right work }
-  join:
-    kind: fan_in
-    config: { kind: fan_in }
-  done: { kind: exit }
-edges:
-- { from: start, to: fork }
-- { from: fork, to: left }
-- { from: fork, to: right }
-- { from: left, to: join }
-- { from: right, to: join }
-- { from: join, to: done }
-"#
-            .into(),
+            json!({
+                "schema_version": "1",
+                "id": "steer_fork",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "fork": {
+                        "kind": "parallel",
+                        "config": {
+                            "kind": "parallel",
+                            "join_policy": "wait_all"
+                        }
+                    },
+                    "left": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "Left work"}
+                    },
+                    "right": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "Right work"}
+                    },
+                    "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "fork"},
+                    {"from": "fork", "to": "left"},
+                    {"from": "fork", "to": "right"},
+                    {"from": "left", "to": "join"},
+                    {"from": "right", "to": "join"},
+                    {"from": "join", "to": "done"}
+                ]
+            }),
         ),
     );
     wait_for_log(&log, "turn/start", 2);
@@ -573,31 +584,40 @@ fn steer_follows_a_parallel_branch_past_its_entry_node() {
         "codex",
         content(
             &settings,
-            r#"schema_version: "1"
-id: steer_chain
-nodes:
-  start: { kind: start }
-  fork:
-    kind: parallel
-    config: { kind: parallel, join_policy: wait_all }
-  first:
-    kind: agent_task
-    config: { kind: agent_task, prompt: First work }
-  second:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Second work }
-  join:
-    kind: fan_in
-    config: { kind: fan_in }
-  done: { kind: exit }
-edges:
-- { from: start, to: fork }
-- { from: fork, to: first }
-- { from: first, to: second }
-- { from: second, to: join }
-- { from: join, to: done }
-"#
-            .into(),
+            json!({
+                "schema_version": "1",
+                "id": "steer_chain",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "fork": {
+                        "kind": "parallel",
+                        "config": {
+                            "kind": "parallel",
+                            "join_policy": "wait_all"
+                        }
+                    },
+                    "first": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "First work"}
+                    },
+                    "second": {
+                        "kind": "agent_task",
+                        "config": {
+                            "kind": "agent_task",
+                            "prompt": "Second work"
+                        }
+                    },
+                    "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "fork"},
+                    {"from": "fork", "to": "first"},
+                    {"from": "first", "to": "second"},
+                    {"from": "second", "to": "join"},
+                    {"from": "join", "to": "done"}
+                ]
+            }),
         ),
     );
     // Each steer ends the fake's open turn, so `first` completes and the
@@ -624,8 +644,15 @@ fn steer_rejects_when_no_agent_node_is_active() {
     let started = service.start_pipeline(PipelineStartRequest {
         run_id: Some("steer-idle".into()),
         working_directory: settings.project_root.to_string_lossy().into(),
-        flow_name: Some(crate::install_flow(&settings,
-            "schema_version: \"1\"\nid: idle\nnodes:\n  start: { kind: start }\n  done: { kind: exit }\nedges:\n- { from: start, to: done }\n")),
+        flow_name: Some(crate::install_flow(
+            &settings,
+            json!({
+                "schema_version": "1",
+                "id": "idle",
+                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+                "edges": [{"from": "start", "to": "done"}]
+            }),
+        )),
         wait: Some(true),
         ..Default::default()
     });
@@ -659,23 +686,30 @@ fn steer_counts_unsteerable_agent_nodes_when_resolving_the_target() {
         "codex",
         content(
             &settings,
-            r#"schema_version: "1"
-id: steer_mixed
-nodes:
-  start: { kind: start }
-  work:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Do the work }
-  other:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Other work }
-  done: { kind: exit }
-edges:
-- { from: start, to: work }
-- { from: work, to: other }
-- { from: other, to: done }
-"#
-            .into(),
+            json!({
+                "schema_version": "1",
+                "id": "steer_mixed",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "work": {
+                        "kind": "agent_task",
+                        "config": {
+                            "kind": "agent_task",
+                            "prompt": "Do the work"
+                        }
+                    },
+                    "other": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "Other work"}
+                    },
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "other"},
+                    {"from": "other", "to": "done"}
+                ]
+            }),
         ),
     );
     wait_for_log(&log, "turn/start", 1);
@@ -726,33 +760,49 @@ fn steer_rejects_unsteerable_parallel_agent_nodes() {
     let paths = store
         .create_run(CreateRunRequest {
             record,
-            flow_source: Some(
-                r#"schema_version: "1"
-id: steer_unsupported
-nodes:
-  start: { kind: start }
-  fork:
-    kind: parallel
-    config: { kind: parallel, join_policy: wait_all }
-  left:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Left work }
-  right:
-    kind: agent_task
-    config: { kind: agent_task, prompt: Right work }
-  join:
-    kind: fan_in
-    config: { kind: fan_in }
-  done: { kind: exit }
-edges:
-- { from: start, to: fork }
-- { from: fork, to: left }
-- { from: fork, to: right }
-- { from: left, to: join }
-- { from: right, to: join }
-- { from: join, to: done }
-"#
-                .into(),
+            flow_definition_json: Some(
+                json!({
+                    "schema_version": "1",
+                    "id": "steer_unsupported",
+                    "nodes": {
+                        "start": {"kind": "start"},
+                        "fork": {
+                            "kind": "parallel",
+                            "config": {
+                                "kind": "parallel",
+                                "join_policy": "wait_all"
+                            }
+                        },
+                        "left": {
+                            "kind": "agent_task",
+                            "config": {
+                                "kind": "agent_task",
+                                "prompt": "Left work"
+                            }
+                        },
+                        "right": {
+                            "kind": "agent_task",
+                            "config": {
+                                "kind": "agent_task",
+                                "prompt": "Right work"
+                            }
+                        },
+                        "join": {
+                            "kind": "fan_in",
+                            "config": {"kind": "fan_in"}
+                        },
+                        "done": {"kind": "exit"}
+                    },
+                    "edges": [
+                        {"from": "start", "to": "fork"},
+                        {"from": "fork", "to": "left"},
+                        {"from": "fork", "to": "right"},
+                        {"from": "left", "to": "join"},
+                        {"from": "right", "to": "join"},
+                        {"from": "join", "to": "done"}
+                    ]
+                })
+                .to_string(),
             ),
             ..Default::default()
         })
@@ -803,12 +853,4 @@ edges:
         "provider_steering_unsupported"
     );
     assert_eq!(events[1]["target_node_id"], "left");
-}
-
-fn write_flow(dir: &Path, yaml: &str) {
-    attractor_dsl::write_flow_dir(
-        dir,
-        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
-    )
-    .expect("write flow");
 }

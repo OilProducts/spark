@@ -40,116 +40,117 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-const PARENT_FLOW: &str = r#"schema_version: "1"
-id: lifecycle_parent
-title: Lifecycle Parent
-nodes:
-  start:
-    kind: start
-  prepare_workspace:
-    kind: tool
-    config:
-      kind: tool
-      command: |
-        set -eu
-        repo_root=$(git rev-parse --show-toplevel)
-        branch="spark/lifecycle/${SPARK_RUN_ID}"
-        checkout_root="${repo_root}/.spark/checkouts"
-        worktree="${checkout_root}/${SPARK_RUN_ID}"
-        mkdir -p "$checkout_root"
-        printf '*\n' > "${repo_root}/.spark/.gitignore"
-        git worktree add -b "$branch" "$worktree" HEAD >/dev/null
-        printf '{"path":"%s","branch":"%s"}' "$worktree" "$branch"
-      env_map:
-        SPARK_RUN_ID: internal.run_id
-      output_map:
-        context.workspace.path: path
-        context.workspace.branch: branch
-    contracts:
-      writes_context:
-      - context.workspace.path
-      - context.workspace.branch
-  work:
-    kind: subflow
-    config:
-      kind: subflow
-      flow_ref: workers/child
-    manager:
-      child_workdir_from: context.workspace.path
-  finalize_commit:
-    kind: tool
-    config:
-      kind: tool
-      command: |
-        set -eu
-        cd "$SPARK_WORKSPACE_PATH"
-        git add --all
-        git commit -m "lifecycle change" >/dev/null
-        printf '{"commit":"%s"}' "$(git rev-parse HEAD)"
-      env_map:
-        SPARK_WORKSPACE_PATH: context.workspace.path
-      output_map:
-        context.workspace.commit: commit
-    contracts:
-      writes_context:
-      - context.workspace.commit
-  cleanup_workspace:
-    kind: tool
-    config:
-      kind: tool
-      command: |
-        set -eu
-        git worktree remove "$SPARK_WORKSPACE_PATH"
-      env_map:
-        SPARK_WORKSPACE_PATH: context.workspace.path
-  done:
-    kind: exit
-edges:
-- from: start
-  to: prepare_workspace
-- from: prepare_workspace
-  to: work
-  condition: outcome=success
-- from: work
-  to: finalize_commit
-  condition: outcome=success
-- from: finalize_commit
-  to: cleanup_workspace
-  condition: outcome=success
-- from: cleanup_workspace
-  to: done
-  condition: outcome=success
-"#;
+fn parent_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "lifecycle_parent",
+        "title": "Lifecycle Parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "prepare_workspace": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "set -eu\nrepo_root=$(git rev-parse --show-toplevel)\nbranch=\"spark/lifecycle/${SPARK_RUN_ID}\"\ncheckout_root=\"${repo_root}/.spark/checkouts\"\nworktree=\"${checkout_root}/${SPARK_RUN_ID}\"\nmkdir -p \"$checkout_root\"\nprintf '*\\n' > \"${repo_root}/.spark/.gitignore\"\ngit worktree add -b \"$branch\" \"$worktree\" HEAD >/dev/null\nprintf '{\"path\":\"%s\",\"branch\":\"%s\"}' \"$worktree\" \"$branch\"\n",
+                    "env_map": {"SPARK_RUN_ID": "internal.run_id"},
+                    "output_map": {
+                        "context.workspace.path": "path",
+                        "context.workspace.branch": "branch"
+                    }
+                },
+                "contracts": {
+                    "writes_context": ["context.workspace.path", "context.workspace.branch"]
+                }
+            },
+            "work": {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": "lifecycle-child"},
+                "manager": {"child_workdir_from": "context.workspace.path"}
+            },
+            "finalize_commit": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "set -eu\ncd \"$SPARK_WORKSPACE_PATH\"\ngit add --all\ngit commit -m \"lifecycle change\" >/dev/null\nprintf '{\"commit\":\"%s\"}' \"$(git rev-parse HEAD)\"\n",
+                    "env_map": {"SPARK_WORKSPACE_PATH": "context.workspace.path"},
+                    "output_map": {"context.workspace.commit": "commit"}
+                },
+                "contracts": {"writes_context": ["context.workspace.commit"]}
+            },
+            "cleanup_workspace": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "set -eu\ngit worktree remove \"$SPARK_WORKSPACE_PATH\"\n",
+                    "env_map": {"SPARK_WORKSPACE_PATH": "context.workspace.path"}
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "prepare_workspace"},
+            {
+                "from": "prepare_workspace",
+                "to": "work",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "work",
+                "to": "finalize_commit",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "finalize_commit",
+                "to": "cleanup_workspace",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "cleanup_workspace",
+                "to": "done",
+                "condition": "outcome=success"
+            }
+        ]
+    })
+}
 
-const CHILD_FLOW: &str = r#"schema_version: "1"
-id: lifecycle_child
-title: Lifecycle Child
-nodes:
-  start:
-    kind: start
-  produce:
-    kind: tool
-    config:
-      kind: tool
-      command: printf 'produced by child' > produced.txt
-  done:
-    kind: exit
-edges:
-- from: start
-  to: produce
-- from: produce
-  to: done
-  condition: outcome=success
-"#;
+fn child_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "lifecycle_child",
+        "title": "Lifecycle Child",
+        "nodes": {
+            "start": {"kind": "start"},
+            "produce": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "printf 'produced by child' > produced.txt"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "produce"},
+            {
+                "from": "produce",
+                "to": "done",
+                "condition": "outcome=success"
+            }
+        ]
+    })
+}
 
 #[test]
 fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
-    let flow_dir = settings.bundled_dir().join("flows").join("lifecycle");
-    write_flow(&flow_dir.join("parent"), PARENT_FLOW);
-    write_flow(&flow_dir.join("workers/child"), CHILD_FLOW);
+    // The parent's flow_ref names the child installed beside it.
+    let parent = crate::install_flow(&settings, parent_flow());
+    assert_eq!(
+        crate::install_flow(&settings, child_flow()),
+        "tests/lifecycle-child"
+    );
 
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
@@ -166,7 +167,7 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-lifecycle".to_string()),
-        flow_name: Some("lifecycle/parent".to_string()),
+        flow_name: Some(parent),
         working_directory: repo.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -219,28 +220,33 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     );
 }
 
-const RUNS_ROOT_FLOW: &str = r#"schema_version: "1"
-id: runs_root_probe
-title: Runs Root Probe
-nodes:
-  start:
-    kind: start
-  probe:
-    kind: tool
-    config:
-      kind: tool
-      command: printf '%s' "$SPARK_RUNS_ROOT"
-      env_map:
-        SPARK_RUNS_ROOT: internal.runs_dir
-  done:
-    kind: exit
-edges:
-- from: start
-  to: probe
-- from: probe
-  to: done
-  condition: outcome=success
-"#;
+fn runs_root_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "runs_root_probe",
+        "title": "Runs Root Probe",
+        "nodes": {
+            "start": {"kind": "start"},
+            "probe": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "printf '%s' \"$SPARK_RUNS_ROOT\"",
+                    "env_map": {"SPARK_RUNS_ROOT": "internal.runs_dir"}
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "probe"},
+            {
+                "from": "probe",
+                "to": "done",
+                "condition": "outcome=success"
+            }
+        ]
+    })
+}
 
 #[test]
 fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
@@ -254,7 +260,7 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-runs-root".to_string()),
-        flow_name: Some(crate::install_flow(&settings, RUNS_ROOT_FLOW.to_string())),
+        flow_name: Some(crate::install_flow(&settings, runs_root_flow())),
         working_directory: project.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -278,12 +284,4 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
         bundle.paths.root.starts_with(&probed),
         "the probed root must actually contain this run"
     );
-}
-
-fn write_flow(dir: &Path, yaml: &str) {
-    attractor_dsl::write_flow_dir(
-        dir,
-        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
-    )
-    .expect("write flow");
 }

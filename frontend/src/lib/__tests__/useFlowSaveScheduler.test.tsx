@@ -15,10 +15,7 @@ function SchedulerHarness() {
   const { scheduleSave } = useFlowSaveScheduler<{ value: number }>({
     flowName: 'demo.yaml',
     debounceMs: 25,
-    buildContent: (payload, flowName) => JSON.stringify({
-      flowName,
-      value: payload?.value ?? null,
-    }),
+    buildContent: (payload, flowName) => ({ flow: { id: flowName, value: payload?.value ?? null } }),
   })
 
   return (
@@ -63,10 +60,7 @@ describe('useFlowSaveScheduler', () => {
     expect(saveFlowContent).toHaveBeenCalledTimes(1)
     expect(saveFlowContent).toHaveBeenCalledWith(
       'demo.yaml',
-      JSON.stringify({
-        flowName: 'demo.yaml',
-        value: 1,
-      }),
+      { flow: { id: 'demo.yaml', value: 1 } },
       '/tmp/project-a',
     )
   })

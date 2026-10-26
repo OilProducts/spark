@@ -261,26 +261,26 @@ image = "spark-worker:test"
     .expect("write profiles");
 }
 
-fn worker_flow() -> String {
-    r#"schema_version: "1"
-id: docker_dispatch
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Exercise the worker
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-"#
-    .to_string()
+fn worker_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "docker_dispatch",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Exercise the worker"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "task"},
+            {"from": "task", "to": "done"}
+        ]
+    })
 }
 
 fn assert_docker_dispatch(commands: &[CommandSpec]) {
@@ -404,7 +404,10 @@ fn native_launch_never_invokes_docker() {
 }
 
 fn seed_retry(settings: &SparkSettings, run_id: &str) {
-    let flow = attractor_dsl::parse_flow_definition(&worker_flow()).expect("flow");
+    let flow = attractor_dsl::validated_flow(
+        serde_json::from_value(worker_flow()).expect("flow definition JSON"),
+    )
+    .expect("flow");
     let mut record =
         attractor_core::RunRecord::new(run_id, settings.project_root.to_string_lossy().to_string());
     record.status = "failed".to_string();
@@ -432,7 +435,6 @@ fn seed_retry(settings: &SparkSettings, run_id: &str) {
                 logs: Vec::new(),
             }),
             manifest: None,
-            flow_source: Some(worker_flow()),
             flow_definition_json: Some(flow.to_canonical_json_string()),
             flow_files: None,
         })
@@ -687,7 +689,9 @@ fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcom
                     })
                 }));
             for run_id in ["first", "second"] {
-                let flow = worker_flow().replace("  task:\n", "  task:\n    retry: {max_retries: 1}\n").replace("  done:\n    kind: exit", "  done:\n    kind: exit\n    config:\n      kind: exit\n      result_summary: true");
+                let mut flow = worker_flow();
+                flow["nodes"]["task"]["retry"] = json!({"max_retries": 1});
+                flow["nodes"]["done"]["config"] = json!({"kind": "exit", "result_summary": true});
                 let response = service.start_pipeline(PipelineStartRequest {
                     run_id: Some(run_id.into()),
                     flow_name: Some(crate::install_flow(&settings, flow)),
@@ -804,30 +808,37 @@ fn real_docker_run_lifetime() {
             })
         }),
     );
-    let flow = r#"schema_version: "1"
-id: container_smoke
-nodes:
-  start: {kind: start}
-  write:
-    kind: tool
-    config:
-      kind: tool
-      command: "test ! -e /tmp/spark-cr119 && printf preserved > /tmp/spark-cr119"
-  read:
-    kind: tool
-    config:
-      kind: tool
-      command: "test $(cat /tmp/spark-cr119) = preserved"
-  done: {kind: exit}
-edges:
-  - {from: start, to: write}
-  - {from: write, to: read}
-  - {from: read, to: done}
-"#;
+    let flow = json!({
+        "schema_version": "1",
+        "id": "container_smoke",
+        "nodes": {
+            "start": {"kind": "start"},
+            "write": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "test ! -e /tmp/spark-cr119 && printf preserved > /tmp/spark-cr119"
+                }
+            },
+            "read": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "test $(cat /tmp/spark-cr119) = preserved"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "write"},
+            {"from": "write", "to": "read"},
+            {"from": "read", "to": "done"}
+        ]
+    });
     for run_id in ["smoke-first", "smoke-second"] {
         let response = service.start_pipeline(PipelineStartRequest {
             run_id: Some(run_id.into()),
-            flow_name: Some(crate::install_flow(&settings, flow)),
+            flow_name: Some(crate::install_flow(&settings, flow.clone())),
             working_directory: settings.project_root.to_string_lossy().into(),
             execution_profile_id: Some("container".into()),
             wait: Some(true),

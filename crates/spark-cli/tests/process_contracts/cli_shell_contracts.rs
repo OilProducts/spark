@@ -441,10 +441,49 @@ fn flow_describe_and_validate_text_match_python_labels() {
 }
 
 #[test]
-fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
+fn flow_get_prints_each_file_exactly_and_json_prints_files_response() {
     let env = BTreeMap::new();
-    let flow_yaml = "schema_version: \"1\"\nid: implement_change_request\nnodes:\n  start:\n    kind: start\nedges: []\n";
-    let (json_base_url, json_requests) = serve_once(HttpResponse::text(200, flow_yaml));
+    let files = serde_json::json!({
+        "name": "software-development/implement-change-request",
+        "layer": "project",
+        "path": "/project/.spark/agent-org/flows/software-development/implement-change-request",
+        "files": [
+            {"name": "flow.md", "content": "---\nid: implement_change_request\n---\nGoal.\n"},
+            {"name": "start.md", "content": "---\nkind: start\n---"},
+        ],
+    });
+    let (text_base_url, text_requests) = serve_once(HttpResponse::json(200, files.to_string()));
+    let text_output = run_with_args_and_env(
+        [
+            "spark",
+            "flow",
+            "get",
+            "--flow",
+            "software-development/implement-change-request",
+            "--project",
+            "/project",
+            "--base-url",
+            text_base_url.as_str(),
+        ],
+        &env,
+    );
+    assert_eq!(text_output.exit_code, 0, "{}", text_output.stderr);
+    assert_eq!(
+        text_output.stdout,
+        "Layer: project\n\
+Path: /project/.spark/agent-org/flows/software-development/implement-change-request\n\
+\n==> flow.md <==\n---\nid: implement_change_request\n---\nGoal.\n\
+\n==> start.md <==\n---\nkind: start\n---\n"
+    );
+    let request = text_requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("text request");
+    assert_eq!(
+        request.path,
+        "/workspace/api/flows/software-development%2Fimplement-change-request/files?project_path=%2Fproject"
+    );
+
+    let (json_base_url, _json_requests) = serve_once(HttpResponse::json(200, files.to_string()));
     let json_output = run_with_args_and_env(
         [
             "spark",
@@ -452,46 +491,17 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
             "get",
             "--flow",
             "software-development/implement-change-request",
+            "--json",
             "--base-url",
             json_base_url.as_str(),
         ],
         &env,
     );
-    assert_eq!(json_output.exit_code, 0);
-    let payload = serde_json::from_str::<Value>(&json_output.stdout).expect("stdout json");
+    assert_eq!(json_output.exit_code, 0, "{}", json_output.stderr);
     assert_eq!(
-        payload["name"],
-        "software-development/implement-change-request"
+        serde_json::from_str::<Value>(&json_output.stdout).expect("stdout json"),
+        files
     );
-    assert!(payload["content"]
-        .as_str()
-        .expect("content")
-        .contains("implement_change_request"));
-    assert_eq!(
-        json_requests
-            .recv_timeout(Duration::from_secs(2))
-            .expect("json request")
-            .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/raw"
-    );
-
-    let text_flow_yaml = "schema_version: \"1\"\nid: plain\n";
-    let (text_base_url, _text_requests) = serve_once(HttpResponse::text(200, text_flow_yaml));
-    let text_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "get",
-            "--flow",
-            "plain",
-            "--text",
-            "--base-url",
-            text_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(text_output.exit_code, 0);
-    assert_eq!(text_output.stdout, text_flow_yaml);
 }
 
 #[test]
@@ -683,284 +693,23 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
 }
 
 #[test]
-fn flow_format_file_prints_canonical_yaml_without_source_checkout_guard() {
-    let temp_dir = temp_dir("flow-format-stdout");
-    let flow_path = temp_dir.join("messy-flow.yaml");
-    fs::write(&flow_path, messy_flow_source()).expect("write flow");
-    let env = BTreeMap::new();
+fn flow_format_is_not_a_command() {
+    let output = run_with_args_and_env(["spark", "flow", "format", "--dir", "x"], &BTreeMap::new());
 
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, formatted_flow_source());
-    assert_eq!(output.stderr, "");
-    assert_eq!(
-        fs::read_to_string(&flow_path).expect("read flow"),
-        messy_flow_source()
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_accepts_argparse_equals_value_syntax() {
-    let temp_dir = temp_dir("flow-format-equals");
-    let flow_path = temp_dir.join("messy-flow.yaml");
-    fs::write(&flow_path, messy_flow_source()).expect("write flow");
-    let env = BTreeMap::new();
-    let file_arg = format!("--file={}", flow_path.to_str().expect("path"));
-
-    let output = run_with_args_and_env(["spark", "flow", "format", file_arg.as_str()], &env);
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, formatted_flow_source());
-    assert_eq!(output.stderr, "");
-    assert_eq!(
-        fs::read_to_string(&flow_path).expect("read flow"),
-        messy_flow_source()
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_write_replaces_only_target_file_contents() {
-    let temp_dir = temp_dir("flow-format-write");
-    let flow_path = temp_dir.join("messy-write.yaml");
-    let sibling_path = temp_dir.join("untouched.txt");
-    fs::write(&flow_path, messy_flow_source()).expect("write flow");
-    fs::write(&sibling_path, "leave me alone\n").expect("write sibling");
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-            "--write",
-            "--text",
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.exit_code, 2, "{output:?}");
     assert_eq!(output.stdout, "");
-    assert_eq!(output.stderr, "");
-    assert_eq!(
-        fs::read_to_string(&flow_path).expect("read flow"),
-        formatted_flow_source()
-    );
-    assert_eq!(
-        fs::read_to_string(&sibling_path).expect("read sibling"),
-        "leave me alone\n"
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_prints_canonical_numeric_values() {
-    let temp_dir = temp_dir("flow-format-numbers");
-    let flow_path = temp_dir.join("numbers.yaml");
-    fs::write(&flow_path, numeric_flow_source()).expect("write flow");
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(
-        output.stdout,
-        "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n    config:\n      kind: exit\n  start:\n    kind: start\n    label: ''\n    description: ''\n    config:\n      kind: start\n    ui:\n      x: 1e-6\n      y: 1e16\nedges:\n- from: start\n  to: done\n  label: ''\n  condition: ''\n  weight: 10000000000000000\n"
-    );
-    assert_eq!(output.stderr, "");
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_write_is_idempotent_for_yaml() {
-    let temp_dir = temp_dir("flow-format-idempotent-write");
-    let flow_path = temp_dir.join("idempotent-write.yaml");
-    fs::write(&flow_path, messy_flow_source()).expect("write flow");
-    let env = BTreeMap::new();
-
-    let write_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-            "--write",
-        ],
-        &env,
-    );
-
-    assert_eq!(write_output.exit_code, 0);
-    assert_eq!(write_output.stdout, "");
-    assert_eq!(write_output.stderr, "");
-    assert_eq!(
-        fs::read_to_string(&flow_path).expect("read flow"),
-        formatted_flow_source()
-    );
-
-    let second_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(second_output.exit_code, 0);
-    assert_eq!(second_output.stdout, formatted_flow_source());
-    assert_eq!(second_output.stderr, "");
-    assert_eq!(
-        fs::read_to_string(&flow_path).expect("read flow"),
-        formatted_flow_source()
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_orders_nodes_deterministically() {
-    let temp_dir = temp_dir("flow-format-node-order");
-    let flow_path = temp_dir.join("node-order.yaml");
-    fs::write(&flow_path, reverse_order_flow_source()).expect("write flow");
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0);
-    let done_index = output.stdout.find("  done:").expect("done node");
-    let start_index = output.stdout.find("  start:").expect("start node");
-    let task_index = output.stdout.find("  task:").expect("task node");
-    assert!(done_index < start_index);
-    assert!(start_index < task_index);
-    assert_eq!(output.stderr, "");
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_file_accepts_empty_equals_value_as_file_path() {
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(["spark", "flow", "format", "--file="], &env);
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert!(output
-        .stderr
-        .starts_with("{\"ok\": false, \"error\": \"Unable to read flow file : "));
-    assert!(output.stderr.contains("Is a directory"));
-    assert!(!output
-        .stderr
-        .contains("the following arguments are required"));
-}
-
-#[test]
-fn flow_format_file_rejects_missing_value_before_option() {
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(["spark", "flow", "format", "--file", "--write"], &env);
-
-    assert_eq!(output.exit_code, 2);
-    assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings} ...\n\
-spark: error: argument --file: expected one argument\n"
+    assert!(
+        output.stderr.contains("Unknown command"),
+        "{}",
+        output.stderr
     );
 }
 
 #[test]
-fn flow_format_invalid_yaml_returns_json_error() {
-    let temp_dir = temp_dir("flow-format-invalid");
-    let flow_path = temp_dir.join("invalid-flow.yaml");
-    fs::write(&flow_path, "schema_version: '1'\nid: broken\nnodes: [").expect("write flow");
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert!(output
-        .stderr
-        .starts_with("{\"ok\": false, \"error\": \"flow definition validation failed with 1 error(s): invalid YAML flow definition:"));
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_format_missing_file_returns_json_error() {
-    let temp_dir = temp_dir("flow-format-missing");
-    let flow_path = temp_dir.join("missing.yaml");
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "format",
-            "--file",
-            flow_path.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        format!(
-            "{{\"ok\": false, \"error\": \"Flow file not found: {}\"}}\n",
-            flow_path.display()
-        )
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
+fn flow_validate_dir_json_uses_local_preview_without_source_checkout_guard() {
     let temp_dir = temp_dir("flow-validate-success");
-    let flow_path = temp_dir.join("valid-flow.yaml");
-    fs::write(&flow_path, valid_flow_source()).expect("write flow");
+    let flow_dir = temp_dir.join("valid-flow");
+    crate::write_flow_json(&flow_dir, valid_flow());
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -968,19 +717,19 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
             "spark",
             "flow",
             "validate",
-            "--file",
-            flow_path.to_str().expect("path"),
+            "--dir",
+            flow_dir.to_str().expect("path"),
         ],
         &env,
     );
 
-    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
     assert_eq!(output.stderr, "");
     let payload: Value = serde_json::from_str(&output.stdout).expect("valid json");
-    assert_eq!(payload["name"], "valid-flow.yaml");
+    assert_eq!(payload["name"], "valid-flow");
     assert_eq!(
         payload["path"],
-        fs::canonicalize(&flow_path)
+        fs::canonicalize(&flow_dir)
             .expect("canonical path")
             .to_string_lossy()
             .as_ref()
@@ -988,35 +737,44 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
     assert_eq!(payload["errors"], Value::Array(Vec::new()));
-
-    // A flow directory validates as the loader assembles it.
-    let flow_dir = temp_dir.join("valid-flow");
-    attractor_dsl::write_flow_dir(
-        &flow_dir,
-        &attractor_dsl::parse_flow_definition(valid_flow_source()).expect("valid flow"),
-    )
-    .expect("write flow dir");
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "validate",
-            "--file",
-            flow_dir.to_str().expect("path"),
-        ],
-        &env,
-    );
-    assert_eq!(output.exit_code, 0, "{}", output.stderr);
-    let payload: Value = serde_json::from_str(&output.stdout).expect("valid json");
-    assert_eq!(payload["name"], "valid-flow");
-    assert_eq!(payload["status"], "ok");
     let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
-fn flow_validate_file_checks_stylesheet_controls_and_inherited_budgets() {
-    let temp_dir = temp_dir("flow-validate-reasoning");
+fn flow_validate_rejects_file_option_and_single_flow_files() {
+    let temp_dir = temp_dir("flow-validate-yaml");
     let flow_path = temp_dir.join("flow.yaml");
+    // A whole-flow YAML file is no longer a flow source.
+    fs::write(&flow_path, "id: workflow\n").expect("write flow");
+    let flow_path = flow_path.to_str().expect("path");
+    let env = BTreeMap::new();
+
+    let file_option =
+        run_with_args_and_env(["spark", "flow", "validate", "--file", flow_path], &env);
+    assert_eq!(file_option.exit_code, 2, "{file_option:?}");
+    assert_eq!(file_option.stdout, "");
+    assert!(
+        file_option
+            .stderr
+            .contains("unrecognized arguments: --file"),
+        "{}",
+        file_option.stderr
+    );
+
+    let yaml_file = run_with_args_and_env(["spark", "flow", "validate", "--dir", flow_path], &env);
+    assert_eq!(yaml_file.exit_code, 1, "{yaml_file:?}");
+    assert_eq!(yaml_file.stdout, "");
+    assert_eq!(
+        yaml_file.stderr,
+        format!("{{\"ok\": false, \"error\": \"Flow directory not found: {flow_path}\"}}\n")
+    );
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn flow_validate_dir_checks_stylesheet_controls_and_inherited_budgets() {
+    let temp_dir = temp_dir("flow-validate-reasoning");
+    let flow_path = temp_dir.join("flow");
     for (stylesheet, valid) in [
         ("* { reasoning_mode: fast; }", false),
         ("* { thinking: invalid; }", false),
@@ -1034,13 +792,13 @@ fn flow_validate_file_checks_stylesheet_controls_and_inherited_budgets() {
             "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
             "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
         });
-        fs::write(&flow_path, source.to_string()).unwrap();
+        crate::write_flow_json(&flow_path, source);
         let output = run_with_args_and_env(
             [
                 "spark",
                 "flow",
                 "validate",
-                "--file",
+                "--dir",
                 flow_path.to_str().unwrap(),
             ],
             &BTreeMap::new(),
@@ -1072,10 +830,10 @@ fn flow_validate_file_checks_stylesheet_controls_and_inherited_budgets() {
 }
 
 #[test]
-fn flow_validate_file_text_renders_diagnostics() {
+fn flow_validate_dir_text_renders_diagnostics() {
     let temp_dir = temp_dir("flow-validate-text");
-    let flow_path = temp_dir.join("validation-error-flow.yaml");
-    fs::write(&flow_path, validation_error_flow_source()).expect("write flow");
+    let flow_path = temp_dir.join("validation-error-flow");
+    crate::write_flow_json(&flow_path, validation_error_flow());
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -1083,7 +841,7 @@ fn flow_validate_file_text_renders_diagnostics() {
             "spark",
             "flow",
             "validate",
-            "--file",
+            "--dir",
             flow_path.to_str().expect("path"),
             "--text",
         ],
@@ -1095,7 +853,7 @@ fn flow_validate_file_text_renders_diagnostics() {
     assert_eq!(
         output.stdout,
         format!(
-            "Name: validation-error-flow.yaml\n\
+            "Name: validation-error-flow\n\
 Path: {}\n\
 Status: validation_error\n\
 Diagnostics: 2\n\
@@ -1111,7 +869,7 @@ Errors: 2\n\
 }
 
 #[test]
-fn flow_validate_file_and_flow_are_mutually_exclusive() {
+fn flow_validate_dir_and_flow_are_mutually_exclusive() {
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -1121,8 +879,8 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
             "validate",
             "--flow",
             "examples/simple-linear",
-            "--file",
-            "local.yaml",
+            "--dir",
+            "local",
         ],
         &env,
     );
@@ -1132,7 +890,7 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
     assert_eq!(
         output.stderr,
         "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings} ...\n\
-spark: error: argument --file: not allowed with argument --flow\n"
+spark: error: argument --dir: not allowed with argument --flow\n"
     );
 }
 
@@ -1625,28 +1383,38 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
-fn messy_flow_source() -> &'static str {
-    "title: Workflow\nid: workflow\nschema_version: '1'\nedges:\n  - to: task\n    from: start\n  - to: done\n    from: task\nnodes:\n  done:\n    kind: exit\n  task:\n    config:\n      prompt: Do work\n      kind: agent_task\n    kind: agent_task\n    label: Task\n  start:\n    kind: start\n"
+fn valid_flow() -> Value {
+    serde_json::json!({
+        "schema_version": "1",
+        "id": "workflow",
+        "title": "Workflow",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Do work"},
+            },
+            "done": {"kind": "exit"},
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
+    })
 }
 
-fn formatted_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n    config:\n      kind: exit\n  start:\n    kind: start\n    label: ''\n    description: ''\n    config:\n      kind: start\n  task:\n    kind: agent_task\n    label: Task\n    description: ''\n    config:\n      kind: agent_task\n      prompt: Do work\nedges:\n- from: start\n  to: task\n  label: ''\n  condition: ''\n  weight: 0\n- from: task\n  to: done\n  label: ''\n  condition: ''\n  weight: 0\n"
-}
-
-fn numeric_flow_source() -> &'static str {
-    "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\nnodes:\n  start:\n    kind: start\n    ui:\n      x: 0.000001\n      y: 10000000000000000.0\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n    weight: 10000000000000000\n"
-}
-
-fn reverse_order_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
-}
-
-fn valid_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
-}
-
-fn validation_error_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: No start or done\nedges: []\n"
+fn validation_error_flow() -> Value {
+    serde_json::json!({
+        "schema_version": "1",
+        "id": "workflow",
+        "title": "Workflow",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "No start or done"},
+            },
+        },
+        "edges": [],
+    })
 }
 
 #[test]

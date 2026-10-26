@@ -18,7 +18,8 @@ pub mod context_contracts;
 /// Core error types.
 pub mod error;
 
-/// FlowDefinition YAML workflow model.
+/// FlowDefinition workflow model (JSON interchange; flows are stored as
+/// per-node markdown directories by `attractor-dsl`).
 pub mod flow_definition;
 
 /// Graph model and identifier boundary.

@@ -8,20 +8,24 @@ use attractor_runtime::{
 };
 use serde_json::json;
 
-const FLOW: &str = r#"schema_version: "1"
-id: retry
-title: Retry
-nodes:
-  start: {kind: start}
-  task:
-    kind: agent_task
-    config: {kind: agent_task, prompt: test}
-    retry: {max_retries: 1}
-  done: {kind: exit}
-edges:
-- {from: start, to: task}
-- {from: task, to: done}
-"#;
+fn flow() -> FlowDefinition {
+    serde_json::from_value(json!({
+        "schema_version": "1",
+        "id": "retry",
+        "title": "Retry",
+        "nodes": {
+            "start": { "kind": "start" },
+            "task": {
+                "kind": "agent_task",
+                "config": { "kind": "agent_task", "prompt": "test" },
+                "retry": { "max_retries": 1 }
+            },
+            "done": { "kind": "exit" }
+        },
+        "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+    }))
+    .unwrap()
+}
 
 fn seed(store: &RunStore) {
     let mut record = RunRecord::new("retry", "/tmp");
@@ -41,8 +45,7 @@ fn seed(store: &RunStore) {
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }),
             manifest: None,
-            flow_source: Some(FLOW.into()),
-            flow_definition_json: None,
+            flow_definition_json: Some(flow().to_canonical_json_string()),
             flow_files: None,
         })
         .unwrap();
@@ -60,12 +63,7 @@ fn resume(store: &RunStore, mut execute: impl FnMut(NodeExecutionRequest) -> Out
         .execute(ExecuteRunRequest {
             store: store.clone(),
             record: bundle.record.unwrap(),
-            flow: FlowDefinition::from_yaml_str(
-                &store.read_graph_source(&bundle.paths).unwrap().unwrap(),
-            )
-            .unwrap()
-            .normalize(),
-            flow_source: None,
+            flow: store.read_graph_source(&bundle.paths).unwrap().unwrap(),
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),
@@ -230,9 +228,8 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
             start_node: "task".into(),
             flow_source_mode: "snapshot".into(),
             new_run_id: Some("continued".into()),
-            flow: FlowDefinition::from_yaml_str(FLOW).unwrap().normalize(),
-            flow_source: Some(FLOW.into()),
-            flow_definition_json: None,
+            flow: flow().normalize(),
+            flow_definition_json: Some(flow().to_canonical_json_string()),
             flow_files: None,
             flow_name: None,
             project_path: None,
@@ -254,24 +251,32 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
 
 #[test]
 fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
-    const LOOP_FLOW: &str = r#"schema_version: "1"
-id: looping_retry
-title: Looping retry
-nodes:
-  start: {kind: start}
-  task:
-    kind: agent_task
-    config: {kind: agent_task, prompt: test}
-  again:
-    kind: agent_task
-    config: {kind: agent_task, prompt: loop}
-  done: {kind: exit}
-edges:
-- {from: start, to: task}
-- {from: task, to: again, condition: "preferred_label=again"}
-- {from: task, to: done, condition: "preferred_label=done"}
-- {from: again, to: task}
-"#;
+    fn loop_flow() -> FlowDefinition {
+        serde_json::from_value(json!({
+            "schema_version": "1",
+            "id": "looping_retry",
+            "title": "Looping retry",
+            "nodes": {
+                "start": { "kind": "start" },
+                "task": {
+                    "kind": "agent_task",
+                    "config": { "kind": "agent_task", "prompt": "test" }
+                },
+                "again": {
+                    "kind": "agent_task",
+                    "config": { "kind": "agent_task", "prompt": "loop" }
+                },
+                "done": { "kind": "exit" }
+            },
+            "edges": [
+                { "from": "start", "to": "task" },
+                { "from": "task", "to": "again", "condition": "preferred_label=again" },
+                { "from": "task", "to": "done", "condition": "preferred_label=done" },
+                { "from": "again", "to": "task" }
+            ]
+        }))
+        .unwrap()
+    }
     for crash in ["ready", "preparing", "durable"] {
         let temp = tempfile::tempdir().unwrap();
         let store = RunStore::for_runs_dir(temp.path());
@@ -293,11 +298,8 @@ edges:
         .execute(ExecuteRunRequest {
             store: store.clone(),
             record: RunRecord::new("retry", temp.path().to_string_lossy()),
-            flow: FlowDefinition::from_yaml_str(LOOP_FLOW)
-                .unwrap()
-                .normalize(),
-            flow_source: Some(LOOP_FLOW.into()),
-            flow_definition_json: None,
+            flow: loop_flow().normalize(),
+            flow_definition_json: Some(loop_flow().to_canonical_json_string()),
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),
             max_steps: Some(10),

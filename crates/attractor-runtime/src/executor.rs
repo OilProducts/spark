@@ -49,7 +49,6 @@ pub struct ExecuteRunRequest {
     pub store: RunStore,
     pub record: RunRecord,
     pub flow: FlowDefinition,
-    pub flow_source: Option<String>,
     pub flow_definition_json: Option<String>,
     pub launch_context: LaunchContext,
     pub runtime_context: ContextMap,
@@ -233,7 +232,6 @@ where
             store,
             mut record,
             flow,
-            flow_source,
             flow_definition_json,
             launch_context,
             runtime_context,
@@ -272,7 +270,6 @@ where
                         started_at: record.started_at.clone(),
                         extra: BTreeMap::new(),
                     }),
-                    flow_source,
                     flow_definition_json,
                     flow_files: None,
                 })?;
@@ -407,7 +404,6 @@ where
                         started_at: record.started_at.clone(),
                         extra: BTreeMap::new(),
                     }),
-                    flow_source,
                     flow_definition_json,
                     flow_files,
                 })?;
@@ -1062,7 +1058,6 @@ pub fn prepare_fresh_run(
     store: &RunStore,
     record: &RunRecord,
     flow: &FlowDefinition,
-    flow_source: Option<String>,
     flow_definition_json: Option<String>,
     flow_files: Option<attractor_dsl::FlowManifest>,
     launch_context: &LaunchContext,
@@ -1082,7 +1077,6 @@ pub fn prepare_fresh_run(
         record,
         checkpoint: Some(fresh.checkpoint),
         manifest: Some(manifest),
-        flow_source,
         flow_definition_json,
         flow_files,
     })

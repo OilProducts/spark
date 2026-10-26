@@ -11,24 +11,16 @@ const openGate = (name: string) => {
     writeFileSync(path.join(tmpRoot, 'gates', name), '')
 }
 const closeGates = () => rmSync(path.join(tmpRoot, 'gates'), { recursive: true, force: true })
-const flowYaml = `schema_version: "1"
-id: live-turn-smoke
-title: Live turn smoke
-nodes:
-  start:
-    kind: start
-    label: Start
-    config:
-      kind: start
-  done:
-    kind: exit
-    label: Done
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: done
-`
+const smokeFlow = {
+    schema_version: '1',
+    id: 'live-turn-smoke',
+    title: 'Live turn smoke',
+    nodes: {
+        start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
+        done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+    },
+    edges: [{ from: 'start', to: 'done' }],
+}
 
 test('a long chat turn keeps rendering live updates after it launches a flow partway through', async ({ page }) => {
     test.setTimeout(90_000)
@@ -39,7 +31,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const otherProject = path.join(tmpRoot, 'projects', 'live-turn-other')
     mkdirSync(otherProject, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: otherProject } })).ok()).toBe(true)
-    expect((await page.request.post('/attractor/api/flows', { data: { name: 'live-turn-smoke', content: flowYaml, project_path: projectPath } })).ok()).toBe(true)
+    expect((await page.request.post('/attractor/api/flows', { data: { name: 'live-turn-smoke', flow: smokeFlow, project_path: projectPath } })).ok()).toBe(true)
     await page.addInitScript(({ projectPath }) => {
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
     }, { projectPath })

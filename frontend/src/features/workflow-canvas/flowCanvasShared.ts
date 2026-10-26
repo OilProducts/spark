@@ -132,10 +132,6 @@ function shapeFromNodeAttrs(attrs: Record<string, unknown>): string {
     return NODE_KIND_TO_SHAPE[kind] ?? 'box'
 }
 
-export function normalizeLegacyDot(content: string): string {
-    return content.replace(/\blabel=label=/g, 'label=')
-}
-
 function buildHydratedNode(
     node: CanonicalFlowNode,
     index: number,
@@ -548,7 +544,6 @@ export function buildHydratedFlowGraph(
     flowName: string,
     preview: PreviewResponse,
     _uiDefaults: UiDefaults,
-    sourceYaml?: string,
     options?: BuildHydratedFlowGraphOptions,
 ): HydratedFlowGraph | null {
     if (!preview.graph) {
@@ -558,10 +553,7 @@ export function buildHydratedFlowGraph(
     const canonicalModel = buildCanonicalFlowModelFromPreviewGraph(
         flowName,
         preview.graph,
-        {
-            ...(sourceYaml !== undefined ? { rawYaml: sourceYaml } : {}),
-            flow: preview.flow ?? null,
-        },
+        { flow: preview.flow ?? null },
     )
     const nextFlowMetadata: FlowDefinitionMetadata = preview.graph.metadata ? { ...canonicalModel.flowMetadata } : {}
 

@@ -1622,9 +1622,16 @@ fn workflow_native_tracing_uses_saved_settings_and_retains_captured_choice() {
     fs::create_dir_all(&config_dir).unwrap();
     let core = config_dir.join("spark.toml");
     let capture = || read_execution_configuration(&config_dir, &ProcessEnvironment).unwrap();
-    let graph = attractor_core::FlowDefinition::from_yaml_str(
-        "schema_version: '1'\nid: trace\ntitle: Trace\nnodes:\n  task:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: Say hello\n    execution:\n      llm_provider: codex\n      llm_model: gpt-codex-test\n",
-    ).unwrap().to_runtime_dot_graph();
+    let graph = serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+        "schema_version": "1", "id": "trace", "title": "Trace",
+        "nodes": {"task": {
+            "kind": "agent_task",
+            "config": {"kind": "agent_task", "prompt": "Say hello"},
+            "execution": {"llm_provider": "codex", "llm_model": "gpt-codex-test"}
+        }}
+    }))
+    .unwrap()
+    .to_runtime_dot_graph();
     let execute = |name: &str,
                    configuration: &spark_common::settings::ExecutionConfiguration,
                    expected: bool| {

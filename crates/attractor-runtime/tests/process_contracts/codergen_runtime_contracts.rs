@@ -17,20 +17,21 @@ use unified_llm_adapter::{
 
 #[test]
 fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-goal: Ship
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Plan for $goal
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "goal": "Ship",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Plan for $goal"
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -62,24 +63,26 @@ nodes:
 
 #[test]
 fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-goal: Ship
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Summarize $goal
-    execution:
-      llm_provider: OpenAI
-      llm_model: gpt-runtime-text
-      reasoning_effort: FutureEffort
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "goal": "Ship",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Summarize $goal"
+                },
+                "execution": {
+                    "llm_provider": "OpenAI",
+                    "llm_model": "gpt-runtime-text",
+                    "reasoning_effort": "FutureEffort"
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -150,22 +153,24 @@ nodes:
 
 #[test]
 fn initial_context_persistence_failure_prevents_provider_execution() {
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Never submit this
-    execution:
-      llm_provider: OpenAI
-      llm_model: blocked-model
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Never submit this"
+                },
+                "execution": {
+                    "llm_provider": "OpenAI",
+                    "llm_model": "blocked-model"
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -194,25 +199,28 @@ nodes:
 
 #[test]
 fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_api() {
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Inspect with tools
-    execution:
-      llm_provider: openai-compatible
-      llm_model: gpt-runtime-agent
-    extensions:
-      codergen.requires_tools: true
-      codergen.requires_session_events: true
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Inspect with tools"
+                },
+                "execution": {
+                    "llm_provider": "openai-compatible",
+                    "llm_model": "gpt-runtime-agent"
+                },
+                "extensions": {
+                    "codergen.requires_tools": true,
+                    "codergen.requires_session_events": true
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -425,20 +433,21 @@ impl spark_agent_adapter::CodergenBackend for StreamingFakeBackend {
 
 #[test]
 fn live_sink_receives_prefix_and_execution_keeps_full_event_list() {
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-goal: Ship
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Plan for $goal
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "goal": "Ship",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Plan for $goal"
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -491,18 +500,16 @@ nodes:
 
 #[test]
 fn codergen_external_sink_wins_over_reconstructed_run_paths() {
-    let flow = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Ship it
-"#,
-    )
+    let flow = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": { "kind": "agent_task", "prompt": "Ship it" }
+            }
+        }
+    }))
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();
@@ -577,22 +584,24 @@ send({'type':'result','subtype':'success','is_error':False,'result':'Steered','s
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
-    let graph = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-title: G
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Implement it
-    execution:
-      llm_provider: claude-code
-      llm_model: test-model
-"#,
-    )
+    let graph = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "title": "G",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Implement it"
+                },
+                "execution": {
+                    "llm_provider": "claude-code",
+                    "llm_model": "test-model"
+                }
+            }
+        }
+    }))
     .expect("flow parses")
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
@@ -700,18 +709,16 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
 
 #[test]
 fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
-    let flow = FlowDefinition::from_yaml_str(
-        r#"
-schema_version: '1'
-id: g
-nodes:
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Ship it
-"#,
-    )
+    let flow = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "g",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": { "kind": "agent_task", "prompt": "Ship it" }
+            }
+        }
+    }))
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();

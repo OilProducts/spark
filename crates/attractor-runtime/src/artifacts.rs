@@ -392,9 +392,8 @@ fn artifact_media_type(path: &Path) -> String {
         .as_str()
     {
         "md" => "text/markdown",
-        "yaml" | "yml" => "text/yaml",
         "json" => "application/json",
-        "txt" => "text/plain",
+        "txt" | "yaml" | "yml" => "text/plain",
         "html" => "text/html",
         "svg" => "image/svg+xml",
         "xml" => "application/xml",

@@ -1,7 +1,7 @@
 import { useStore, type DiagnosticEntry } from "@/store"
 import { useMemo } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { generateFlowYaml } from "@/lib/flowYamlUtils"
+import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from "@/lib/canonicalFlowModel"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
@@ -163,6 +163,8 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const activeFlow = useStore((state) => state.activeFlow)
     const selectedNodeId = useStore((state) => state.selectedNodeId)
     const selectedEdgeId = useStore((state) => state.selectedEdgeId)
+    // The file view owns edits in Files mode; a structured save here would leave its file text stale.
+    const isFilesMode = useStore((state) => state.editorMode === 'files')
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId)
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId)
     const isNarrowViewport = useNarrowViewport()
@@ -185,12 +187,14 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const { scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName: activeFlow,
         debounceMs: INSPECTOR_SAVE_DEBOUNCE_MS,
-        buildContent: (snapshot, currentFlowName) => generateFlowYaml(
-            currentFlowName,
-            snapshot?.nodes || [],
-            snapshot?.edges || [],
-            flowMetadata,
-        ),
+        buildContent: (snapshot, currentFlowName) => ({
+            flow: buildFlowDefinitionFromCanonicalFlowModel(currentFlowName, buildCanonicalFlowModelFromEditorState(currentFlowName, {
+                nodes: snapshot?.nodes || [],
+                edges: snapshot?.edges || [],
+                flowMetadata,
+                flow: editorGraphBridgeRef?.current?.getFlow(),
+            })),
+        }),
     })
 
     const applyNodeVisualState = (node: Node, nextData: Record<string, unknown>) => {
@@ -512,7 +516,12 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                 <div className="text-xs font-semibold text-muted-foreground">{inspectorTitle}</div>
             </div>
 
-            <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+            {isFilesMode ? (
+                <p data-testid="inspector-files-mode-notice" className="px-4 pb-2 text-xs text-muted-foreground">
+                    Read-only while editing files. Switch to Structured to edit here.
+                </p>
+            ) : null}
+            <fieldset disabled={isFilesMode} className="m-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-0 p-0">
                 {showGraphInspector ? (
                     <GraphInspectorPanel />
                 ) : null}
@@ -567,7 +576,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         renderFieldDiagnostics={renderFieldDiagnostics}
                     />
                 ) : null}
-            </div>
+            </fieldset>
         </nav>
     )
 }
