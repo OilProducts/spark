@@ -197,12 +197,13 @@ fn bundled_flows_round_trip_through_the_directory_writer() {
             flows::starter_flow_files(&name).expect("files"),
             "{name}"
         );
-        // Converting the single-document YAML form and loading it again is lossless.
-        let yaml = attractor_dsl::flow_yaml(&flow).expect("yaml");
+        // The JSON interchange form, validated and written back as files, is lossless.
+        let json = serde_json::to_string(&flow).expect("json");
         let converted = temp.path().join("flows").join(&name);
         attractor_dsl::write_flow_dir(
             &converted,
-            &attractor_dsl::parse_flow_definition(&yaml).expect("parse"),
+            &attractor_dsl::validated_flow(serde_json::from_str(&json).expect("parse"))
+                .expect("valid"),
         )
         .expect("write");
         assert_eq!(

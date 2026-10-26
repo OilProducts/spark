@@ -8,44 +8,65 @@ use spark_http::build_app;
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn workspace_flow_list_detail_raw_and_validate_routes_layer_the_project_org() {
+async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_org() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let flow_content = r#"schema_version: '1'
-id: inspectable
-title: Inspectable Graph
-goal: Inspect graph behavior
-nodes:
-  start:
-    kind: start
-  human_review:
-    kind: human_gate
-    label: Human Review
-    config:
-      kind: human_gate
-      prompt: Review the result
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: human_review
-  - from: human_review
-    to: done
-"#;
-    write_flow(&settings, "ops/review/inspectable", flow_content);
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(
+        &settings,
+        "ops/review/inspectable",
+        json!({
+            "schema_version": "1",
+            "id": "inspectable",
+            "title": "Inspectable Graph",
+            "goal": "Inspect graph behavior",
+            "nodes": {
+                "start": {"kind": "start"},
+                "human_review": {
+                    "kind": "human_gate",
+                    "label": "Human Review",
+                    "config": {"kind": "human_gate", "prompt": "Review the result"}
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [
+                {"from": "start", "to": "human_review"},
+                {"from": "human_review", "to": "done"}
+            ]
+        }),
+    );
+    let inspectable = settings.bundled_dir().join("flows/ops/review/inspectable");
+    // Files are served as written, not re-serialized.
+    let flow_md = inspectable.join("flow.md");
+    let authored = format!(
+        "{}\n\n",
+        std::fs::read_to_string(&flow_md).expect("flow.md")
+    );
+    std::fs::write(&flow_md, &authored).expect("hand-edited flow.md");
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     // The project's copy of `shared` replaces the bundled one, with a lock.
     let project = temp.path().join("project");
     let org_flows = spark_common::project::org_dir(&project).join("flows");
-    attractor_dsl::write_flow_dir(
-        &org_flows.join("shared"),
-        &attractor_dsl::parse_flow_definition(&format!(
-            "{}execution_lock: {{ scope: project, key: integration }}\n",
-            simple_flow("shared").replace("title: shared", "title: Project Shared")
-        ))
-        .expect("valid flow"),
-    )
-    .expect("write org flow");
+    let mut project_shared = simple_flow("shared", "Project Shared");
+    project_shared["execution_lock"] = json!({"scope": "project", "key": "integration"});
+    write_flow_at(&org_flows.join("shared"), project_shared);
+    // A project flow whose node names a role that does not exist.
+    write_flow_at(
+        &org_flows.join("roleless"),
+        json!({
+            "schema_version": "1",
+            "id": "roleless",
+            "nodes": {
+                "start": {"kind": "start"},
+                "review": {
+                    "kind": "agent_task",
+                    "role": "nobody",
+                    "config": {"kind": "agent_task", "prompt": "Review."}
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [{"from": "start", "to": "review"}, {"from": "review", "to": "done"}]
+        }),
+    );
     let app = build_app(settings.clone());
     let query = format!("?project_path={}", project.display());
 
@@ -63,14 +84,27 @@ edges:
     )
     .await;
     assert_eq!(layered.0, StatusCode::OK);
-    assert_eq!(layered.1.as_array().expect("flows").len(), 2);
-    assert_eq!(layered.1[1]["name"], "shared");
-    assert_eq!(layered.1[1]["title"], "Project Shared");
+    let names: Vec<_> = layered
+        .1
+        .as_array()
+        .expect("flows")
+        .iter()
+        .map(|flow| flow["name"].clone())
+        .collect();
     assert_eq!(
-        layered.1[1]["execution_lock"],
+        names,
+        [
+            json!("ops/review/inspectable"),
+            json!("roleless"),
+            json!("shared")
+        ]
+    );
+    assert_eq!(layered.1[2]["title"], "Project Shared");
+    assert_eq!(
+        layered.1[2]["execution_lock"],
         json!({"scope": "project", "key": "integration", "conflict_policy": "queue"})
     );
-    assert!(layered.1[1].get("effective_launch_policy").is_none());
+    assert!(layered.1[2].get("effective_launch_policy").is_none());
 
     let detail = request_json(
         app.clone(),
@@ -83,25 +117,29 @@ edges:
     assert_eq!(detail.1["title"], "Inspectable Graph");
     assert_eq!(detail.1["features"]["has_human_gate"], true);
 
-    let raw = request_text(
+    let files = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable/raw",
+        "/workspace/api/flows/ops/review/inspectable/files",
         None,
     )
     .await;
-    assert_eq!(raw.0, StatusCode::OK);
-    assert!(raw.2.starts_with("text/yaml"));
-    assert_eq!(raw.3, Some("ops/review/inspectable".to_string()));
+    assert_eq!(files.0, StatusCode::OK, "{}", files.1);
+    assert!(files.2.starts_with("application/json"), "{}", files.2);
+    let read = |dir: &Path, name: &str| json!({"name": name, "content": std::fs::read_to_string(dir.join(name)).expect(name)});
     assert_eq!(
-        attractor_dsl::parse_flow_definition(&raw.1).expect("raw flow"),
-        attractor_dsl::read_flow_dir(
-            &settings
-                .bundled_dir()
-                .join("flows")
-                .join("ops/review/inspectable")
-        )
-        .expect("stored flow")
+        files.1,
+        json!({
+            "name": "ops/review/inspectable",
+            "layer": "bundled",
+            "path": inspectable.canonicalize().expect("canonical").to_string_lossy(),
+            "files": [
+                {"name": "flow.md", "content": authored},
+                read(&inspectable, "done.md"),
+                read(&inspectable, "human_review.md"),
+                read(&inspectable, "start.md"),
+            ]
+        })
     );
 
     let validation = request_json(
@@ -113,21 +151,87 @@ edges:
     .await;
     assert_eq!(validation.0, StatusCode::OK);
     assert_eq!(validation.1["name"], "ops/review/inspectable");
+    assert_eq!(
+        validation.1["path"],
+        json!(inspectable
+            .canonicalize()
+            .expect("canonical")
+            .to_string_lossy())
+    );
     assert_eq!(validation.1["status"], "ok");
 
-    let project_raw = request_text(
-        app,
+    let project_files = request_json(
+        app.clone(),
         "GET",
-        &format!("/workspace/api/flows/shared/raw{query}"),
+        &format!("/workspace/api/flows/shared/files{query}"),
         None,
     )
     .await;
-    assert_eq!(project_raw.0, StatusCode::OK);
-    assert!(
-        project_raw.1.contains("Project Shared"),
-        "{}",
-        project_raw.1
+    assert_eq!(project_files.0, StatusCode::OK, "{}", project_files.1);
+    let project_shared = org_flows.join("shared");
+    assert_eq!(project_files.1["name"], "shared");
+    assert_eq!(project_files.1["layer"], "org");
+    assert_eq!(
+        project_files.1["path"],
+        json!(project_shared
+            .canonicalize()
+            .expect("canonical")
+            .to_string_lossy())
     );
+    assert_eq!(
+        project_files.1["files"],
+        json!([
+            read(&project_shared, "flow.md"),
+            read(&project_shared, "done.md"),
+            read(&project_shared, "start.md"),
+        ])
+    );
+    assert!(project_files.1["files"][0]["content"]
+        .as_str()
+        .expect("content")
+        .contains("Project Shared"));
+    let bundled_files = request_json(
+        app.clone(),
+        "GET",
+        "/workspace/api/flows/shared/files",
+        None,
+    )
+    .await;
+    assert_eq!(bundled_files.1["layer"], "bundled");
+    assert!(!bundled_files.1.to_string().contains("Project Shared"));
+
+    let project_validation = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/flows/shared/validate{query}"),
+        None,
+    )
+    .await;
+    assert_eq!(project_validation.0, StatusCode::OK);
+    assert_eq!(project_validation.1["status"], "ok");
+    let roleless = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/flows/roleless/validate{query}"),
+        None,
+    )
+    .await;
+    assert_eq!(roleless.0, StatusCode::OK);
+    assert_ne!(roleless.1["status"], "ok", "{}", roleless.1);
+    assert!(roleless.1.to_string().contains("nobody"), "{}", roleless.1);
+
+    for uri in [
+        "/workspace/api/flows/missing/files".to_string(),
+        format!("/workspace/api/flows/missing/files{query}"),
+        "/workspace/api/flows/roleless/files".to_string(),
+    ] {
+        let missing = request_json(app.clone(), "GET", &uri, None).await;
+        assert_eq!(missing.0, StatusCode::NOT_FOUND, "{uri}: {}", missing.1);
+        assert!(missing.1["detail"]
+            .as_str()
+            .expect("detail")
+            .starts_with("Unknown flow: "));
+    }
 }
 
 #[tokio::test]
@@ -143,7 +247,7 @@ async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names()
     let escaped = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/../escape/raw",
+        "/workspace/api/flows/../escape/files",
         None,
     )
     .await;
@@ -168,8 +272,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir();
-    write_flow(&settings, "shared", &simple_flow("shared"));
-    write_flow(&settings, "plain", &simple_flow("plain"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
+    write_flow(&settings, "plain", simple_flow("plain", "plain"));
     let role = "---\ntype: Role\n---\n\nYou review.\n";
     std::fs::create_dir_all(bundled.join("roles")).expect("roles dir");
     std::fs::write(bundled.join("roles/reviewer.md"), role).expect("role");
@@ -195,27 +299,15 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     };
     // `shared` is copied unmodified, then bundled moves on; `local` is the
     // project's own and uses the bundled reviewer role.
-    let write_org_flow = |name: &str, content: &str| {
-        attractor_dsl::write_flow_dir(
-            &org.join("flows").join(name),
-            &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-        )
-        .expect("write org flow")
-    };
-    write_org_flow("shared", &simple_flow("shared"));
+    let write_org_flow =
+        |name: &str, flow: Value| write_flow_at(&org.join("flows").join(name), flow);
+    write_org_flow("shared", simple_flow("shared", "shared"));
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "Copy shared from bundled"]);
-    write_org_flow(
-        "local",
-        "schema_version: '1'\nid: local\ntitle: local\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    config:\n      kind: agent_task\n      prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
-    );
+    write_org_flow("local", reviewed_flow("local"));
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "Add local"]);
-    write_flow(
-        &settings,
-        "shared",
-        &simple_flow("shared").replace("title: shared", "title: Shared v2"),
-    );
+    write_flow(&settings, "shared", simple_flow("shared", "Shared v2"));
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
     std::fs::write(org.join("roles/helper.md"), role).expect("untracked role");
     let memory = org.join("memory/coordinator");
@@ -304,7 +396,7 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
         json!([{"name": "helper.md", "content": role, "status": "untracked"}])
     );
     // Copying shared again makes bundled match the first commit.
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let (_, same, _) = get(format!(
         "/workspace/api/org/item?{query}&kind=flow&name=shared"
     ))
@@ -321,7 +413,7 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     .await;
     assert_eq!(spaced["bundled_changed"], true);
     assert_ne!(spaced["bundled_diff"], "");
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
 
     let (status, history, _) = get(format!(
         "/workspace/api/org/history?{query}&path=flows/shared"
@@ -467,7 +559,7 @@ async fn a_retried_save_after_a_failed_copy_commit_keeps_the_pristine_copy() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let bundled = settings.bundled_dir().join("flows/shared/flow.md");
     let before = std::fs::read_to_string(&bundled).expect("bundled");
     let project = temp.path().join("project");
@@ -484,7 +576,10 @@ async fn a_retried_save_after_a_failed_copy_commit_keeps_the_pristine_copy() {
     let save = || {
         service.save_flow(attractor_api::SaveFlowRequest {
             name: "shared".to_string(),
-            content: simple_flow("shared").replace("title: shared", "title: Edited"),
+            flow: Some(
+                serde_json::from_value(simple_flow("shared", "Edited")).expect("flow definition"),
+            ),
+            files: None,
             project_path: Some(project.to_string_lossy().to_string()),
         })
     };
@@ -521,19 +616,12 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir();
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let outside = temp.path().join("outside");
     std::fs::create_dir_all(&outside).expect("outside");
     std::fs::write(outside.join("secret.md"), "secret\n").expect("secret");
     // An outside flow whose `review` node uses the reviewer role.
-    attractor_dsl::write_flow_dir(
-        &outside.join("flow"),
-        &attractor_dsl::parse_flow_definition(
-            "schema_version: '1'\nid: outside\ntitle: outside\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    config:\n      kind: agent_task\n      prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
-        )
-        .expect("valid flow"),
-    )
-    .expect("outside flow");
+    write_flow_at(&outside.join("flow"), reviewed_flow("outside"));
     std::fs::create_dir_all(bundled.join("roles")).expect("bundled roles");
     std::fs::write(
         bundled.join("roles/reviewer.md"),
@@ -628,7 +716,7 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
     use std::os::unix::fs::symlink;
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let outside = temp.path().join("outside");
     std::fs::create_dir_all(&outside).expect("outside");
     for (file, title) in [
@@ -694,7 +782,7 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
 async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "shared", &simple_flow("shared"));
+    write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let roles = settings.bundled_dir().join("roles");
     std::fs::create_dir_all(&roles).expect("roles");
     std::fs::write(
@@ -801,7 +889,7 @@ async fn request_text(
     method: &str,
     uri: &str,
     body: Option<&str>,
-) -> (StatusCode, String, String, Option<String>) {
+) -> (StatusCode, String, String) {
     let mut builder = Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
@@ -817,10 +905,6 @@ async fn request_text(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let flow_name = headers
-        .get("x-spark-flow-name")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body");
@@ -828,22 +912,48 @@ async fn request_text(
         status,
         String::from_utf8_lossy(&bytes).into_owned(),
         content_type,
-        flow_name,
     )
 }
 
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
+// ponytail: names here are load-bearing (org copies shadow bundled ones of
+// the same name), so flows are written by name rather than `install_flow`.
+fn write_flow(settings: &SparkSettings, name: &str, flow: Value) {
+    write_flow_at(&settings.bundled_dir().join("flows").join(name), flow);
 }
 
-fn simple_flow(id: &str) -> String {
-    format!(
-        "schema_version: '1'\nid: {id}\ntitle: {id}\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n"
-    )
+fn write_flow_at(dir: &Path, flow: Value) {
+    let flow = serde_json::from_value(flow).expect("flow definition JSON");
+    let flow = attractor_dsl::validated_flow(flow).expect("valid flow");
+    attractor_dsl::write_flow_dir(dir, &flow).expect("write flow");
+}
+
+fn simple_flow(id: &str, title: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "title": title,
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
+}
+
+/// A flow whose `review` node uses the reviewer role.
+fn reviewed_flow(id: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "title": id,
+        "nodes": {
+            "start": {"kind": "start"},
+            "review": {
+                "kind": "agent_task",
+                "role": "reviewer",
+                "config": {"kind": "agent_task", "prompt": "Review."}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "review"}, {"from": "review", "to": "done"}]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {

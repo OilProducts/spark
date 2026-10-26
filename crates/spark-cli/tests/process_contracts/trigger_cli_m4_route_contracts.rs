@@ -319,12 +319,16 @@ fn protected_definition(id: &str) -> TriggerDefinition {
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
-    let flow = attractor_dsl::parse_flow_definition(
-        "schema_version: '1'\nid: trigger-flow\ntitle: Trigger Flow\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
-    )
-    .expect("valid flow");
-    attractor_dsl::write_flow_dir(&settings.bundled_dir().join("flows").join(name), &flow)
-        .expect("write flow");
+    crate::write_flow_json(
+        &settings.bundled_dir().join("flows").join(name),
+        json!({
+            "schema_version": "1",
+            "id": "trigger-flow",
+            "title": "Trigger Flow",
+            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+            "edges": [{"from": "start", "to": "done"}],
+        }),
+    );
 }
 
 fn settings(root: &Path) -> SparkSettings {

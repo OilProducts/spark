@@ -45,11 +45,23 @@ export function pipelineJournalUrl(
     return `${attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/journal`)}${query ? `?${query}` : ''}`
 }
 
-export interface FlowPayloadResponse {
+export interface FlowFile {
     name: string
     content: string
-    layer?: 'org' | 'bundled'
 }
+
+export type FlowDefinitionPayload = Record<string, unknown>
+
+export interface FlowPayloadResponse {
+    name: string
+    layer?: 'org' | 'bundled'
+    /** The flow's files in directory order, `flow.md` first. */
+    files: FlowFile[]
+    flow: FlowDefinitionPayload
+}
+
+/** A save sends exactly one: the structured editor's flow, or edited files from the file view. */
+export type FlowSaveContent = { flow: FlowDefinitionPayload } | { files: FlowFile[] }
 
 export interface SaveFlowApiResponse {
     ok: boolean
@@ -390,12 +402,26 @@ export function parseFlowListResponse(payload: unknown, endpoint = '/attractor/a
     return [...payload]
 }
 
+function expectFlowFiles(value: unknown, endpoint: string): FlowFile[] {
+    if (!Array.isArray(value)) {
+        throw new ApiSchemaError(endpoint, 'Expected files to be an array.')
+    }
+    return value.map((entry) => {
+        const file = expectObjectRecord(entry, endpoint)
+        return {
+            name: expectString(file.name, endpoint, 'files.name'),
+            content: expectString(file.content, endpoint, 'files.content'),
+        }
+    })
+}
+
 export function parseFlowPayloadResponse(payload: unknown, endpoint = '/attractor/api/flows/{name}'): FlowPayloadResponse {
     const record = expectObjectRecord(payload, endpoint)
     return {
         name: typeof record.name === 'string' ? record.name : '',
-        content: expectString(record.content, endpoint, 'content'),
         layer: record.layer === 'org' || record.layer === 'bundled' ? record.layer : undefined,
+        files: expectFlowFiles(record.files, endpoint),
+        flow: expectObjectRecord(record.flow, endpoint),
     }
 }
 
@@ -886,7 +912,7 @@ export async function fetchFlowPayloadValidated(
 
 export async function saveFlowValidated(
     name: string,
-    content: string,
+    content: FlowSaveContent,
     projectPath: string | null,
 ): Promise<SaveFlowApiResponse> {
     const response = await fetch(attractorUrl('/api/flows'), {
@@ -894,8 +920,8 @@ export async function saveFlowValidated(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             name,
-            content,
             project_path: projectPath,
+            ...content,
         }),
     })
     let payload: unknown = null
@@ -916,8 +942,9 @@ export async function deleteFlowValidated(flowName: string, projectPath: string 
     await fetchJsonWithValidation(url, { method: 'DELETE' }, '/attractor/api/flows/{name}', () => undefined)
 }
 
+/** Previews `flow`, or with `null` the saved flow named by `options.flowName`. */
 export async function fetchPreviewValidated(
-    flowContent: string,
+    flow: FlowDefinitionPayload | null,
     init?: RequestInit,
     options?: PreviewRequestOptions,
 ): Promise<PreviewResponsePayload> {
@@ -927,9 +954,7 @@ export async function fetchPreviewValidated(
             'Content-Type': 'application/json',
         }
         : { 'Content-Type': 'application/json' }
-    const payload: Record<string, unknown> = {
-        flow_content: flowContent,
-    }
+    const payload: Record<string, unknown> = flow ? { flow } : {}
     if (typeof options?.flowName === 'string' && options.flowName.trim()) {
         payload.flow_name = options.flowName
     }

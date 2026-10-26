@@ -342,7 +342,7 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     assert!(model_response.status().is_success());
     let preference_response = client.patch(format!("{first_url}workspace/api/settings")).json(&serde_json::json!({
         "expected_revision": "absent", "section": "client_preferences",
-        "value": {"client_id": client_id, "preferences": {"editor_mode": "raw", "editor_sidebar_width": 400}}
+        "value": {"client_id": client_id, "preferences": {"editor_mode": "files", "editor_sidebar_width": 400}}
     })).send().unwrap();
     assert!(preference_response.status().is_success());
     // Keep the old listener open so the replacement necessarily gets a different port.
@@ -370,7 +370,7 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     );
     assert_eq!(
         preferences["preferences"]["effective"]["editor_mode"],
-        "raw"
+        "files"
     );
     let response: serde_json::Value = client
         .get(format!("{}workspace/api/settings", second.url()))

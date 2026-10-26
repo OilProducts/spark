@@ -7,4 +7,4 @@ mod flow_install;
 #[path = "process_contracts/trigger_cli_m4_route_contracts.rs"]
 mod trigger_cli_m4_route_contracts;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{install_flow, install_org_flow};
+pub(crate) use flow_install::{install_flow, install_org_flow, write_flow_json};

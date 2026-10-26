@@ -30,90 +30,92 @@ fn settings(root: &Path) -> SparkSettings {
 /// gate whose failure routes through a bounded counter and a diagnosis stage
 /// back to the implementer, with the counter failing the run once the fix
 /// budget is spent.
-fn fix_loop_flow(gate_command: &str) -> String {
-    format!(
-        concat!(
-            "schema_version: '1'\n",
-            "id: validate_fix_loop\n",
-            "title: Validate Fix Loop\n",
-            "nodes:\n",
-            "  start:\n",
-            "    kind: start\n",
-            "  prepare:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: printf '{{\"validation_attempts\":0}}'\n",
-            "      output_map:\n",
-            "        context.validation.attempts: validation_attempts\n",
-            "    contracts:\n",
-            "      writes_context:\n",
-            "      - context.validation.attempts\n",
-            "  implement:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: echo attempt >> attempts.txt\n",
-            "  validate:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: {gate}\n",
-            "  count_validate_attempt:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: |\n",
-            "        set -eu\n",
-            "        attempts=$((SPARK_VALIDATION_ATTEMPTS + 1))\n",
-            "        if [ \"$attempts\" -gt 3 ]; then\n",
-            "          echo \"validation gate failed ${{attempts}} times; fix budget (3 attempts) exhausted\" >&2\n",
-            "          exit 1\n",
-            "        fi\n",
-            "        printf '{{\"attempts\":%s}}' \"$attempts\"\n",
-            "      env_map:\n",
-            "        SPARK_VALIDATION_ATTEMPTS: context.validation.attempts\n",
-            "      output_map:\n",
-            "        context.validation.attempts: attempts\n",
-            "    contracts:\n",
-            "      writes_context:\n",
-            "      - context.validation.attempts\n",
-            "  diagnose_validation:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: printf '{{\"summary\":\"gate red\"}}'\n",
-            "      output_map:\n",
-            "        context.review.summary: summary\n",
-            "    contracts:\n",
-            "      writes_context:\n",
-            "      - context.review.summary\n",
-            "  done:\n",
-            "    kind: exit\n",
-            "edges:\n",
-            "- from: start\n",
-            "  to: prepare\n",
-            "- from: prepare\n",
-            "  to: implement\n",
-            "  condition: outcome=success\n",
-            "- from: implement\n",
-            "  to: validate\n",
-            "  condition: outcome=success\n",
-            "- from: validate\n",
-            "  to: done\n",
-            "  condition: outcome=success\n",
-            "- from: validate\n",
-            "  to: count_validate_attempt\n",
-            "  condition: outcome=fail\n",
-            "- from: count_validate_attempt\n",
-            "  to: diagnose_validation\n",
-            "  condition: outcome=success\n",
-            "- from: diagnose_validation\n",
-            "  to: implement\n",
-            "  condition: outcome=success\n",
-        ),
-        gate = gate_command,
-    )
+fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "validate_fix_loop",
+        "title": "Validate Fix Loop",
+        "nodes": {
+            "start": {"kind": "start"},
+            "prepare": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "printf '{\"validation_attempts\":0}'",
+                    "output_map": {
+                        "context.validation.attempts": "validation_attempts"
+                    }
+                },
+                "contracts": {"writes_context": ["context.validation.attempts"]}
+            },
+            "implement": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "echo attempt >> attempts.txt"
+                }
+            },
+            "validate": {
+                "kind": "tool",
+                "config": {"kind": "tool", "command": gate_command}
+            },
+            "count_validate_attempt": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "set -eu\nattempts=$((SPARK_VALIDATION_ATTEMPTS + 1))\nif [ \"$attempts\" -gt 3 ]; then\n  echo \"validation gate failed ${attempts} times; fix budget (3 attempts) exhausted\" >&2\n  exit 1\nfi\nprintf '{\"attempts\":%s}' \"$attempts\"\n",
+                    "env_map": {
+                        "SPARK_VALIDATION_ATTEMPTS": "context.validation.attempts"
+                    },
+                    "output_map": {"context.validation.attempts": "attempts"}
+                },
+                "contracts": {"writes_context": ["context.validation.attempts"]}
+            },
+            "diagnose_validation": {
+                "kind": "tool",
+                "config": {
+                    "kind": "tool",
+                    "command": "printf '{\"summary\":\"gate red\"}'",
+                    "output_map": {"context.review.summary": "summary"}
+                },
+                "contracts": {"writes_context": ["context.review.summary"]}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "prepare"},
+            {
+                "from": "prepare",
+                "to": "implement",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "implement",
+                "to": "validate",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "validate",
+                "to": "done",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "validate",
+                "to": "count_validate_attempt",
+                "condition": "outcome=fail"
+            },
+            {
+                "from": "count_validate_attempt",
+                "to": "diagnose_validation",
+                "condition": "outcome=success"
+            },
+            {
+                "from": "diagnose_validation",
+                "to": "implement",
+                "condition": "outcome=success"
+            }
+        ]
+    })
 }
 
 fn run_fix_loop_flow(gate_command: &str, run_id: &str) -> (serde_json::Value, SparkSettings) {
@@ -222,10 +224,16 @@ fn packaged_software_development_flows_validate_cleanly() {
             .expect("utf8");
         // The packaged assets are laid out like the bundled library.
         let roots = attractor_dsl::FlowRoots::new(flows.join("../.."), None);
-        let source = roots.read_named_flow_source(name).expect("read flow");
-        let preview = attractor_api::preview_named_flow_source(&roots, name, &source.content);
+        let preview = attractor_api::preview_with_roots(
+            attractor_api::PreviewRequest {
+                flow_name: Some(name.to_string()),
+                ..Default::default()
+            },
+            &roots,
+        );
         assert_eq!(
-            preview.status_code, 200,
+            (preview.status_code, &preview.body["status"]),
+            (200, &json!("ok")),
             "{name} failed validation: {:?}",
             preview.body,
         );

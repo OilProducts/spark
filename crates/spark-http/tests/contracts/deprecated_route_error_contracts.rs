@@ -177,29 +177,22 @@ fn sse_data_entries(body: &str) -> Vec<Value> {
         .collect()
 }
 
-fn simple_flow() -> String {
-    r#"
-schema_version: '1'
-id: api-inspect
-title: API Inspect
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    label: Task
-    config:
-      kind: agent_task
-      prompt: Write an inspection note
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-"#
-    .to_string()
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "api-inspect",
+        "title": "API Inspect",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Write an inspection note"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {

@@ -25,13 +25,11 @@ import {
   fetchPreviewValidated,
   fetchProjectBrowseValidated,
   fetchWorkspaceFlowListValidated,
-  fetchWorkspaceFlowRawValidated,
   fetchWorkspaceFlowValidated,
   parseConversationSnapshotResponse,
   parseFlowListResponse,
   parseFlowPayloadResponse,
   parseWorkspaceFlowListResponse,
-  parseWorkspaceFlowRawResponse,
   parseWorkspaceFlowResponse,
   parsePipelineGraphResponse,
   parseProjectBrowseResponse,
@@ -223,11 +221,6 @@ const renderLaunchPanelWithDialogs = (overrides?: Partial<LaunchPanelProps>) => 
   const props: LaunchPanelProps = {
     target: {
       flowName: 'contract-behavior.yaml',
-      loadFlowContent: async () => {
-        const response = await fetch('/attractor/api/flows/contract-behavior.yaml')
-        const payload = await response.json() as { content: string }
-        return payload.content
-      },
       previewSource: { kind: 'flow', flowName: 'contract-behavior.yaml' },
     },
     projectPath: '/tmp/project-contract-behavior',
@@ -377,7 +370,8 @@ describe('Frontend contract behavior', () => {
         if (url.includes('/attractor/api/flows/')) {
           return jsonResponse({
             name: 'contract-behavior.yaml',
-            content: 'digraph G { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }',
+            files: [],
+            flow: { id: 'contract_behavior' },
           })
         }
         if (url.includes('/graph-preview')) {
@@ -438,8 +432,12 @@ describe('Frontend contract behavior', () => {
   it('[CID:12.1.02] provides typed endpoint adapters with runtime schema validation for required JSON responses', () => {
     expect(parseFlowListResponse(['a.yaml', 'nested/b.yaml'])).toEqual(['a.yaml', 'nested/b.yaml'])
     expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
-    expect(parseFlowPayloadResponse({ content: 'digraph G {}', layer: 'org' })).toEqual({ name: '', content: 'digraph G {}', layer: 'org' })
+    const flowFiles = [{ name: 'flow.md', content: '---\nid: a\n---\n' }, { name: 'start.md', content: '---\ntype: start\n---\n' }]
+    expect(parseFlowPayloadResponse({ files: flowFiles, flow: { id: 'a' }, layer: 'org' }))
+      .toEqual({ name: '', files: flowFiles, flow: { id: 'a' }, layer: 'org' })
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
+    expect(() => parseFlowPayloadResponse({ files: [{ name: 'flow.md' }], flow: {} })).toThrow(ApiSchemaError)
+    expect(() => parseFlowPayloadResponse({ files: [], content: 'id: a' })).toThrow(ApiSchemaError)
     expect(parseWorkspaceFlowListResponse([
       {
         name: 'test-planning.yaml',
@@ -465,8 +463,6 @@ describe('Frontend contract behavior', () => {
       name: 'test-planning.yaml',
       execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' },
     })
-    expect(parseWorkspaceFlowRawResponse('digraph G {}')).toBe('digraph G {}')
-    expect(() => parseWorkspaceFlowRawResponse({})).toThrow(ApiSchemaError)
     expect(parsePreviewResponse({ graph: { nodes: [], edges: [] } }).status).toBe('ok')
     expect(() => parsePreviewResponse({ graph: { nodes: {} } })).toThrow(ApiSchemaError)
     expect(parsePipelineStatusResponse({
@@ -593,7 +589,7 @@ describe('Frontend contract behavior', () => {
           return jsonResponse(['alpha.yaml'])
         }
         if (url === '/attractor/api/flows/alpha%20flow.yaml?project_path=%2Ftmp%2Fproject%20one') {
-          return jsonResponse({ name: 'alpha flow.yaml', content: 'digraph G {}', layer: 'bundled' })
+          return jsonResponse({ name: 'alpha flow.yaml', files: [{ name: 'flow.md', content: '---\nid: alpha\n---\n' }], flow: { id: 'alpha' }, layer: 'bundled' })
         }
         if (url === '/workspace/api/flows?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse([
@@ -612,9 +608,6 @@ describe('Frontend contract behavior', () => {
             description: 'Run the alpha workflow.',
             execution_lock: null,
           })
-        }
-        if (url === '/workspace/api/flows/alpha%20flow.yaml/raw?project_path=%2Ftmp%2Fproject%20one') {
-          return new Response('digraph G {}', { status: 200 })
         }
         if (url === '/workspace/api/conversations/conversation%201?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse(conversationSnapshot({
@@ -641,7 +634,8 @@ describe('Frontend contract behavior', () => {
     await expect(fetchFlowListValidated(project)).resolves.toEqual(['alpha.yaml'])
     await expect(fetchFlowPayloadValidated('alpha flow.yaml', project)).resolves.toEqual({
       name: 'alpha flow.yaml',
-      content: 'digraph G {}',
+      files: [{ name: 'flow.md', content: '---\nid: alpha\n---\n' }],
+      flow: { id: 'alpha' },
       layer: 'bundled',
     })
     await expect(fetchWorkspaceFlowListValidated(project)).resolves.toMatchObject([
@@ -651,7 +645,6 @@ describe('Frontend contract behavior', () => {
       name: 'alpha flow.yaml',
       execution_lock: null,
     })
-    await expect(fetchWorkspaceFlowRawValidated('alpha flow.yaml', project)).resolves.toBe('digraph G {}')
     await expect(fetchConversationSnapshotValidated('conversation 1', '/tmp/project one')).resolves.toMatchObject({
       conversation_id: 'conversation 1',
       flow_run_requests: [],
@@ -662,7 +655,7 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async () => jsonResponse({ detail: 'Preview validation failed.' }, { status: 422 })),
     )
-    await expect(fetchPreviewValidated('digraph G {}')).rejects.toMatchObject<ApiHttpError>({
+    await expect(fetchPreviewValidated({ id: 'g' })).rejects.toMatchObject<ApiHttpError>({
       endpoint: '/attractor/preview',
       status: 422,
       detail: 'Preview validation failed.',
@@ -887,8 +880,8 @@ describe('Frontend contract behavior', () => {
   })
 
   it('[CID:12.2.03] keeps save paths non-destructive when save response shape drifts', async () => {
-    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
-    const editedYaml = 'digraph contract_behavior { start [label="Start"]; start -> end; end [label="End"]; }'
+    const initialFile = '---\nid: contract_behavior\n---\n'
+    const editedFile = '---\nid: contract_behavior\ntitle: Edited\n---\n'
     const previewPayload = {
       status: 'ok',
       graph: {
@@ -911,10 +904,12 @@ describe('Frontend contract behavior', () => {
       errors: [],
     }
     let previewRequestCount = 0
+    let flowRequestCount = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
       if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ content: initialYaml })
+        flowRequestCount += 1
+        return jsonResponse({ files: [{ name: 'flow.md', content: initialFile }], flow: { id: 'contract_behavior' } })
       }
       if (url.endsWith('/attractor/preview')) {
         previewRequestCount += 1
@@ -938,21 +933,21 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const rawEditor = await screen.findByTestId('raw-yaml-editor')
-    fireEvent.change(rawEditor, { target: { value: editedYaml } })
+    await waitFor(() => expect(previewRequestCount).toBe(1))
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    const fileEditor = await screen.findByTestId('flow-file-editor')
+    fireEvent.change(fileEditor, { target: { value: editedFile } })
 
-    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    await user.click(screen.getByTestId('flow-files-save'))
 
-    await waitFor(() => {
-      expect(screen.getByTestId('raw-yaml-editor')).toBeVisible()
-    })
-    expect((screen.getByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toBe(editedYaml)
-    expect(screen.getByTestId('raw-yaml-handoff-error')).toHaveTextContent(
+    expect(await screen.findByTestId('flow-files-error')).toHaveTextContent(
       'Flow save failed before confirmation from backend.',
     )
-    expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
-    expect(previewRequestCount).toBe(1)
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(editedFile)
+    expect(screen.getByTestId('flow-files-save')).toBeEnabled()
+    // One load, one reload on opening the file view, none after the refused save.
+    expect(flowRequestCount).toBe(2)
+    expect(previewRequestCount).toBe(2)
   })
 
   it('[CID:12.3.01] persists canonical active-project identity in UI client state', async () => {
@@ -1206,7 +1201,7 @@ describe('Frontend contract behavior', () => {
         })
       }
       if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ content: 'digraph BuildContract { start -> end }' })
+        return jsonResponse({ files: [], flow: { id: 'build_contract' } })
       }
       if (url.endsWith('/attractor/preview') && init?.method === 'POST') {
         return jsonResponse({
@@ -1683,7 +1678,8 @@ useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
         if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
             name: 'contract-behavior.yaml',
-            content: 'digraph G { start [label="Start"]; end [label="End"]; start -> end; }',
+            files: [],
+            flow: { id: 'contract_behavior' },
           })
         }
         if (url.endsWith('/attractor/preview')) {
@@ -1832,7 +1828,8 @@ useStore.getState().setRunsSelectedRunId(runId);
         if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
             name: 'contract-behavior.yaml',
-            content: 'digraph G { start -> end; }',
+            files: [],
+            flow: { id: 'contract_behavior' },
           })
         }
         if (url.endsWith('/attractor/preview')) {
@@ -4486,81 +4483,8 @@ useStore.getState().setRunsSelectedRunId(runId);
     )
   })
 
-  it('[CID:11.3.01] keeps raw-to-structured handoff single-flight during repeated transition clicks', async () => {
-    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
-    const previewPayload = {
-      graph: {
-        graph_attrs: {},
-        defaults: {
-          node: {},
-          edge: {},
-        },
-        subgraphs: [],
-        nodes: [
-          {
-            id: 'start',
-            label: 'Start',
-            shape: 'box',
-          },
-        ],
-        edges: [],
-      },
-      diagnostics: [],
-    }
-    const saveResolvers: Array<() => void> = []
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input)
-      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return Promise.resolve(jsonResponse({ content: initialYaml }))
-      }
-      if (url.endsWith('/attractor/preview')) {
-        return Promise.resolve(jsonResponse(previewPayload))
-      }
-      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        return new Promise<Response>((resolve) => {
-          saveResolvers.push(() => resolve(jsonResponse({ status: 'saved' })))
-        })
-      }
-      return Promise.resolve(jsonResponse({}, { status: 404 }))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const user = userEvent.setup()
-    renderWithFlowProvider(<Editor />)
-
-    await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    expect(await screen.findByTestId('raw-yaml-editor')).toBeVisible()
-    const previewCallsBeforeHandoff = fetchMock.mock.calls.filter(([input]) => {
-      const callUrl = requestUrl(input as RequestInfo | URL)
-      return callUrl.endsWith('/attractor/preview')
-    }).length
-
-    const structuredButton = screen.getByRole('button', { name: 'Structured' })
-    fireEvent.click(structuredButton)
-    fireEvent.click(structuredButton)
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
-    })
-
-    const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
-      const callUrl = requestUrl(input as RequestInfo | URL)
-      return callUrl.endsWith('/attractor/api/flows') && (requestInit as RequestInit | undefined)?.method === 'POST'
-    })
-    expect(saveCalls.length).toBeLessThanOrEqual(1)
-
-    const previewCallsAfterHandoff = fetchMock.mock.calls.filter(([input]) => {
-      const callUrl = requestUrl(input as RequestInfo | URL)
-      return callUrl.endsWith('/attractor/preview')
-    }).length
-    expect(previewCallsAfterHandoff - previewCallsBeforeHandoff).toBe(1)
-    expect(saveResolvers).toHaveLength(0)
-  })
-
-  it('[CID:11.3.04] saves raw YAML changes before returning to structured mode', async () => {
-    const initialYaml = 'schema_version: "1"\nid: contract_behavior\n'
-    const editedYaml = `${initialYaml}title: Contract Behavior\n`
+  it('[CID:11.3.04] switches between the structured and file views without writing the flow', async () => {
+    const flowFile = '---\nid: contract_behavior\n---\n'
     const previewPayload = {
       graph: {
         graph_attrs: {},
@@ -4583,7 +4507,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
       if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ content: initialYaml })
+        return jsonResponse({ files: [{ name: 'flow.md', content: flowFile }], flow: { id: 'contract_behavior' } })
       }
       if (url.endsWith('/attractor/preview')) {
         return jsonResponse(previewPayload)
@@ -4599,46 +4523,23 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const rawEditor = await screen.findByTestId('raw-yaml-editor')
-    fireEvent.change(rawEditor, { target: { value: editedYaml } })
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    expect(await screen.findByTestId('flow-file-editor')).toHaveValue(flowFile)
+    expect(screen.getByTestId('flow-files-save')).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
-
     await waitFor(() => {
-      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
     })
 
-    const saveCall = fetchMock.mock.calls.find(([input, requestInit]) => {
+    const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
       const callUrl = requestUrl(input as RequestInfo | URL)
       return callUrl.endsWith('/attractor/api/flows') && (requestInit as RequestInit | undefined)?.method === 'POST'
     })
-    expect(saveCall).toBeTruthy()
-
-    const [, requestInit] = saveCall!
-    const body = JSON.parse(String((requestInit as RequestInit).body))
-    expect(body).toEqual({
-      name: 'contract-behavior.yaml',
-      content: editedYaml,
-      project_path: '/tmp/project-contract-behavior',
-    })
+    expect(saveCalls).toHaveLength(0)
   })
 
-  it('[CID:11.3.02] preserves unsurfaced canonical data through structured and raw edit paths', async () => {
-    const initialYaml = `
-digraph contract_behavior {
-  graph [goal="Ship release", x_unsurfaced_graph="keep-graph"];
-  node [x_unsurfaced_node_default="keep-node-default"];
-  edge [x_unsurfaced_edge_default="keep-edge-default"];
-  subgraph cluster_review {
-    graph [x_unsurfaced_scope="keep-scope"];
-    start;
-  }
-  start [label="Start", shape=box, prompt="Plan release", x_unsurfaced_node="keep-node"];
-  end [label="End", shape=Msquare];
-  start -> end [label="next", x_unsurfaced_edge="keep-edge"];
-}
-`.trim()
+  it('[CID:11.3.02] preserves unsurfaced canonical data through structured edits and the file view', async () => {
     const previewPayload = {
       graph: {
         metadata: {
@@ -4692,17 +4593,17 @@ digraph contract_behavior {
       },
       diagnostics: [],
     }
-    const savedPayloads: Array<{ name: string; content: string }> = []
+    const savedPayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
       if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ content: initialYaml })
+        return jsonResponse({ files: [{ name: 'flow.md', content: '---\nid: contract_behavior\n---\n' }], flow: { id: 'contract_behavior' } })
       }
       if (url.endsWith('/attractor/preview')) {
         return jsonResponse(previewPayload)
       }
       if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        const payload = JSON.parse(String(init.body)) as { name: string; content: string }
+        const payload = JSON.parse(String(init.body)) as { name: string; flow: Record<string, unknown> }
         savedPayloads.push(payload)
         return jsonResponse({ status: 'saved' })
       }
@@ -4721,131 +4622,19 @@ digraph contract_behavior {
       expect(savedPayloads.length).toBeGreaterThanOrEqual(1)
     })
 
-    const structuredSave = savedPayloads[0].content
-    expect(structuredSave).toContain('x_unsurfaced_graph: keep-graph')
-    expect(structuredSave).toContain('x_unsurfaced_node: keep-node')
-    expect(structuredSave).toContain('x_unsurfaced_edge: keep-edge')
+    const structuredSave = JSON.stringify(savedPayloads[0].flow)
+    expect(structuredSave).toContain('"x_unsurfaced_graph":"keep-graph"')
+    expect(structuredSave).toContain('"x_unsurfaced_node":"keep-node"')
+    expect(structuredSave).toContain('"x_unsurfaced_edge":"keep-edge"')
 
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const rawEditor = await screen.findByTestId('raw-yaml-editor')
-    const rawDraftValue = (rawEditor as HTMLTextAreaElement).value
-    expect(rawDraftValue).toContain('x_unsurfaced_graph: keep-graph')
-    expect(rawDraftValue).toContain('x_unsurfaced_node: keep-node')
-    expect(rawDraftValue).toContain('x_unsurfaced_edge: keep-edge')
-
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    await screen.findByTestId('flow-file-editor')
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => {
-      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
     })
 
     expect(savedPayloads).toHaveLength(1)
-
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const roundTrippedRawEditor = await screen.findByTestId('raw-yaml-editor')
-    const roundTrippedRawValue = (roundTrippedRawEditor as HTMLTextAreaElement).value
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_graph: keep-graph')
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_node: keep-node')
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_edge: keep-edge')
-  })
-
-  it('[CID:11.3.03] blocks raw-to-structured handoff when raw edits conflict with structured assumptions', async () => {
-    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
-    const previewOkPayload = {
-      status: 'ok',
-      graph: {
-        graph_attrs: {},
-        defaults: {
-          node: {},
-          edge: {},
-        },
-        subgraphs: [],
-        nodes: [
-          {
-            id: 'start',
-            label: 'Start',
-            shape: 'box',
-          },
-        ],
-        edges: [],
-      },
-      diagnostics: [],
-      errors: [],
-    }
-    const previewConflictPayload = {
-      status: 'validation_error',
-      graph: {
-        graph_attrs: {},
-        defaults: {
-          node: {},
-          edge: {},
-        },
-        subgraphs: [],
-        nodes: [
-          {
-            id: 'start',
-            label: 'Start',
-            shape: 'box',
-          },
-        ],
-        edges: [
-          {
-            from: 'start',
-            to: 'missing',
-          },
-        ],
-      },
-      diagnostics: [
-        {
-          rule_id: 'edge_target_exists',
-          severity: 'error',
-          message: 'edge target does not exist',
-          edge: ['start', 'missing'],
-        },
-      ],
-      errors: [
-        {
-          rule_id: 'edge_target_exists',
-          severity: 'error',
-          message: 'edge target does not exist',
-          edge: ['start', 'missing'],
-        },
-      ],
-    }
-    let previewRequestCount = 0
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input)
-      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ content: initialYaml })
-      }
-      if (url.endsWith('/attractor/preview')) {
-        const payload = previewRequestCount === 0 ? previewOkPayload : previewConflictPayload
-        previewRequestCount += 1
-        return jsonResponse(payload)
-      }
-      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        return jsonResponse({ status: 'saved' })
-      }
-      return jsonResponse({}, { status: 404 })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const user = userEvent.setup()
-    renderWithFlowProvider(<Editor />)
-
-    await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'YAML' }))
-    const rawEditor = await screen.findByTestId('raw-yaml-editor')
-    fireEvent.change(rawEditor, { target: { value: 'digraph contract_behavior { start; start -> missing; }' } })
-
-    await user.click(screen.getByRole('button', { name: 'Structured' }))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('raw-yaml-editor')).toBeVisible()
-    })
-    expect(screen.getByTestId('raw-yaml-handoff-error')).toHaveTextContent(
-      'Raw YAML edit conflicts with structured mode assumptions.',
-    )
-    expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
   })
 
   it('[CID:11.4.01] renders generic extension key/value editors for non-core graph, node, and edge attrs', async () => {
@@ -4921,11 +4710,11 @@ digraph contract_behavior {
   })
 
   it('[CID:11.4.02] preserves unknown-valid attrs on graph save operations without pre-edit autosave', async () => {
-    const savePayloads: Array<{ name: string; content: string }> = []
+    const savePayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
       if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        const payload = JSON.parse(String(init.body)) as { name: string; content: string }
+        const payload = JSON.parse(String(init.body)) as { name: string; flow: Record<string, unknown> }
         savePayloads.push(payload)
         return jsonResponse({ status: 'saved' })
       }
@@ -4979,18 +4768,18 @@ digraph contract_behavior {
       expect(savePayloads).toHaveLength(1)
     })
 
-    const savedYaml = savePayloads[0].content
-    expect(savedYaml).toContain('x_graph_extension: graph-extra')
-    expect(savedYaml).toContain('x_node_extension: node-extra')
-    expect(savedYaml).toContain('x_edge_extension: edge-extra')
+    const savedFlow = JSON.stringify(savePayloads[0].flow)
+    expect(savedFlow).toContain('"x_graph_extension":"graph-extra"')
+    expect(savedFlow).toContain('"x_node_extension":"node-extra"')
+    expect(savedFlow).toContain('"x_edge_extension":"edge-extra"')
   })
 
   it('[CID:11.4.03] keeps numeric extension attrs stable across repeated structured edits', async () => {
-    const savePayloads: Array<{ name: string; content: string }> = []
+    const savePayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
       if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        const payload = JSON.parse(String(init.body)) as { name: string; content: string }
+        const payload = JSON.parse(String(init.body)) as { name: string; flow: Record<string, unknown> }
         savePayloads.push(payload)
         return jsonResponse({ status: 'saved' })
       }
@@ -5050,10 +4839,11 @@ digraph contract_behavior {
       expect(savePayloads).toHaveLength(2)
     })
 
-    savePayloads.forEach(({ content }) => {
-      expect(content).toContain('x_graph_extension_number: 17')
-      expect(content).toContain('x_node_extension_number: 23')
-      expect(content).toContain('x_edge_extension_number: 29')
+    savePayloads.forEach(({ flow }) => {
+      const content = JSON.stringify(flow)
+      expect(content).toContain('"x_graph_extension_number":17')
+      expect(content).toContain('"x_node_extension_number":23')
+      expect(content).toContain('"x_edge_extension_number":29')
     })
   })
 

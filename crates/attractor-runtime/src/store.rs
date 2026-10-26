@@ -44,7 +44,7 @@ impl std::fmt::Debug for RunStore {
     }
 }
 
-/// The run manifest beside `flow-source.yaml`: every file the run used.
+/// The run manifest beside `flow-definition.json`: every file the run used.
 pub const FLOW_FILES_MANIFEST: &str = "files.json";
 
 #[derive(Debug, Clone, Default)]
@@ -52,7 +52,6 @@ pub struct CreateRunRequest {
     pub record: RunRecord,
     pub checkpoint: Option<CheckpointState>,
     pub manifest: Option<RunManifest>,
-    pub flow_source: Option<String>,
     pub flow_definition_json: Option<String>,
     /// Every file the run's flow was assembled from, written as
     /// `artifacts/flow/files.json`.
@@ -255,8 +254,9 @@ impl RunStore {
 
     pub fn create_run(&self, request: CreateRunRequest) -> Result<RunRootPaths> {
         let mut record = request.record;
-        if let Some(source) = request.flow_source.as_deref() {
-            record.effective_flow_hash = Some(format!("{:x}", Sha256::digest(source.as_bytes())));
+        if let Some(definition_json) = request.flow_definition_json.as_deref() {
+            record.effective_flow_hash =
+                Some(format!("{:x}", Sha256::digest(definition_json.as_bytes())));
         }
         let project_path = if record.project_path.trim().is_empty() {
             record.working_directory.clone()
@@ -291,13 +291,6 @@ impl RunStore {
             JsonWriteOptions::default(),
         )?;
 
-        if let Some(source) = request.flow_source.as_deref() {
-            let flow_dir = paths.artifacts_dir().join("flow");
-            fs::create_dir_all(&flow_dir).map_err(|source| {
-                RuntimeStorageError::io("create flow artifacts", &flow_dir, source)
-            })?;
-            write_text_atomic(flow_dir.join("flow-source.yaml"), source)?;
-        }
         if let Some(definition_json) = request.flow_definition_json.as_deref() {
             let flow_dir = paths.artifacts_dir().join("flow");
             fs::create_dir_all(&flow_dir).map_err(|source| {
@@ -610,16 +603,25 @@ impl RunStore {
         }))
     }
 
-    pub fn read_graph_source(&self, paths: &RunRootPaths) -> Result<Option<String>> {
-        for relative in ["artifacts/flow/flow-source.yaml"] {
-            let path = paths.root.join(relative);
-            if path.is_file() {
-                return fs::read_to_string(&path)
-                    .map(Some)
-                    .map_err(|source| RuntimeStorageError::io("read flow source", path, source));
-            }
+    /// The run's flow snapshot (`artifacts/flow/flow-definition.json`),
+    /// validated and normalized; None when the run has none.
+    pub fn read_graph_source(&self, paths: &RunRootPaths) -> Result<Option<FlowDefinition>> {
+        let path = paths
+            .artifacts_dir()
+            .join("flow")
+            .join("flow-definition.json");
+        if !path.is_file() {
+            return Ok(None);
         }
-        Ok(None)
+        let text = fs::read_to_string(&path)
+            .map_err(|source| RuntimeStorageError::io("read flow definition", &path, source))?;
+        let flow = serde_json::from_str::<FlowDefinition>(&text)
+            .map_err(|source| RuntimeStorageError::Json { path, source })?;
+        attractor_dsl::validated_flow(flow)
+            .map(Some)
+            .map_err(|error| RuntimeStorageError::InvalidRuntimeGraph {
+                reason: error.to_string(),
+            })
     }
 
     pub fn materialize_result(

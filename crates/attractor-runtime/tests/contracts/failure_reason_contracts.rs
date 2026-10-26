@@ -2,22 +2,29 @@ use attractor_core::{FlowDefinition, LaunchContext, RunRecord};
 use attractor_runtime::{
     ExecuteRunRequest, ExecutionStart, PipelineExecutor, RunStore, RuntimeHandlerRunner,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
-const FLOW: &str = r#"schema_version: "1"
-id: failing
-title: Failing
-nodes:
-  start: {kind: start}
-  review:
-    kind: agent_task
-    config: {kind: agent_task, prompt: Review the change.}
-    contracts: {response: status_envelope}
-  done: {kind: exit}
-edges:
-- {from: start, to: review}
-- {from: review, to: done}
-"#;
+fn flow() -> FlowDefinition {
+    serde_json::from_value(json!({
+        "schema_version": "1",
+        "id": "failing",
+        "title": "Failing",
+        "nodes": {
+            "start": { "kind": "start" },
+            "review": {
+                "kind": "agent_task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Review the change."
+                },
+                "contracts": { "response": "status_envelope" }
+            },
+            "done": { "kind": "exit" }
+        },
+        "edges": [{ "from": "start", "to": "review" }, { "from": "review", "to": "done" }]
+    }))
+    .unwrap()
+}
 
 /// An agent that follows the structured-response contract it is given.
 struct ContractFollowingAgent;
@@ -57,8 +64,7 @@ fn failed_agent_visit_carries_the_agents_reason() {
         .execute(ExecuteRunRequest {
             store: store.clone(),
             record: RunRecord::new("run-fail", project.to_string_lossy()),
-            flow: FlowDefinition::from_yaml_str(FLOW).unwrap().normalize(),
-            flow_source: None,
+            flow: flow().normalize(),
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),

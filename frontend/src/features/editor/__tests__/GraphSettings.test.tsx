@@ -2,8 +2,12 @@ import { chooseModel, customModel, chooseEffort, openPicker } from '@/components
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
-import { buildCanonicalFlowModelFromPreviewGraph } from '@/lib/canonicalFlowModel'
-import { generateFlowYaml } from '@/lib/flowYamlUtils'
+import {
+  buildCanonicalFlowModelFromEditorState,
+  buildCanonicalFlowModelFromPreviewGraph,
+  buildFlowDefinitionFromCanonicalFlowModel,
+  type CanonicalFlowDefinition,
+} from '@/lib/canonicalFlowModel'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -12,7 +16,16 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const TEST_GRAPH_FLOW = 'test-graph.yaml'
+const TEST_GRAPH_FLOW = 'test-graph'
+const buildFlow = (
+  nodes: Parameters<typeof buildCanonicalFlowModelFromEditorState>[1]['nodes'],
+  edges: Parameters<typeof buildCanonicalFlowModelFromEditorState>[1]['edges'],
+  flowMetadata: Parameters<typeof buildCanonicalFlowModelFromEditorState>[1]['flowMetadata'],
+  flow: CanonicalFlowDefinition | null = null,
+) => buildFlowDefinitionFromCanonicalFlowModel(
+  TEST_GRAPH_FLOW,
+  buildCanonicalFlowModelFromEditorState(TEST_GRAPH_FLOW, { nodes, edges, flowMetadata, flow }),
+)
 let serverModels = { provider: 'openai' as string | null, llm_profile: null as string | null, model: 'gpt-5.3' as string | null, reasoning_effort: 'high' as string | null }
 let settingsRevision = 1
 
@@ -246,7 +259,7 @@ describe('Graph and settings behavior', () => {
     wrapWithFlowProvider(<GraphSettings inline />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from YAML output.')
+    expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
     expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
@@ -295,13 +308,13 @@ describe('Graph and settings behavior', () => {
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
       expect(request).toBeDefined()
-      const { content } = JSON.parse(String(request![1]?.body))
-      const nodeYaml = content.slice(content.indexOf('\nnodes:'))
-      expect(nodeYaml).toContain('\nnodes:\n  review:')
-      if (expectedThinking) expect(nodeYaml).toContain(`thinking: ${expectedThinking}`)
-      else expect(nodeYaml).not.toContain('thinking:')
-      if (expectedBudget === null) expect(nodeYaml).not.toContain('thinking_budget_tokens:')
-      else expect(nodeYaml).toContain(`thinking_budget_tokens: ${expectedBudget}`)
+      const { flow } = JSON.parse(String(request![1]?.body))
+      expect(Object.keys(flow.nodes)).toEqual(['review'])
+      const review = JSON.stringify(flow.nodes.review)
+      if (expectedThinking) expect(review).toContain(`"thinking":"${expectedThinking}"`)
+      else expect(review).not.toContain('"thinking"')
+      if (expectedBudget === null) expect(review).not.toContain('"thinking_budget_tokens"')
+      else expect(review).toContain(`"thinking_budget_tokens":${expectedBudget}`)
     })
   })
 
@@ -329,9 +342,9 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByText('title')).not.toBeInTheDocument()
     expect(screen.queryByText('description')).not.toBeInTheDocument()
 
-    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata)
-    expect(yaml).toContain('title: "Implement From Plan File"')
-    expect(yaml).toContain('description: "Snapshot a plan file, implement it, and iterate until complete."')
+    const flow = buildFlow([], [], useStore.getState().flowMetadata)
+    expect(flow.title).toBe('Implement From Plan File')
+    expect(flow.description).toBe('Snapshot a plan file, implement it, and iterate until complete.')
   })
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {
@@ -364,9 +377,8 @@ describe('Graph and settings behavior', () => {
       ]),
     )
 
-    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata)
-    expect(yaml).toContain('inputs:')
-    expect(yaml).toContain('key: context.request.acceptance_criteria')
+    const flow = buildFlow([], [], useStore.getState().flowMetadata)
+    expect(flow.inputs).toEqual([expect.objectContaining({ key: 'context.request.acceptance_criteria' })])
   })
 
   it('authors FlowDefinition defaults without DOT defaults or subgraph payloads', async () => {
@@ -382,18 +394,15 @@ describe('Graph and settings behavior', () => {
     await user.type(screen.getByPlaceholderText('full'), 'summary:high')
 
     const state = useStore.getState()
-    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], state.flowMetadata)
-    expect(yaml).toContain('schema_version: "1.0"')
-    expect(yaml).toContain('defaults:')
-    expect(yaml).toContain('max_retries: 3')
-    expect(yaml).toContain('fidelity: summary:high')
-    expect(yaml).not.toContain('legacy default prompt')
-    expect(yaml).not.toContain('cluster_legacy')
+    const flow = buildFlow([], [], state.flowMetadata)
+    expect(flow.schema_version).toBe('1.0')
+    expect(flow.defaults).toMatchObject({ max_retries: 3, fidelity: 'summary:high' })
+    expect(JSON.stringify(flow)).not.toContain('legacy default prompt')
+    expect(JSON.stringify(flow)).not.toContain('cluster_legacy')
   })
 
-  it('does not derive FlowDefinition node kind or YAML metadata from DOT shape/type attrs', () => {
-    const yaml = generateFlowYaml(
-      TEST_GRAPH_FLOW,
+  it('does not derive FlowDefinition node kind or metadata from DOT shape/type attrs', () => {
+    const flow = buildFlow(
       [
         {
           id: 'review',
@@ -409,11 +418,12 @@ describe('Graph and settings behavior', () => {
       {},
     )
 
-    expect(yaml).toContain('kind: agent_task')
-    expect(yaml).not.toContain('human_gate')
-    expect(yaml).not.toContain('wait.human')
-    expect(yaml).not.toContain('shape:')
-    expect(yaml).not.toContain('type:')
+    const review = JSON.stringify((flow.nodes as Record<string, unknown>).review)
+    expect(review).toContain('"kind":"agent_task"')
+    expect(review).not.toContain('human_gate')
+    expect(review).not.toContain('wait.human')
+    expect(review).not.toContain('"shape"')
+    expect(review).not.toContain('"type"')
   })
 
   it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {
@@ -456,14 +466,13 @@ describe('Graph and settings behavior', () => {
 
     await user.type(screen.getByLabelText('Execution Lock Key'), 'integration')
     expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
-    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata, { flow: null })
-    expect(yaml).toContain('execution_lock:\n  scope: project\n  key: integration\n  conflict_policy: queue')
+    expect(buildFlow([], [], useStore.getState().flowMetadata).execution_lock)
+      .toEqual({ scope: 'project', key: 'integration', conflict_policy: 'queue' })
 
     await user.clear(screen.getByLabelText('Execution Lock Key'))
     const base = { execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' } }
-    expect(generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata, { flow: base }))
-      .not.toContain('execution_lock')
-    expect(generateFlowYaml(TEST_GRAPH_FLOW, [], [], {}, { flow: base })).toContain('key: integration')
+    expect(buildFlow([], [], useStore.getState().flowMetadata, base).execution_lock).toBeUndefined()
+    expect(buildFlow([], [], {}, base).execution_lock).toEqual(base.execution_lock)
     expect(buildCanonicalFlowModelFromPreviewGraph('g', { nodes: [], edges: [] }, { flow: base }).flowMetadata.execution_lock)
       .toBe('integration')
 

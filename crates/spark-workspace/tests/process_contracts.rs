@@ -9,4 +9,4 @@ mod test_support;
 #[path = "process_contracts/utility_contracts.rs"]
 mod utility_contracts;
 #[allow(unused_imports)]
-pub(crate) use flow_install::{install_flow, install_org_flow};
+pub(crate) use flow_install::{install_flow, install_named_flow, install_org_flow};

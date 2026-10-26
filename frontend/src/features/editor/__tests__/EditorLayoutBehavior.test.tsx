@@ -296,9 +296,10 @@ const queueDeferredRouterResponse = () => {
 const usePreviewMap = (previews: Record<string, EditorPreviewResponse>) => {
   vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
     name: flowName,
-    content: flowName,
+    files: [],
+    flow: { id: flowName },
   }))
-  vi.mocked(loadEditorPreview).mockImplementation(async (_dot: string, _init, options) => {
+  vi.mocked(loadEditorPreview).mockImplementation(async (_flow, _init, options) => {
     const flowName = options?.flowName ?? 'unknown.dot'
     const preview = previews[flowName]
     if (!preview) {
@@ -556,9 +557,10 @@ describe('Editor layout behavior', () => {
     let preview = buildPreview(['a', 'b'], [])
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
       name: flowName,
-      content: flowName,
+      files: [],
+      flow: { id: flowName },
     }))
-    vi.mocked(loadEditorPreview).mockImplementation(async (_dot: string, _init, options) => {
+    vi.mocked(loadEditorPreview).mockImplementation(async (_flow, _init, options) => {
       const flowName = options?.flowName ?? 'unknown.dot'
       if (flowName !== 'flow-a.dot') {
         throw new Error(`Unexpected preview request for ${flowName}`)
@@ -727,9 +729,10 @@ describe('Editor layout behavior', () => {
     window.localStorage.setItem(storageKeyFor('flow-a.dot'), JSON.stringify(parentLayout))
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
       name: flowName,
-      content: flowName,
+      files: [],
+      flow: { id: flowName },
     }))
-    vi.mocked(loadEditorPreview).mockImplementation(async (_dot: string, _init, options) => {
+    vi.mocked(loadEditorPreview).mockImplementation(async (_flow, _init, options) => {
       const flowName = options?.flowName ?? 'unknown.dot'
       if (flowName !== 'flow-a.dot') {
         throw new Error(`Unexpected preview request for ${flowName}`)

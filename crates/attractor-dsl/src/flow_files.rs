@@ -162,6 +162,24 @@ pub fn read_flow_dir_texts(dir: &Path) -> Result<BTreeMap<String, String>, FlowS
     Ok(files)
 }
 
+/// One file of a flow directory, with its exact text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowFileText {
+    pub name: String,
+    pub content: String,
+}
+
+/// A flow directory's files as people see them: `flow.md` first, then the
+/// node files by name.
+pub fn flow_file_list(texts: BTreeMap<String, String>) -> Vec<FlowFileText> {
+    let mut files = texts
+        .into_iter()
+        .map(|(name, content)| FlowFileText { name, content })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|file| file.name != FLOW_FILE);
+    files
+}
+
 /// Assembles `flow.md` and node files (file name -> text) into a validated,
 /// normalized flow.
 pub fn assemble_flow_files(
@@ -236,18 +254,8 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
         .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
     fs::create_dir_all(dir).map_err(|error| write_error(dir, error))?;
-    let temp_dir = dir.parent().unwrap_or(dir);
-    let dir_name = dir
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
     for name in &changed {
-        let path = dir.join(name);
-        // The temp file sits beside the flow directory, never inside it, so
-        // readers see no extra entries.
-        let temp = temp_dir.join(format!(".{dir_name}.{name}.{}.tmp", std::process::id()));
-        fs::write(&temp, &files[name]).map_err(|error| write_error(&temp, error))?;
-        fs::rename(&temp, &path).map_err(|error| write_error(&path, error))?;
+        write_file_atomic(dir, name, &files[name])?;
     }
     for entry in fs::read_dir(dir).map_err(|error| read_error(dir, error))? {
         let entry = entry.map_err(|error| read_error(dir, error))?;
@@ -262,6 +270,33 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
         }
     }
     Ok(changed)
+}
+
+/// Writes `files` into the flow directory `dir` exactly as given, each
+/// atomically; other files are untouched. Callers validate the result first.
+pub fn write_flow_files(dir: &Path, files: &[FlowFileText]) -> Result<(), FlowSourceError> {
+    let _guard = FLOW_DIR_LOCK
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    files
+        .iter()
+        .try_for_each(|file| write_file_atomic(dir, &file.name, &file.content))
+}
+
+fn write_file_atomic(dir: &Path, name: &str, text: &str) -> Result<(), FlowSourceError> {
+    let path = dir.join(name);
+    // The temp file sits beside the flow directory, never inside it, so
+    // readers see no extra entries.
+    let dir_name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let temp = dir
+        .parent()
+        .unwrap_or(dir)
+        .join(format!(".{dir_name}.{name}.{}.tmp", std::process::id()));
+    fs::write(&temp, text).map_err(|error| write_error(&temp, error))?;
+    fs::rename(&temp, &path).map_err(|error| write_error(&path, error))
 }
 
 /// A flow loaded for a run: the resolved form runs execute, and the manifest

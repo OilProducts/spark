@@ -16,7 +16,7 @@ import {
 } from '@/lib/workflowNodeShape'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { generateFlowYaml } from '@/lib/flowYamlUtils'
+import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
 import { useEditorGraphBridgeRef } from '@/features/editor/EditorGraphBridgeContext'
 import { statusToneClassName } from '@/features/runs/model/shared'
 
@@ -247,8 +247,13 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         })
 
         if (updatedNodes.length > 0) {
-            const yaml = generateFlowYaml(flowName, updatedNodes, readEdges(), flowMetadata)
-            void saveFlowContent(flowName, yaml)
+            const flow = buildFlowDefinitionFromCanonicalFlowModel(flowName, buildCanonicalFlowModelFromEditorState(flowName, {
+                nodes: updatedNodes,
+                edges: readEdges(),
+                flowMetadata,
+                flow: editorGraphBridgeRef?.current?.getFlow(),
+            }))
+            void saveFlowContent(flowName, { flow })
         }
     }
 

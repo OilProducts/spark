@@ -9,6 +9,8 @@ import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const DEMO_FLOW = { flow: { schema_version: '1.0', id: 'demo', nodes: {}, edges: [] } }
+
 const resetSaveState = () => {
   useStore.setState((state) => ({
     ...state,
@@ -50,18 +52,18 @@ describe('Editor save state behavior', () => {
         ),
     )
 
-    const parseSave = await saveFlowContent('demo.yaml', 'nodes: [')
+    const parseSave = await saveFlowContent('demo', { files: [{ name: 'flow.md', content: '---\nid: [\n---\n' }] })
     expect(parseSave).toBe(false)
     let saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
     expect(saveState.saveErrorKind).toBe('parse_error')
-    expect(saveState.saveErrorMessage).toContain('Save blocked by YAML parse error')
+    expect(saveState.saveErrorMessage).toContain('Save blocked by a flow parse error')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Fix YAML syntax issues in Raw YAML mode, then save again.',
+      message: 'Fix the flow file syntax in the Files view, then save again.',
       allowRetry: false,
     })
 
-    const validationSave = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
+    const validationSave = await saveFlowContent('demo', DEMO_FLOW)
     expect(validationSave).toBe(false)
     saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
@@ -76,7 +78,7 @@ describe('Editor save state behavior', () => {
   it('waits for in-flight saves to settle', async () => {
     let respond!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
-    void saveFlowContent('demo', 'schema_version: "1"\nid: demo\n')
+    void saveFlowContent('demo', DEMO_FLOW)
     let settled = false
     const waited = waitForFlowSaves().then(() => { settled = true })
     await Promise.resolve()
@@ -100,7 +102,7 @@ describe('Editor save state behavior', () => {
         ),
     )
 
-    const firstAttempt = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
+    const firstAttempt = await saveFlowContent('demo', DEMO_FLOW)
     expect(firstAttempt).toBe(false)
     let saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
@@ -118,7 +120,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveErrorKind).toBeNull()
   })
 
-  it('sends YAML content and the active project without semantic-equivalence options', async () => {
+  it('sends the flow as JSON with the active project', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'saved' }), {
         status: 200,
@@ -128,15 +130,15 @@ describe('Editor save state behavior', () => {
     vi.stubGlobal('fetch', fetchMock)
     useStore.setState({ activeProjectPath: '/tmp/project-a' })
 
-    const saved = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
+    const saved = await saveFlowContent('demo', DEMO_FLOW)
     expect(saved).toBe(true)
 
     const [, requestInit] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((requestInit as RequestInit).body))
     expect(body).toEqual({
-      name: 'demo.yaml',
-      content: 'schema_version: "1"\nid: demo\n',
+      name: 'demo',
       project_path: '/tmp/project-a',
+      ...DEMO_FLOW,
     })
   })
 
@@ -144,9 +146,9 @@ describe('Editor save state behavior', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    primeFlowSaveBaseline('demo.yaml', 'schema_version: "1"\nid: demo\n')
+    primeFlowSaveBaseline('demo', DEMO_FLOW)
 
-    const saved = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
+    const saved = await saveFlowContent('demo', DEMO_FLOW)
     expect(saved).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
 

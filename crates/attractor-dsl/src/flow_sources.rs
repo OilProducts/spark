@@ -20,7 +20,6 @@ pub struct FlowSourceError {
 pub struct NamedFlowSource {
     pub name: String,
     pub path: PathBuf,
-    pub content: String,
     pub flow: FlowDefinition,
 }
 
@@ -178,7 +177,6 @@ impl FlowRoots {
     }
 
     /// The named flow in its authored form (roles referenced, not merged).
-    /// The named flow in its authored form (roles referenced, not merged).
     pub fn read_named_flow_source(
         &self,
         flow_name: &str,
@@ -188,7 +186,6 @@ impl FlowRoots {
         Ok(NamedFlowSource {
             name: resolved.name,
             path: resolved.path,
-            content: flow_yaml(&flow)?,
             flow,
         })
     }
@@ -321,9 +318,10 @@ fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
         .collect())
 }
 
-pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
-    let flow = FlowDefinition::from_yaml_str(source).map_err(flow_definition_error)?;
-    validate_flow_definition(&flow).map_err(flow_definition_error)?;
+/// A flow received as JSON (an editor save, a preview, a run snapshot),
+/// validated and normalized.
+pub fn validated_flow(flow: FlowDefinition) -> Result<FlowDefinition, FlowSourceError> {
+    validate_flow_definition(&flow)?;
     Ok(flow.normalize())
 }
 
@@ -358,31 +356,11 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
     Ok(())
 }
 
-pub fn flow_yaml(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
-    serde_yaml::to_string(flow).map_err(|source| {
-        FlowSourceError::new(500, format!("Unable to serialize flow YAML: {source}"))
-    })
-}
-
-pub fn canonicalize_flow_yaml(source: &str) -> Result<String, FlowSourceError> {
-    let flow = parse_flow_definition(source)?;
-    serde_yaml::to_string(&flow).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to serialize canonical flow YAML: {source}"),
-        )
-    })
-}
-
 fn path_safety_error() -> FlowSourceError {
     FlowSourceError::new(
         400,
         "Flow name must be a relative path inside the flows directory.",
     )
-}
-
-fn flow_definition_error(error: FlowDefinitionError) -> FlowSourceError {
-    error.into()
 }
 
 impl From<FlowDefinitionError> for FlowSourceError {

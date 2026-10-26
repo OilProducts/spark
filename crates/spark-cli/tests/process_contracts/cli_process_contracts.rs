@@ -48,13 +48,13 @@ fn process_help_matches_top_level_contract() {
 }
 
 #[test]
-fn process_flow_validate_file_observes_stdout_json() {
+fn process_flow_validate_dir_observes_stdout_json() {
     let temp_dir = temp_dir("process-validate");
-    let flow_path = temp_dir.join("valid-flow.yaml");
-    fs::write(&flow_path, valid_flow_source()).expect("write flow");
+    let flow_path = temp_dir.join("valid-flow");
+    crate::write_flow_json(&flow_path, valid_flow());
 
     let output = Command::new(spark_bin())
-        .args(["flow", "validate", "--file"])
+        .args(["flow", "validate", "--dir"])
         .arg(&flow_path)
         .env_clear()
         .env("HOME", temp_dir.to_string_lossy().to_string())
@@ -64,7 +64,7 @@ fn process_flow_validate_file_observes_stdout_json() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout is validation JSON");
-    assert_eq!(payload["name"], "valid-flow.yaml");
+    assert_eq!(payload["name"], "valid-flow");
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
     let _ = fs::remove_dir_all(temp_dir);
@@ -75,16 +75,12 @@ fn process_flow_validate_dir_resolves_referenced_roles() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let flow_dir = temp.path().join("reviewed");
-    let flow =
-        valid_flow_source().replace("    label: Task\n", "    label: Task\n    role: persona\n");
-    attractor_dsl::write_flow_dir(
-        &flow_dir,
-        &attractor_dsl::parse_flow_definition(&flow).expect("flow"),
-    )
-    .expect("write flow");
+    let mut flow = valid_flow();
+    flow["nodes"]["task"]["role"] = "persona".into();
+    crate::write_flow_json(&flow_dir, flow);
     let validate = || -> Value {
         let output = Command::new(spark_bin())
-            .args(["flow", "validate", "--file"])
+            .args(["flow", "validate", "--dir"])
             .arg(&flow_dir)
             .env_clear()
             .env("HOME", temp.path())
@@ -161,9 +157,9 @@ fn process_flow_list_text_executes_http_and_renders_rows() {
 }
 
 #[test]
-fn process_flow_get_wraps_raw_response_as_json() {
-    let flow_yaml = "schema_version: \"1\"\nid: implement_change_request\nnodes: {}\nedges: []\n";
-    let (base_url, requests) = serve_once(HttpResponse::text(200, flow_yaml));
+fn process_flow_get_json_prints_files_response() {
+    let files = r#"{"name":"software-development/implement-change-request","layer":"bundled","path":"/spark/bundled/flows/software-development/implement-change-request","files":[{"name":"flow.md","content":"---\nid: implement_change_request\n---\n"}]}"#;
+    let (base_url, requests) = serve_once(HttpResponse::json(200, files));
 
     let output = Command::new(spark_bin())
         .args([
@@ -171,6 +167,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             "get",
             "--flow",
             "software-development/implement-change-request",
+            "--json",
             "--base-url",
             base_url.as_str(),
         ])
@@ -181,17 +178,13 @@ fn process_flow_get_wraps_raw_response_as_json() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout json");
-    assert_eq!(
-        payload["name"],
-        "software-development/implement-change-request"
-    );
-    assert_eq!(payload["content"], flow_yaml);
+    assert_eq!(payload, serde_json::from_str::<Value>(files).unwrap());
     assert_eq!(
         requests
             .recv_timeout(Duration::from_secs(2))
             .expect("request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/raw"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/files"
     );
 }
 
@@ -403,14 +396,6 @@ impl HttpResponse {
             body: body.into(),
         }
     }
-
-    fn text(status: u16, body: impl Into<String>) -> Self {
-        Self {
-            status,
-            content_type: "text/plain; charset=utf-8",
-            body: body.into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,8 +495,22 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
-fn valid_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
+fn valid_flow() -> Value {
+    serde_json::json!({
+        "schema_version": "1",
+        "id": "workflow",
+        "title": "Workflow",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Do work"},
+            },
+            "done": {"kind": "exit"},
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
+    })
 }
 
 #[test]
@@ -571,20 +570,24 @@ fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence
 }
 
 #[test]
-fn process_flow_validate_file_resolves_roles_through_the_files_org() {
+fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project = temp.path().join("project");
     let org = project.join(".spark/agent-org");
     let flow_dir = org.join("flows/team/work");
-    attractor_dsl::write_flow_dir(
+    crate::write_flow_json(
         &flow_dir,
-        &attractor_dsl::parse_flow_definition(
-            "id: work\nnodes:\n  start: {kind: start}\n  task: {kind: agent_task, role: reviewer, prompt: Review.}\n  done: {kind: exit}\nedges:\n  - {from: start, to: task}\n  - {from: task, to: done}\n",
-        )
-        .expect("flow"),
-    )
-    .expect("write flow");
+        serde_json::json!({
+            "id": "work",
+            "nodes": {
+                "start": {"kind": "start"},
+                "task": {"kind": "agent_task", "role": "reviewer", "prompt": "Review."},
+                "done": {"kind": "exit"},
+            },
+            "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
+        }),
+    );
     let spark = |args: &[&str]| {
         Command::new(spark_bin())
             .args(args)
@@ -600,7 +603,7 @@ fn process_flow_validate_file_resolves_roles_through_the_files_org() {
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         serde_json::from_slice::<Value>(&output.stdout).expect("validation JSON")["status"].clone()
     };
-    let missing = spark(&["flow", "validate", "--file", &flow_dir]);
+    let missing = spark(&["flow", "validate", "--dir", &flow_dir]);
     assert_eq!(status(&missing), "validation_error");
     assert!(String::from_utf8_lossy(&missing.stdout).contains("unknown role 'reviewer'"));
 
@@ -610,7 +613,7 @@ fn process_flow_validate_file_resolves_roles_through_the_files_org() {
         "---\ntype: Role\n---\nYou review.\n",
     )
     .expect("role");
-    let valid = spark(&["flow", "validate", "--file", &flow_dir]);
+    let valid = spark(&["flow", "validate", "--dir", &flow_dir]);
     assert_eq!(status(&valid), "ok");
 
     for removed in ["accept", "promote"] {

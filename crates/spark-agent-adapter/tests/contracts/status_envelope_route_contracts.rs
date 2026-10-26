@@ -59,7 +59,7 @@ fn flow(edges: Value) -> attractor_core::FlowDefinition {
         },
         "edges": edges
     });
-    attractor_dsl::parse_flow_definition(&source.to_string()).unwrap()
+    attractor_dsl::validated_flow(serde_json::from_value(source).unwrap()).unwrap()
 }
 
 fn routed_edges() -> Value {

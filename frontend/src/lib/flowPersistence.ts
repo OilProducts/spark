@@ -1,5 +1,5 @@
 import { useStore, type SaveErrorKind } from '@/store'
-import { saveFlowValidated } from '@/lib/attractorClient'
+import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 
 interface SaveFlowErrorDetail {
@@ -8,7 +8,7 @@ interface SaveFlowErrorDetail {
 }
 
 const FALLBACK_SAVE_FAILURE_MESSAGE = 'Flow save failed before confirmation from backend.'
-let lastSaveRequest: { name: string; content: string; projectPath: string | null } | null = null
+let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null } | null = null
 const persistedBaselineByScope = new Map<string, string>()
 
 // Flows belong to a project; the same name in another project is a different flow.
@@ -30,7 +30,7 @@ function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {
 
 function buildErrorMessage(status: string | undefined, error: string | undefined, statusCode: number): string {
     if (status === 'parse_error') {
-        return `Save blocked by YAML parse error: ${error ?? FALLBACK_SAVE_FAILURE_MESSAGE}`
+        return `Save blocked by a flow parse error: ${error ?? FALLBACK_SAVE_FAILURE_MESSAGE}`
     }
     if (status === 'validation_error') {
         return `Save blocked by validation errors: ${error ?? FALLBACK_SAVE_FAILURE_MESSAGE}`
@@ -49,8 +49,8 @@ export async function retryLastSaveContent(): Promise<boolean> {
     return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content, lastSaveRequest.projectPath)
 }
 
-export function primeFlowSaveBaseline(name: string, content: string, projectPath = activeProjectPath()): void {
-    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath), content)
+export function primeFlowSaveBaseline(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): void {
+    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath), JSON.stringify(content))
 }
 
 export function resetFlowSaveBaselines(): void {
@@ -65,19 +65,19 @@ export async function waitForFlowSaves(): Promise<void> {
     await Promise.all([...inFlightSaves])
 }
 
-export function saveFlowContent(name: string, content: string, projectPath = activeProjectPath()): Promise<boolean> {
+export function saveFlowContent(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): Promise<boolean> {
     const save = persistFlowContent(name, content, projectPath)
     inFlightSaves.add(save)
     void save.finally(() => inFlightSaves.delete(save))
     return save
 }
 
-async function persistFlowContent(name: string, content: string, projectPath: string | null): Promise<boolean> {
+async function persistFlowContent(name: string, content: FlowSaveContent, projectPath: string | null): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath)
-    const existingBaseline = persistedBaselineByScope.get(scopeKey)
-    if (existingBaseline === content) {
+    const serialized = JSON.stringify(content)
+    if (persistedBaselineByScope.get(scopeKey) === serialized) {
         recordFlowLoadDebug('save:skipped', name, {
-            contentLength: content.length,
+            contentLength: serialized.length,
             reason: 'baseline_match',
         })
         return true
@@ -85,7 +85,7 @@ async function persistFlowContent(name: string, content: string, projectPath: st
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
     lastSaveRequest = { name, content, projectPath }
     recordFlowLoadDebug('save:request', name, {
-        contentLength: content.length,
+        contentLength: serialized.length,
     })
     markSaveInFlight()
 
@@ -137,7 +137,7 @@ async function persistFlowContent(name: string, content: string, projectPath: st
             statusCode: response.statusCode,
             saveStatus: status,
         })
-        persistedBaselineByScope.set(scopeKey, content)
+        persistedBaselineByScope.set(scopeKey, serialized)
         markSaveSuccess()
         return true
     } catch (error) {

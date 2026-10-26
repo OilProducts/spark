@@ -323,7 +323,7 @@ test('a completed run opens on its status item with its result, source, what did
     pipeline_id: run.run_id,
     artifacts: [
       { path: 'result/result.md', size_bytes: 20, media_type: 'text/markdown', viewable: true },
-      { path: 'artifacts/flow/flow-source.yaml', size_bytes: 20, media_type: 'text/yaml', viewable: true },
+      { path: 'artifacts/flow/flow-definition.json', size_bytes: 20, media_type: 'application/json', viewable: true },
     ],
   })
   await openRunsForSmokeTest(page, projectPath)

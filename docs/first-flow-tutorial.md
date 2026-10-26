@@ -29,7 +29,7 @@ cp -r crates/spark-assets/assets/flows/examples/simple-linear ~/.spark-dev/flows
 Validate direct flow edits:
 
 ```bash
-cargo run -p spark-cli --bin spark -- flow validate --file ~/.spark-dev/flows/my-first-flow --text
+cargo run -p spark-cli --bin spark -- flow validate --dir ~/.spark-dev/flows/my-first-flow --text
 ```
 
 Launch a saved flow through the development server:

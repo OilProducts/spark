@@ -123,26 +123,26 @@ while True:
         model: Some("test-model".into()),
         flow_name: Some(crate::install_flow(
             &settings,
-            r#"schema_version: "1"
-id: clarify
-nodes:
-  start:
-    kind: start
-  work:
-    kind: agent_task
-    runtime:
-      max_retries: 2
-    config:
-      kind: agent_task
-      prompt: Resolve the intended audience
-  done:
-    kind: exit
-edges:
-- from: start
-  to: work
-- from: work
-  to: done
-"#,
+            json!({
+                "schema_version": "1",
+                "id": "clarify",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "work": {
+                        "kind": "agent_task",
+                        "runtime": {"max_retries": 2},
+                        "config": {
+                            "kind": "agent_task",
+                            "prompt": "Resolve the intended audience"
+                        }
+                    },
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "done"}
+                ]
+            }),
         )),
         ..Default::default()
     };
@@ -581,7 +581,7 @@ fn start_node(
     id: &str,
     provider: &str,
     prompt: &str,
-    runtime: &str,
+    runtime: Value,
 ) -> std::path::PathBuf {
     let project = temp.join(id);
     fs::create_dir_all(&project).unwrap();
@@ -592,27 +592,23 @@ fn start_node(
         model: Some("test-model".into()),
         flow_name: Some(crate::install_flow(
             settings,
-            format!(
-                r#"schema_version: "1"
-id: {id}
-nodes:
-  start:
-    kind: start
-  work:
-    kind: agent_task
-    runtime: {{ {runtime} }}
-    config:
-      kind: agent_task
-      prompt: {prompt}
-  done:
-    kind: exit
-edges:
-- from: start
-  to: work
-- from: work
-  to: done
-"#
-            ),
+            json!({
+                "schema_version": "1",
+                "id": id,
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "work": {
+                        "kind": "agent_task",
+                        "runtime": runtime,
+                        "config": {"kind": "agent_task", "prompt": prompt}
+                    },
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "done"}
+                ]
+            }),
         )),
         ..Default::default()
     });
@@ -651,7 +647,15 @@ fn assert_cancel_and_timeout(
     provider: &str,
 ) {
     let id = format!("{provider}-cancel");
-    let project = start_node(service, settings, temp, &id, provider, "LONG work", "");
+    let project = start_node(
+        service,
+        settings,
+        temp,
+        &id,
+        provider,
+        "LONG work",
+        json!({}),
+    );
     wait(|| project.join("started").exists());
     let path = format!("/attractor/pipelines/{id}/cancel");
     assert_eq!(service.dispatch("POST", &path, "{}").status_code, 200);
@@ -666,7 +670,7 @@ fn assert_cancel_and_timeout(
         &id,
         provider,
         "LONG work",
-        "timeout: 1s, max_retries: 0",
+        json!({"timeout": "1s", "max_retries": 0}),
     );
     wait(|| run_status(settings, &id) == "failed");
     let failures = stage_failures(settings, &id);
@@ -698,7 +702,7 @@ fn claude_code_node_questions_cancel_and_timeout() {
         "claude-ask",
         "claude-code",
         "ASK about the audience",
-        "",
+        json!({}),
     );
     wait(|| {
         assert_ne!(run_status(&settings, "claude-ask"), "failed");
@@ -830,7 +834,15 @@ fn assert_steer_delivered(
     provider: &str,
 ) {
     let id = format!("{provider}-steer");
-    let project = start_node(service, settings, temp, &id, provider, "STEER work", "");
+    let project = start_node(
+        service,
+        settings,
+        temp,
+        &id,
+        provider,
+        "STEER work",
+        json!({}),
+    );
     wait(|| project.join("started").exists());
     let path = format!("/attractor/pipelines/{id}/steer");
     let steer = service.dispatch("POST", &path, r#"{"message":"Use the docs."}"#);
@@ -971,21 +983,23 @@ fn native_node_steer_cancel_and_timeout() {
         model: Some("test-model".into()),
         flow_name: Some(crate::install_flow(
             &settings,
-            format!(
-                r#"schema_version: "1"
-id: native_steer
-nodes:
-  start: {{ kind: start }}
-  work:
-    kind: agent_task
-    contracts: {{ runtime_mode: agent }}
-    config: {{ kind: agent_task, prompt: STEER work }}
-  done: {{ kind: exit }}
-edges:
-- {{ from: start, to: work }}
-- {{ from: work, to: done }}
-"#
-            ),
+            json!({
+                "schema_version": "1",
+                "id": "native_steer",
+                "nodes": {
+                    "start": {"kind": "start"},
+                    "work": {
+                        "kind": "agent_task",
+                        "contracts": {"runtime_mode": "agent"},
+                        "config": {"kind": "agent_task", "prompt": "STEER work"}
+                    },
+                    "done": {"kind": "exit"}
+                },
+                "edges": [
+                    {"from": "start", "to": "work"},
+                    {"from": "work", "to": "done"}
+                ]
+            }),
         )),
         ..Default::default()
     });
@@ -1095,22 +1109,27 @@ fn native_node_clarification_outlasts_its_timeout_and_stops_on_cancel() {
             model: Some("test-model".into()),
             flow_name: Some(crate::install_flow(
                 &settings,
-                &format!(
-                    r#"schema_version: "1"
-id: {id}
-nodes:
-  start: {{ kind: start }}
-  work:
-    kind: agent_task
-    runtime: {{ timeout: 1s, max_retries: 0 }}
-    contracts: {{ runtime_mode: agent }}
-    config: {{ kind: agent_task, prompt: ASK about the audience }}
-  done: {{ kind: exit }}
-edges:
-- {{ from: start, to: work }}
-- {{ from: work, to: done }}
-"#
-                ),
+                json!({
+                    "schema_version": "1",
+                    "id": id,
+                    "nodes": {
+                        "start": {"kind": "start"},
+                        "work": {
+                            "kind": "agent_task",
+                            "runtime": {"timeout": "1s", "max_retries": 0},
+                            "contracts": {"runtime_mode": "agent"},
+                            "config": {
+                                "kind": "agent_task",
+                                "prompt": "ASK about the audience"
+                            }
+                        },
+                        "done": {"kind": "exit"}
+                    },
+                    "edges": [
+                        {"from": "start", "to": "work"},
+                        {"from": "work", "to": "done"}
+                    ]
+                }),
             )),
             ..Default::default()
         });

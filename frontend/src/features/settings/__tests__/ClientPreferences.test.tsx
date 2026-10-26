@@ -3,10 +3,17 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { ClientPreferencesEditor } from '../ClientPreferencesEditor'
-import { fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
+import { fetchClientPreferences, parseClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<typeof import('../services/clientPreferences')>(), fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn() }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
+
+it('reads an unknown stored editor mode, such as the retired raw mode, as structured', () => {
+    const parse = (mode: unknown) => parseClientPreferences({ preferences: { scope: 'client', client_id: 'c', revision: 'r',
+        stored: { editor_mode: mode, editor_sidebar_width: null }, effective: { editor_mode: mode, editor_sidebar_width: 288 } } }, '/workspace/api/settings')
+    expect(parse('raw')).toMatchObject({ stored: { editor_mode: null }, effective: { editor_mode: 'structured' } })
+    expect(parse('files')).toMatchObject({ stored: { editor_mode: 'files' }, effective: { editor_mode: 'files' } })
+})
 
 it('validates preferences and retains the draft and original revision after live conflicts', async () => {
     const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',

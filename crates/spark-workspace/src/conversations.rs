@@ -4033,12 +4033,12 @@ impl WorkspaceConversationService {
         if record.title.is_some() || record.parent_run_id.is_some() {
             return Ok(None);
         }
-        let source = store
+        let flow = store
             .read_graph_source(&paths)
             .map_err(internal)?
-            .unwrap_or_default();
-        let flow = attractor_dsl::parse_flow_definition(&source)
-            .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
+            .ok_or_else(|| {
+                WorkspaceError::Internal(format!("Run {run_id} has no flow snapshot"))
+            })?;
         let launch_context = record.launch_context.unwrap_or_default();
         let mut input = format!("Flow: {}\nGoal: {}\n\nInputs:", flow.title, flow.goal);
         for flow_input in &flow.inputs {
@@ -4443,9 +4443,9 @@ pub(crate) fn playbook_instructions(conversation_handle: &str, project_path: &st
 pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
         "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's org repo {org} (flows/ and roles/) replaces any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
-        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>` (pass `--project {project_path}` to include this project's org flows)\n\
+        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --dir <flow directory>` (pass `--project {project_path}` to include this project's org flows)\n\
         - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
-        Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
+        Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
         - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
         Only the Chief of Staff role changes files in the org repo, committing each change there with its reason in the commit message; any other agent sends it the change it needs with `spark role send --project {project_path} --role chief-of-staff --conversation {handle} --message <text>`. The one exception: when the Chief of Staff is not running (`spark role list --project {project_path}`) and the user asks for an org change, the Coordinator makes it and commits it with its reason. Never edit $SPARK_HOME/bundled.\n\n\
         Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",

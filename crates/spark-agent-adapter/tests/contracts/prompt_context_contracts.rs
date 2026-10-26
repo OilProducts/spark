@@ -558,7 +558,8 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
         "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_mode":"pro", "thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
         "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
     });
-    let flow = attractor_dsl::parse_flow_definition(&source.to_string()).unwrap();
+    let flow =
+        attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
     let graph = flow.to_runtime_dot_graph();
     let diagnostics = attractor_dsl::validate_graph(&graph);
     assert!(
@@ -581,7 +582,7 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
         .as_object_mut()
         .unwrap()
         .remove("thinking_budget_tokens");
-    let off = attractor_dsl::parse_flow_definition(&off.to_string()).unwrap();
+    let off = attractor_dsl::validated_flow(serde_json::from_value(off).unwrap()).unwrap();
     let off = attractor_dsl::apply_graph_transforms(&off.to_runtime_dot_graph());
     assert!(!off.nodes["work"]
         .attrs
@@ -611,7 +612,7 @@ fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
         "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
         "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
     });
-    attractor_dsl::parse_flow_definition(&source.to_string()).unwrap();
+    attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
     for (execution, stylesheet, defaults, field) in [
         (
             json!({"thinking":"off", "thinking_budget_tokens":4096}),
@@ -654,7 +655,10 @@ fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
         invalid["nodes"]["work"]["execution"] = execution;
         invalid["metadata"]["model_stylesheet"] = json!(stylesheet);
         invalid["defaults"] = defaults;
-        let error = attractor_dsl::parse_flow_definition(&invalid.to_string()).unwrap_err();
+        let error = attractor_core::FlowDefinition::from_json_str(&invalid.to_string())
+            .map_err(attractor_dsl::FlowSourceError::from)
+            .and_then(attractor_dsl::validated_flow)
+            .unwrap_err();
         assert!(error.to_string().contains(field), "{error}");
     }
 }

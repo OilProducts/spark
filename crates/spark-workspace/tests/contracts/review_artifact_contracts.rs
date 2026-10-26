@@ -20,7 +20,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review", simple_flow());
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -72,7 +72,7 @@ fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review", simple_flow());
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_assistant_status(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -113,7 +113,7 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review", simple_flow());
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -317,7 +317,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(
+    crate::install_named_flow(
         &settings,
         "software-development/implement-change",
         simple_flow(),
@@ -553,14 +553,6 @@ fn request_by_id<'a>(snapshot: &'a Value, request_id: &str) -> &'a Value {
         .expect("request")
 }
 
-pub(super) fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
-}
-
 pub(super) fn write_native_execution_profile(settings: &SparkSettings) {
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     fs::write(
@@ -705,19 +697,13 @@ fn plan_completed(content: &str) -> TurnStreamEvent {
     }
 }
 
-pub(super) fn simple_flow() -> &'static str {
-    r#"
-schema_version: "1"
-id: review
-nodes:
-  start:
-    kind: start
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: done
-    "#
+pub(super) fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "review",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
 }
 
 fn runs_dir_is_empty(settings: &SparkSettings) -> bool {
@@ -833,7 +819,7 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review", simple_flow());
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),

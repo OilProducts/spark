@@ -1,7 +1,7 @@
 import { useStore, type DiagnosticEntry } from "@/store"
 import { useMemo } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { generateFlowYaml } from "@/lib/flowYamlUtils"
+import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from "@/lib/canonicalFlowModel"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
@@ -185,12 +185,14 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const { scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName: activeFlow,
         debounceMs: INSPECTOR_SAVE_DEBOUNCE_MS,
-        buildContent: (snapshot, currentFlowName) => generateFlowYaml(
-            currentFlowName,
-            snapshot?.nodes || [],
-            snapshot?.edges || [],
-            flowMetadata,
-        ),
+        buildContent: (snapshot, currentFlowName) => ({
+            flow: buildFlowDefinitionFromCanonicalFlowModel(currentFlowName, buildCanonicalFlowModelFromEditorState(currentFlowName, {
+                nodes: snapshot?.nodes || [],
+                edges: snapshot?.edges || [],
+                flowMetadata,
+                flow: editorGraphBridgeRef?.current?.getFlow(),
+            })),
+        }),
     })
 
     const applyNodeVisualState = (node: Node, nextData: Record<string, unknown>) => {

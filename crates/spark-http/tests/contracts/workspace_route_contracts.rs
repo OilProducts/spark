@@ -488,7 +488,10 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    write_flow(&settings, "ops/review", "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n");
+    let flow_name = crate::install_flow(
+        &settings,
+        json!({"schema_version": "1", "id": "review", "title": "Review", "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}}, "edges": [{"from": "start", "to": "done"}]}),
+    );
     let project = root.join("bound-project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy().into_owned();
@@ -554,7 +557,7 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
         app.clone(),
         "POST",
         &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
-        Some(json!({"flow_name": "ops/review", "summary": "Run from Home."})),
+        Some(json!({"flow_name": flow_name, "summary": "Run from Home."})),
     )
     .await;
     assert_eq!(run.0, StatusCode::OK, "{}", run.1);
@@ -705,7 +708,7 @@ impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
             .sum::<usize>();
         drop(prompts);
         let reply = if request.prompt == "Begin work on this mission." {
-            for (flow, summary) in [("work/ok", "Build it"), ("work/ok", "Test it")] {
+            for (flow, summary) in [("tests/ok", "Build it"), ("tests/ok", "Test it")] {
                 let launched = self.call(
                     "POST",
                     &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
@@ -981,10 +984,13 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     let settings = settings(temp.path());
     let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
-    write_flow(
-        &settings,
-        "work/ok",
-        "schema_version: \"1\"\nid: ok\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+    // The scripted agent launches `tests/ok`.
+    assert_eq!(
+        crate::install_flow(
+            &settings,
+            json!({"schema_version": "1", "id": "ok", "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}}, "edges": [{"from": "start", "to": "done"}]})
+        ),
+        "tests/ok"
     );
     let agent = std::sync::Arc::new(ScriptedMissionAgent {
         app: std::sync::OnceLock::new(),
@@ -1650,7 +1656,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         288
     );
     let payload = json!({"section":"client_preferences", "expected_revision": initial.1["preferences"]["revision"],
-        "value":{"client_id":"browser-one", "preferences":{"editor_mode":"raw", "editor_sidebar_width":400,
+        "value":{"client_id":"browser-one", "preferences":{"editor_mode":"files", "editor_sidebar_width":400,
             "show_advanced_controls":true,"expand_child_flows":true,"graph_settings_open":true,
             "runs_scope":"all","triggers_scope":"active","home_sidebar_primary_split_ratio":0.6,"appearance":"dark"}}});
     let saved = request_json(
@@ -1669,6 +1675,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         ("runs_scope", json!("all")),
         ("triggers_scope", json!("active")),
         ("appearance", json!("dark")),
+        ("editor_mode", json!("files")),
     ] {
         assert_eq!(saved.1["preferences"]["stored"][field], expected);
         let restarted = request_json(build_app(settings.clone()), "GET", uri, None).await;
@@ -1692,7 +1699,6 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         json!({"home_sidebar_primary_split_ratio":-0.1}),
         json!({"home_sidebar_primary_split_ratio":1.1}),
         json!({"home_sidebar_primary_split_ratio":"0.5"}),
-        json!({"editor_mode":"unsupported"}),
         json!({"selected_record":"session-only"}),
         json!({"runs_scope":"unknown"}),
         json!({"triggers_scope":"unknown"}),
@@ -1709,6 +1715,21 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         );
     }
     assert_eq!(fs::read(&file).unwrap(), original);
+    // An unknown mode, such as the old `raw`, falls back to structured.
+    let legacy = json!({"section":"client_preferences", "expected_revision":saved.1["preferences"]["revision"],
+        "value":{"client_id":"browser-one", "preferences":{"editor_mode":"raw"}}});
+    let legacy = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/settings",
+        Some(legacy),
+    )
+    .await;
+    assert_eq!(legacy.0, StatusCode::OK, "{legacy:?}");
+    assert_eq!(
+        legacy.1["preferences"]["effective"]["editor_mode"],
+        "structured"
+    );
     let other = request_json(
         app.clone(),
         "GET",
@@ -1745,7 +1766,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
     let read = request_json(restarted, "GET", uri, None).await;
     assert_eq!(
         read.1["preferences"]["stored"],
-        saved.1["preferences"]["stored"]
+        legacy.1["preferences"]["stored"]
     );
 }
 
@@ -1833,7 +1854,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     assert!(!path.exists());
     let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
         "run_id":"native-after-rejected-save", "working_directory":project, "wait":true,
-        "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: native\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
+        "flow_name": crate::install_flow(&settings, json!({"schema_version": "1", "id": "native", "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}}, "edges": [{"from": "start", "to": "end"}]}))
     }))).await;
     assert_eq!(launched.0, StatusCode::OK, "{launched:?}");
     let bundle = attractor_runtime::RunStore::for_settings(&settings)
@@ -1898,7 +1919,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                 .is_empty());
             let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
                 "run_id":"invalid-defaults", "working_directory":project, "wait":true,
-                "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
+                "flow_name": crate::install_flow(&settings, json!({"schema_version": "1", "id": "invalid", "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}}, "edges": [{"from": "start", "to": "end"}]}))
             }))).await;
             assert_eq!(
                 launched.1["status"], "validation_error",
@@ -2348,12 +2369,4 @@ async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
             );
         }
     }
-}
-
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
 }

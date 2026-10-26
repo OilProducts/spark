@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::{Body, Bytes};
 use axum::extract::rejection::{BytesRejection, JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
@@ -1154,9 +1154,9 @@ async fn get_workspace_flow_dispatch(
     let query = optional_query_payload(payload)?;
     let flow_path = flow_path.trim_start_matches('/');
     let service = WorkspaceFlowService::new((*settings).clone());
-    if let Some(flow_name) = flow_path.strip_suffix("/raw") {
-        let raw = service.raw_flow(flow_name, query.project_path.as_deref())?;
-        return raw_flow_response(raw);
+    if let Some(flow_name) = flow_path.strip_suffix("/files") {
+        let files = service.flow_files(flow_name, query.project_path.as_deref())?;
+        return Ok(Json(files).into_response());
     }
     if let Some(flow_name) = flow_path.strip_suffix("/validate") {
         let payload = service.validate_flow(flow_name, query.project_path.as_deref())?;
@@ -1663,24 +1663,6 @@ fn collect_run_ids_from_value(value: &Value, run_ids: &mut BTreeSet<String>) {
         }
         _ => {}
     }
-}
-
-fn raw_flow_response(
-    flow: spark_workspace::WorkspaceFlowRaw,
-) -> Result<Response, WorkspaceApiError> {
-    static X_SPARK_FLOW_NAME: HeaderName = HeaderName::from_static("x-spark-flow-name");
-    let flow_name = HeaderValue::from_str(&flow.name).map_err(|error| {
-        WorkspaceError::Internal(format!("Invalid flow name response header: {error}"))
-    })?;
-    let mut response = (StatusCode::OK, flow.content).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/yaml; charset=utf-8"),
-    );
-    response
-        .headers_mut()
-        .insert(X_SPARK_FLOW_NAME.clone(), flow_name);
-    Ok(response)
 }
 
 fn mission_service(settings: &SparkSettings) -> spark_workspace::missions::WorkspaceMissionService {

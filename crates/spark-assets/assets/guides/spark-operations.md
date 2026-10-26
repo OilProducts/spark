@@ -34,7 +34,7 @@ Operational rules:
 
 - From a source checkout, always set `SPARK_HOME` before `spark-server init` or `spark-server serve`.
 - From a source checkout, always set `SPARK_API_BASE_URL` before `spark ...` commands that talk to a running server.
-- `spark flow validate --file ...` is local and does not require a running server.
+- `spark flow validate --dir ...` is local and does not require a running server.
 - `SPARK_UI_DIR` overrides the served built UI directory when needed.
 
 ## Discover And Validate Flows
@@ -65,20 +65,21 @@ spark flow describe --flow examples/simple-linear --text
 curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear
 ```
 
-Fetch raw YAML for a stored flow:
+Print a stored flow's files (its layer and directory, then each file under a
+`==> <file> <==` header; `--json` prints the JSON response):
 
 ```bash
-spark flow get --flow examples/simple-linear --text
+spark flow get --flow examples/simple-linear
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/raw
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/files
 ```
 
 Validate a flow directory you are editing directly:
 
 ```bash
-spark flow validate --file /absolute/path/to/flows/my-flow --text
+spark flow validate --dir /absolute/path/to/flows/my-flow --text
 ```
 
 Validate a stored flow through the server:
@@ -90,15 +91,6 @@ spark flow validate --flow examples/simple-linear --text
 ```bash
 curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/validate
 ```
-
-Format a single-document flow YAML file, such as one you will convert or paste into the editor:
-
-```bash
-spark flow format --file /absolute/path/to/flow.yaml
-spark flow format --file /absolute/path/to/flow.yaml --write
-```
-
-`spark flow format --file` is local like file validation. The `--write` form updates only the target YAML file.
 
 ## Launch Runs, Recover Runs, And Create Run Requests
 
@@ -193,7 +185,7 @@ Notes:
 
 - `spark run launch` requires either `--conversation` or `--project`.
 - `spark convo run-request` launches any flow, resolved through the conversation's project.
-- Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
+- Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.
 - `spark run launch` and `spark convo run-request` do not take `--llm-profile`; use flow defaults such as `ui_default_llm_profile`, or use `--llm-profile` on supported recovery commands.

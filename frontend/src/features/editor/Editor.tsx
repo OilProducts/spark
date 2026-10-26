@@ -14,18 +14,18 @@ import {
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useStore, type FlowDefinitionMetadata } from '@/store';
+import { useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
 import { Well } from '@/components/app/well';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
-    clearFlowYamlSerializationContext,
-    generateFlowYaml,
-    setFlowYamlSerializationContext,
-    type FlowYamlSerializationContext,
-} from '@/lib/flowYamlUtils';
+    buildCanonicalFlowModelFromEditorState,
+    buildFlowDefinitionFromCanonicalFlowModel,
+    type CanonicalFlowDefinition,
+} from '@/lib/canonicalFlowModel';
+import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
     primeFlowSaveBaseline,
@@ -64,11 +64,9 @@ import {
     filterAuthoredNodes,
     layoutWithElk,
     nodeTypes,
-    normalizeLegacyDot,
     nowMs,
 } from '@/features/workflow-canvas';
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
-import { Textarea } from '@/components/ui/textarea';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
 import {
@@ -78,6 +76,7 @@ import {
 } from './services/editorPreview';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
+import { FlowFilesView } from './components/FlowFilesView';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -93,7 +92,7 @@ type FlowGraphSnapshot = {
 }
 
 type PreviewDebugContext = {
-    source: 'flow-load-source-yaml' | 'structured-sync-preview' | 'raw-yaml-handoff'
+    source: 'flow-load' | 'structured-sync-preview'
     loadId: number | null
     nodeCount?: number
     edgeCount?: number
@@ -168,20 +167,19 @@ function buildDirtyRect(previousRect: NodeRect | null, nextRect: NodeRect | null
     }
 }
 
-function buildAuthoredYaml(
+function buildAuthoredFlow(
     flowName: string,
     nodes: Node[],
     edges: Edge[],
     flowMetadata: FlowDefinitionMetadata,
-    serializationContext?: FlowYamlSerializationContext,
+    flow: CanonicalFlowDefinition | null,
 ) {
-    return generateFlowYaml(
-        flowName,
-        filterAuthoredNodes(nodes),
-        filterAuthoredEdges(edges),
+    return buildFlowDefinitionFromCanonicalFlowModel(flowName, buildCanonicalFlowModelFromEditorState(flowName, {
+        nodes: filterAuthoredNodes(nodes),
+        edges: filterAuthoredEdges(edges),
         flowMetadata,
-        serializationContext,
-    )
+        flow,
+    }))
 }
 
 export function Editor({ isActive = true }: { isActive?: boolean }) {
@@ -195,10 +193,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const clientPreferencesLoaded = useStore((state) => state.clientPreferencesLoaded);
     const initialModeFlowRef = useRef<string | null>(null);
     const setEditorMode = useStore((state) => state.setEditorMode);
-    const rawYamlDraft = useStore((state) => state.rawYamlDraft);
-    const setRawYamlDraft = useStore((state) => state.setRawYamlDraft);
-    const rawHandoffError = useStore((state) => state.rawHandoffError);
-    const setRawHandoffError = useStore((state) => state.setRawHandoffError);
     // A run defaults to the project of the chat you came from, else the last used.
     const runDefaultProjectPath = useStore((state) => defaultProjectChoice(state.projectRegistry, state.chatOriginProjectPath));
     const activeFlow = useStore((state) => state.activeFlow);
@@ -249,8 +243,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const edgeIdToLayoutKeyRef = useRef<Map<string, string>>(new Map());
     const edgeSideIntentRef = useRef<Record<string, { sourceSide?: RouteSide; targetSide?: RouteSide }>>({});
     const routeRevisionRef = useRef(0);
-    const rawYamlEntryDraftRef = useRef<string>('');
-    const rawHandoffInFlightRef = useRef(false);
     const expandChildFlowsRef = useRef(expandChildFlows);
     const canonicalFlowRef = useRef<NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['flow']>(null);
     const canvasGraphRef = useRef({
@@ -259,7 +251,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         flowMetadata: {} as FlowDefinitionMetadata,
     });
     const [isDragging, setIsDragging] = useState(false);
-    const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
+    const [flowFiles, setFlowFiles] = useState<FlowFile[]>([]);
+    // Bumped to reload the active flow, e.g. after the file view saves.
+    const [flowReloadToken, setFlowReloadToken] = useState(0);
+    const reloadRequestedRef = useRef(false);
     const [runProjectPath, setRunProjectPath] = useState<string | null>(null);
     const isRunPanelOpen = runProjectPath !== null;
     const [isHydrated, setIsHydrated] = useState(false);
@@ -279,11 +274,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const optimizationLabel = activeOptimizations.length ? activeOptimizations.join(', ') : 'none';
     const flowName = activeFlow;
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
+    // The file view edits the files; its canvas only selects nodes.
+    const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
         setNodes,
         getEdges: () => canvasGraphRef.current.edges,
         setEdges,
+        getFlow: () => canonicalFlowRef.current,
     }), [setEdges, setNodes]);
 
     useRegisterEditorGraphBridge(editorGraphBridge);
@@ -339,13 +337,15 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const { flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
-        buildContent: (snapshot, currentFlowName) => generateFlowYaml(
-            currentFlowName,
-            filterAuthoredNodes(snapshot?.nodes || []),
-            filterAuthoredEdges(snapshot?.edges || []),
-            flowMetadata,
-            { flow: canonicalFlowRef.current },
-        ),
+        buildContent: (snapshot, currentFlowName) => ({
+            flow: buildAuthoredFlow(
+                currentFlowName,
+                snapshot?.nodes || [],
+                snapshot?.edges || [],
+                flowMetadata,
+                canonicalFlowRef.current,
+            ),
+        }),
     })
 
     const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null, userControlled = true) => {
@@ -535,7 +535,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
     const hydrateFromPreview = useCallback(async (
         preview: PreviewResponse,
-        sourceYaml?: string,
         debugContext?: { loadId: number | null; source: PreviewDebugContext['source'] },
         options?: {
             expandChildren?: boolean
@@ -545,7 +544,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         if (!preview.graph) {
             recordFlowLoadDebug('hydrate:skipped', flowName, {
                 loadId: debugContext?.loadId ?? null,
-                source: debugContext?.source ?? 'flow-load-source-yaml',
+                source: debugContext?.source ?? 'flow-load',
                 reason: 'preview graph missing',
             });
             return null;
@@ -554,7 +553,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             flowName ?? 'flow',
             preview,
             resolvedUiDefaults,
-            sourceYaml,
             options,
         )
         if (!hydratedGraph) {
@@ -562,8 +560,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         }
         recordFlowLoadDebug('hydrate:start', flowName, {
             loadId: debugContext?.loadId ?? null,
-            source: debugContext?.source ?? 'flow-load-source-yaml',
-            sourceYamlLength: sourceYaml?.length ?? null,
+            source: debugContext?.source ?? 'flow-load',
             nodeCount: hydratedGraph.nodes.length,
             edgeCount: hydratedGraph.edges.length,
             flowMetadataCount: Object.keys(hydratedGraph.flowMetadata).length,
@@ -618,7 +615,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     ]);
 
     const requestPreview = useCallback(async (
-        yaml: string,
+        flow: CanonicalFlowDefinition,
         debugContext?: PreviewDebugContext,
         signal?: AbortSignal,
         options?: { expandChildren?: boolean },
@@ -626,7 +623,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         recordFlowLoadDebug('preview:request', flowName, {
             loadId: debugContext?.loadId ?? null,
             source: debugContext?.source ?? 'structured-sync-preview',
-            yamlLength: yaml.length,
             nodeCount: debugContext?.nodeCount ?? null,
             edgeCount: debugContext?.edgeCount ?? null,
             flowMetadataCount: debugContext?.flowMetadataCount ?? null,
@@ -634,7 +630,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         });
         const previewStart = nowMs();
         const preview = await loadEditorPreview(
-            yaml,
+            flow,
             signal ? { signal } : undefined,
             {
                 flowName,
@@ -677,7 +673,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 loadId: activeFlowLoadIdRef.current,
                 reason: 'no active flow',
             });
-            clearFlowYamlSerializationContext();
             setNodes([]);
             setEdges([]);
             setSelectedNodeId(null);
@@ -685,12 +680,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             replaceFlowMetadata({});
             canonicalFlowRef.current = null;
             clearDiagnostics();
-            setRawYamlDraft('');
-            setRawHandoffError(null);
-            rawHandoffInFlightRef.current = false;
-            setIsRawHandoffInFlight(false);
+            setFlowFiles([]);
             setEditorMode('structured');
-            rawYamlEntryDraftRef.current = '';
             hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
             setLastPreviewMs(0);
@@ -704,6 +695,11 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         ) {
             return;
         }
+        // A reload of the hydrated flow keeps the canvas, selection and mode until fresh data lands.
+        const isReload = reloadRequestedRef.current
+            && hydratedFlowNameRef.current === flowName
+            && hydratedProjectPathRef.current === activeProjectPath;
+        reloadRequestedRef.current = false;
         hydratedRef.current = false;
         setIsHydrated(false);
 
@@ -726,26 +722,23 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             loadId,
             session: 'editor',
         });
-        clearFlowYamlSerializationContext();
-        setNodes([]);
-        setEdges([]);
-        setSelectedNodeId(null);
-        setSelectedEdgeId(null);
-        replaceFlowMetadata({});
-        canonicalFlowRef.current = null;
-        clearDiagnostics();
-        recordFlowLoadDebug('diagnostics:clear', flowName, {
-            loadId,
-            reason: 'flow-load reset',
-        });
-        setRawHandoffError(null);
-        rawHandoffInFlightRef.current = false;
-        setIsRawHandoffInFlight(false);
-        setEditorMode('structured');
-        rawYamlEntryDraftRef.current = '';
-        setRawYamlDraft('');
-        setLastLayoutMs(0);
-        setLastPreviewMs(0);
+        if (!isReload) {
+            setNodes([]);
+            setEdges([]);
+            setSelectedNodeId(null);
+            setSelectedEdgeId(null);
+            replaceFlowMetadata({});
+            canonicalFlowRef.current = null;
+            clearDiagnostics();
+            recordFlowLoadDebug('diagnostics:clear', flowName, {
+                loadId,
+                reason: 'flow-load reset',
+            });
+            setFlowFiles([]);
+            setEditorMode('structured');
+            setLastLayoutMs(0);
+            setLastPreviewMs(0);
+        }
 
         const startScopedLoad = async () => {
             try {
@@ -754,19 +747,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     return;
                 }
 
-                const normalizedContent = normalizeLegacyDot(data.content);
                 recordFlowLoadDebug('flow-load:payload', flowName, {
                     loadId,
-                    originalLength: data.content.length,
-                    normalizedLength: normalizedContent.length,
-                    normalizedLegacySyntax: normalizedContent !== data.content,
+                    fileCount: data.files.length,
                 });
 
                 const { preview, elapsedMs } = await requestPreview(
-                    normalizedContent,
+                    data.flow,
                     {
                         loadId,
-                        source: 'flow-load-source-yaml',
+                        source: 'flow-load',
                     },
                     loadAbort.signal,
                     {
@@ -785,14 +775,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 recordFlowLoadDebug('diagnostics:apply', flowName, {
                     loadId,
-                    source: 'flow-load-source-yaml',
+                    source: 'flow-load',
                     ...summarizeDiagnosticsForFlowLoadDebug(preview.diagnostics),
                 });
-                setRawYamlDraft(normalizedContent);
+                setFlowFiles(data.files);
 
-                const hydrated = await hydrateFromPreview(preview, normalizedContent, {
+                const hydrated = await hydrateFromPreview(preview, {
                     loadId,
-                    source: 'flow-load-source-yaml',
+                    source: 'flow-load',
                 }, {
                     expandChildren: expandChildFlowsRef.current,
                 });
@@ -800,7 +790,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     return;
                 }
 
-                setFlowYamlSerializationContext({ flow: hydrated.flow });
                 canonicalFlowRef.current = hydrated.flow;
                 replaceFlowMetadata(hydrated.flowMetadata);
                 setLastLayoutMs(hydrated.layoutDurationMs);
@@ -811,19 +800,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
                 }
-                primeFlowSaveBaseline(
-                    flowName,
-                    buildAuthoredYaml(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, {
-                        flow: hydrated.flow,
-                    }),
-                );
+                primeFlowSaveBaseline(flowName, {
+                    flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
+                });
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 hydratedFlowNameRef.current = flowName;
                 hydratedProjectPathRef.current = activeProjectPath;
                 recordFlowLoadDebug('hydrate:complete', flowName, {
                     loadId,
-                    source: 'flow-load-source-yaml',
+                    source: 'flow-load',
                     nodeCount: hydrated.nodes.length,
                     edgeCount: hydrated.edges.length,
                     layoutMs: hydrated.layoutDurationMs,
@@ -846,6 +832,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         isActive,
         flowName,
         activeProjectPath,
+        flowReloadToken,
         clearDiagnostics,
         hydrateFromPreview,
         requestPreview,
@@ -864,15 +851,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             || !isHydrated
             || suppressPreview
             || isDragging
-            || editorMode === 'raw'
+            || editorMode !== 'structured'
         ) return;
-        const yaml = buildAuthoredYaml(
-            flowName,
-            nodes,
-            edges,
-            flowMetadata,
-            { flow: canonicalFlowRef.current },
-        );
+        const flow = buildAuthoredFlow(flowName, nodes, edges, flowMetadata, canonicalFlowRef.current);
         if (previewTimer.current) {
             window.clearTimeout(previewTimer.current);
         }
@@ -883,10 +864,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             nodeCount: nodes.length,
             edgeCount: edges.length,
             flowMetadataCount: Object.keys(flowMetadata).length,
-            yamlLength: yaml.length,
         });
         previewTimer.current = window.setTimeout(() => {
-            void requestPreview(yaml, {
+            void requestPreview(flow, {
                 loadId: activeFlowLoadIdRef.current,
                 source: 'structured-sync-preview',
                 nodeCount: nodes.length,
@@ -1139,134 +1119,39 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         applyLaidOutGraph(layoutGraph)
     }, [applyLaidOutGraph, edges, expandChildFlows, flowName, nodes])
 
-    const enterRawYamlMode = useCallback((persistPreference = true) => {
-        if (!flowName) return;
-        if (editorMode === 'raw') return;
+    const reloadFlow = useCallback(() => {
+        hydratedRef.current = false;
+        reloadRequestedRef.current = true;
+        setFlowReloadToken((token) => token + 1);
+    }, []);
+
+    const selectEditorMode = useCallback((mode: EditorMode, fromPreference = false) => {
+        if (!flowName || editorMode === mode) return;
         flushPendingSave();
-        const yaml = buildAuthoredYaml(flowName, nodes, edges, flowMetadata, {
-            flow: canonicalFlowRef.current,
-        });
-        rawYamlEntryDraftRef.current = yaml;
-        setRawYamlDraft(yaml);
-        setRawHandoffError(null);
-        setEditorMode('raw');
-        if (persistPreference) {
-            useStore.setState({ preferredEditorMode: 'raw' });
-            completePreferenceInteraction({ editor_mode: 'raw' });
-        }
-    }, [flowMetadata, flowName, editorMode, edges, flushPendingSave, nodes]);
+        setEditorMode(mode);
+        if (fromPreference) return;
+        useStore.setState({ preferredEditorMode: mode });
+        completePreferenceInteraction({ editor_mode: mode });
+        if (mode !== 'files') return;
+        // The files show the structured state as saved: save it (a no-op when unchanged, and it
+        // covers edits still debounced elsewhere, such as graph settings), then read the files.
+        void waitForFlowSaves().then(() => saveNow({ nodes, edges })).then(reloadFlow);
+    }, [editorMode, edges, flowName, flushPendingSave, nodes, reloadFlow, saveNow, setEditorMode]);
 
     useEffect(() => {
         if (!isHydrated) { initialModeFlowRef.current = null; return; }
         if (!clientPreferencesLoaded || hydratedFlowNameRef.current !== flowName || initialModeFlowRef.current === flowName) return;
         initialModeFlowRef.current = flowName;
-        if (useStore.getState().preferredEditorMode === 'raw') enterRawYamlMode(false);
-    }, [clientPreferencesLoaded, enterRawYamlMode, flowName, isHydrated]);
+        if (useStore.getState().preferredEditorMode === 'files') selectEditorMode('files', true);
+    }, [clientPreferencesLoaded, selectEditorMode, flowName, isHydrated]);
 
-    const returnToStructuredMode = useCallback(async () => {
-        if (!flowName) return;
-        if (rawHandoffInFlightRef.current) {
-            return;
-        }
-        rawHandoffInFlightRef.current = true;
-        setIsRawHandoffInFlight(true);
-        try {
-            const rawYamlChanged = rawYamlEntryDraftRef.current !== rawYamlDraft;
-            if (rawYamlChanged) {
-                const saved = await saveFlowContent(flowName, rawYamlDraft);
-                if (!saved) {
-                    const latestSaveErrorMessage = useStore.getState().saveErrorMessage;
-                    setRawHandoffError(
-                        `Safe handoff requires valid YAML. ${latestSaveErrorMessage || 'Fix YAML parse or validation errors before switching modes.'}`,
-                    );
-                    return;
-                }
-            }
-
-            try {
-                const { preview, elapsedMs } = await requestPreview(rawYamlDraft, {
-                    loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-yaml-handoff',
-                }, undefined, {
-                    expandChildren: expandChildFlowsRef.current,
-                });
-                setLastPreviewMs(elapsedMs);
-                if (preview.diagnostics) {
-                    setDiagnostics(preview.diagnostics);
-                } else {
-                    clearDiagnostics();
-                }
-                recordFlowLoadDebug('diagnostics:apply', flowName, {
-                    loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-yaml-handoff',
-                    ...summarizeDiagnosticsForFlowLoadDebug(preview.diagnostics),
-                });
-                if (preview.status === 'validation_error' || (preview.errors?.length ?? 0) > 0) {
-                    setRawHandoffError(
-                        'Raw YAML edit conflicts with structured mode assumptions. Resolve validation errors before switching modes.',
-                    );
-                    return;
-                }
-                const hydrated = await hydrateFromPreview(preview, rawYamlDraft, {
-                    loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-yaml-handoff',
-                }, {
-                    expandChildren: expandChildFlowsRef.current,
-                });
-                if (!hydrated) {
-                    setRawHandoffError('Safe handoff requires valid YAML. Preview response did not include a graph.');
-                    return;
-                }
-                setFlowYamlSerializationContext({ flow: hydrated.flow });
-                canonicalFlowRef.current = hydrated.flow;
-                replaceFlowMetadata(hydrated.flowMetadata);
-                setLastLayoutMs(hydrated.layoutDurationMs);
-                layoutStateRef.current = hydrated.layout;
-                edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
-                setNodes(hydrated.nodes);
-                setEdges(hydrated.edges);
-                if (!expandChildFlowsRef.current) {
-                    persistLayoutState(hydrated.layout, false);
-                }
-                primeFlowSaveBaseline(
-                    flowName,
-                    buildAuthoredYaml(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, {
-                        flow: hydrated.flow,
-                    }),
-                );
-                hydratedRef.current = true;
-                setIsHydrated(true);
-                recordFlowLoadDebug('hydrate:complete', flowName, {
-                    loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-yaml-handoff',
-                    nodeCount: hydrated.nodes.length,
-                    edgeCount: hydrated.edges.length,
-                    layoutMs: hydrated.layoutDurationMs,
-                });
-                setRawHandoffError(null);
-                rawYamlEntryDraftRef.current = '';
-                setEditorMode('structured');
-                useStore.setState({ preferredEditorMode: 'structured' });
-                completePreferenceInteraction({ editor_mode: 'structured' });
-            } catch {
-                setRawHandoffError('Safe handoff requires valid YAML. Failed to parse YAML preview for structured mode.');
-            }
-        } finally {
-            rawHandoffInFlightRef.current = false;
-            setIsRawHandoffInFlight(false);
-        }
-    }, [
-        clearDiagnostics,
-        flowName,
-        hydrateFromPreview,
-        persistLayoutState,
-        rawYamlDraft,
-        replaceFlowMetadata,
-        requestPreview,
-        setDiagnostics,
-        setEdges,
-        setNodes,
-    ]);
+    /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
+    const saveFlowFiles = useCallback(async (files: FlowFile[]) => {
+        if (!flowName) return false;
+        const saved = await saveFlowContent(flowName, { files });
+        if (saved) reloadFlow();
+        return saved;
+    }, [flowName, reloadFlow]);
 
     const onSelectionChange = useCallback(({ nodes, edges }: OnSelectionChangeParams) => {
         const selectedNode = nodes.find(n => n.selected);
@@ -1364,16 +1249,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
         const controller = new AbortController()
         const authoredGraph = canvasGraphRef.current
-        const yaml = buildAuthoredYaml(
+        const flow = buildAuthoredFlow(
             flowName,
             authoredGraph.nodes,
             authoredGraph.edges,
             authoredGraph.flowMetadata,
-            { flow: canonicalFlowRef.current },
+            canonicalFlowRef.current,
         )
 
         void requestPreview(
-            yaml,
+            flow,
             {
                 loadId: activeFlowLoadIdRef.current,
                 source: 'structured-sync-preview',
@@ -1390,7 +1275,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setLastPreviewMs(elapsedMs)
                 const hydrated = await hydrateFromPreview(
                     preview,
-                    yaml,
                     {
                         loadId: activeFlowLoadIdRef.current,
                         source: 'structured-sync-preview',
@@ -1402,7 +1286,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 if (controller.signal.aborted || !hydrated) {
                     return
                 }
-                setFlowYamlSerializationContext({ flow: hydrated.flow })
                 canonicalFlowRef.current = hydrated.flow
                 replaceFlowMetadata(hydrated.flowMetadata)
                 setLastLayoutMs(hydrated.layoutDurationMs)
@@ -1444,12 +1327,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 <EditorCanvasToolbar
                     mode={editorMode}
                     childFlowsExpanded={expandChildFlows}
-                    rawHandoffPending={isRawHandoffInFlight}
                     runDisabledReason={runDisabledReason}
-                    onSelectStructured={() => {
-                        if (editorMode === 'raw') void returnToStructuredMode()
-                    }}
-                    onSelectYaml={() => enterRawYamlMode()}
+                    onSelectStructured={() => selectEditorMode('structured')}
+                    onSelectFiles={() => selectEditorMode('files')}
                     onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
                     onArrange={() => {
                         void onAutoArrange()
@@ -1465,28 +1345,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     }}
                 />
             )}
-            <div className="relative min-h-0 flex-1">
-                {editorMode === 'raw' ? (
-                    <div className="h-full w-full p-4">
-                        <div className="h-full rounded-lg border border-border p-3">
-                            <Textarea
-                                data-testid="raw-yaml-editor"
-                                value={rawYamlDraft}
-                                onChange={(event) => {
-                                    setRawYamlDraft(event.target.value);
-                                    setRawHandoffError(null);
-                                }}
-                                className="h-full w-full resize-none font-mono text-sm leading-5"
-                                spellCheck={false}
-                            />
-                        </div>
-                        {rawHandoffError ? (
-                            <p data-testid="raw-yaml-handoff-error" className="mt-2 text-xs font-medium text-destructive">
-                                {rawHandoffError}
-                            </p>
-                        ) : null}
-                    </div>
-                ) : (
+            <div className="flex min-h-0 flex-1">
+            <div className="relative min-h-0 min-w-0 flex-1">
+                {
                     flowName ? (
                         <ReactFlow
                             className="flow-canvas"
@@ -1501,8 +1362,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             onSelectionChange={onSelectionChange}
                             nodeTypes={nodeTypes}
                             edgeTypes={edgeTypes}
-                            nodesDraggable={!isExpandedReadOnlyPreview}
-                            nodesConnectable={!isExpandedReadOnlyPreview}
+                            nodesDraggable={!isCanvasReadOnly}
+                            nodesConnectable={!isCanvasReadOnly}
+                            deleteKeyCode={isCanvasReadOnly ? null : undefined}
                             elementsSelectable={!isExpandedReadOnlyPreview}
                             defaultEdgeOptions={{
                                 type: EDGE_TYPE,
@@ -1539,7 +1401,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             </Well>
                         </div>
                     )
-                )}
+                }
 
                 {flowName && (
                     <div className="absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
@@ -1610,6 +1472,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         />
                     </div>
                 ) : null}
+            </div>
+            {flowName && editorMode === 'files' ? (
+                <FlowFilesView files={flowFiles} selectedNodeId={selectedNodeId} onSave={saveFlowFiles} />
+            ) : null}
             </div>
         </div>
     );

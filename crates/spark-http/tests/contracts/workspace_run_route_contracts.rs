@@ -24,7 +24,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
     let other_path = temp.path().join("other");
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
-    write_flow(&settings, "ops/run", simple_flow());
+    let flow_name = crate::install_flow(&settings, simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -39,7 +39,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/run",
+            "flow_name": flow_name,
             "summary": "Launch from route.",
             "conversation_handle": "amber-anchor",
             "project_path": project_path.to_string_lossy(),
@@ -222,7 +222,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         .as_array()
         .expect("launches")
         .iter()
-        .any(|entry| entry["flow_name"] == "ops/run" && entry["status"] == "launched"));
+        .any(|entry| entry["flow_name"] == flow_name.as_str() && entry["status"] == "launched"));
     assert!(!snapshot["flow_launches"]
         .as_array()
         .expect("launches")
@@ -236,7 +236,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/rust-boundary", simple_flow());
+    let flow_name = crate::install_flow(&settings, simple_flow());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",
@@ -256,7 +256,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/rust-boundary",
+            "flow_name": flow_name,
             "summary": "Launch through the Rust adapter boundary.",
             "project_path": project_path.to_string_lossy(),
             "model": "gpt-route-boundary",
@@ -353,7 +353,6 @@ fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) 
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow().to_string()),
             flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
@@ -368,7 +367,6 @@ fn seed_completed_run(settings: &SparkSettings, run_id: &str, project_path: &Pat
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow().to_string()),
             flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
@@ -438,16 +436,22 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
         .expect("handle");
 }
 
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
-}
-
-fn simple_flow() -> &'static str {
-    "schema_version: '1'\nid: workspace-run-route\ntitle: Workspace Run Route\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Write a route note\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "workspace-run-route",
+        "title": "Workspace Run Route",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Write a route note"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {

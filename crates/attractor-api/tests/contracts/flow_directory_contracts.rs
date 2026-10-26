@@ -5,56 +5,63 @@ use std::path::Path;
 use attractor_api::{preview_with_roots, AttractorApiService, PreviewRequest, SaveFlowRequest};
 use attractor_core::{ExecutionConfig, NodeConfig};
 use attractor_dsl::{
-    flow_ref_name, flow_yaml, load_flow, parse_flow_definition, read_flow_dir, resolve_flow_roles,
-    write_flow_dir, FlowDefinition, FlowRoots,
+    flow_ref_name, load_flow, read_flow_dir, resolve_flow_roles, validated_flow, write_flow_dir,
+    FlowDefinition, FlowRoots, FlowSourceError,
 };
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
-const FLOW: &str = r#"schema_version: "1"
-id: review
-title: Review
-goal: Review the work.
-nodes:
-  start:
-    kind: start
-    label: Start
-  check:
-    kind: tool
-    label: Check
-    config:
-      kind: tool
-      command: "echo ``` && true"
-  review:
-    kind: agent_task
-    label: Review
-    role: reviewer
-    config:
-      kind: agent_task
-      prompt: Review the diff.
-    execution:
-      llm_model: node-model
-  done:
-    kind: exit
-    label: Done
-    config:
-      kind: exit
-      result_summary: true
-      result_summary_prompt: Summarize.
-edges:
-  - from: start
-    to: check
-  - from: check
-    to: review
-    condition: outcome=success
-  - from: review
-    to: done
-"#;
+fn flow_value() -> Value {
+    json!({
+    "schema_version": "1",
+    "id": "review",
+    "title": "Review",
+    "goal": "Review the work.",
+    "nodes": {
+        "start": {"kind": "start", "label": "Start"},
+        "check": {
+            "kind": "tool",
+            "label": "Check",
+            "config": {"kind": "tool", "command": "echo ``` && true"}
+        },
+        "review": {
+            "kind": "agent_task",
+            "label": "Review",
+            "role": "reviewer",
+            "config": {"kind": "agent_task", "prompt": "Review the diff."},
+            "execution": {"llm_model": "node-model"}
+        },
+        "done": {
+            "kind": "exit",
+            "label": "Done",
+            "config": {
+                "kind": "exit",
+                "result_summary": true,
+                "result_summary_prompt": "Summarize."
+            }
+        }
+    },
+    "edges": [
+        {"from": "start", "to": "check"},
+        {
+            "from": "check",
+            "to": "review",
+            "condition": "outcome=success"
+        },
+        {"from": "review", "to": "done"}
+    ]
+    })
+}
 
 const ROLE: &str = "---\ntype: Role\nexecution:\n  llm_model: role-model\n  reasoning_effort: high\n---\n\nYou are a careful reviewer.\n";
 
+/// A JSON `FlowDefinition`, validated and normalized.
+fn flow_json(value: Value) -> Result<FlowDefinition, FlowSourceError> {
+    validated_flow(serde_json::from_value(value).expect("flow definition JSON"))
+}
+
 fn flow() -> FlowDefinition {
-    parse_flow_definition(FLOW).expect("valid flow")
+    flow_json(flow_value()).expect("valid flow")
 }
 
 /// A project with an org repo that has a local git identity, since editor
@@ -71,10 +78,11 @@ fn project_with_org(root: &Path) -> std::path::PathBuf {
     project
 }
 
-fn save_request(name: &str, content: String, project: &Path) -> SaveFlowRequest {
+fn save_request(name: &str, flow: FlowDefinition, project: &Path) -> SaveFlowRequest {
     SaveFlowRequest {
         name: name.to_string(),
-        content,
+        flow: Some(flow),
+        files: None,
         project_path: Some(project.to_string_lossy().to_string()),
     }
 }
@@ -170,7 +178,7 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
     fs::write(dir.join(".start.md.swp"), "swap").expect("swap");
     fs::create_dir(dir.join(".git")).expect("hidden dir");
     fs::write(dir.join("notes.txt"), "notes").expect("notes");
-    fs::write(dir.join("old.yaml"), FLOW).expect("yaml");
+    fs::write(dir.join("old.yaml"), "id: review\n").expect("yaml");
     let error = read_flow_dir(&dir).expect_err("unknown files");
     assert!(
         error
@@ -232,7 +240,7 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
     let project = project_with_org(temp.path());
     let service = AttractorApiService::new(settings.clone());
 
-    let unknown_role = service.save_flow(save_request("review", FLOW.to_string(), &project));
+    let unknown_role = service.save_flow(save_request("review", flow(), &project));
     assert_eq!(unknown_role.status_code, 422, "{}", unknown_role.body);
     assert!(unknown_role
         .body
@@ -250,7 +258,7 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
             format!("---\ntype: Role\nexecution:\n  {execution}\n---\n\nPersona.\n"),
         )
         .expect("role");
-        let rejected = service.save_flow(save_request("review", FLOW.to_string(), &project));
+        let rejected = service.save_flow(save_request("review", flow(), &project));
         assert_ne!(rejected.status_code, 200, "{}", rejected.body);
         assert!(
             rejected.body.to_string().contains(expected),
@@ -266,19 +274,30 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
         ROLE,
     )
     .expect("role");
-    let saved = service.save_flow(save_request("review", FLOW.to_string(), &project));
+    let saved = service.save_flow(save_request("review", flow(), &project));
     assert_eq!(saved.status_code, 200, "{}", saved.body);
 
     let loaded = service.get_flow("review", project.to_str());
-    let content = loaded.body["content"].as_str().expect("content");
-    assert!(content.contains("role: reviewer"));
-    assert!(!content.contains("careful reviewer"));
-    assert_eq!((parse_flow_definition(content).expect("authored")), flow());
+    let files = loaded.body["files"].as_array().expect("files");
+    let review = files
+        .iter()
+        .find(|file| file["name"] == "review.md")
+        .expect("review.md");
+    assert!(review["content"]
+        .as_str()
+        .expect("content")
+        .contains("role: reviewer"));
+    assert!(!loaded.body.to_string().contains("careful reviewer"));
+    assert_eq!(
+        flow_json(loaded.body["flow"].clone()).expect("authored"),
+        flow()
+    );
 
     let roots = FlowRoots::new(settings.bundled_dir(), Some(&project));
-    let resolved = flow_yaml(&load_flow(&roots, "review").expect("resolved").flow).expect("yaml");
+    let resolved =
+        serde_json::to_string(&load_flow(&roots, "review").expect("resolved").flow).expect("json");
     assert!(resolved.contains("You are a careful reviewer."));
-    assert!(!resolved.contains("role: reviewer"));
+    assert!(!resolved.contains("\"role\""));
 
     // A project role replaces the bundled role of the same name.
     fs::create_dir_all(org.join("roles")).expect("org roles");
@@ -287,7 +306,8 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
         "---\ntype: Role\n---\n\nYou are the project's reviewer.\n",
     )
     .expect("org role");
-    let resolved = flow_yaml(&load_flow(&roots, "review").expect("resolved").flow).expect("yaml");
+    let resolved =
+        serde_json::to_string(&load_flow(&roots, "review").expect("resolved").flow).expect("json");
     assert!(
         resolved.contains("You are the project's reviewer."),
         "{resolved}"
@@ -308,11 +328,7 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     let project = project_with_org(temp.path());
     let service = AttractorApiService::new(settings.clone());
     let save = |flow: &FlowDefinition| {
-        let response = service.save_flow(save_request(
-            "review",
-            flow_yaml(flow).expect("yaml"),
-            &project,
-        ));
+        let response = service.save_flow(save_request("review", flow.clone(), &project));
         assert_eq!(response.status_code, 200, "{}", response.body);
     };
     save(&flow());
@@ -367,14 +383,28 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
 fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
-    let child = parse_flow_definition(
-        "id: child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
-    )
+    let child = flow_json(json!({
+        "id": "child",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    }))
     .expect("child");
     write_flow_dir(&flows_dir.join("team/workers/child"), &child).expect("child");
-    let parent = parse_flow_definition(
-        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
-    )
+    let parent = flow_json(json!({
+        "id": "parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "run": {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": "workers/child"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "run"},
+            {"from": "run", "to": "done"}
+        ]
+    }))
     .expect("parent");
     write_flow_dir(&flows_dir.join("team/parent"), &parent).expect("parent");
 
@@ -390,7 +420,7 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
     );
     let preview = preview_with_roots(
         PreviewRequest {
-            flow_content: flow_yaml(&parent).expect("yaml"),
+            flow: Some(parent.clone()),
             flow_name: Some("team/parent".to_string()),
             expand_children: true,
             project_path: None,
@@ -419,16 +449,33 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
 fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_resolver() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
-    let child = parse_flow_definition(
-        "id: child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
-    )
+    let child = flow_json(json!({
+        "id": "child",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    }))
     .expect("child");
     write_flow_dir(&flows_dir.join("team/workers/child"), &child).expect("child");
     write_flow_dir(&flows_dir.join("outside"), &child).expect("outside");
     let parent_with = |flow_ref: &str| {
-        let mut parent = parse_flow_definition(
-            "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
-        )
+        let mut parent = flow_json(json!({
+            "id": "parent",
+            "nodes": {
+                "start": {"kind": "start"},
+                "run": {
+                    "kind": "subflow",
+                    "config": {
+                        "kind": "subflow",
+                        "flow_ref": "workers/child"
+                    }
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [
+                {"from": "start", "to": "run"},
+                {"from": "run", "to": "done"}
+            ]
+        }))
         .expect("parent");
         parent.nodes.get_mut("run").expect("run").config = Some(NodeConfig::Subflow {
             flow_ref: flow_ref.to_string(),
@@ -439,7 +486,7 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
     let child_preview = |parent: &FlowDefinition| {
         preview_with_roots(
             PreviewRequest {
-                flow_content: flow_yaml(parent).expect("yaml"),
+                flow: Some(parent.clone()),
                 flow_name: Some("team/parent".to_string()),
                 expand_children: true,
                 project_path: None,
@@ -480,9 +527,12 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
 fn authored_child_workdir_does_not_change_the_flow_ref_base() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let child = parse_flow_definition(
-        "id: child\ntitle: Child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
-    )
+    let child = flow_json(json!({
+        "id": "child",
+        "title": "Child",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    }))
     .expect("child");
     write_flow_dir(
         &settings
@@ -492,9 +542,26 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
         &child,
     )
     .expect("child");
-    let parent = parse_flow_definition(
-        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n    manager: {max_cycles: 1, child_autostart: true, child_workdir: worktree}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
-    )
+    let parent = flow_json(json!({
+        "id": "parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "run": {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": "workers/child"},
+                "manager": {
+                    "max_cycles": 1,
+                    "child_autostart": true,
+                    "child_workdir": "worktree"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "run"},
+            {"from": "run", "to": "done"}
+        ]
+    }))
     .expect("parent");
     write_flow_dir(
         &settings.bundled_dir().join("flows").join("team/parent"),
@@ -506,7 +573,7 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
 
     let preview = preview_with_roots(
         PreviewRequest {
-            flow_content: flow_yaml(&parent).expect("yaml"),
+            flow: Some(parent.clone()),
             flow_name: Some("team/parent".to_string()),
             expand_children: true,
             project_path: None,
@@ -595,24 +662,35 @@ fn named_launches_execute_the_resolved_form() {
                 .with_rust_llm_client(unified_llm_adapter::Client::new())
         }),
     );
-    let flow = r#"id: inline-review
-nodes:
-  start: {kind: start}
-  first:
-    kind: agent_task
-    role: reviewer
-    config: {kind: agent_task, prompt: Review the first part.}
-  second:
-    kind: agent_task
-    role: reviewer
-    config: {kind: agent_task, prompt: Review the second part.}
-    execution: {llm_model: node-model}
-  done: {kind: exit}
-edges:
-  - {from: start, to: first}
-  - {from: first, to: second}
-  - {from: second, to: done}
-"#;
+    let flow = json!({
+        "id": "inline-review",
+        "nodes": {
+            "start": {"kind": "start"},
+            "first": {
+                "kind": "agent_task",
+                "role": "reviewer",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Review the first part."
+                }
+            },
+            "second": {
+                "kind": "agent_task",
+                "role": "reviewer",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Review the second part."
+                },
+                "execution": {"llm_model": "node-model"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "first"},
+            {"from": "first", "to": "second"},
+            {"from": "second", "to": "done"}
+        ]
+    });
     // Runs launch the flow on disk by name.
     let name = crate::install_flow(&settings, flow);
     let launch = |run_id: &str| {
@@ -704,13 +782,18 @@ edges:
         .expect("read")
         .expect("run");
     assert_eq!(bundle.record.expect("record").status, "completed");
-    let snapshot = fs::read_to_string(bundle.paths.artifacts_dir().join("flow/flow-source.yaml"))
-        .expect("snapshot");
+    let snapshot = fs::read_to_string(
+        bundle
+            .paths
+            .artifacts_dir()
+            .join("flow/flow-definition.json"),
+    )
+    .expect("snapshot");
     assert!(
         snapshot.contains("You are a careful reviewer."),
         "{snapshot}"
     );
-    assert!(!snapshot.contains("role:"), "{snapshot}");
+    assert!(!snapshot.contains("\"role\""), "{snapshot}");
 }
 
 #[test]
@@ -719,15 +802,31 @@ fn launches_resolve_child_flows_by_name_to_the_project_copy() {
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir().join("flows");
     let child = |title: &str| {
-        parse_flow_definition(&format!(
-            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
-        ))
+        flow_json(json!({
+            "id": "child",
+            "title": title,
+            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+            "edges": [{"from": "start", "to": "done"}]
+        }))
         .expect("child")
     };
     write_flow_dir(&bundled.join("team/workers/child"), &child("Bundled Child")).expect("child");
-    let parent = parse_flow_definition(
-        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n    manager: {max_cycles: 1, child_autostart: true}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
-    )
+    let parent = flow_json(json!({
+        "id": "parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "run": {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": "workers/child"},
+                "manager": {"max_cycles": 1, "child_autostart": true}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "run"},
+            {"from": "run", "to": "done"}
+        ]
+    }))
     .expect("parent");
     write_flow_dir(&bundled.join("team/parent"), &parent).expect("parent");
     let project = temp.path().join("project");
@@ -855,15 +954,31 @@ fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let parent = |child: &str| {
-        parse_flow_definition(&format!(
-            "id: parent\nnodes:\n  start: {{kind: start}}\n  run:\n    kind: subflow\n    config: {{kind: subflow, flow_ref: {child}}}\n    manager: {{max_cycles: 1, child_autostart: true}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: run}}\n  - {{from: run, to: done}}\n"
-        ))
+        flow_json(json!({
+            "id": "parent",
+            "nodes": {
+                "start": {"kind": "start"},
+                "run": {
+                    "kind": "subflow",
+                    "config": {"kind": "subflow", "flow_ref": child},
+                    "manager": {"max_cycles": 1, "child_autostart": true}
+                },
+                "done": {"kind": "exit"}
+            },
+            "edges": [
+                {"from": "start", "to": "run"},
+                {"from": "run", "to": "done"}
+            ]
+        }))
         .expect("parent")
     };
     let child = |title: &str| {
-        parse_flow_definition(&format!(
-            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
-        ))
+        flow_json(json!({
+            "id": "child",
+            "title": title,
+            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+            "edges": [{"from": "start", "to": "done"}]
+        }))
         .expect("child")
     };
     // Org-only flows in two projects; runs execute in a separate checkout.
@@ -977,14 +1092,30 @@ fn bundled_only_runs_continue_bundled_only_when_the_project_has_overrides() {
 
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let parent = parse_flow_definition(
-        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: child}\n    manager: {max_cycles: 1, child_autostart: true}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
-    )
+    let parent = flow_json(json!({
+        "id": "parent",
+        "nodes": {
+            "start": {"kind": "start"},
+            "run": {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": "child"},
+                "manager": {"max_cycles": 1, "child_autostart": true}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "run"},
+            {"from": "run", "to": "done"}
+        ]
+    }))
     .expect("parent");
     let child = |title: &str| {
-        parse_flow_definition(&format!(
-            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
-        ))
+        flow_json(json!({
+            "id": "child",
+            "title": title,
+            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+            "edges": [{"from": "start", "to": "done"}]
+        }))
         .expect("child")
     };
     // Differing bundled and project copies of the same names.

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { FilePlus } from 'lucide-react'
 
 import { useStore } from '@/store'
-import { sanitizeFlowId } from '@/lib/flowYamlUtils'
+import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
@@ -73,37 +73,27 @@ function useFlowCatalogPanel() {
 
         const fileName = name;
         const flowId = sanitizeFlowId(fileName);
-        const quoteYaml = (value: string) => JSON.stringify(value)
-        const defaults = [
-            uiDefaults.llm_model ? `  llm_model: ${quoteYaml(uiDefaults.llm_model)}` : '',
-            uiDefaults.llm_provider ? `  llm_provider: ${quoteYaml(uiDefaults.llm_provider)}` : '',
-            uiDefaults.llm_profile ? `  llm_profile: ${quoteYaml(uiDefaults.llm_profile)}` : '',
-            uiDefaults.reasoning_effort ? `  reasoning_effort: ${quoteYaml(uiDefaults.reasoning_effort)}` : '',
-        ].filter(Boolean)
-        const defaultsBlock = defaults.length ? `defaults:\n${defaults.join('\n')}\n` : ''
+        // A minimal FlowDefinition; empty defaults drop out of the JSON.
+        const flow = {
+            schema_version: '1.0',
+            id: flowId,
+            title: fileName,
+            description: '',
+            goal: '',
+            defaults: {
+                llm_model: uiDefaults.llm_model || undefined,
+                llm_provider: uiDefaults.llm_provider || undefined,
+                llm_profile: uiDefaults.llm_profile || undefined,
+                reasoning_effort: uiDefaults.reasoning_effort || undefined,
+            },
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
+                end: { kind: 'exit', label: 'End', config: { kind: 'exit' } },
+            },
+            edges: [{ from: 'start', to: 'end' }],
+        }
 
-        const initialContent = `schema_version: "1.0"
-id: ${flowId}
-title: ${quoteYaml(fileName)}
-description: ""
-goal: ""
-${defaultsBlock}nodes:
-  start:
-    kind: start
-    label: Start
-    config:
-      kind: start
-  end:
-    kind: exit
-    label: End
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: end
-`
-
-        const saved = await saveFlowContent(fileName, initialContent)
+        const saved = await saveFlowContent(fileName, { flow })
         if (!saved) return
 
         await refreshFlows();

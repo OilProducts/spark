@@ -82,7 +82,7 @@ cannot be migrated automatically.
 The Preferences editor saves explicitly and retains drafts on conflicts. Editor
 mode changes and completed sidebar resize interactions persist without opening
 Settings; pointer movement and viewport-size adjustments do not write preferences.
-Selected records, raw YAML drafts and route restoration remain session state.
+Selected records, unsaved file view edits and route restoration remain session state.
 Additional client fields are `show_advanced_controls`, `expand_child_flows`,
 `graph_settings_open`, `runs_scope`, and `triggers_scope`. The first three default
 to false and supply initial presentation for newly opened flows/nodes. Run scope

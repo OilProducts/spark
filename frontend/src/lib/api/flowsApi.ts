@@ -6,7 +6,7 @@ import {
     expectObjectRecord,
     expectString,
 } from './shared'
-import { fetchWorkspaceJsonValidated, fetchWorkspaceTextValidated } from './apiClient'
+import { fetchWorkspaceJsonValidated } from './apiClient'
 
 export type FlowExecutionLockScope = 'project'
 export type FlowExecutionLockConflictPolicy = 'queue'
@@ -111,13 +111,6 @@ export function parseWorkspaceFlowListResponse(payload: unknown, endpoint = '/wo
         .filter((entry): entry is WorkspaceFlowResponse => entry !== null)
 }
 
-export function parseWorkspaceFlowRawResponse(payload: unknown, endpoint = '/workspace/api/flows/{flow_name}/raw'): string {
-    if (typeof payload !== 'string') {
-        throw new ApiSchemaError(endpoint, 'Expected raw YAML text response.')
-    }
-    return payload
-}
-
 function projectQuery(projectPath: string | null): string {
     return projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''
 }
@@ -140,17 +133,5 @@ export async function fetchWorkspaceFlowValidated(
         undefined,
         '/workspace/api/flows/{flow_name}',
         parseWorkspaceFlowResponse,
-    )
-}
-
-export async function fetchWorkspaceFlowRawValidated(
-    flowName: string,
-    projectPath: string | null,
-): Promise<string> {
-    return fetchWorkspaceTextValidated(
-        `/flows/${encodeFlowPath(flowName)}/raw${projectQuery(projectPath)}`,
-        undefined,
-        '/workspace/api/flows/{flow_name}/raw',
-        parseWorkspaceFlowRawResponse,
     )
 }

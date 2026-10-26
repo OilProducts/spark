@@ -248,7 +248,7 @@ function RunOutputs({
     const resultFiles = artifactEntries.filter((entry) => (
         entry.path.startsWith('result/') || (entry.path.startsWith('artifacts/') && !entry.path.startsWith('artifacts/flow/'))
     ))
-    const flowSnapshot = artifactEntries.find((entry) => entry.path.startsWith('artifacts/flow/flow-source'))
+    const flowSnapshot = artifactEntries.find((entry) => entry.path === 'artifacts/flow/flow-definition.json')
         ?? artifactEntries.find((entry) => entry.path.startsWith('artifacts/flow/'))
     // A failed run's commit and branch are where it started, not something it made.
     const commit = withCommit ? run.git_commit?.trim() : null

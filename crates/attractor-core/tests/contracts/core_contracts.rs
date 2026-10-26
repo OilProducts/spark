@@ -681,18 +681,19 @@ fn node_runtime_timeout_accepts_durations_and_rejects_invalid_values() {
         assert!(error.contains("runtime.timeout"), "{error}");
     }
 
-    let flow = attractor_core::FlowDefinition::from_yaml_str(
-        r#"schema_version: "1"
-id: timeouts
-nodes:
-  start: { kind: start }
-  work: { kind: agent_task, runtime: { timeout: 1e100s } }
-  done: { kind: exit }
-edges:
-- { from: start, to: work }
-- { from: work, to: done }
-"#,
-    )
+    let flow = serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "timeouts",
+        "nodes": {
+            "start": { "kind": "start" },
+            "work": { "kind": "agent_task", "runtime": { "timeout": "1e100s" } },
+            "done": { "kind": "exit" }
+        },
+        "edges": [
+            { "from": "start", "to": "work" },
+            { "from": "work", "to": "done" }
+        ]
+    }))
     .unwrap();
     let diagnostics = flow.diagnostics();
     assert!(
@@ -705,10 +706,13 @@ edges:
 
 #[test]
 fn execution_locks_require_project_scope_a_key_and_queue_policy() {
-    let rules = |lock: &str| {
-        attractor_core::FlowDefinition::from_yaml_str(&format!(
-            "id: locked\nexecution_lock: {lock}\nnodes:\n  start: {{ kind: start }}\n  done: {{ kind: exit }}\nedges:\n- {{ from: start, to: done }}\n"
-        ))
+    let rules = |lock: serde_json::Value| {
+        serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+            "id": "locked",
+            "execution_lock": lock,
+            "nodes": { "start": { "kind": "start" }, "done": { "kind": "exit" } },
+            "edges": [{ "from": "start", "to": "done" }]
+        }))
         .unwrap()
         .diagnostics()
         .into_iter()
@@ -717,17 +721,21 @@ fn execution_locks_require_project_scope_a_key_and_queue_policy() {
         .collect::<Vec<_>>()
     };
     assert_eq!(
-        rules("{ scope: project, key: integration }"),
+        rules(json!({ "scope": "project", "key": "integration" })),
         Vec::<String>::new()
     );
     assert_eq!(
-        rules("{ scope: Project, key: integration, conflict_policy: QUEUE }"),
+        rules(json!({ "scope": "Project", "key": "integration", "conflict_policy": "QUEUE" })),
         Vec::<String>::new()
     );
-    assert_eq!(rules("{ scope: global, key: integration }").len(), 1);
-    assert_eq!(rules("{ scope: project, key: ' ' }").len(), 1);
     assert_eq!(
-        rules("{ scope: project, key: integration, conflict_policy: reject }").len(),
+        rules(json!({ "scope": "global", "key": "integration" })).len(),
+        1
+    );
+    assert_eq!(rules(json!({ "scope": "project", "key": " " })).len(), 1);
+    assert_eq!(
+        rules(json!({ "scope": "project", "key": "integration", "conflict_policy": "reject" }))
+            .len(),
         1
     );
 }

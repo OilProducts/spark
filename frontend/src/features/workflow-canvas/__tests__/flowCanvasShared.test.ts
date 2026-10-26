@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 
@@ -6,16 +6,20 @@ import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canva
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
-import { generateFlowYaml } from '@/lib/flowYamlUtils'
+import {
+    buildCanonicalFlowModelFromEditorState,
+    buildFlowDefinitionFromCanonicalFlowModel,
+    type CanonicalEditorStateInput,
+} from '@/lib/canonicalFlowModel'
 import type { EdgeRoute } from '@/lib/edgeRouting'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = resolve(process.cwd(), '..')
 const previewFixtureCache = new Map<string, PreviewResponsePayload>()
 const require = createRequire(import.meta.url)
-const { load: loadYaml, dump: dumpYaml } = require('js-yaml') as {
+// Frontmatter in flow files is YAML.
+const { load: loadFrontmatter } = require('js-yaml') as {
     load: (source: string) => unknown
-    dump: (value: unknown) => string
 }
 
 function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolean): PreviewResponsePayload {
@@ -26,7 +30,7 @@ function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolea
     }
 
     const flowPath = resolve(repoRoot, flowRelativePath)
-    const payload = buildPreviewPayloadFromFlowFile(flowPath, expandChildren)
+    const payload = buildPreviewPayloadFromFlowDefinition(flowPath, expandChildren)
 
     previewFixtureCache.set(cacheKey, payload)
     return payload
@@ -63,15 +67,22 @@ interface LooseFlowDefinition extends LooseRecord {
     edges?: LooseFlowEdge[]
 }
 
-function buildPreviewPayloadFromFlowFile(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
-    if (statSync(flowPath).isDirectory()) {
-        return buildPreviewPayloadFromFlowDefinition(flowPath, expandChildren)
-    }
-    return buildPreviewPayloadFromYamlCompatFile(flowPath, expandChildren)
+// The FlowDefinition the editor saves for this canvas state.
+function buildFlow(
+    flowName: string,
+    nodes: CanonicalEditorStateInput['nodes'],
+    edges: CanonicalEditorStateInput['edges'],
+    flowMetadata: CanonicalEditorStateInput['flowMetadata'],
+    flow: CanonicalEditorStateInput['flow'] = null,
+) {
+    return buildFlowDefinitionFromCanonicalFlowModel(
+        flowName,
+        buildCanonicalFlowModelFromEditorState(flowName, { nodes, edges, flowMetadata, flow }),
+    ) as LooseFlowDefinition & { nodes: Record<string, LooseFlowNode>; edges: LooseFlowEdge[]; inputs?: unknown }
 }
 
 function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
-    const flow = parseFlowYamlFile(flowPath)
+    const flow = readFlowDirectory(flowPath)
     const graph = flowDefinitionToPreviewGraph(flow)
     if (expandChildren) {
         const childPreviews = Object.entries(flow.nodes ?? {})
@@ -82,7 +93,7 @@ function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren:
                     return null
                 }
                 const childPath = resolve(dirname(flowPath), flowRef)
-                const childFlow = parseFlowYamlFile(childPath)
+                const childFlow = readFlowDirectory(childPath)
                 return [nodeId, {
                     flow_name: flowRef,
                     flow_path: childPath,
@@ -112,11 +123,11 @@ const NODE_BODY_KEYS: Record<string, string> = {
 
 // Assembles a flow directory (flow.md plus one <node>.md per node) the way
 // the server loader does.
-function parseFlowYamlFile(flowPath: string): LooseFlowDefinition {
+function readFlowDirectory(flowPath: string): LooseFlowDefinition {
     const readMarkdown = (file: string) => {
         const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(readFileSync(resolve(flowPath, file), 'utf-8'))
         return {
-            meta: (loadYaml(match?.[1] ?? '') ?? {}) as LooseRecord,
+            meta: (loadFrontmatter(match?.[1] ?? '') ?? {}) as LooseRecord,
             body: (match?.[2] ?? '').trim(),
         }
     }
@@ -177,144 +188,6 @@ function flowDefinitionToPreviewGraph(flow: LooseFlowDefinition): NonNullable<Pr
         nodes,
         edges,
     }
-}
-
-function buildPreviewPayloadFromYamlCompatFile(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
-    const source = readFileSync(flowPath, 'utf-8')
-    const graph = parseLineOrientedYamlCompat(source)
-    if (expandChildren) {
-        const childYamlfile = typeof graph.metadata?.['stack.child_yamlfile'] === 'string'
-            ? graph.metadata['stack.child_yamlfile']
-            : null
-        if (childYamlfile) {
-            const childPath = resolve(dirname(flowPath), childYamlfile)
-            graph.child_previews = Object.fromEntries(
-                graph.nodes
-                    .filter((node) => node.type === 'stack.manager_loop' || node.shape === 'house')
-                    .map((node) => {
-                        const childGraph = parseLineOrientedYamlCompat(readFileSync(childPath, 'utf-8'))
-                        return [String(node.id), {
-                            flow_name: childYamlfile,
-                            flow_path: childPath,
-                            flow_label: typeof childGraph.metadata?.label === 'string' ? childGraph.metadata.label : childYamlfile,
-                            provenance: 'derived_child_preview',
-                            graph: childGraph,
-                        }]
-                    }),
-            )
-        }
-    }
-    return {
-        status: 'ok',
-        graph,
-    }
-}
-
-function parseLineOrientedYamlCompat(source: string): NonNullable<PreviewResponsePayload['graph']> {
-    const graphAttrs: Record<string, unknown> = {}
-    const nodes: Array<Record<string, unknown>> = []
-    const edges: Array<Record<string, unknown>> = []
-
-    source.split(/\r?\n/).forEach((rawLine) => {
-        const line = rawLine.trim()
-        if (!line || line === '{' || line === '}') {
-            return
-        }
-        if (line.startsWith('graph [')) {
-            Object.assign(graphAttrs, parseAttrs(extractAttrBody(line)))
-            return
-        }
-        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;[]+)"?\s*(?:\[(.*)\])?;?$/)
-        if (edgeMatch) {
-            edges.push({
-                from: edgeMatch[1],
-                to: edgeMatch[2],
-                ...parseAttrs(edgeMatch[3] ?? ''),
-            })
-            return
-        }
-        const nodeMatch = line.match(/^"?([^"\s[]+)"?\s*\[(.*)\];?$/)
-        if (nodeMatch && !['node', 'edge'].includes(nodeMatch[1])) {
-            nodes.push({
-                id: nodeMatch[1],
-                ...parseAttrs(nodeMatch[2]),
-            })
-        }
-    })
-
-    return {
-        metadata: graphAttrs,
-        nodes,
-        edges,
-    }
-}
-
-function extractAttrBody(statement: string): string {
-    const start = statement.indexOf('[')
-    const end = statement.lastIndexOf(']')
-    return start >= 0 && end > start ? statement.slice(start + 1, end) : ''
-}
-
-function parseAttrs(body: string): Record<string, unknown> {
-    const attrs: Record<string, unknown> = {}
-    splitAttrs(body).forEach((part) => {
-        const index = part.indexOf('=')
-        if (index <= 0) {
-            return
-        }
-        const key = part.slice(0, index).trim()
-        const rawValue = part.slice(index + 1).trim()
-        attrs[key] = parseAttrValue(rawValue)
-    })
-    return attrs
-}
-
-function splitAttrs(body: string): string[] {
-    const parts: string[] = []
-    let current = ''
-    let inString = false
-    let escaped = false
-    for (const character of body) {
-        if (escaped) {
-            current += character
-            escaped = false
-            continue
-        }
-        if (character === '\\') {
-            current += character
-            escaped = true
-            continue
-        }
-        if (character === '"') {
-            current += character
-            inString = !inString
-            continue
-        }
-        if (character === ',' && !inString) {
-            parts.push(current.trim())
-            current = ''
-            continue
-        }
-        current += character
-    }
-    if (current.trim()) {
-        parts.push(current.trim())
-    }
-    return parts
-}
-
-function parseAttrValue(rawValue: string): string | number | boolean {
-    if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
-        return rawValue.slice(1, -1).replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\\\/g, '\\')
-    }
-    if (rawValue === 'true') {
-        return true
-    }
-    if (rawValue === 'false') {
-        return false
-    }
-    const numeric = Number(rawValue)
-    return Number.isFinite(numeric) && rawValue.trim() !== '' ? numeric : rawValue
 }
 
 function getRenderRoute(edge: { data?: Record<string, unknown> | undefined }): EdgeRoute | null {
@@ -584,7 +457,7 @@ describe('flowCanvasShared', () => {
             llm_model: '',
             llm_provider: '',
             reasoning_effort: '',
-        }, undefined, {
+        }, {
             expandChildren: true,
         })
 
@@ -607,7 +480,7 @@ describe('flowCanvasShared', () => {
         })
     })
 
-    it('hydrates typed FlowDefinition previews, expands children, and round-trips YAML without metadata loss', () => {
+    it('hydrates typed FlowDefinition previews, expands children, and round-trips the FlowDefinition without metadata loss', () => {
         const flow = {
             schema_version: '1.0',
             id: 'typed_parent',
@@ -701,7 +574,7 @@ describe('flowCanvasShared', () => {
             llm_model: '',
             llm_provider: '',
             reasoning_effort: '',
-        }, undefined, {
+        }, {
             expandChildren: true,
         })
 
@@ -729,16 +602,13 @@ describe('flowCanvasShared', () => {
         })
         expect(hydrated?.nodes.some((node) => node.id === '__child_preview__child__child_start')).toBe(true)
 
-        const yaml = generateFlowYaml(
+        const roundTripped = buildFlow(
             'typed-parent.yaml',
             filterAuthoredNodes(hydrated?.nodes ?? []),
             filterAuthoredEdges(hydrated?.edges ?? []),
             hydrated?.flowMetadata ?? {},
-            {
-                flow: hydrated?.flow,
-            },
+            hydrated?.flow,
         )
-        const roundTripped = loadYaml(yaml) as LooseRecord
 
         expect(roundTripped).toMatchObject({
             schema_version: '1.0',
@@ -806,9 +676,7 @@ describe('flowCanvasShared', () => {
         const edited = (hydrated?.nodes ?? []).map((node) => (
             node.id === 'first' ? { ...node, data: { ...node.data, prompt: 'Review A twice.' } } : node
         ))
-        const saved = loadYaml(generateFlowYaml('roles', edited, hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, {
-            flow: hydrated?.flow,
-        })) as LooseRecord
+        const saved = buildFlow('roles', edited, hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, hydrated?.flow)
 
         expect(saved.nodes.second).toEqual(flow.nodes.second)
         expect(saved.edges).toEqual(flow.edges)
@@ -816,11 +684,6 @@ describe('flowCanvasShared', () => {
     })
 
     it('does not materialize implicit node or graph defaults when saving after apply-to-nodes style edits', () => {
-        const sourceYaml = `
-            schema_version: "1"
-            id: implement_spec_program
-            title: Implement Spec Program
-        `
         const preview: PreviewResponsePayload = {
             status: 'ok',
             graph: {
@@ -841,7 +704,7 @@ describe('flowCanvasShared', () => {
             llm_model: 'gpt-5.4',
             llm_provider: 'openai',
             reasoning_effort: 'high',
-        }, sourceYaml)
+        })
 
         expect(hydrated).not.toBeNull()
         expect(hydrated?.graphAttrs.ui_default_llm_model).toBeUndefined()
@@ -859,36 +722,18 @@ describe('flowCanvasShared', () => {
                 reasoning_effort: 'high',
             },
         }))
-        const yaml = generateFlowYaml('implement-spec.yaml', updatedNodes, hydrated?.edges ?? [], hydrated?.graphAttrs ?? {})
+        const saved = JSON.stringify(buildFlow('implement-spec.yaml', updatedNodes, hydrated?.edges ?? [], hydrated?.graphAttrs ?? {}))
 
-        expect(yaml).toContain('llm_model: gpt-5.4')
-        expect(yaml).toContain('llm_provider: openai')
-        expect(yaml).toContain('reasoning_effort: high')
-        expect(yaml).not.toContain('error_policy: continue')
-        expect(yaml).not.toContain('goal_gate: false')
-        expect(yaml).not.toContain('auto_status: false')
-        expect(yaml).not.toContain('allow_partial: false')
-        expect(yaml).not.toContain('ui_default_llm_model')
-        expect(yaml).not.toContain('ui_default_llm_provider')
-        expect(yaml).not.toContain('ui_default_reasoning_effort')
-    })
-
-    it('serializes nested empty collections as parseable YAML', () => {
-        const yaml = generateFlowYaml('empty-collections.yaml', [], [], {}, {
-            flow: {
-                schema_version: '1',
-                id: 'empty_collections',
-                title: 'Empty Collections',
-                nodes: {},
-                edges: [],
-            },
-        })
-
-        expect(loadYaml(yaml)).toMatchObject({
-            metadata: {},
-            nodes: {},
-            edges: [],
-        })
+        expect(saved).toContain('"llm_model":"gpt-5.4"')
+        expect(saved).toContain('"llm_provider":"openai"')
+        expect(saved).toContain('"reasoning_effort":"high"')
+        expect(saved).not.toContain('"error_policy"')
+        expect(saved).not.toContain('"goal_gate"')
+        expect(saved).not.toContain('"auto_status"')
+        expect(saved).not.toContain('"allow_partial"')
+        expect(saved).not.toContain('ui_default_llm_model')
+        expect(saved).not.toContain('ui_default_llm_provider')
+        expect(saved).not.toContain('ui_default_reasoning_effort')
     })
 
     it.each([
@@ -922,7 +767,6 @@ describe('flowCanvasShared', () => {
         expandChildren,
         expectedDerivedNodeId,
     }) => {
-        const sourceYaml = dumpYaml(parseFlowYamlFile(resolve(repoRoot, flowRelativePath)))
         const preview = loadStarterFlowPreview(flowRelativePath, expandChildren)
 
         expect(preview.status).toBe('ok')
@@ -934,7 +778,6 @@ describe('flowCanvasShared', () => {
                 llm_provider: '',
                 reasoning_effort: '',
             },
-            sourceYaml,
             { expandChildren },
         )
 
@@ -960,7 +803,7 @@ describe('flowCanvasShared', () => {
         expect(summarizeLaidOutGraph(secondLayout)).toEqual(summarizeLaidOutGraph(firstLayout))
     })
 
-    it('filters derived child preview nodes and edges out of YAML serialization', () => {
+    it('filters derived child preview nodes and edges out of the saved flow', () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',
             graph: {
@@ -990,32 +833,31 @@ describe('flowCanvasShared', () => {
             llm_model: '',
             llm_provider: '',
             reasoning_effort: '',
-        }, undefined, {
+        }, {
             expandChildren: true,
         })
 
         expect(hydrated).not.toBeNull()
-        const yaml = generateFlowYaml(
+        const saved = buildFlow(
             'parent.yaml',
             filterAuthoredNodes(hydrated?.nodes ?? []),
             filterAuthoredEdges(hydrated?.edges ?? []),
             hydrated?.flowMetadata ?? {},
         )
 
-        expect(yaml).toContain('manager')
-        expect(yaml).not.toContain('__child_preview__manager__child_task')
-        expect(yaml).not.toContain('Child Flow Preview')
+        expect(Object.keys(saved.nodes)).toEqual(['manager'])
+        expect(JSON.stringify(saved)).not.toContain('__child_preview__manager__child_task')
+        expect(JSON.stringify(saved)).not.toContain('Child Flow Preview')
     })
 })
 
 it('serializes and clears reasoning controls in node execution and graph defaults', () => {
     const controls = { thinking: 'budget', thinking_budget_tokens: '2048', reasoning_mode: 'pro', reasoning_summary: 'detailed' }
     const nodes = [{ id: 'work', position: { x: 0, y: 0 }, data: { shape: 'box', prompt: 'hello', ...controls } }]
-    const yaml = generateFlowYaml('reasoning.yaml', nodes, [], controls, {})
-    const flow = loadYaml(yaml) as { defaults: Record<string, unknown>; nodes: { work: { execution?: Record<string, unknown> } } }
+    const flow = buildFlow('reasoning.yaml', nodes, [], controls)
     expect(flow.defaults).toMatchObject({ ...controls, thinking_budget_tokens: 2048 })
     expect(flow.nodes.work.execution).toMatchObject({ ...controls, thinking_budget_tokens: 2048 })
     const cleared = { thinking: '', thinking_budget_tokens: '', reasoning_mode: '', reasoning_summary: '' }
-    const updated = generateFlowYaml('reasoning.yaml', [{ ...nodes[0], data: { ...nodes[0].data, ...cleared } }], [], cleared, { flow })
-    for (const field of Object.keys(controls)) expect(updated).not.toContain(`${field}:`)
+    const updated = JSON.stringify(buildFlow('reasoning.yaml', [{ ...nodes[0], data: { ...nodes[0].data, ...cleared } }], [], cleared, flow))
+    for (const field of Object.keys(controls)) expect(updated).not.toContain(`"${field}"`)
 })

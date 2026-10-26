@@ -29,7 +29,6 @@ export interface CanonicalFlowModel {
     flowMetadata: CanonicalAttrMap
     nodes: CanonicalFlowNode[]
     edges: CanonicalFlowEdge[]
-    rawYaml: string | null
     flow: CanonicalFlowDefinition | null
 }
 
@@ -41,7 +40,6 @@ export interface CanonicalPreviewGraphPayload {
 }
 
 export interface CanonicalModelBuildOptions {
-    rawYaml?: string | null
     flow?: CanonicalFlowDefinition | null
 }
 
@@ -447,7 +445,6 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         flowMetadata: canonicalizeFlowMetadata(flowMetadataFromFlow(baseFlow, graph.metadata)),
         nodes,
         edges,
-        rawYaml: options?.rawYaml ?? null,
         flow: baseFlow,
     }
 }
@@ -476,7 +473,6 @@ export function buildCanonicalFlowModelFromEditorState(
         flowMetadata: canonicalizeFlowMetadata(cloneCanonicalAttrMap(input.flowMetadata)),
         nodes,
         edges,
-        rawYaml: input.rawYaml ?? null,
         flow: cloneFlowDefinition(input.flow),
     }
 }
@@ -520,38 +516,6 @@ export function sanitizeFlowId(flowName: string): string {
         return normalized
     }
     return `_${normalized}`
-}
-
-function yamlScalar(value: unknown): string {
-    if (value === null || value === undefined) return 'null'
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-    const text = String(value)
-    if (
-        /^[A-Za-z0-9_./:-]+$/.test(text)
-        && text !== ''
-        && !/^(?:true|false|null|~)$/i.test(text)
-        && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)
-    ) return text
-    return JSON.stringify(text)
-}
-
-function yamlBlock(value: unknown, indent = 0): string {
-    const pad = ' '.repeat(indent)
-    if (Array.isArray(value)) {
-        if (value.length === 0) return `${pad}[]`
-        return value.map((item) => `${pad}- ${yamlBlock(item, indent + 2).trimStart()}`).join('\n')
-    }
-    if (value && typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined)
-        if (entries.length === 0) return `${pad}{}`
-        return entries.map(([key, item]) => {
-            if (item && typeof item === 'object') {
-                return `${pad}${key}:\n${yamlBlock(item, indent + 2)}`
-            }
-            return `${pad}${key}: ${yamlScalar(item)}`
-        }).join('\n')
-    }
-    return yamlScalar(value)
 }
 
 function nodeKindFromAttrs(attrs: CanonicalAttrMap, baseNode?: Record<string, unknown> | null): string {
@@ -792,7 +756,7 @@ function executionLockFromAttrs(attrs: CanonicalAttrMap, baseLock: unknown): unk
     return key ? { scope: 'project', key, conflict_policy: 'queue' } : undefined
 }
 
-export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): string {
+export function buildFlowDefinitionFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): CanonicalFlowDefinition {
     const flowMetadata = model.flowMetadata
     const baseFlow = cloneFlowDefinition(model.flow) ?? {}
     const baseNodes = asRecord(baseFlow.nodes)
@@ -802,7 +766,7 @@ export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: 
     }))
     const edges = model.edges.map((edge, index) => edgeFromCanonicalAttrs(edge, asRecord(baseEdges[index])))
     const inputs = flowInputsFromAttrs(flowMetadata)
-    const flow = {
+    return {
         ...baseFlow,
         schema_version: readStringAttr(flowMetadata, 'schema_version') || String(baseFlow.schema_version ?? '1.0'),
         id: readStringAttr(flowMetadata, 'id') || String(baseFlow.id ?? sanitizeFlowId(flowName)),
@@ -816,5 +780,4 @@ export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: 
         edges,
         metadata: mergeExtensions(asRecord(baseFlow.metadata), flowMetadata, FLOW_METADATA_CORE_KEYS),
     }
-    return `${yamlBlock(flow)}\n`
 }

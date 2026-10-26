@@ -506,37 +506,30 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
     let first = save(&settings, "llm_profiles", "absent", json!([team, other])).unwrap();
     let revision = first["llm_profiles"]["revision"].as_str().unwrap();
     let flow_path = settings.bundled_dir().join("flows").join("inherited");
-    let write_flow = |source: &str| {
+    let write_flow = |flow: &Value| {
         attractor_dsl::write_flow_dir(
             &flow_path,
-            &attractor_dsl::parse_flow_definition(source).expect("valid flow"),
+            &attractor_dsl::validated_flow(serde_json::from_value(flow.clone()).unwrap())
+                .expect("valid flow"),
         )
         .expect("write flow");
     };
-    let source = r#"schema_version: "1"
-id: inherited
-defaults:
-  llm_profile: team
-  llm_model: m1
-nodes:
-  start:
-    kind: start
-  work:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: No model call in this test
-    execution:
-      llm_model: m2
-  exit:
-    kind: exit
-edges:
-  - from: start
-    to: work
-  - from: work
-    to: exit
-"#;
-    write_flow(source);
+    let source = json!({
+        "schema_version": "1",
+        "id": "inherited",
+        "defaults": {"llm_profile": "team", "llm_model": "m1"},
+        "nodes": {
+            "start": {"kind": "start"},
+            "work": {
+                "kind": "agent_task",
+                "config": {"kind": "agent_task", "prompt": "No model call in this test"},
+                "execution": {"llm_model": "m2"}
+            },
+            "exit": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "exit"}]
+    });
+    write_flow(&source);
     let path = settings.config_dir.join("llm-profiles.toml");
     let before = std::fs::read(&path).unwrap();
     let mut candidate = json!([team, other]);
@@ -565,14 +558,16 @@ edges:
     assert_eq!(std::fs::read(&path).unwrap(), before);
 
     // Explicit node profile wins over the flow profile; its model wins over m1.
-    write_flow(&source.replace("llm_model: m2", "llm_model: m2\n      llm_profile: other"));
+    let mut explicit = source.clone();
+    explicit["nodes"]["work"]["execution"]["llm_profile"] = json!("other");
+    write_flow(&explicit);
     validate_workspace_settings_update(&settings, &request()).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let saved = update_workspace_settings(&settings, request()).unwrap();
     assert_eq!(saved["llm_profiles"]["stored"][1]["models"], json!(["m1"]));
 
     // Endpoint, label and supported model-list edits remain valid with inheritance.
-    write_flow(source);
+    write_flow(&source);
     candidate[0]["models"] = json!(["m1", "m2", "m3"]);
     candidate[0]["label"] = json!("Renamed team");
     candidate[0]["base_url"] = json!("http://localhost:9998/v1");

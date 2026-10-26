@@ -7,6 +7,7 @@ import {
   gotoWithRegisteredProject,
   registerProjectForSmokeTest,
   screenshotPath,
+  smokeFixtureFile,
   stubProjectRegistration,
   stubProjectMetadata,
 } from '../fixtures/smoke-helpers'
@@ -581,7 +582,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
   }
 })
 
-test("flow metadata round trips through YAML without legacy stylesheet controls", async ({ page }) => {
+test("flow metadata round trips through the file view without legacy stylesheet controls", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-metadata-roundtrip-${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata-roundtrip", projectPath)
   try {
@@ -594,10 +595,38 @@ test("flow metadata round trips through YAML without legacy stylesheet controls"
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
     await page.getByTestId("graph-extension-attr-new-value").fill("roundtrip-value")
     await page.getByRole("button", { name: "Add Attribute", exact: true }).click()
-    await page.getByRole("button", { name: "YAML", exact: true }).click()
-    await expect(page.getByTestId("raw-yaml-editor")).toHaveValue(/smoke_note:.*roundtrip-value/)
+
+    // The structured edit lands in flow.md's frontmatter.
+    await page.getByRole("button", { name: "Files", exact: true }).click()
+    const fileEditor = page.getByTestId("flow-file-editor")
+    await expect(page.getByTestId("flow-file")).toHaveCount(7)
+    await expect(fileEditor).toHaveAccessibleName("flow.md")
+    await expect(fileEditor).toHaveValue(/smoke_note:.*roundtrip-value/)
+
+    // Selecting a node shows its file; a file edit saves that file and reloads the canvas.
+    await page.locator('.react-flow__node[data-id="ingest_spec"]').click()
+    await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
+    const nodeFile = smokeFixtureFile("ingest_spec.md")
+    await expect(fileEditor).toHaveValue(nodeFile)
+    await fileEditor.fill(nodeFile.replace("title: Ingest Spec", "title: Ingest Spec Edited"))
+    const saved = page.waitForResponse((response) => (
+      response.url().endsWith("/attractor/api/flows") && response.request().method() === "POST"
+    ))
+    await page.getByTestId("flow-files-save").click()
+    const saveRequest = (await saved).request().postDataJSON() as { files?: Array<{ name: string }>; flow?: unknown }
+    expect(saveRequest.flow).toBeUndefined()
+    expect(saveRequest.files?.map((file) => file.name)).toEqual(["ingest_spec.md"])
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toContainText("Ingest Spec Edited")
+
+    // A file that fails validation is refused and shown against the file.
+    await fileEditor.fill("---\ntype: agent_task\nroutes:\n- to: missing_node\n---\n")
+    await page.getByTestId("flow-files-save").click()
+    await expect(page.getByTestId("flow-files-error")).toContainText("ingest_spec.md")
+
+    // Back in the structured view, the canvas holds the saved file, not the refused draft.
     await page.getByRole("button", { name: "Structured", exact: true }).click()
-    await expect(page.getByTestId("graph-extension-attr-value-0")).toHaveValue("roundtrip-value")
+    await expect(page.getByTestId("flow-files-view")).toHaveCount(0)
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toContainText("Ingest Spec Edited")
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
   }

@@ -1,5 +1,5 @@
 use super::review_artifact_contracts::{
-    seed_conversation, settings, simple_flow, write_flow, write_native_execution_profile,
+    seed_conversation, settings, simple_flow, write_native_execution_profile,
 };
 use serde_json::{json, Value};
 use spark_agent_adapter::{
@@ -128,8 +128,8 @@ impl Harness {
             .unwrap()
             .to_string()
     }
-    fn install(&self, flow: &str, content: &str) {
-        write_flow(&self.settings, flow, content);
+    fn install(&self, flow: &str, content: Value) {
+        crate::install_named_flow(&self.settings, flow, content);
     }
     /// The agent's `spark convo run-request` from inside its turn.
     fn launch(&self, id: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
@@ -215,7 +215,7 @@ fn owned_run(
         .unwrap();
 }
 
-pub(crate) fn tool_flow(command: &str) -> String {
+pub(crate) fn tool_flow(command: &str) -> Value {
     json!({
         "schema_version": "1",
         "id": "tool",
@@ -226,7 +226,6 @@ pub(crate) fn tool_flow(command: &str) -> String {
         },
         "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done", "condition": "outcome=success"}]
     })
-    .to_string()
 }
 
 #[test]
@@ -456,7 +455,7 @@ fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
 fn events_during_a_turn_are_delivered_as_one_next_turn() {
     let harness = Harness::new();
     harness.install("work/ok", simple_flow());
-    harness.install("work/fail", &tool_flow("exit 1"));
+    harness.install("work/fail", tool_flow("exit 1"));
     let mission = harness.create(json!({"title": "Ship", "description": "Deliver"}));
     harness
         .missions
@@ -543,7 +542,7 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
 #[test]
 fn launches_over_budget_are_refused() {
     let harness = Harness::new();
-    harness.install("work/slow", &tool_flow("sleep 30"));
+    harness.install("work/slow", tool_flow("sleep 30"));
     let mission = harness
         .create(json!({"title": "Budgeted", "budget": {"concurrent_runs": 1, "total_runs": 2}}));
     harness
@@ -578,7 +577,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     // Keep the tool in flight until cancellation; expire the gate if the test fails.
     harness.install(
         "work/slow",
-        &tool_flow(&format!(
+        tool_flow(&format!(
             "touch '{}'; for i in $(seq 1 600); do [ -f '{}' ] && exit 0; sleep 0.1; done; exit 1",
             entered.display(),
             release.display()
@@ -1302,7 +1301,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     let harness = Harness::new();
     harness.install(
         "work/parent",
-        &json!({
+        json!({
             "schema_version":"1", "id":"parent",
             "nodes": {
                 "start":{"kind":"start"},
@@ -1310,13 +1309,12 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
                 "done":{"kind":"exit"}
             },
             "edges":[{"from":"start","to":"child"},{"from":"child","to":"done"}]
-        })
-        .to_string(),
+        }),
     );
-    write_flow(
+    crate::install_named_flow(
         &harness.settings,
         "work/child",
-        &json!({
+        json!({
             "schema_version":"1", "id":"child",
             "nodes": {
                 "start":{"kind":"start"},
@@ -1324,8 +1322,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
                 "done":{"kind":"exit"}
             },
             "edges":[{"from":"start","to":"gate"},{"from":"gate","to":"done","label":"Proceed"}]
-        })
-        .to_string(),
+        }),
     );
     let mission = harness.create(json!({"title":"Live gate"}));
     harness

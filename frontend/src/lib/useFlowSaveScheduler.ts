@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
+import type { FlowSaveContent } from '@/lib/attractorClient'
 
 interface PendingFlowSaveRequest {
     flowName: string
-    content: string
+    content: FlowSaveContent
     projectPath: string | null
 }
 
 interface UseFlowSaveSchedulerArgs<T> {
     flowName: string | null
     debounceMs: number
-    buildContent: (payload: T | undefined, flowName: string) => string
+    buildContent: (payload: T | undefined, flowName: string) => FlowSaveContent
 }
 
 export function useFlowSaveScheduler<T = void>({

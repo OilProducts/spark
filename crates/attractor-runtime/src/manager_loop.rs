@@ -410,11 +410,6 @@ fn autostart_child_pipeline(
                 ))));
             }
         };
-    let child_source = match attractor_dsl::flow_yaml(&child_flow) {
-        Ok(source) => source,
-        Err(error) => return Ok(Some(fail_outcome(error.detail().to_string()))),
-    };
-
     let child_flow_name = (!child_flow.title.trim().is_empty())
         .then(|| child_flow.title.trim().to_string())
         .or_else(|| {
@@ -475,13 +470,7 @@ fn autostart_child_pipeline(
     let child_result = if let Some(launcher) = runner.child_run_launcher() {
         launcher(request)
     } else {
-        match launch_default_child_run(
-            runner.clone(),
-            runtime,
-            request,
-            child_source,
-            child_flow_files,
-        ) {
+        match launch_default_child_run(runner.clone(), runtime, request, child_flow_files) {
             Ok(result) => result,
             Err(reason) => ChildRunResult {
                 run_id: child_run_id.clone(),
@@ -592,13 +581,10 @@ fn resume_existing_child(
     let checkpoint = bundle
         .checkpoint
         .ok_or_else(|| "recovery_missing_lineage: child checkpoint unavailable".to_string())?;
-    let source = store
+    let flow = store
         .read_graph_source(&bundle.paths)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "recovery_missing_lineage: captured child flow unavailable".to_string())?;
-    let flow = FlowDefinition::from_yaml_str(&source)
-        .map_err(|e| e.to_string())?
-        .normalize();
     let child_id = record.run_id.clone();
     let pause = flow
         .nodes
@@ -672,7 +658,6 @@ fn resume_existing_child(
             store: store.clone(),
             record,
             flow,
-            flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),
@@ -696,7 +681,6 @@ fn launch_default_child_run(
     runner: RuntimeHandlerRunner,
     runtime: &HandlerRuntime,
     request: ChildRunRequest,
-    child_source: String,
     child_flow_files: attractor_dsl::FlowManifest,
 ) -> std::result::Result<ChildRunResult, String> {
     let Some(parent_paths) = runtime.run_paths.as_ref() else {
@@ -823,7 +807,6 @@ fn launch_default_child_run(
             store,
             record,
             flow: request.child_flow,
-            flow_source: Some(child_source.clone()),
             flow_definition_json: Some(child_definition_json),
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),

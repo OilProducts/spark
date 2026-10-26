@@ -1,6 +1,7 @@
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
 import { ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
 import type { Appearance } from '@/lib/theme'
+import type { EditorMode } from '@/state/store-types'
 
 const ID_KEY = 'spark.client_id'
 const validId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/.test(value)
@@ -42,7 +43,7 @@ export interface ClientPreferences {
     run_presentation?: RunPresentation | null
     flow_node_positions?: FlowNodePositions | null
     flow_edge_ports?: FlowEdgePorts | null
-    editor_mode: 'structured' | 'raw' | null
+    editor_mode: EditorMode | null
     editor_sidebar_width: number | null
     home_sidebar_primary_split_ratio?: number | null
     show_advanced_controls?: boolean | null
@@ -55,7 +56,7 @@ export interface ClientPreferencesView {
     browser_migration_version?: number
     revision: string
     stored: ClientPreferences
-    effective: ClientPreferences & { editor_mode: 'structured' | 'raw'; editor_sidebar_width: number }
+    effective: ClientPreferences & { editor_mode: EditorMode; editor_sidebar_width: number }
 }
 export function parseClientPreferences(payload: unknown, endpoint: string): ClientPreferencesView {
     const record = expectObjectRecord(expectObjectRecord(payload, endpoint).preferences, endpoint)
@@ -63,9 +64,9 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
     if (record.browser_migration_version != null && record.browser_migration_version !== 0 && record.browser_migration_version !== 1) throw new ApiSchemaError(endpoint, 'Unsupported browser preference migration version.')
     const preferences = (value: unknown): ClientPreferences => {
         const fields = expectObjectRecord(value, endpoint)
-        const mode = fields.editor_mode
+        // An unknown stored mode (such as the retired raw mode) reads as the default.
+        const mode: EditorMode | null = fields.editor_mode === 'structured' || fields.editor_mode === 'files' ? fields.editor_mode : null
         const width = fields.editor_sidebar_width
-        if (mode !== null && mode !== 'structured' && mode !== 'raw') throw new ApiSchemaError(endpoint, 'Invalid editor mode.')
         if (width !== null && (typeof width !== 'number' || !Number.isInteger(width) || width < 256 || width > 560)) throw new ApiSchemaError(endpoint, 'Invalid sidebar width.')
         const presentation: Partial<ClientPreferences> = {}
         if (fields.run_presentation != null) {
@@ -109,9 +110,9 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
         return { editor_mode: mode, editor_sidebar_width: width, ...presentation }
     }
     const effective = preferences(record.effective)
-    if (effective.editor_mode === null || effective.editor_sidebar_width === null) throw new ApiSchemaError(endpoint, 'Missing effective preferences.')
+    if (effective.editor_sidebar_width === null) throw new ApiSchemaError(endpoint, 'Missing effective preferences.')
     return { browser_migration_version: typeof record.browser_migration_version === 'number' ? record.browser_migration_version : 0, client_id: expectString(record.client_id, endpoint, 'client_id'), revision: expectString(record.revision, endpoint, 'revision'),
-        stored: preferences(record.stored), effective: { ...effective, editor_mode: effective.editor_mode, editor_sidebar_width: effective.editor_sidebar_width } }
+        stored: preferences(record.stored), effective: { ...effective, editor_mode: effective.editor_mode ?? 'structured', editor_sidebar_width: effective.editor_sidebar_width } }
 }
 export async function fetchClientPreferences(): Promise<ClientPreferencesView> {
     const id = await clientIdentity()

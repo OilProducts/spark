@@ -18,8 +18,7 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
         .create_run(CreateRunRequest {
             record: failed_record("run-control", &project_path),
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow()),
-            flow_definition_json: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -68,8 +67,7 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
         .create_run(CreateRunRequest {
             record: running_record("run-control-cancel", &project_path),
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow()),
-            flow_definition_json: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
         .expect("running run");
@@ -121,8 +119,7 @@ fn continue_inherits_source_launch_context() {
         .create_run(CreateRunRequest {
             record: source_record,
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow()),
-            flow_definition_json: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -163,18 +160,13 @@ fn continue_reseeds_identity_context_for_the_new_run() {
     let project_path = temp.path().join("Project Continue Identity");
     fs::create_dir_all(&project_path).expect("project dir");
     let store = RunStore::for_settings(&settings);
-    let exit_flow = r#"schema_version: "1"
-id: api_identity
-title: API Identity
-nodes:
-  start:
-    kind: start
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: done
-"#;
+    let exit_flow = json!({
+        "schema_version": "1",
+        "id": "api_identity",
+        "title": "API Identity",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    });
     // The source checkpoint names the source run, exactly as a real
     // checkpoint does; the continued run must not inherit that identity.
     let mut source_checkpoint = checkpoint("done");
@@ -204,8 +196,7 @@ edges:
         .create_run(CreateRunRequest {
             record: failed_record("run-identity-src", &project_path),
             checkpoint: Some(source_checkpoint),
-            flow_source: Some(exit_flow.to_string()),
-            flow_definition_json: None,
+            flow_definition_json: Some(exit_flow.to_string()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -323,7 +314,7 @@ fn reset_clears_only_runs_directory() {
     let flow_dir = settings.bundled_dir().join("flows").clone();
     attractor_dsl::write_flow_dir(
         &flow_dir.join("kept"),
-        &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
+        &serde_json::from_value(simple_flow()).expect("flow definition JSON"),
     )
     .expect("write flow");
     let project_path = temp.path().join("Project Reset");
@@ -353,7 +344,7 @@ fn reset_clears_only_runs_directory() {
 fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
     record.execution_profile_id = Some("native".to_string());
-    record.flow_name = "control.yaml".to_string();
+    record.flow_name = "control".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
     record.started_at = "2026-06-23T10:00:00Z".to_string();
@@ -363,7 +354,7 @@ fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
 fn running_record(run_id: &str, project_path: &Path) -> RunRecord {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
     record.execution_profile_id = Some("native".to_string());
-    record.flow_name = "control.yaml".to_string();
+    record.flow_name = "control".to_string();
     record.status = "running".to_string();
     record.started_at = "2026-06-23T10:00:00Z".to_string();
     record
@@ -388,28 +379,28 @@ fn checkpoint(current_node: &str) -> CheckpointState {
     }
 }
 
-fn simple_flow() -> String {
-    r#"schema_version: "1"
-id: api_controls
-title: API Controls
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    label: Task
-    config:
-      kind: agent_task
-      prompt: Write a control note
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-"#
-    .to_string()
+fn simple_flow() -> serde_json::Value {
+    json!({
+        "schema_version": "1",
+        "id": "api_controls",
+        "title": "API Controls",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {
+                    "kind": "agent_task",
+                    "prompt": "Write a control note"
+                }
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "task"},
+            {"from": "task", "to": "done"}
+        ]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {

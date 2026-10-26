@@ -110,8 +110,8 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
-    write_flow(&flows_dir, "root", &nested_flow("root", "branch", "child"));
-    write_flow(&flows_dir, "child", &nested_flow("child", "branch", "leaf"));
+    write_flow(&flows_dir, "root", nested_flow("root", "branch", "child"));
+    write_flow(&flows_dir, "child", nested_flow("child", "branch", "leaf"));
     write_flow(&flows_dir, "leaf", gate_flow());
 
     let mut server = RunningServer::start(temp.path(), &ui_dir);
@@ -179,22 +179,46 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     assert_eq!(lineage_ids(&completed), before_ids);
 }
 
-fn write_flow(flows_dir: &Path, name: &str, yaml: &str) {
+fn write_flow(flows_dir: &Path, name: &str, flow: Value) {
     attractor_dsl::write_flow_dir(
         &flows_dir.join(name),
-        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
+        &attractor_dsl::validated_flow(serde_json::from_value(flow).expect("flow JSON"))
+            .expect("valid flow"),
     )
     .expect("write flow");
 }
 
-fn nested_flow(id: &str, node: &str, child: &str) -> String {
-    format!(
-        "schema_version: '1'\nid: {id}\nnodes:\n  start: {{ kind: start }}\n  {node}:\n    kind: subflow\n    config: {{ kind: subflow, flow_ref: {child} }}\n    manager: {{ poll_interval: 10ms, max_cycles: 10000 }}\n  done: {{ kind: exit }}\nedges:\n- {{ from: start, to: {node} }}\n- {{ from: {node}, to: done }}\n"
-    )
+fn nested_flow(id: &str, node: &str, child: &str) -> Value {
+    json!({
+        "schema_version": "1",
+        "id": id,
+        "nodes": {
+            "start": {"kind": "start"},
+            node: {
+                "kind": "subflow",
+                "config": {"kind": "subflow", "flow_ref": child},
+                "manager": {"poll_interval": "10ms", "max_cycles": 10000}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": node}, {"from": node, "to": "done"}]
+    })
 }
 
-fn gate_flow() -> &'static str {
-    "schema_version: '1'\nid: leaf\nnodes:\n  start: { kind: start }\n  hold:\n    kind: human_gate\n    config: { kind: human_gate, prompt: Continue? }\n  done: { kind: exit }\nedges:\n- { from: start, to: hold }\n- { from: hold, to: done, label: Finish }\n"
+fn gate_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "leaf",
+        "nodes": {
+            "start": {"kind": "start"},
+            "hold": {"kind": "human_gate", "config": {"kind": "human_gate", "prompt": "Continue?"}},
+            "done": {"kind": "exit"}
+        },
+        "edges": [
+            {"from": "start", "to": "hold"},
+            {"from": "hold", "to": "done", "label": "Finish"}
+        ]
+    })
 }
 
 fn wait_for_tree(data_dir: &Path, ready: impl Fn(&[Value]) -> bool) -> Vec<Value> {

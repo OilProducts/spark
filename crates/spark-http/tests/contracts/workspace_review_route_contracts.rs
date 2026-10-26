@@ -20,7 +20,7 @@ async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review", simple_flow());
+    let flow_name = crate::install_flow(&settings, simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -33,7 +33,7 @@ async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
-            "flow_name": "ops/review",
+            "flow_name": flow_name,
             "summary": "Run implementation.",
             "goal": "Run the tiny flow.",
             "launch_context": {"context.review": "approved"}
@@ -53,7 +53,7 @@ async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
         app.clone(),
         "POST",
         "/workspace/api/conversations/by-handle/missing-handle/flow-run-requests",
-        Some(json!({"flow_name": "ops/review", "summary": "Run"})),
+        Some(json!({"flow_name": flow_name, "summary": "Run"})),
     )
     .await;
     assert_eq!(unknown.0, StatusCode::NOT_FOUND);
@@ -93,7 +93,7 @@ async fn run_request_executes_codergen_through_injected_rust_llm_client() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review-rust-boundary", codergen_flow());
+    let flow_name = crate::install_flow(&settings, codergen_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -118,7 +118,7 @@ async fn run_request_executes_codergen_through_injected_rust_llm_client() {
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
-            "flow_name": "ops/review-rust-boundary",
+            "flow_name": flow_name,
             "summary": "Run with Rust adapter.",
             "model": "gpt-review-boundary",
             "llm_provider": "OpenAI",
@@ -340,20 +340,32 @@ fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation
     );
 }
 
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "review",
+        "title": "Review",
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
 }
 
-fn simple_flow() -> &'static str {
-    "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n"
-}
-
-fn codergen_flow() -> &'static str {
-    "schema_version: '1'\nid: review-rust-boundary\ntitle: Review Rust Boundary\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Write review route note\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
+fn codergen_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "review-rust-boundary",
+        "title": "Review Rust Boundary",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Write review route note"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+    })
 }
 
 fn settings(root: &Path) -> SparkSettings {

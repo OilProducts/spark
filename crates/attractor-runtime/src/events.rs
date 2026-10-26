@@ -210,12 +210,7 @@ pub fn run_metadata_event_with_graph_paths(
 ) -> RawRuntimeEvent {
     let mut event = run_metadata_event(record);
     let flow_dir = paths.artifacts_dir().join("flow");
-    let flow_source_path = flow_dir.join("flow-source.yaml");
     let flow_definition_path = flow_dir.join("flow-definition.json");
-    event.payload.insert(
-        "flow_source_path".to_string(),
-        path_value_if_exists(flow_source_path),
-    );
     event.payload.insert(
         "flow_definition_path".to_string(),
         path_value_if_exists(flow_definition_path),

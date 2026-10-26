@@ -433,30 +433,27 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     assert_eq!(stored_title(&service, "failing"), "first question");
 }
 
-const TITLED_FLOW: &str = r#"schema_version: "1"
-id: titled
-title: Implement Change
-goal: Implement the requested change.
-inputs:
-- {key: context.request.objective, label: Objective}
-- {key: context.request.unused, label: Unused}
-nodes:
-  start: {kind: start}
-  done: {kind: exit}
-edges:
-- {from: start, to: done}
-"#;
+fn titled_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "titled",
+        "title": "Implement Change",
+        "goal": "Implement the requested change.",
+        "inputs": [
+            {"key": "context.request.objective", "label": "Objective"},
+            {"key": "context.request.unused", "label": "Unused"}
+        ],
+        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+        "edges": [{"from": "start", "to": "done"}]
+    })
+}
 
 /// A service whose run-record writes reach the receiver as live run upserts,
 /// the way the HTTP run event publisher delivers them.
 fn run_service_with_updates(
     settings: SparkSettings,
 ) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join("ops/titled"),
-        &attractor_dsl::parse_flow_definition(TITLED_FLOW).expect("valid flow"),
-    )
-    .expect("write flow");
+    crate::install_named_flow(&settings, "ops/titled", titled_flow());
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
     let observed = settings.clone();
@@ -583,8 +580,7 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
             record,
             checkpoint: None,
             manifest: None,
-            flow_source: Some(TITLED_FLOW.into()),
-            flow_definition_json: None,
+            flow_definition_json: Some(titled_flow().to_string()),
             flow_files: None,
         })
         .unwrap();

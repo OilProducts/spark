@@ -189,7 +189,12 @@ describe('Editor sidebar manual refresh', () => {
         await waitFor(() => {
             expect(saveFlowContentMock).toHaveBeenCalledWith(
                 'beta',
-                expect.stringContaining('schema_version: "1.0"'),
+                { flow: expect.objectContaining({
+                    schema_version: '1.0',
+                    id: 'beta',
+                    nodes: expect.objectContaining({ start: expect.anything(), end: expect.anything() }),
+                    edges: [{ from: 'start', to: 'end' }],
+                }) },
             )
         })
         await waitFor(() => {

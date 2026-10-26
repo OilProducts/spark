@@ -4,24 +4,16 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
-const smokeFlowContent = `schema_version: "1"
-id: rust_product_shell
-title: Rust Product Shell
-nodes:
-  start:
-    kind: start
-    label: Start
-    config:
-      kind: start
-  done:
-    kind: exit
-    label: Done
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: done
-`
+const smokeFlow = {
+  schema_version: '1',
+  id: 'rust_product_shell',
+  title: 'Rust Product Shell',
+  nodes: {
+    start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
+    done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+  },
+  edges: [{ from: 'start', to: 'done' }],
+}
 
 test.beforeAll(() => {
   ensureScreenshotDir()
@@ -55,7 +47,7 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
   const projectQuery = `project_path=${encodeURIComponent(projectRoot)}`
   try {
     const saveFlow = await page.request.post('/attractor/api/flows', {
-      data: { name: flowName, content: smokeFlowContent, project_path: projectRoot },
+      data: { name: flowName, flow: smokeFlow, project_path: projectRoot },
     })
     expect(saveFlow.ok()).toBeTruthy()
 
@@ -67,8 +59,9 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
     expect(readFlow.ok()).toBeTruthy()
     await expect(readFlow.json()).resolves.toMatchObject({
       name: flowName,
-      content: expect.stringContaining('rust_product_shell'),
       layer: 'org',
+      files: expect.arrayContaining([expect.objectContaining({ name: 'flow.md', content: expect.stringContaining('rust_product_shell') })]),
+      flow: expect.objectContaining({ id: 'rust_product_shell' }),
     })
 
     const registerProject = await page.request.post('/workspace/api/projects/register', {

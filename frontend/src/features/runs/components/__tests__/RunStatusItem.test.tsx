@@ -70,7 +70,8 @@ const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false
       resultError={null}
       artifactEntries={[
         { path: 'result/result.md', size_bytes: 10, media_type: 'text/markdown', viewable: true },
-        { path: 'artifacts/flow/flow-source.yaml', size_bytes: 10, media_type: 'text/yaml', viewable: true },
+        { path: 'artifacts/flow/files.json', size_bytes: 10, media_type: 'application/json', viewable: true },
+        { path: 'artifacts/flow/flow-definition.json', size_bytes: 10, media_type: 'application/json', viewable: true },
       ]}
       question={<p>Approve the change?</p>}
       onSelectVisit={onSelectVisit}
@@ -101,6 +102,8 @@ describe('RunStatusItem', () => {
     expect(files.map((file) => file.textContent)).toEqual(['result.md', 'flow snapshot'])
     fireEvent.click(files[0])
     expect(onViewArtifact).toHaveBeenCalledWith(expect.objectContaining({ path: 'result/result.md' }))
+    fireEvent.click(files[1])
+    expect(onViewArtifact).toHaveBeenCalledWith(expect.objectContaining({ path: 'artifacts/flow/flow-definition.json' }))
     expect(screen.getByTestId('run-status-facts')).not.toHaveAttribute('open')
   })
 

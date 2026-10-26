@@ -70,7 +70,7 @@ describe('Editor launch preparation', () => {
       executionFlow: null,
       suppressPreview: true,
     }))
-    vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({ name: flowName, content: flowName }))
+    vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({ name: flowName, files: [], flow: { id: flowName } }))
     vi.mocked(loadEditorPreview).mockResolvedValue({
       status: 'ok',
       graph: { nodes: [{ id: 'start', label: 'Start', shape: 'Mdiamond' }], edges: [], graph_attrs: {} },
@@ -90,7 +90,7 @@ describe('Editor launch preparation', () => {
     const savedContents: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       if (String(url).endsWith('/api/flows') && init?.method === 'POST') {
-        savedContents.push(JSON.parse(String(init.body)).content)
+        savedContents.push(JSON.stringify(JSON.parse(String(init.body)).flow))
         return saveResponse(saveResults.shift() ?? false)
       }
       return new Response('{}', { status: 404 })
@@ -104,6 +104,8 @@ describe('Editor launch preparation', () => {
     await user.click(screen.getByRole('button', { name: 'add node' }))
     await waitFor(() => expect(useStore.getState().saveState).toBe('error'))
     expect(savedContents).toHaveLength(1)
+    // Structured saves send the flow as a JSON FlowDefinition.
+    expect(Object.keys(JSON.parse(savedContents[0]).nodes)).toContain('start')
 
     await user.click(screen.getByRole('button', { name: 'run' }))
     const launch = await screen.findByRole('button', { name: 'launch' })

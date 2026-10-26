@@ -8,7 +8,6 @@ import { useStore } from '@/store'
 import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
 
 const TEST_FLOW = 'test-linear.yaml'
-const TEST_FLOW_CONTENT = 'schema_version: "1"\nid: simple_linear\n'
 const TEST_PROJECT = '/tmp/project'
 
 const jsonResponse = (payload: unknown, init?: ResponseInit) =>
@@ -80,9 +79,6 @@ const installLaunchFetchMock = (options?: {
         description: '',
         execution_lock: null,
       })
-    }
-    if (url.includes(`/attractor/api/flows/`)) {
-      return jsonResponse({ name: TEST_FLOW, content: TEST_FLOW_CONTENT })
     }
     if (url.endsWith('/attractor/preview') && init?.method === 'POST') {
       return jsonResponse(buildPreviewPayload(inputs))
@@ -166,8 +162,11 @@ useStore.getState().setRunsSelectedRunId(null);
 
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
     expect(prepareLaunch).toHaveBeenCalledOnce()
+    // The launch form previews the saved flow by name.
+    const previewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/attractor/preview'))
+    expect(JSON.parse(String((previewCall?.[1] as RequestInit).body))).toEqual({ flow_name: TEST_FLOW, project_path: TEST_PROJECT })
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/attractor/api/flows/'))).toBe(false)
     const payload = startedPipelinePayload(fetchMock)
-    expect(payload).not.toHaveProperty('flow_content')
     expect(payload).toMatchObject({
       flow_name: TEST_FLOW,
       working_directory: TEST_PROJECT,

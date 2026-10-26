@@ -381,14 +381,16 @@ fn role_triggers_skip_the_roles_own_runs_and_other_projects_runs() {
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(
-            "schema_version: '1'\nid: workspace-trigger\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
-        )
-        .expect("valid flow"),
-    )
-    .expect("write flow");
+    crate::install_named_flow(
+        settings,
+        name,
+        json!({
+            "schema_version": "1",
+            "id": "workspace-trigger",
+            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
+            "edges": [{"from": "start", "to": "done"}]
+        }),
+    );
 }
 
 fn flow_event_definition(

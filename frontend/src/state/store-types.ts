@@ -7,7 +7,7 @@ import type {
 } from './viewSessionTypes'
 
 export type ViewMode = 'overview' | 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'missions' | 'org'
-export type EditorMode = 'structured' | 'raw'
+export type EditorMode = 'structured' | 'files'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
 export type RunOutcome = 'success' | 'failure'
@@ -215,10 +215,6 @@ export interface EditorSlice {
     preferredEditorMode: EditorMode
     editorMode: EditorMode
     setEditorMode: (mode: EditorMode) => void
-    rawYamlDraft: string
-    setRawYamlDraft: (value: string) => void
-    rawHandoffError: string | null
-    setRawHandoffError: (value: string | null) => void
     selectedNodeId: string | null
     setSelectedNodeId: (id: string | null) => void
     selectedEdgeId: string | null

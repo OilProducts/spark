@@ -22,43 +22,31 @@ test.afterEach(async ({ page }) => {
   await cleanupSmokeFlowsForPage(page)
 })
 
-const diagnosticFlowYaml = (id: string, prompt: string) => `schema_version: "1"
-id: ${id}
-title: ${id}
-nodes:
-  start:
-    kind: start
-    label: Start
-    config:
-      kind: start
-  extract_declarations:
-    kind: agent_task
-    label: Extract Testable Declarations
-    config:
-      kind: agent_task
-      prompt: ${JSON.stringify(prompt)}
-  done:
-    kind: exit
-    label: Done
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: extract_declarations
-  - from: extract_declarations
-    to: done
-`
+const diagnosticFlow = (id: string, prompt: string) => ({
+  schema_version: "1",
+  id,
+  title: id,
+  nodes: {
+    start: { kind: "start", label: "Start", config: { kind: "start" } },
+    extract_declarations: { kind: "agent_task", label: "Extract Testable Declarations", config: { kind: "agent_task", prompt } },
+    done: { kind: "exit", label: "Done", config: { kind: "exit" } },
+  },
+  edges: [{ from: "start", to: "extract_declarations" }, { from: "extract_declarations", to: "done" }],
+})
+
+// The editor previews the flow itself (carrying its token); the launch form previews it by name.
+const previewIs = (body: string, token: string, flowName: string) => body.includes(token) || body.includes(flowName)
 
 test("warning-only diagnostics still allow the editor run with explicit banner for item 7.2-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-warning-only-${Date.now()}`
   const promptToken = `warning-only-${Date.now()}`
   const warningMessage = `Warning-only diagnostic ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-warning-only", projectPath)
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-warning-only", projectPath, diagnosticFlow('warning_only', promptToken))
 
   try {
     await page.route("**/attractor/preview", async (route) => {
       const body = route.request().postData() || ""
-      if (body.includes(promptToken)) {
+      if (previewIs(body, promptToken, flowName)) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -76,21 +64,6 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
         return
       }
       await route.continue()
-    })
-
-    await page.route(`**/attractor/api/flows/${encodeURIComponent(flowName)}?*`, async (route) => {
-      if (route.request().method() !== 'GET') {
-        await route.continue()
-        return
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          name: flowName,
-          content: diagnosticFlowYaml('warning_only', promptToken),
-        }),
-      })
     })
 
     await gotoWithRegisteredProject(page, projectPath)
@@ -123,14 +96,14 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
   const errorToken = `diagnostic-error-${Date.now()}`
   const warningToken = `diagnostic-warning-${Date.now()}`
   const cleanToken = `diagnostic-clean-${Date.now()}`
-  const errorFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-error", projectPath)
-  const warningFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-warning", projectPath)
-  const cleanFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-clean", projectPath)
+  const errorFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-error", projectPath, diagnosticFlow('diagnostic_error', errorToken))
+  const warningFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-warning", projectPath, diagnosticFlow('diagnostic_warning', warningToken))
+  const cleanFlowName = await createFlowForSmokeTest(page, "ui-smoke-diagnostic-clean", projectPath, diagnosticFlow('diagnostic_clean', cleanToken))
 
   try {
     await page.route("**/attractor/preview", async (route) => {
       const body = route.request().postData() || ""
-      if (body.includes(errorToken)) {
+      if (previewIs(body, errorToken, errorFlowName)) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -152,7 +125,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
         })
         return
       }
-      if (body.includes(warningToken)) {
+      if (previewIs(body, warningToken, warningFlowName)) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -169,7 +142,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
         })
         return
       }
-      if (body.includes(cleanToken)) {
+      if (previewIs(body, cleanToken, cleanFlowName)) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -181,33 +154,6 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
         return
       }
       await route.continue()
-    })
-
-    const flowContentByName: Record<string, string> = {
-      [errorFlowName]: diagnosticFlowYaml('diagnostic_error', errorToken),
-      [warningFlowName]: diagnosticFlowYaml('diagnostic_warning', warningToken),
-      [cleanFlowName]: diagnosticFlowYaml('diagnostic_clean', cleanToken),
-    }
-
-    await page.route('**/attractor/api/flows/*?*', async (route) => {
-      if (route.request().method() !== 'GET') {
-        await route.continue()
-        return
-      }
-      const flowName = decodeURIComponent(new URL(route.request().url()).pathname.split('/attractor/api/flows/')[1] ?? '')
-      const content = flowContentByName[flowName]
-      if (!content) {
-        await route.continue()
-        return
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          name: flowName,
-          content,
-        }),
-      })
     })
 
     await gotoWithRegisteredProject(page, projectPath)

@@ -17,7 +17,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/run", simple_flow());
+    crate::install_named_flow(&settings, "ops/run", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -92,7 +92,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
     let other_path = temp.path().join("other");
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
-    write_flow(&settings, "ops/run", simple_flow());
+    crate::install_named_flow(&settings, "ops/run", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -133,7 +133,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
         matches!(mismatch, WorkspaceError::Validation(message) if message.contains("does not match"))
     );
 
-    write_flow(&settings, "ops/invalid", simple_flow());
+    crate::install_named_flow(&settings, "ops/invalid", simple_flow());
     let invalid_launch = service
         .launch_workspace_run(RunLaunchRequest {
             flow_name: "ops/invalid".to_string(),
@@ -334,7 +334,6 @@ fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) 
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow().to_string()),
             flow_definition_json: Some(simple_flow_definition_json()),
             ..CreateRunRequest::default()
         })
@@ -349,7 +348,6 @@ fn seed_completed_run(settings: &SparkSettings, run_id: &str, project_path: &Pat
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            flow_source: Some(simple_flow().to_string()),
             flow_definition_json: Some(simple_flow_definition_json()),
             ..CreateRunRequest::default()
         })
@@ -420,39 +418,25 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
         .expect("handle");
 }
 
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    attractor_dsl::write_flow_dir(
-        &settings.bundled_dir().join("flows").join(name),
-        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
-    )
-    .expect("write flow");
-}
-
-fn simple_flow() -> &'static str {
-    r#"
-schema_version: "1"
-id: workspace-run
-nodes:
-  start:
-    kind: start
-  task:
-    kind: agent_task
-    config:
-      kind: agent_task
-      prompt: Write a workspace note
-  done:
-    kind: exit
-edges:
-  - from: start
-    to: task
-  - from: task
-    to: done
-    "#
+fn simple_flow() -> Value {
+    json!({
+        "schema_version": "1",
+        "id": "workspace-run",
+        "nodes": {
+            "start": {"kind": "start"},
+            "task": {
+                "kind": "agent_task",
+                "config": {"kind": "agent_task", "prompt": "Write a workspace note"}
+            },
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+    })
 }
 
 fn simple_flow_definition_json() -> String {
-    FlowDefinition::from_yaml_str(simple_flow())
-        .expect("flow yaml")
+    serde_json::from_value::<FlowDefinition>(simple_flow())
+        .expect("flow definition")
         .to_canonical_json_string()
 }
 

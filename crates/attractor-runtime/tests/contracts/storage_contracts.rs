@@ -59,16 +59,20 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
         extra: BTreeMap::new(),
     };
 
-    let captured_source = "schema_version: '1'\nid: create\n";
+    let flow = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "1",
+        "id": "create",
+        "nodes": { "start": { "kind": "start" }, "done": { "kind": "exit" } },
+        "edges": [{ "from": "start", "to": "done" }]
+    }))
+    .expect("flow");
+    let captured_definition = flow.to_canonical_json_string();
     let paths = store
         .create_run(CreateRunRequest {
             record: record.clone(),
             checkpoint: Some(checkpoint.clone()),
             manifest: Some(manifest),
-            flow_source: Some(captured_source.to_string()),
-            flow_definition_json: Some(
-                "{\"schema_version\":\"1\",\"id\":\"create\"}\n".to_string(),
-            ),
+            flow_definition_json: Some(captured_definition.clone()),
             flow_files: None,
         })
         .expect("create run");
@@ -88,11 +92,31 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
         paths.run_log(),
         paths.result_json(),
         paths.result_markdown(),
-        paths.artifacts_dir().join("flow/flow-source.yaml"),
         paths.artifacts_dir().join("flow/flow-definition.json"),
     ] {
         assert!(path.exists(), "{} should exist", path.display());
     }
+    let mut flow_artifacts = std::fs::read_dir(paths.artifacts_dir().join("flow"))
+        .expect("flow artifacts")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("name")
+        })
+        .collect::<Vec<_>>();
+    flow_artifacts.sort();
+    assert_eq!(
+        flow_artifacts,
+        ["flow-definition.json"],
+        "runs capture their flow as JSON only"
+    );
+    assert_eq!(
+        store.read_graph_source(&paths).expect("read graph source"),
+        Some(flow.normalize()),
+        "the captured flow-definition.json is the run's graph source"
+    );
     assert!(paths.logs_dir().is_dir());
     assert!(paths.logs_dir().join("artifacts").is_dir());
     assert!(paths.artifacts_dir().is_dir());
@@ -106,8 +130,8 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
     assert_eq!(loaded.run_id, "run-create");
     assert_eq!(
         loaded.effective_flow_hash.as_deref(),
-        Some(format!("{:x}", Sha256::digest(captured_source.as_bytes())).as_str()),
-        "the durable hash must describe the exact captured source"
+        Some(format!("{:x}", Sha256::digest(captured_definition.as_bytes())).as_str()),
+        "the durable hash must describe the exact captured flow-definition.json"
     );
     assert_eq!(loaded.provider, "codex");
     assert_eq!(loaded.llm_provider, "codex");
@@ -508,7 +532,9 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
                 started_at: "2026-06-22T17:40:17Z".to_string(),
                 extra: BTreeMap::new(),
             }),
-            flow_source: Some("schema_version: '1'\nid: artifacts\n".to_string()),
+            flow_definition_json: Some(
+                "{\"schema_version\":\"1\",\"id\":\"artifacts\"}\n".to_string(),
+            ),
             ..CreateRunRequest::default()
         })
         .expect("create run");
@@ -531,6 +557,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
         "captured request",
     )
     .expect("initial context");
+    std::fs::write(paths.logs_dir().join("work/notes.yaml"), "a: 1\n").expect("yaml artifact");
     let mut capture_event = RawRuntimeEvent::new("CodergenAdapter", "run-artifacts");
     capture_event.payload.extend(BTreeMap::from([
         ("node_id".to_string(), json!("work")),
@@ -552,7 +579,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
         .iter()
         .map(|artifact| artifact.path.as_str())
         .collect::<Vec<_>>();
-    assert!(paths_only.contains(&"artifacts/flow/flow-source.yaml"));
+    assert!(paths_only.contains(&"artifacts/flow/flow-definition.json"));
     assert!(paths_only.contains(&"logs/work/executions/1-0/response.md"));
     assert!(artifacts.iter().any(|artifact| {
         artifact.path == "logs/work/initial-context.txt"
@@ -567,8 +594,12 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
     assert!(!paths_only.contains(&"events.jsonl"));
     assert!(artifacts
         .iter()
-        .find(|artifact| artifact.path == "artifacts/flow/flow-source.yaml")
-        .is_some_and(|artifact| artifact.media_type == "text/yaml" && artifact.viewable));
+        .find(|artifact| artifact.path == "artifacts/flow/flow-definition.json")
+        .is_some_and(|artifact| artifact.media_type == "application/json" && artifact.viewable));
+    assert!(artifacts
+        .iter()
+        .find(|artifact| artifact.path == "logs/work/notes.yaml")
+        .is_some_and(|artifact| artifact.media_type == "text/plain" && artifact.viewable));
     assert!(paths.safe_join("../run.json").is_err());
     assert!(paths.safe_join("/tmp/file").is_err());
 }

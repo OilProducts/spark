@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { buildHydratedFlowGraph, normalizeLegacyDot, type HydratedFlowGraph } from '@/features/workflow-canvas'
+import { buildHydratedFlowGraph, type HydratedFlowGraph } from '@/features/workflow-canvas'
 import {
-    fetchFlowPayloadValidated,
     fetchPipelineGraphPreviewValidated,
     fetchPreviewValidated,
 } from '@/lib/attractorClient'
@@ -72,18 +71,11 @@ export function useLaunchPreview(
                         source.displayName || source.runId,
                         preview,
                         uiDefaults,
-                        undefined,
                         { expandChildren: expandChildFlows },
                     )
                 } else {
-                    const payload = await fetchFlowPayloadValidated(source.flowName, projectPath, { signal: loadAbort.signal })
-                    if (cancelled) {
-                        return
-                    }
-
-                    const normalizedContent = normalizeLegacyDot(payload.content)
                     preview = await fetchPreviewValidated(
-                        normalizedContent,
+                        null,
                         { signal: loadAbort.signal },
                         {
                             flowName: source.flowName,
@@ -99,7 +91,6 @@ export function useLaunchPreview(
                         source.flowName,
                         preview,
                         uiDefaults,
-                        normalizedContent,
                         { expandChildren: expandChildFlows },
                     )
                 }

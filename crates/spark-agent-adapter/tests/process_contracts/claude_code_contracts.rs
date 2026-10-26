@@ -1587,7 +1587,7 @@ fn envelope_node_request(
             {"from":"review","to":"fix","label":"Rework"},
             {"from":"fix","to":"end"}]
     });
-    let mut graph = attractor_dsl::parse_flow_definition(&source.to_string())
+    let mut graph = attractor_dsl::validated_flow(serde_json::from_value(source).unwrap())
         .unwrap()
         .to_runtime_dot_graph();
     let node = graph.nodes.get_mut("review").unwrap();
