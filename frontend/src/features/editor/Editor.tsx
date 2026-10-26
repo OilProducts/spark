@@ -1370,8 +1370,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     }}
                 />
             )}
-            <div className="flex min-h-0 flex-1">
-            <div className="relative min-h-0 min-w-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+            {/* ponytail: phones get the file view alone in Files mode; its list selects files. */}
+            <div className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
                 {
                     flowName ? (
                         <ReactFlow

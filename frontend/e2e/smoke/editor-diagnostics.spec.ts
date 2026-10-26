@@ -637,3 +637,74 @@ test("flow metadata round trips through the file view without legacy stylesheet 
     await deleteFlowAfterSmoke(page, flowName)
   }
 })
+
+test("files mode keeps structured controls read-only so file saves cannot erase their edits", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-files-readonly-${Date.now()}`
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-files-readonly", projectPath)
+  try {
+    await gotoWithRegisteredProject(page, projectPath)
+    await page.getByTestId("activity-flows").click()
+    await page.getByRole("button", { name: flowName }).click()
+    const node = page.locator('.react-flow__node[data-id="ingest_spec"]')
+    await expect(node).toBeVisible()
+    await page.getByRole("button", { name: "Files", exact: true }).click()
+    const flowSaves: unknown[] = []
+    page.on("request", (request) => {
+      if (request.url().endsWith("/attractor/api/flows") && request.method() === "POST" && request.postDataJSON()?.flow) {
+        flowSaves.push(request.postDataJSON())
+      }
+    })
+
+    // Canvas selection still picks the node's file, but neither the inspector nor the node edits it.
+    await node.click()
+    const fileEditor = page.getByTestId("flow-file-editor")
+    await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
+    await expect(page.getByTestId("inspector-files-mode-notice")).toBeVisible()
+    await expect(page.getByLabel("Prompt Instruction")).toBeDisabled()
+    await expect(node.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0)
+    await node.dblclick()
+    await expect(node.locator("input")).toHaveCount(0)
+
+    const nodeFile = smokeFixtureFile("ingest_spec.md")
+    await fileEditor.fill(nodeFile.replace("title: Ingest Spec", "title: Ingest Spec Edited"))
+    const saved = page.waitForResponse((response) => (
+      response.url().endsWith("/attractor/api/flows") && response.request().method() === "POST"
+    ))
+    await page.getByTestId("flow-files-save").click()
+    expect((await saved).ok()).toBe(true)
+    await expect(node).toContainText("Ingest Spec Edited")
+    expect(flowSaves).toEqual([])
+
+    // Back in Structured mode the inspector edits again.
+    await page.getByRole("button", { name: "Structured", exact: true }).click()
+    await node.click()
+    await expect(page.getByLabel("Prompt Instruction")).toBeEnabled()
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
+  }
+})
+
+test("files mode leaves readable editing space on a phone-width viewport", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-files-mobile-${Date.now()}`
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-files-mobile", projectPath)
+  try {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await gotoWithRegisteredProject(page, projectPath)
+    await page.getByTestId("activity-flows").click()
+    await page.getByRole("button", { name: flowName }).click()
+    await page.getByRole("button", { name: "Files", exact: true }).click()
+    const fileEditor = page.getByTestId("flow-file-editor")
+    await fileEditor.scrollIntoViewIfNeeded()
+    await expect(fileEditor).toBeInViewport({ ratio: 1 })
+    const box = (await fileEditor.boundingBox())!
+    expect(box.width).toBeGreaterThan(300)
+    expect(box.height).toBeGreaterThan(120)
+    await expect(page.getByTestId("flow-files-save")).toBeInViewport()
+
+    await page.getByTestId("flow-file").filter({ hasText: "ingest_spec.md" }).click()
+    await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
+    await page.screenshot({ path: screenshotPath("13e-mobile-flow-files.png"), fullPage: true })
+  } finally {
+    await deleteFlowAfterSmoke(page, flowName)
+  }
+})
