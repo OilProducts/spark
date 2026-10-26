@@ -944,3 +944,120 @@ fn persisted_connections_apply_on_restart_with_cli_and_environment_precedence() 
         Some(8123)
     );
 }
+
+/// Runs one `provider` agent node through a real worker with a temporary
+/// HOME and the given SPARK_HOME, and returns the environment the agent saw.
+#[cfg(unix)]
+fn worker_agent_environment(
+    provider: &str,
+    spark_home: Option<&Path>,
+) -> (Value, tempfile::TempDir) {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let dump = temp.path().join("agent-env.json");
+    let bin = temp.path().join("agent");
+    fs::write(
+        &bin,
+        format!(
+            "#!/usr/bin/env python3\nimport json, os\njson.dump(dict(os.environ), open({:?}, 'w'))\n",
+            dump.to_string_lossy()
+        ),
+    )
+    .expect("fake agent");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("executable");
+    let request = json!({
+        "run_id": format!("run-worker-{provider}-home"),
+        "stage_index": 0,
+        "attempt": 0,
+        "flow": {
+            "schema_version": "1",
+            "id": "G",
+            "nodes": {
+                "task": {
+                    "kind": "agent_task",
+                    "config": {"kind": "agent_task", "prompt": "Work"},
+                    "execution": {"llm_provider": provider, "llm_model": "test-model"}
+                }
+            },
+            "edges": []
+        },
+        "node_id": "task",
+        "prompt": "Work",
+        "context": {},
+        "context_logs": [],
+        "logs_root": null,
+        "working_dir": temp.path(),
+        "backend_name": null,
+        "model": null,
+        "config_dir": null
+    });
+    let mut command = Command::new(env!("CARGO_BIN_EXE_spark-server"));
+    command
+        .args(["worker", "run-node"])
+        .env("HOME", &home)
+        .env("SPARK_CLAUDE_CODE_BIN", &bin)
+        .env("SPARK_CODEX_APP_SERVER_BIN", &bin)
+        .env_remove("SPARK_HOME")
+        .env_remove("SPARK_CONFIG_DIR")
+        .env_remove("ATTRACTOR_CODEX_RUNTIME_ROOT")
+        .env_remove("SPARK_CLAUDE_CODE_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(spark_home) = spark_home {
+        command.env("SPARK_HOME", spark_home);
+    }
+    let mut child = command.spawn().expect("spawn worker");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all((request.to_string() + "\n").as_bytes())
+        .expect("write request");
+    let output = child.wait_with_output().expect("worker output");
+    let env: Value = serde_json::from_str(&fs::read_to_string(&dump).unwrap_or_else(|_| {
+        panic!(
+            "{provider} agent not launched: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }))
+    .expect("agent env");
+    (env, temp)
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_run_node_gives_agents_the_resolved_spark_home() {
+    for provider in ["codex", "claude-code"] {
+        let (env, temp) = worker_agent_environment(provider, None);
+        let data_dir = temp.path().join("home").join(".spark");
+        assert_eq!(
+            env["SPARK_HOME"],
+            json!(data_dir.to_string_lossy()),
+            "{provider}"
+        );
+        if provider == "codex" {
+            assert_eq!(
+                env["HOME"],
+                json!(data_dir.join("runtime/codex").to_string_lossy())
+            );
+        } else {
+            assert_eq!(
+                env["CLAUDE_CONFIG_DIR"],
+                json!(data_dir.join("runtime/claude").to_string_lossy())
+            );
+        }
+        let explicit = temp.path().join("explicit-spark");
+        let (env, _) = worker_agent_environment(provider, Some(&explicit));
+        assert_eq!(
+            env["SPARK_HOME"],
+            json!(explicit.to_string_lossy()),
+            "{provider}"
+        );
+    }
+}
