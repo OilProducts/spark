@@ -26,7 +26,7 @@ spark-server service status
 spark-server service remove
 ```
 
-By default, runtime data lives under `~/.spark`. Set `SPARK_HOME` to use a different runtime tree. See [persisted settings](docs/configuration.md) for the supported configuration scopes, revision-checked saves, and migration boundaries.
+Every Spark process (the desktop app, `spark-server` and the `spark` CLI) uses one data directory: `$SPARK_HOME` when it is set, else `~/.spark`. Agents receive it as `SPARK_HOME` and keep their own homes under `$SPARK_HOME/runtime/<agent>`. See [persisted settings](docs/configuration.md) for the supported configuration scopes, revision-checked saves, and migration boundaries.
 
 ## Development
 

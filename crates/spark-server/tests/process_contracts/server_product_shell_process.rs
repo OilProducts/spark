@@ -179,6 +179,69 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     assert_eq!(lineage_ids(&completed), before_ids);
 }
 
+#[test]
+fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let ui_dir = root.join("ui");
+    let home = root.join("home");
+    let dumps = root.join("agent-env");
+    for dir in [&ui_dir, &home, &dumps] {
+        fs::create_dir_all(dir).expect("dir");
+    }
+    fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
+    // Each fake agent records the environment Spark launched it with, then exits.
+    let fake = |name: &str| {
+        let path = root.join(name);
+        fs::write(
+            &path,
+            format!("#!/bin/sh\nenv > '{}'\n", dumps.join(name).display()),
+        )
+        .expect("fake agent");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    };
+    let (codex, claude) = (fake("codex"), fake("claude"));
+    let server = RunningServer::start_with(&root, &ui_dir, |command| {
+        command
+            .env("HOME", &home)
+            .env_remove("SPARK_HOME")
+            .env_remove("SPARK_CLAUDE_CODE_CONFIG_DIR")
+            .env_remove("ATTRACTOR_CODEX_RUNTIME_ROOT")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env("SPARK_CODEX_APP_SERVER_BIN", &codex)
+            .env("SPARK_CLAUDE_CODE_BIN", &claude);
+    });
+
+    // Model discovery launches both agents.
+    http_get(server.port, "/workspace/api/projects/chat-models");
+
+    let data_dir = root.join("spark-home");
+    let agent_env = |name: &str| -> BTreeMap<String, String> {
+        fs::read_to_string(dumps.join(name))
+            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"))
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    };
+    let codex_env = agent_env("codex");
+    let data_dir_text = data_dir.to_string_lossy().into_owned();
+    assert_eq!(codex_env.get("SPARK_HOME"), Some(&data_dir_text));
+    assert_eq!(
+        codex_env.get("HOME").map(PathBuf::from),
+        Some(data_dir.join("runtime/codex"))
+    );
+    let claude_env = agent_env("claude");
+    assert_eq!(claude_env.get("SPARK_HOME"), Some(&data_dir_text));
+    assert_eq!(
+        claude_env.get("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        Some(data_dir.join("runtime/claude"))
+    );
+}
+
 fn write_flow(flows_dir: &Path, name: &str, flow: Value) {
     attractor_dsl::write_flow_dir(
         &flows_dir.join(name),
@@ -267,12 +330,18 @@ struct RunningServer {
 
 impl RunningServer {
     fn start(root: &Path, ui_dir: &Path) -> Self {
+        Self::start_with(root, ui_dir, |_| {})
+    }
+
+    fn start_with(root: &Path, ui_dir: &Path, configure: impl FnOnce(&mut Command)) -> Self {
         let port = free_tcp_port();
         let data_dir = root.join("spark-home");
         let port_text = port.to_string();
         let data_dir_text = data_dir.to_string_lossy().into_owned();
         let ui_dir_text = ui_dir.to_string_lossy().into_owned();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_spark-server"));
+        configure(&mut command);
+        let mut child = command
             .args([
                 "serve",
                 "--host",

@@ -817,6 +817,9 @@ fn run_serve_process(
     env: &impl Environment,
 ) -> std::result::Result<(), CommandOutput> {
     let config = build_serve_configuration_from_args(args, env)?;
+    // Agents get the data directory as SPARK_HOME, so their homes live under it.
+    spark_agent_adapter::configure_codex_spark_home(&config.settings.data_dir)
+        .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     if config.debug_codex_jsonrpc {
         std::env::set_var(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
     }

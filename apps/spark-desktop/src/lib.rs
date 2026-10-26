@@ -6,6 +6,7 @@ use desktop_core::{
     bootstrap_desktop_runtime, load_desktop_settings, read_desktop_settings_view,
     start_desktop_server, DesktopPaths, DesktopServer, DesktopServerSettingsView,
 };
+use spark_common::paths::ProcessEnvironment;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub mod desktop_core;
@@ -62,8 +63,8 @@ pub fn run() {
             let paths = tauri_desktop_paths(app.handle()).map_err(boxed_error)?;
             let client_id = desktop_core::desktop_client_identity(&paths).map_err(boxed_error)?;
             let desktop_settings = load_desktop_settings(&paths).map_err(boxed_error)?;
-            let bootstrap =
-                bootstrap_desktop_runtime(&paths, &desktop_settings).map_err(boxed_error)?;
+            let bootstrap = bootstrap_desktop_runtime(&desktop_settings, &ProcessEnvironment)
+                .map_err(boxed_error)?;
             spark_agent_adapter::configure_codex_spark_home(&bootstrap.settings.data_dir)
                 .map_err(boxed_error)?;
             let server = start_desktop_server(bootstrap.settings, &bootstrap.bind_host)
@@ -107,15 +108,11 @@ pub fn run() {
 fn tauri_desktop_paths<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<DesktopPaths, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
     let app_config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("Unable to resolve app config directory: {error}"))?;
-    Ok(DesktopPaths::new(app_data_dir, app_config_dir))
+    DesktopPaths::resolve(app_config_dir, &ProcessEnvironment)
 }
 
 fn boxed_error(message: String) -> Box<dyn std::error::Error> {

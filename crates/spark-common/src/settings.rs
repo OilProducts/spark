@@ -532,13 +532,10 @@ pub fn resolve_settings_with_persisted(
 ) -> Result<SparkSettings> {
     persisted.validate()?;
     let project_root = detect_project_root();
-    let default_data_dir = PathBuf::from("~").join(".spark");
-
-    let data_dir = coalesce_path(
-        overrides.data_dir.as_ref(),
-        env.get_var(ENV_HOME_DIR).as_deref(),
-        &default_data_dir,
-    )?;
+    let data_dir = match overrides.data_dir.as_ref() {
+        Some(value) => normalize_path(value)?,
+        None => resolve_data_dir(env)?,
+    };
     let config_dir = data_dir.join("config");
     let runtime_dir = data_dir.join("runtime");
     let logs_dir = data_dir.join("logs");
@@ -653,6 +650,15 @@ pub fn parse_project_roots(value: Option<&str>) -> Result<Vec<PathBuf>> {
         .map(normalize_path)
         .collect::<Result<Vec<_>>>()?;
     Ok(roots)
+}
+
+/// The one data directory rule for every Spark process: `$SPARK_HOME`, else `~/.spark`.
+pub fn resolve_data_dir(env: &impl Environment) -> Result<PathBuf> {
+    coalesce_path(
+        None,
+        env.get_var(ENV_HOME_DIR).as_deref(),
+        &PathBuf::from("~").join(".spark"),
+    )
 }
 
 fn coalesce_path(

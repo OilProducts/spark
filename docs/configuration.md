@@ -304,13 +304,14 @@ project, conversation, trigger and flow references. Save repeats these checks
 under the existing reference and document locks. Historical execution snapshots
 are excluded. Rejected candidates leave the document unchanged.
 
-Desktop resolves startup environment overrides while keeping its app-owned Spark
-home. Runtime and agent-home sources are captured at startup and reported with
+Desktop, server and CLI resolve the same Spark home: `$SPARK_HOME`, else
+`~/.spark`. Runtime and agent-home sources are captured at startup and reported with
 restart retention. Connection views separate the running server from the target
 for new CLI commands; `--base-url` still takes precedence, then
 `SPARK_API_BASE_URL`, then the target in the CLI-resolved Spark home and the
 built-in default. The view identifies that configuration directory, which can
-differ from Desktop’s app-owned home.
+differ from the server's when it was started with another `SPARK_HOME` or
+`--data-dir`.
 Live provider and agent fields report environment or stored/default sources.
 
 Parseable invalid sections retain their stored values and scoped errors. Valid
