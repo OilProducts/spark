@@ -8,6 +8,8 @@ import type { EditorMode } from '@/state/store-types'
 
 type EditorCanvasToolbarProps = {
     mode: EditorMode
+    /** Set until the flow is loaded: a view switch saves the canvas, which is empty until then. */
+    modeDisabled: boolean
     childFlowsExpanded: boolean
     runDisabledReason: string | null | undefined
     onSelectStructured: () => void
@@ -23,6 +25,7 @@ type EditorCanvasToolbarProps = {
 
 export function EditorCanvasToolbar({
     mode,
+    modeDisabled,
     childFlowsExpanded,
     runDisabledReason,
     onSelectStructured,
@@ -49,8 +52,8 @@ export function EditorCanvasToolbar({
                 aria-label="View"
                 className="shrink-0"
                 options={[
-                    { key: 'structured', label: 'Structured', pressed: isStructured, onPress: onSelectStructured },
-                    { key: 'files', label: 'Files', pressed: !isStructured, onPress: onSelectFiles },
+                    { key: 'structured', label: 'Structured', pressed: isStructured, onPress: onSelectStructured, disabled: modeDisabled },
+                    { key: 'files', label: 'Files', pressed: !isStructured, onPress: onSelectFiles, disabled: modeDisabled },
                 ]}
             />
 

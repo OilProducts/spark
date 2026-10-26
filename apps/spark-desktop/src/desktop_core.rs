@@ -1,10 +1,10 @@
-use std::fs;
 use std::net::{IpAddr, SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
 use serde::Serialize;
+use spark_common::paths::Environment;
 use spark_common::settings::SparkSettings;
 use spark_server::RuntimeInitializationOptions;
 use tokio::sync::oneshot;
@@ -16,16 +16,25 @@ pub const REMOTE_ACCESS_WARNING: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopPaths {
-    pub app_data_dir: PathBuf,
+    /// Spark's data directory, shared with every other Spark process.
+    pub data_dir: PathBuf,
+    /// Tauri's app config directory; holds only the desktop client id.
     pub app_config_dir: PathBuf,
 }
 
 impl DesktopPaths {
-    pub fn new(app_data_dir: impl Into<PathBuf>, app_config_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(data_dir: impl Into<PathBuf>, app_config_dir: impl Into<PathBuf>) -> Self {
         Self {
-            app_data_dir: app_data_dir.into(),
+            data_dir: data_dir.into(),
             app_config_dir: app_config_dir.into(),
         }
+    }
+
+    pub fn resolve(
+        app_config_dir: impl Into<PathBuf>,
+        env: &impl Environment,
+    ) -> Result<Self, String> {
+        Ok(Self::new(default_spark_data_dir(env)?, app_config_dir))
     }
 }
 
@@ -95,12 +104,12 @@ impl Drop for DesktopServer {
     }
 }
 
-pub fn default_spark_data_dir(paths: &DesktopPaths) -> PathBuf {
-    paths.app_data_dir.join("spark")
+pub fn default_spark_data_dir(env: &impl Environment) -> Result<PathBuf, String> {
+    spark_common::settings::resolve_data_dir(env).map_err(|error| error.to_string())
 }
 
 pub fn core_config_file(paths: &DesktopPaths) -> PathBuf {
-    default_spark_data_dir(paths).join("config/spark.toml")
+    paths.data_dir.join("config/spark.toml")
 }
 
 pub fn load_desktop_settings(paths: &DesktopPaths) -> Result<DesktopServerSettings, String> {
@@ -205,23 +214,16 @@ pub fn settings_view(
 }
 
 pub fn bootstrap_desktop_runtime(
-    paths: &DesktopPaths,
     settings: &DesktopServerSettings,
+    env: &impl Environment,
 ) -> Result<DesktopBootstrap, String> {
-    let data_dir = default_spark_data_dir(paths);
-    fs::create_dir_all(&paths.app_data_dir).map_err(|error| {
-        format!(
-            "Unable to create desktop app data directory {}: {error}",
-            paths.app_data_dir.display()
-        )
-    })?;
     let spark_settings = spark_server::initialize_runtime_with_options(
         &RuntimeInitializationOptions {
-            data_dir: Some(data_dir),
+            data_dir: None,
             ui_dir: None,
             force: false,
         },
-        &spark_common::paths::ProcessEnvironment,
+        env,
     )?;
     let bind_host = server_host_for_settings(settings).to_string();
     Ok(DesktopBootstrap {
@@ -306,10 +308,6 @@ pub fn start_desktop_server(
         shutdown: Some(shutdown_tx),
         thread: Some(thread),
     })
-}
-
-pub fn is_app_owned_data_dir(paths: &DesktopPaths, data_dir: &Path) -> bool {
-    data_dir.starts_with(&paths.app_data_dir)
 }
 
 /// App-owned bootstrap identity survives ephemeral HTTP ports and WebView origins.

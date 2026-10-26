@@ -126,6 +126,15 @@ pub fn run() -> i32 {
         && stripped.get(1).map(String::as_str) == Some("run-node")
         && !stripped.iter().skip(2).any(|arg| is_help_arg(arg))
     {
+        // Agents the worker launches get its data directory as SPARK_HOME, as under serve.
+        if let Err(error) = spark_common::settings::resolve_data_dir(&ProcessEnvironment)
+            .map_err(|error| error.to_string())
+            .and_then(spark_agent_adapter::configure_codex_spark_home)
+        {
+            let output = CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n"));
+            write_process_output(&output);
+            return output.exit_code;
+        }
         return attractor_execution::run_worker_node_from_reader_writer(
             std::io::stdin().lock(),
             std::io::stdout(),
@@ -817,6 +826,9 @@ fn run_serve_process(
     env: &impl Environment,
 ) -> std::result::Result<(), CommandOutput> {
     let config = build_serve_configuration_from_args(args, env)?;
+    // Agents get the data directory as SPARK_HOME, so their homes live under it.
+    spark_agent_adapter::configure_codex_spark_home(&config.settings.data_dir)
+        .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     if config.debug_codex_jsonrpc {
         std::env::set_var(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
     }

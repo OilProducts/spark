@@ -2,32 +2,63 @@ use std::fs;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use spark_common::paths::ProcessEnvironment;
 use spark_desktop::desktop_core::{
-    bootstrap_desktop_runtime, core_config_file, default_spark_data_dir, desktop_settings_revision,
-    frontend_url_for_addr, is_app_owned_data_dir, load_desktop_settings, server_host_for_settings,
-    set_remote_access_enabled, settings_view, start_desktop_server, DesktopPaths,
-    DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
+    bootstrap_desktop_runtime, core_config_file, desktop_settings_revision, frontend_url_for_addr,
+    load_desktop_settings, server_host_for_settings, set_remote_access_enabled, settings_view,
+    start_desktop_server, DesktopPaths, DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
 };
 use spark_storage::ConversationRepository;
 
 #[test]
-fn bootstrap_uses_app_owned_spark_data_directory_by_default() {
+fn desktop_uses_spark_home_or_home_dot_spark_as_its_data_directory() {
+    const CHILD: &str = "SPARK_DESKTOP_DATA_DIR_TEST_EXPECTED";
+    const NAME: &str = "desktop_uses_spark_home_or_home_dot_spark_as_its_data_directory";
+    if let Ok(expected) = std::env::var(CHILD) {
+        let expected = std::path::PathBuf::from(expected);
+        let paths = DesktopPaths::resolve(expected.join("tauri-config"), &ProcessEnvironment)
+            .expect("resolve paths");
+        assert_eq!(paths.data_dir, expected);
+        fs::create_dir_all(expected.join("config")).unwrap();
+        fs::write(
+            expected.join("config/spark.toml"),
+            "[desktop]\nremote_access_enabled = true\n",
+        )
+        .unwrap();
+        let desktop = load_desktop_settings(&paths).expect("desktop settings");
+        assert!(desktop.remote_access_enabled);
+
+        let boot = bootstrap_desktop_runtime(&desktop, &ProcessEnvironment).expect("bootstrap");
+        assert_eq!(boot.settings.data_dir, expected);
+        assert_eq!(boot.settings.bundled_dir(), expected.join("bundled"));
+        assert_eq!(boot.bind_host, REMOTE_BIND_HOST);
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: TempDir may be symlinked (macOS /var -> /private/var) while
     // resolved settings paths are physical.
     let root = temp.path().canonicalize().expect("canonical tempdir");
-    let paths = DesktopPaths::new(root.join("data"), root.join("config"));
-
-    let bootstrap =
-        bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
-
-    assert_eq!(bootstrap.settings.data_dir, default_spark_data_dir(&paths));
-    assert!(is_app_owned_data_dir(&paths, &bootstrap.settings.data_dir));
-    assert_eq!(
-        bootstrap.settings.bundled_dir(),
-        bootstrap.settings.data_dir.join("bundled")
-    );
-    assert_eq!(bootstrap.bind_host, LOCAL_BIND_HOST);
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    for spark_home in [None, Some(root.join("spark-home"))] {
+        let expected = spark_home.clone().unwrap_or_else(|| home.join(".spark"));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, &expected)
+            .env("HOME", &home);
+        match &spark_home {
+            Some(path) => child.env("SPARK_HOME", path),
+            None => child.env_remove("SPARK_HOME"),
+        };
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -36,7 +67,8 @@ fn first_launch_writes_the_bundled_library_into_desktop_runtime() {
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
 
     let bootstrap =
-        bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths))
+            .expect("bootstrap");
 
     let bundled = bootstrap.settings.bundled_dir();
     assert!(bundled
@@ -116,7 +148,8 @@ fn desktop_server_serves_web_ui_from_in_process_loopback_url() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
     let bootstrap =
-        bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths))
+            .expect("bootstrap");
 
     let mut server =
         start_desktop_server(bootstrap.settings, &bootstrap.bind_host).expect("desktop server");
@@ -149,7 +182,8 @@ fn desktop_server_shutdown_request_does_not_wait_for_live_event_stream_to_drain(
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
     let bootstrap =
-        bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths))
+            .expect("bootstrap");
     let mut server =
         start_desktop_server(bootstrap.settings, &bootstrap.bind_host).expect("desktop server");
 
@@ -186,7 +220,8 @@ fn desktop_server_codex_smoke_persists_codex_app_server_backend_marker() {
         temp.path().join("codex-runtime"),
     );
     let bootstrap =
-        bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths))
+            .expect("bootstrap");
     let settings = bootstrap.settings.clone();
     let mut server =
         start_desktop_server(bootstrap.settings, &bootstrap.bind_host).expect("desktop server");
@@ -230,6 +265,15 @@ fn desktop_server_codex_smoke_persists_codex_app_server_backend_marker() {
     }));
 
     server.shutdown();
+}
+
+/// Points settings resolution at the test's data directory, never the real one.
+fn spark_home(paths: &DesktopPaths) -> std::collections::BTreeMap<String, String> {
+    [(
+        "SPARK_HOME".to_string(),
+        paths.data_dir.to_string_lossy().into_owned(),
+    )]
+    .into()
 }
 
 fn http_client() -> reqwest::blocking::Client {
@@ -316,7 +360,7 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
     let client_id = spark_desktop::desktop_core::desktop_client_identity(&paths).unwrap();
     let desktop = load_desktop_settings(&paths).unwrap();
-    let bootstrap = bootstrap_desktop_runtime(&paths, &desktop).unwrap();
+    let bootstrap = bootstrap_desktop_runtime(&desktop, &spark_home(&paths)).unwrap();
     let mut first = start_desktop_server(bootstrap.settings, LOCAL_BIND_HOST).unwrap();
     let first_url = first.url().to_string();
     let client = http_client();
@@ -347,7 +391,8 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     assert!(preference_response.status().is_success());
     // Keep the old listener open so the replacement necessarily gets a different port.
     let restarted =
-        bootstrap_desktop_runtime(&paths, &load_desktop_settings(&paths).unwrap()).unwrap();
+        bootstrap_desktop_runtime(&load_desktop_settings(&paths).unwrap(), &spark_home(&paths))
+            .unwrap();
     assert_eq!(restarted.settings.runs_dir, runs);
     let mut second = start_desktop_server(restarted.settings, LOCAL_BIND_HOST).unwrap();
     assert_ne!(second.url(), first_url);
@@ -393,7 +438,8 @@ fn native_settings_save_publishes_through_existing_http_live_transport() {
     use std::io::{BufRead, BufReader};
     let temp = tempfile::tempdir().unwrap();
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
-    let bootstrap = bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).unwrap();
+    let bootstrap =
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
     let mut server = start_desktop_server(bootstrap.settings, &bootstrap.bind_host).unwrap();
     let response = http_client()
         .get(format!(
@@ -448,7 +494,7 @@ fn desktop_retains_environment_selected_startup_paths() {
                 "SPARK_CLAUDE_CODE_CONFIG_DIR",
                 temp.path().join("environment-claude"),
             )
-            .env("SPARK_HOME", temp.path().join("ignored-home"))
+            .env("SPARK_HOME", temp.path().join("data"))
             .output()
             .unwrap();
         assert!(
@@ -460,11 +506,11 @@ fn desktop_retains_environment_selected_startup_paths() {
         return;
     };
     let root = std::path::PathBuf::from(root);
-    let paths = DesktopPaths::new(root.join("data"), root.join("config"));
-    let boot = bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).unwrap();
+    let boot =
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &ProcessEnvironment).unwrap();
     assert_eq!(
         boot.settings.data_dir,
-        default_spark_data_dir(&paths).canonicalize().unwrap()
+        root.join("data").canonicalize().unwrap()
     );
     let selected = root
         .join("environment-claude")

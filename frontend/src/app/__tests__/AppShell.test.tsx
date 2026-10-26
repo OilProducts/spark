@@ -2731,6 +2731,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
     })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Files' }))
     const fileEditor = await screen.findByTestId('flow-file-editor')
     await user.type(fileEditor, '\nAn editor draft note.')

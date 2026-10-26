@@ -26,6 +26,12 @@ the repo's normal git identity. Saving a bundled flow first copies it into the
 org. Deleting a project copy reverts to the bundled flow; bundled flows cannot
 be deleted.
 
+Flows may keep project scratch under `<project>/.spark/` (for example
+`checkouts/` or `changes/`), but must not use the data directory's top-level
+names there: `attractor`, `bundled`, `config`, `logs`, `playbooks`, `runtime`
+or `workspace`. The Home project's directory is `$HOME`, so its `.spark/` is
+the default data directory itself.
+
 The Rust `FlowDefinition` type is the assembled form of a flow, and
 `assets/schemas/flow-definition.schema.json` describes its JSON form. The
 editor's structured mode loads and saves that form as JSON, and the server
