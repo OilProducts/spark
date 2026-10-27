@@ -2041,6 +2041,53 @@ fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
     assert_eq!(implement_runs(&calls), 1);
 }
 
+/// A failed node whose exhausted `outcome=fail` route leaves only an
+/// unconditional route, which failure routing does not take, fails with the
+/// visit-limit reason naming the exhausted target.
+#[test]
+fn exhausted_fail_condition_beside_an_unconditional_route_reports_the_visit_limit() {
+    for (target, kind) in [("polish", NodeKind::AgentTask), ("done", NodeKind::Exit)] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let mut flow = visit_loop_flow(
+            vec![edge("implement", "", "outcome=fail"), edge(target, "", "")],
+            None,
+        );
+        flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
+            max_visits: Some(1),
+            ..NodeRuntimeConfig::default()
+        });
+        if kind == NodeKind::AgentTask {
+            flow.nodes.insert(
+                target.to_string(),
+                FlowNode {
+                    kind,
+                    config: Some(NodeConfig::AgentTask {
+                        prompt: target.to_string(),
+                    }),
+                    ..FlowNode::default()
+                },
+            );
+        }
+        let (result, calls) = run_visit_loop(
+            &store,
+            "run-visit-fail-condition",
+            temp.path(),
+            flow,
+            OutcomeStatus::Fail,
+            None,
+            Default::default(),
+        );
+        assert_eq!(result.status, "failed", "{target}");
+        assert_eq!(
+            result.failure_reason,
+            "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+        );
+        assert_eq!(implement_runs(&calls), 1);
+        assert!(!calls.iter().any(|node| node == target), "{target}");
+    }
+}
+
 /// Runs `flow` with `evaluate` answering `evaluate_status` and pauses right
 /// after evaluate's third execution completes; returns the resume start.
 fn pause_after_third_evaluate(

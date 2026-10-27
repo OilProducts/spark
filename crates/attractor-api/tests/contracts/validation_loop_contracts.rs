@@ -88,7 +88,7 @@ fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
     })
 }
 
-fn run_fix_loop_flow(gate_command: &str, run_id: &str) -> (serde_json::Value, SparkSettings) {
+fn run_fix_loop_flow(flow: serde_json::Value, run_id: &str) -> (serde_json::Value, SparkSettings) {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
@@ -99,7 +99,7 @@ fn run_fix_loop_flow(gate_command: &str, run_id: &str) -> (serde_json::Value, Sp
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some(run_id.to_string()),
-        flow_name: Some(crate::install_flow(&settings, fix_loop_flow(gate_command))),
+        flow_name: Some(crate::install_flow(&settings, flow)),
         working_directory: project.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -128,7 +128,9 @@ const GATE_LOG: &str = "echo \"gate red after $(wc -l < attempts.txt) attempts\"
 fn validate_failure_routes_through_diagnosis_back_to_implement() {
     // The gate fails until the implementer has run twice.
     let (body, settings) = run_fix_loop_flow(
-        &format!("{GATE_LOG}\ntest \"$(wc -l < attempts.txt)\" -ge 2"),
+        fix_loop_flow(&format!(
+            "{GATE_LOG}\ntest \"$(wc -l < attempts.txt)\" -ge 2"
+        )),
         "run-validate-fix-loop",
     );
     assert_eq!(body["terminal_status"], json!("completed"), "{body:?}");
@@ -144,7 +146,10 @@ fn validate_failure_routes_through_diagnosis_back_to_implement() {
 
 #[test]
 fn validate_fix_budget_exhaustion_fails_the_run() {
-    let (body, settings) = run_fix_loop_flow(&format!("{GATE_LOG}\nexit 1"), "run-validate-budget");
+    let (body, settings) = run_fix_loop_flow(
+        fix_loop_flow(&format!("{GATE_LOG}\nexit 1")),
+        "run-validate-budget",
+    );
     assert_eq!(body["terminal_status"], json!("failed"), "{body:?}");
 
     let record = RunStore::for_settings(&settings)
@@ -166,39 +171,55 @@ fn validate_fix_budget_exhaustion_fails_the_run() {
     );
 }
 
+/// Continues `source` from `start_node` through the API and waits for the
+/// continuation to finish; returns its run id, status and last error.
+fn continue_run(
+    settings: &SparkSettings,
+    source: &str,
+    start_node: &str,
+) -> (String, String, String) {
+    let response = attractor_api::handle_attractor_request(
+        "POST",
+        &format!("/attractor/pipelines/{source}/continue"),
+        &json!({"start_node": start_node, "flow_source_mode": "snapshot"}).to_string(),
+        settings.clone(),
+    );
+    assert_eq!(response.status_code, 200, "{:?}", response.body);
+    let run_id = response.body["pipeline_id"].as_str().unwrap().to_string();
+    let store = RunStore::for_settings(settings);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let record = store
+            .read_run_bundle(&run_id)
+            .unwrap()
+            .unwrap()
+            .record
+            .unwrap();
+        let status = attractor_runtime::normalize_run_status(&record.status);
+        if status == "failed" || status == "completed" {
+            return (run_id, status.to_string(), record.last_error);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{run_id}: {}",
+            record.status
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Continue through the API: each continuation's start counts as a visit, so
 /// an exhausted start target fails without running again.
 #[test]
 fn continue_counts_its_start_visit() {
-    let (_, settings) = run_fix_loop_flow(&format!("{GATE_LOG}\nexit 1"), "run-continue-visits");
-    let store = RunStore::for_settings(&settings);
+    let (_, settings) = run_fix_loop_flow(
+        fix_loop_flow(&format!("{GATE_LOG}\nexit 1")),
+        "run-continue-visits",
+    );
     let continue_from = |source: &str, start_node: &str| {
-        let response = attractor_api::handle_attractor_request(
-            "POST",
-            &format!("/attractor/pipelines/{source}/continue"),
-            &json!({"start_node": start_node, "flow_source_mode": "snapshot"}).to_string(),
-            settings.clone(),
-        );
-        assert_eq!(response.status_code, 200, "{:?}", response.body);
-        let run_id = response.body["pipeline_id"].as_str().unwrap().to_string();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
-            let record = store
-                .read_run_bundle(&run_id)
-                .unwrap()
-                .unwrap()
-                .record
-                .unwrap();
-            if attractor_runtime::normalize_run_status(&record.status) == "failed" {
-                return (run_id, record.last_error);
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{run_id}: {}",
-                record.status
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        let (run_id, status, error) = continue_run(&settings, source, start_node);
+        assert_eq!(status, "failed", "{run_id}");
+        (run_id, error)
     };
     let attempts = || fs::read_to_string(settings.project_root.join("attempts.txt")).unwrap();
     assert_eq!(attempts().lines().count(), 4);
@@ -227,6 +248,24 @@ fn continue_counts_its_start_visit() {
         5
     );
     assert_eq!(attempts().lines().count(), 5);
+}
+
+/// Continuing from an exit that already used all its visits fails at entry
+/// instead of completing the run again.
+#[test]
+fn continue_from_an_exhausted_exit_fails() {
+    let mut flow = fix_loop_flow("exit 0");
+    flow["nodes"]["done"]["runtime"] = json!({"max_visits": 1});
+    let (body, settings) = run_fix_loop_flow(flow, "run-exhausted-exit");
+    assert_eq!(body["terminal_status"], json!("completed"), "{body:?}");
+
+    let (continued, status, error) = continue_run(&settings, "run-exhausted-exit", "done");
+    assert_eq!(status, "failed", "{continued}");
+    assert!(error.starts_with("visit_limit_reached: done"), "{error}");
+    assert_eq!(
+        final_checkpoint(&settings, &continued).visit_counts["done"],
+        2
+    );
 }
 
 /// Every packaged software-development flow must survive the real DSL

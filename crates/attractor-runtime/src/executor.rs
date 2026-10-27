@@ -28,8 +28,8 @@ use crate::results::{canceled_run_result, failed_run_result, result_summary_requ
 use crate::retry::{coerce_retry_exhausted_outcome, retry_policy_for_node, should_retry_attempt};
 use crate::routing::{
     first_target_with_visits_left, is_conditional_node, is_exit_node, mark_unavailable_routes,
-    max_visits, outgoing_routing_edges, resolve_start_node, select_next_node_with_prior,
-    NextNodeSelection, VISIT_LIMIT_REACHED,
+    max_visits, outgoing_routing_edges, resolve_start_node, select_exhausted_route_with_prior,
+    select_next_node_with_prior, NextNodeSelection, VISIT_LIMIT_REACHED,
 };
 use crate::store::{CreateRunRequest, RunStore};
 use crate::terminal::{
@@ -484,6 +484,44 @@ where
                     ),
                 };
             }
+            // Backstop: routing never selects an exhausted node, so this only
+            // fires for an entry that skipped the visit-limit check, such as a
+            // continue from an exhausted start node.
+            let visit_count = visit_counts.get(&current_node).copied().unwrap_or(0);
+            let visit_limit = max_visits(&flow, &current_node);
+            if visit_count > visit_limit {
+                let reason = format!(
+                    "{VISIT_LIMIT_REACHED}: {current_node} entered {visit_count} times, over its {visit_limit} visits"
+                );
+                save_checkpoint_event(
+                    &store,
+                    &paths,
+                    &run_id,
+                    &current_node,
+                    &completed_nodes,
+                    &context,
+                    &retry_counts,
+                    &visit_counts,
+                )?;
+                return finalize_failed(
+                    &store,
+                    &paths,
+                    &run_id,
+                    &mut record,
+                    &mut self.node_executor,
+                    &flow,
+                    &current_node,
+                    &completed_nodes,
+                    &context,
+                    &retry_counts,
+                    &visit_counts,
+                    &node_outcomes,
+                    &route_trace,
+                    reason,
+                    artifact_node_ids.len(),
+                );
+            }
+
             if is_exit_node(&flow, &current_node) {
                 let gate_check = check_goal_gates(&flow, &context, &completed_nodes);
                 if !gate_check.satisfied {
@@ -634,43 +672,6 @@ where
                     &terminal.outcome,
                     terminal.outcome_reason_code,
                     terminal.outcome_reason_message,
-                    artifact_node_ids.len(),
-                );
-            }
-
-            // Backstop: routing never selects an exhausted node, so this only
-            // fires for a routing path that skipped the visit-limit check.
-            let visit_count = visit_counts.get(&current_node).copied().unwrap_or(0);
-            let visit_limit = max_visits(&flow, &current_node);
-            if visit_count > visit_limit {
-                let reason = format!(
-                    "{VISIT_LIMIT_REACHED}: {current_node} entered {visit_count} times, over its {visit_limit} visits"
-                );
-                save_checkpoint_event(
-                    &store,
-                    &paths,
-                    &run_id,
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &retry_counts,
-                    &visit_counts,
-                )?;
-                return finalize_failed(
-                    &store,
-                    &paths,
-                    &run_id,
-                    &mut record,
-                    &mut self.node_executor,
-                    &flow,
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &retry_counts,
-                    &visit_counts,
-                    &node_outcomes,
-                    &route_trace,
-                    reason,
                     artifact_node_ids.len(),
                 );
             }
@@ -1571,17 +1572,34 @@ fn select_route_after_outcome(
         Ok(None) => None,
         Err(reason) => Some(reason),
     };
+    let failure_route_allowed = |edge: &RoutingEdge| {
+        let target = edge.target.as_str();
+        !edge.condition_text().is_empty()
+            || is_conditional_node(flow, target)
+            || (is_goal_gate_node(flow, node_id) && is_exit_node(flow, target))
+    };
     if let Some(edge) = selection.selected_edge.as_ref() {
         // An exhausted edge has no selected node and carries the visit-limit reason.
-        if selection.selected_node.is_none() {
+        if selection.selected_node.is_none() || failure_route_allowed(edge) {
             return Ok(selection);
         }
-        let target = edge.target.as_str();
-        if !edge.condition_text().is_empty() || is_conditional_node(flow, target) {
-            return Ok(selection);
-        }
-        if is_goal_gate_node(flow, node_id) && is_exit_node(flow, target) {
-            return Ok(selection);
+        // The selected edge is not a valid failure route; an exhausted route
+        // it displaced still names the visit limit.
+        let exhausted = select_exhausted_route_with_prior(
+            flow,
+            node_id,
+            outcome,
+            context,
+            prior_status,
+            prior_preferred_label,
+            visits,
+        )?;
+        if exhausted
+            .selected_edge
+            .as_ref()
+            .is_some_and(failure_route_allowed)
+        {
+            return Ok(exhausted);
         }
     }
     Ok(no_route(

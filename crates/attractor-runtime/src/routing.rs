@@ -166,7 +166,6 @@ pub fn select_next_node_with_prior(
     prior_preferred_label: &str,
     visits: &BTreeMap<String, u64>,
 ) -> Result<NextNodeSelection> {
-    let routing_edges = outgoing_routing_edges(flow, node_id)?;
     let routing_outcome = routing_outcome_for_node_with_prior(
         flow,
         node_id,
@@ -174,9 +173,7 @@ pub fn select_next_node_with_prior(
         prior_status,
         prior_preferred_label,
     );
-    let (eligible, exhausted): (Vec<_>, Vec<_>) = routing_edges
-        .into_iter()
-        .partition(|edge| !visits_exhausted(flow, visits, edge.target.as_str()));
+    let (eligible, exhausted) = partition_by_visits_left(flow, node_id, visits)?;
     if let Some(edge) = select_failure_route_edge_with_context(&eligible, &routing_outcome, context)
     {
         return Ok(NextNodeSelection {
@@ -187,7 +184,49 @@ pub fn select_next_node_with_prior(
         });
     }
     let blocked = select_failure_route_edge_with_context(&exhausted, &routing_outcome, context);
-    Ok(NextNodeSelection {
+    Ok(blocked_selection(flow, node_id, blocked))
+}
+
+/// The edge routing would take among the node's exhausted targets alone, as a
+/// `visit_limit_reached` selection. Lets a caller that rejects the selected
+/// edge still report the exhausted route it displaced.
+pub fn select_exhausted_route_with_prior(
+    flow: &FlowDefinition,
+    node_id: &str,
+    outcome: &Outcome,
+    context: &AttractorContext,
+    prior_status: Option<OutcomeStatus>,
+    prior_preferred_label: &str,
+    visits: &BTreeMap<String, u64>,
+) -> Result<NextNodeSelection> {
+    let routing_outcome = routing_outcome_for_node_with_prior(
+        flow,
+        node_id,
+        outcome,
+        prior_status,
+        prior_preferred_label,
+    );
+    let (_, exhausted) = partition_by_visits_left(flow, node_id, visits)?;
+    let blocked = select_failure_route_edge_with_context(&exhausted, &routing_outcome, context);
+    Ok(blocked_selection(flow, node_id, blocked))
+}
+
+fn partition_by_visits_left(
+    flow: &FlowDefinition,
+    node_id: &str,
+    visits: &BTreeMap<String, u64>,
+) -> Result<(Vec<RoutingEdge>, Vec<RoutingEdge>)> {
+    Ok(outgoing_routing_edges(flow, node_id)?
+        .into_iter()
+        .partition(|edge| !visits_exhausted(flow, visits, edge.target.as_str())))
+}
+
+fn blocked_selection(
+    flow: &FlowDefinition,
+    node_id: &str,
+    blocked: Option<RoutingEdge>,
+) -> NextNodeSelection {
+    NextNodeSelection {
         current_node: node_id.to_string(),
         selected_node: None,
         reason: blocked
@@ -195,7 +234,7 @@ pub fn select_next_node_with_prior(
             .map(|edge| visit_limit_reason(flow, edge.target.as_str(), node_id))
             .unwrap_or_else(|| "no_route".to_string()),
         selected_edge: blocked,
-    })
+    }
 }
 
 pub fn is_conditional_node(flow: &FlowDefinition, node_id: &str) -> bool {
