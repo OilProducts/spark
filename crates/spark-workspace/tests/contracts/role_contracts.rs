@@ -517,6 +517,62 @@ fn recovery_delivers_a_role_runs_missing_terminal_event() {
 }
 
 #[test]
+fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instructions() {
+    let harness = Harness::new();
+    harness
+        .roles
+        .start(&harness.project, CHIEF_OF_STAFF)
+        .unwrap();
+    harness.request(0);
+    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.edit_record(CHIEF_OF_STAFF, |role| {
+        role["runs"] = json!([{"run_id": "run-asks", "flow_name": "work/seeded", "summary": "Seeded work", "launched_at": "t", "status": "running"}]);
+    });
+    let mut record = attractor_core::RunRecord::new("run-asks", &harness.project);
+    record.status = "running".into();
+    record.launch_context = Some(
+        [(
+            "context.spark_owner".to_string(),
+            json!({"kind": "role", "id": CHIEF_OF_STAFF}),
+        )]
+        .into(),
+    );
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .append_event(
+            &paths,
+            attractor_runtime::human_gate_pending_event(
+                "run-asks",
+                "q-1",
+                "clarification",
+                "work",
+                "Which branch?",
+                None,
+                vec![],
+            ),
+        )
+        .unwrap();
+    spark_workspace::inbox::deliver_run_events(&harness.settings, "run-asks").unwrap();
+    let turn = harness.request(1);
+    assert!(turn.prompt.contains("Which branch?"), "{}", turn.prompt);
+    assert!(turn.prompt.contains("q-1"), "{}", turn.prompt);
+    let frame = frame(&turn);
+    assert!(
+        frame.contains("spark run answer --run <owning run id>"),
+        "{frame}"
+    );
+    assert!(frame.contains("Never guess an answer"), "{frame}");
+    assert!(frame.contains("`spark run retry|continue|events|questions|answer ...`"));
+    harness.agent.release(1);
+}
+
+#[test]
 fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs() {
     let harness = Harness::new();
     harness

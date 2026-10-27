@@ -1,14 +1,17 @@
 ---
 type: agent_task
 title: Investigate
+role: author
 runtime:
   session: investigator
+  max_entries: 4
 contracts:
   reads_context:
   - context.request.objective
   - context.request.target_paths
   - context.review.required_changes
   writes_context:
+  - context.review.contested
   - context.investigation.summary
   - context.investigation.root_cause
   - context.investigation.evidence
@@ -18,4 +21,4 @@ routes:
   condition: outcome=success
 ---
 
-Investigate the defect described by context.request.objective in the current checkout without changing any files. Reproduce or characterize the failure through real interfaces (tests, CLI, API, observable state), trace the failing execution path, and identify the root cause and affected surfaces. If context.review.required_changes is present, it lists gaps a verifier found in your previous investigation; close them. Prefer deterministic evidence: commands you ran, files and line ranges you inspected, observed versus expected behavior. Do not propose or implement fixes yet. Respond with ONLY a JSON status envelope whose context_updates set context.investigation.summary (the diagnosis), context.investigation.root_cause (the specific defective code path), and context.investigation.evidence (the concrete evidence trail: commands, outputs, file references).
+Investigate the defect described by context.request.objective in the current checkout without changing any files. Reproduce or characterize the failure through real interfaces (tests, CLI, API, observable state), trace the failing execution path, and identify the root cause and affected surfaces. If context.review.required_changes is present, it lists gaps a verifier found in your previous investigation; resolve each one as your role describes. Prefer deterministic evidence: commands you ran, files and line ranges you inspected, observed versus expected behavior. Do not propose or implement fixes yet. Respond with ONLY a JSON status envelope whose context_updates set context.investigation.summary (the diagnosis), context.investigation.root_cause (the specific defective code path), and context.investigation.evidence (the concrete evidence trail: commands, outputs, file references).

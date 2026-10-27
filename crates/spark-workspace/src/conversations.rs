@@ -4439,6 +4439,14 @@ pub(crate) fn playbook_instructions(conversation_handle: &str, project_path: &st
     )
 }
 
+/// How a mission or standing role answers questions from the runs it launched;
+/// `sources` names the frame's own context, ahead of the runs and repository.
+pub(crate) fn run_question_instructions(sources: &str) -> String {
+    format!(
+        "When a run or descendant asks a question, you answer it. First decide whether you have the information to: {sources}, the runs' results and logs, and the repository. Investigate before deciding. If you have it, answer with `spark run answer --run <owning run id> --question <question id> (--option <value> | --text <text>)` and state your reasoning in your reply. Use the owning run id, not the root run id; `spark run questions --run <id>` lists open questions. Only if you do not have the information, ask the user for exactly what is missing and end your turn; relay their reply with `spark run answer` on the next turn. Never guess an answer."
+    )
+}
+
 /// How a conversation agent drives Spark, shared by the chat, role, and mission frames.
 pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
@@ -4446,7 +4454,7 @@ pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &st
         - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --dir <flow directory>` (pass `--project {project_path}` to include this project's org flows)\n\
         - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
         Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
-        - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
+        - `spark run retry|continue|events|questions|answer ...` inspect, resume, or answer existing runs.\n\n\
         Only the Chief of Staff role changes files in the org repo, committing each change there with its reason in the commit message; any other agent sends it the change it needs with `spark role send --project {project_path} --role chief-of-staff --conversation {handle} --message <text>`. The one exception: when the Chief of Staff is not running (`spark role list --project {project_path}`) and the user asks for an org change, the Coordinator makes it and commits it with its reason. Never edit $SPARK_HOME/bundled.\n\n\
         Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",
         handle = conversation_handle,
