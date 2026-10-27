@@ -871,6 +871,7 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    prompts: Arc<Mutex<Vec<String>>>,
 }
 
 impl spark_agent_adapter::CodergenBackend for SessionBackend {
@@ -880,6 +881,7 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
     ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
     {
         let key = "spark.runtime.claude_code.session_id";
+        self.prompts.lock().unwrap().push(request.prompt.clone());
         let mut calls = self.calls.lock().unwrap();
         calls.push((
             request.node_id.clone(),
@@ -1048,6 +1050,54 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
         backend.calls.lock().unwrap().first(),
         Some(&("b".to_string(), handle("h-5")))
     );
+}
+
+#[test]
+fn sessions_started_in_parallel_branches_continue_after_fan_in_but_stay_hidden() {
+    let temp = tempdir().unwrap();
+    let mut nodes = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "join_policy": "wait_all"}},
+        "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
+        "aa": agent_in(None), "b": agent_in(Some("s")), "c": agent_in(Some("s")),
+    });
+    nodes["c"]["contracts"] = json!({"reads_context": ["parallel.results"]});
+    let flow = session_flow(
+        nodes,
+        json!([
+            {"from": "start", "to": "fork"}, {"from": "fork", "to": "aa"},
+            {"from": "fork", "to": "b"}, {"from": "aa", "to": "join"},
+            {"from": "b", "to": "join"}, {"from": "join", "to": "c"},
+            {"from": "c", "to": "done"}
+        ]),
+    );
+    let backend = SessionBackend::default();
+    let result = run_sessions(
+        temp.path(),
+        "run-parallel-sessions",
+        flow,
+        &backend,
+        Default::default(),
+    );
+
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    let calls = backend.calls.lock().unwrap().clone();
+    let b_handle = calls.iter().position(|(node, _)| node == "b").unwrap() + 1;
+    assert_eq!(
+        calls.last(),
+        Some(&("c".to_string(), Some(format!("h-{b_handle}"))))
+    );
+    // Branch payloads, and the prompts that read them, carry no handles.
+    let results = result.context["parallel.results"].to_string();
+    assert!(results.contains("completed_nodes"), "{results}");
+    assert!(
+        !results.contains("_attractor.runtime.sessions"),
+        "{results}"
+    );
+    let prompt = backend.prompts.lock().unwrap().last().unwrap().clone();
+    assert!(prompt.contains("parallel.results"), "{prompt}");
+    assert!(!prompt.contains("_attractor.runtime.sessions"), "{prompt}");
+    assert!(!prompt.contains(&format!("h-{b_handle}")), "{prompt}");
 }
 
 #[test]

@@ -30,7 +30,7 @@ pub const INTERNAL_PIPELINE_RETRY_RUN_ID_KEY: &str = "internal.pipeline_retry_ru
 const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] =
     &["last_response", "last_stage", RUNTIME_SESSIONS_KEY];
 const MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &[RUNTIME_SESSIONS_KEY];
-const PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["parallel.results"];
+const PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["parallel.results", RUNTIME_SESSIONS_KEY];
 const TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["context.tool."];
 const HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["human.gate."];
 const FAN_IN_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["parallel.fan_in."];

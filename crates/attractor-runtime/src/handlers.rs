@@ -1923,13 +1923,14 @@ impl RuntimeHandlerRunner {
             .enumerate()
             .map(|(index, edge)| (index, edge.target.as_str().to_string()))
             .collect::<Vec<_>>();
-        let results = self.execute_parallel_branches(
+        let mut results = self.execute_parallel_branches(
             runtime.clone(),
             branches,
             max_parallel as usize,
             &join_policy,
             &error_policy,
         )?;
+        let sessions = take_branch_sessions(&runtime.context, &mut results);
 
         let event_success_count = results
             .iter()
@@ -2005,12 +2006,14 @@ impl RuntimeHandlerRunner {
             _ => OutcomeStatus::Fail,
         };
 
+        let mut context_updates =
+            ContextMap::from([("parallel.results".to_string(), json!(results_for_policy))]);
+        if let Some(sessions) = sessions {
+            context_updates.insert(crate::context::RUNTIME_SESSIONS_KEY.to_string(), sessions);
+        }
         Ok(Outcome {
             status,
-            context_updates: ContextMap::from([(
-                "parallel.results".to_string(),
-                json!(results_for_policy),
-            )]),
+            context_updates,
             notes: "parallel fan-out completed".to_string(),
             ..Outcome::new(status)
         })
@@ -3059,6 +3062,33 @@ fn branch_payload(
         "node_outcomes": node_outcomes,
         "failure_reason": failure_reason,
     })
+}
+
+/// Removes the runtime's session handles from each branch payload, which
+/// agents can read, and returns the parent's sessions with every entry a
+/// branch started or continued, or `None` when no branch changed one.
+// ponytail: branches updating the same session race; last completed wins.
+fn take_branch_sessions(parent: &ContextMap, results: &mut [Value]) -> Option<Value> {
+    let key = crate::context::RUNTIME_SESSIONS_KEY;
+    let before = parent.get(key).cloned().unwrap_or_else(|| json!({}));
+    let mut merged = before.clone();
+    for result in results.iter_mut() {
+        let Some(branch) = result
+            .get_mut("context")
+            .and_then(Value::as_object_mut)
+            .and_then(|context| context.remove(key))
+        else {
+            continue;
+        };
+        for (section, entries) in branch.as_object().into_iter().flatten() {
+            for (name, handle) in entries.as_object().into_iter().flatten() {
+                if before.get(section).and_then(|s| s.get(name)) != Some(handle) {
+                    merged[section][name] = handle.clone();
+                }
+            }
+        }
+    }
+    (merged != before).then_some(merged)
 }
 
 fn branch_succeeded(payload: &Value) -> bool {
