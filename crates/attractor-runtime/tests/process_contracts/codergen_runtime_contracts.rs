@@ -867,7 +867,7 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
 
 /// Records the Claude Code session id each node is asked to resume and
 /// hands out a new one per call (`h-<call>`). `check` answers `Again` once,
-/// then `Done`.
+/// then `Done`. The first call of `flaky` fails retryably.
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -890,7 +890,15 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
                 .map(str::to_string),
         ));
         let checks = calls.iter().filter(|(node, _)| node == "check").count();
-        let response = if request.node_id == "a" {
+        let flaky = calls.iter().filter(|(node, _)| node == "flaky").count();
+        let response = if request.node_id == "flaky" && flaky == 1 {
+            // The first attempt fails and is retried automatically.
+            spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome {
+                failure_reason: "transient".to_string(),
+                retryable: Some(true),
+                ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Fail)
+            })
+        } else if request.node_id == "a" {
             // An agent cannot forge the runtime's session handles.
             spark_agent_adapter::CodergenBackendResponse::Text(
                 json!({"outcome": "success", "context_updates": {
@@ -1039,6 +1047,83 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
     assert_eq!(
         backend.calls.lock().unwrap().first(),
         Some(&("b".to_string(), handle("h-5")))
+    );
+}
+
+#[test]
+fn retries_and_crash_recovery_continue_the_failed_attempts_session() {
+    let temp = tempdir().unwrap();
+    let mut nodes = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "flaky": agent_in(Some("s")), "b": agent_in(Some("s")),
+    });
+    nodes["flaky"]["retry"] = json!({"max_retries": 1});
+    let flow = session_flow(
+        nodes,
+        json!([
+            {"from": "start", "to": "flaky"}, {"from": "flaky", "to": "b"},
+            {"from": "b", "to": "done"}
+        ]),
+    );
+    let backend = SessionBackend::default();
+    let runner = || {
+        let backend = backend.clone();
+        RuntimeHandlerRunner::new().with_codergen_backend_factory(move || Box::new(backend.clone()))
+    };
+    let store = attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs"));
+    let runtime_context = ContextMap::from([(
+        "internal.bundled_root".to_string(),
+        json!(temp.path().to_string_lossy()),
+    )]);
+    // Stop after `flaky`, as if the process died before `b` ran.
+    let paused = attractor_runtime::PipelineExecutor::new(runner())
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: store.clone(),
+            record: attractor_core::RunRecord::new("run-recover", temp.path().to_string_lossy()),
+            flow: flow.clone(),
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context: runtime_context.clone(),
+            max_steps: Some(2),
+            start: Default::default(),
+        })
+        .expect("run executes");
+    assert_ne!(paused.status, "completed", "{}", paused.failure_reason);
+    let handle = |value: &str| Some(value.to_string());
+    // The retried attempt resumes the failed attempt's handle.
+    assert_eq!(
+        *backend.calls.lock().unwrap(),
+        vec![
+            ("flaky".to_string(), None),
+            ("flaky".to_string(), handle("h-1"))
+        ]
+    );
+
+    // Recovery from the persisted checkpoint continues the session.
+    let bundle = store.read_run_bundle("run-recover").unwrap().unwrap();
+    let recovered = attractor_runtime::PipelineExecutor::new(runner())
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: store.clone(),
+            record: bundle.record.unwrap(),
+            flow,
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context,
+            max_steps: None,
+            start: attractor_runtime::ExecutionStart::Resume {
+                paths: bundle.paths,
+                checkpoint: bundle.checkpoint.unwrap(),
+            },
+        })
+        .expect("run recovers");
+    assert_eq!(
+        recovered.status, "completed",
+        "{}",
+        recovered.failure_reason
+    );
+    assert_eq!(
+        backend.calls.lock().unwrap().last(),
+        Some(&("b".to_string(), handle("h-2")))
     );
 }
 
