@@ -1,6 +1,6 @@
 ---
 type: fan_in
-title: Join Proposals
+title: Join Reviews
 routes:
-- to: judge
+- to: synthesize
 ---

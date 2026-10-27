@@ -867,7 +867,8 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
 
 /// Records the Claude Code session id each node is asked to resume and
 /// hands out a new one per call (`h-<call>`). `check` answers `Again` once,
-/// then `Done`. The first call of `flaky` fails retryably.
+/// then `Done`; `resolve` always answers `Re-review`. The first call of
+/// `flaky` fails retryably.
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -912,6 +913,7 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
                 preferred_label: match (request.node_id.as_str(), checks) {
                     ("check", 1) => "Again".to_string(),
                     ("check", _) => "Done".to_string(),
+                    ("resolve", _) => "Re-review".to_string(),
                     _ => String::new(),
                 },
                 ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success)
@@ -1050,6 +1052,80 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
     assert_eq!(
         backend.calls.lock().unwrap().first(),
         Some(&("b".to_string(), handle("h-5")))
+    );
+}
+
+#[test]
+fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() {
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../spark-assets/assets");
+    let flow = attractor_dsl::resolve_flow_roles(
+        &attractor_dsl::read_flow_dir(&assets.join("flows/software-development/design-change"))
+            .unwrap(),
+        &attractor_dsl::FlowRoots::new(&assets, None),
+    )
+    .unwrap();
+    let temp = tempdir().unwrap();
+    let backend = SessionBackend::default();
+    // `resolve` always asks for a re-review.
+    let result = run_sessions(
+        temp.path(),
+        "run-design",
+        flow,
+        &backend,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
+
+    let calls = backend.calls.lock().unwrap().clone();
+    let handles = |id: &str| {
+        calls
+            .iter()
+            .enumerate()
+            .filter(|(_, (node, _))| node == id)
+            .map(|(index, (_, handle))| (format!("h-{}", index + 1), handle.clone()))
+            .collect::<Vec<_>>()
+    };
+    // `resolve` continues `draft`'s session, then its own on the second pass.
+    let draft = handles("draft");
+    let resolve = handles("resolve");
+    assert_eq!(draft.len(), 1);
+    assert_eq!(resolve.len(), 2);
+    assert_eq!(resolve[0].1, Some(draft[0].0.clone()));
+    assert_eq!(resolve[1].1, Some(resolve[0].0.clone()));
+    // The review runs twice; every reviewer call starts a fresh session.
+    assert_eq!(handles("synthesize").len(), 2);
+    for id in [
+        "codebase_check",
+        "critic",
+        "naive_reader",
+        "readiness",
+        "zoom_out",
+    ] {
+        let runs = handles(id);
+        // After the join, routing also takes the parallel node's first
+        // edge (`codebase_check`) once more, so it runs more than the others.
+        assert!(runs.len() >= 2, "{id} {calls:?}");
+        assert!(runs.iter().all(|(_, handle)| handle.is_none()), "{id}");
+    }
+    // The second `resolve` sees Re-review marked unavailable; routing takes Done.
+    let prompts = backend.prompts.lock().unwrap().clone();
+    let resolve_prompts = calls
+        .iter()
+        .zip(&prompts)
+        .filter(|((node, _), _)| node == "resolve")
+        .map(|(_, prompt)| prompt)
+        .collect::<Vec<_>>();
+    let marked = "go to \"Review Design\" (unavailable: visit limit reached).";
+    assert!(
+        !resolve_prompts[0].contains(marked),
+        "{}",
+        resolve_prompts[0]
+    );
+    assert!(
+        resolve_prompts[1].contains(marked),
+        "{}",
+        resolve_prompts[1]
     );
 }
 

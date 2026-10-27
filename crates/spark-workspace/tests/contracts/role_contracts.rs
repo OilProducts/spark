@@ -167,6 +167,13 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     let coordinator = harness.get(COORDINATOR).conversation_id;
     let role = frame(&harness.user_turn(&coordinator));
     assert!(role.contains("Org changes"), "{role}");
+    for rule in [
+        "goes through the `software-development/design-change` flow",
+        "check its design against what the user asked for",
+        "tell the user exactly where it diverges and ask before implementing",
+    ] {
+        assert!(role.contains(rule), "{rule}");
+    }
     assert!(
         role.contains("standing Coordinator (coordinator)"),
         "{role}"
