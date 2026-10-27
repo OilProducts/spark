@@ -1,13 +1,13 @@
 digraph reference_1_1_03_subgraph_defaults {
   node [llm_model="gpt-5-mini", timeout=45s];
-  edge [fidelity="summary:low"];
+  edge [weight=1];
 
   start [shape=Mdiamond];
   exit [shape=Msquare];
 
   subgraph cluster_review {
     label="Review Loop";
-    node [thread_id="review-loop-thread", class="review-loop"];
+    node [class="review-loop"];
     edge [label="next", weight=2];
 
     draft [shape=box, prompt="Draft proposed changes"];

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use serde_json::json;
 use spark_assets::{flows, frontend, guides, icons, models, resources, ResourceSource};
 use spark_common::settings::SparkSettings;
 
@@ -214,6 +215,57 @@ fn bundled_flows_round_trip_through_the_directory_writer() {
         attractor_dsl::resolve_flow_roles(&flow, &roots)
             .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
     }
+}
+
+#[test]
+fn bundled_flows_use_named_sessions_instead_of_fidelity() {
+    for name in flows::starter_flow_names().expect("names") {
+        for (file, text) in flows::starter_flow_files(&name).expect("files") {
+            let (frontmatter, _) = text[4..].split_once("\n---").expect("frontmatter");
+            // Math prompts use "fidelity" in prose and node names, never as a key.
+            assert!(
+                frontmatter.lines().all(|line| {
+                    let key = line.trim_start().split(':').next().unwrap_or_default();
+                    !matches!(key, "fidelity" | "default_fidelity" | "thread_id")
+                }),
+                "{name}/{file}"
+            );
+        }
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("roles")).expect("roles dir");
+    for (name, text) in spark_assets::roles::assets() {
+        fs::write(temp.path().join("roles").join(name), text).expect("role");
+    }
+    let roots = attractor_dsl::FlowRoots::new(temp.path(), None);
+    for (name, sessions) in [
+        (
+            "software-development/workers/implement-task",
+            json!({"implementer": ["work"]}),
+        ),
+        (
+            "software-development/investigate-bug",
+            json!({"investigator": ["investigate"], "planner": ["propose_plan"]}),
+        ),
+        (
+            "software-development/run-retrospective",
+            json!({"diagnostician": ["diagnose"]}),
+        ),
+    ] {
+        let flow = attractor_dsl::resolve_flow_roles(&bundled_flow(name), &roots)
+            .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
+        assert_eq!(json!(flow.sessions()), sessions, "{name}");
+    }
+    let reviewer = attractor_dsl::parse_role(
+        "adversarial-reviewer",
+        &spark_assets::roles::assets()
+            .into_iter()
+            .find(|(name, _)| name == "adversarial-reviewer.md")
+            .expect("adversarial reviewer")
+            .1,
+    )
+    .expect("role");
+    assert!(reviewer.isolated);
 }
 
 /// A bundled flow in its authored form, assembled like the loader does.

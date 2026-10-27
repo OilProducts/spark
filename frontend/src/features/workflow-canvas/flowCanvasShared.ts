@@ -166,8 +166,7 @@ function buildHydratedNode(
             : '',
         retry_target: typeof node.attrs.retry_target === 'string' ? node.attrs.retry_target : '',
         fallback_retry_target: typeof node.attrs.fallback_retry_target === 'string' ? node.attrs.fallback_retry_target : '',
-        fidelity: typeof node.attrs.fidelity === 'string' ? node.attrs.fidelity : '',
-        thread_id: typeof node.attrs.thread_id === 'string' ? node.attrs.thread_id : '',
+        session: typeof node.attrs.session === 'string' ? node.attrs.session : '',
         class: typeof node.attrs.class === 'string' ? node.attrs.class : '',
         timeout: typeof node.attrs.timeout === 'string' ? node.attrs.timeout : '',
         llm_model: typeof node.attrs.llm_model === 'string' ? node.attrs.llm_model : '',
@@ -235,8 +234,6 @@ function buildHydratedEdge(
         label: typeof edge.attrs.label === 'string' ? edge.attrs.label : '',
         condition: typeof edge.attrs.condition === 'string' ? edge.attrs.condition : '',
         weight: typeof edge.attrs.weight === 'number' || typeof edge.attrs.weight === 'string' ? edge.attrs.weight : '',
-        fidelity: typeof edge.attrs.fidelity === 'string' ? edge.attrs.fidelity : '',
-        thread_id: typeof edge.attrs.thread_id === 'string' ? edge.attrs.thread_id : '',
         // Unset stays unset so saving does not add a default extension.
         ...(edge.attrs.loop_restart === true || edge.attrs.loop_restart === 'true' ? { loop_restart: true } : {}),
     }

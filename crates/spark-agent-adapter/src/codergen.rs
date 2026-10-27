@@ -27,7 +27,6 @@ use crate::status_envelope::{
     StructuredContractViolation, StructuredTextOutcome,
 };
 
-pub const RUNTIME_CONTEXT_CARRYOVER_KEY: &str = "_attractor.runtime.context_carryover";
 pub const DECLARED_CONTEXT_MISSING_SENTINEL: &str = "<missing>";
 pub const STATUS_ENVELOPE_RESPONSE_CONTRACT: &str = "status_envelope";
 pub const DEFAULT_CONTRACT_REPAIR_ATTEMPTS: u32 = 1;
@@ -35,6 +34,37 @@ pub const DEFAULT_CONTRACT_REPAIR_ATTEMPTS: u32 = 1;
 /// enforce it.
 pub const STATUS_ENVELOPE_SCHEMA_METADATA_KEY: &str =
     "spark.runtime.codergen.status_envelope_schema";
+/// Names the node's session; a Codex session node keeps a resumable thread.
+pub const SESSION_NAME_METADATA_KEY: &str = "spark.runtime.session.name";
+/// Where a native provider saves a session node's history after its turn.
+pub const SESSION_HISTORY_PATH_METADATA_KEY: &str = "spark.runtime.session.history_path";
+/// The saved history a native session node continues (part of its handle).
+pub const NATIVE_SESSION_HISTORY_METADATA_KEY: &str = "spark.runtime.native.session_history";
+
+/// A provider session a node continues: the provider and model it began
+/// with, and the request metadata that resumes it (Claude Code's session id
+/// and usage snapshot, Codex's thread id, a native history file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionHandle {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub resume: BTreeMap<String, Value>,
+}
+
+/// The named session (`session: <name>`) a node runs in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodergenSession {
+    pub name: String,
+    /// None starts the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<SessionHandle>,
+    /// Where a native provider saves the session's history; None keeps it
+    /// for this node only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_path: Option<PathBuf>,
+}
 
 #[derive(Debug, Error)]
 pub enum CodergenError {
@@ -65,6 +95,8 @@ pub struct CodergenRequest {
     pub project_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<CodergenSession>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -876,6 +908,49 @@ impl CodergenHandler {
                     .to_string()),
             );
         }
+        let provider = resolve_effective_llm_provider(&resolution_inputs, &request.context);
+        if let Some(session) = request.session.as_ref() {
+            if let Some(handle) = session.handle.as_ref() {
+                if handle.provider != provider {
+                    let failure_reason = format!(
+                        "session '{}' was started with provider '{}', but node '{}' resolves provider '{provider}'",
+                        session.name, handle.provider, request.node_id
+                    );
+                    let outcome = with_builtin_response_context(
+                        Outcome {
+                            status: OutcomeStatus::Fail,
+                            failure_reason: failure_reason.clone(),
+                            retryable: Some(false),
+                            failure_kind: Some(FailureKind::Runtime),
+                            ..Outcome::new(OutcomeStatus::Fail)
+                        },
+                        &request.node_id,
+                        &failure_reason,
+                    );
+                    write_stage_file(stage_dir.as_deref(), "response.md", &failure_reason)?;
+                    write_status_file(stage_dir.as_deref(), &outcome, 0, &[], None)?;
+                    let mut execution = CodergenExecution::from_parts(
+                        outcome,
+                        prompt,
+                        failure_reason,
+                        Vec::new(),
+                        0,
+                        Vec::new(),
+                        None,
+                    );
+                    execution.session = Some(handle.clone());
+                    return Ok(execution);
+                }
+                metadata.extend(handle.resume.clone());
+            }
+            metadata.insert(SESSION_NAME_METADATA_KEY.to_string(), json!(session.name));
+            if let Some(path) = session.history_path.as_ref() {
+                metadata.insert(
+                    SESSION_HISTORY_PATH_METADATA_KEY.to_string(),
+                    json!(path.to_string_lossy()),
+                );
+            }
+        }
         let backend_request = CodergenBackendRequest {
             node_id: request.node_id.clone(),
             prompt: prompt.clone(),
@@ -884,7 +959,7 @@ impl CodergenHandler {
             contract_repair_attempts,
             timeout_seconds: timeout_seconds(&request.node.attrs),
             write_contract: write_contract.clone(),
-            provider: resolve_effective_llm_provider(&resolution_inputs, &request.context),
+            provider,
             model: resolve_effective_llm_model(&resolution_inputs, &request.context),
             llm_profile: resolve_effective_llm_profile(&resolution_inputs, &request.context),
             reasoning_effort: resolve_effective_reasoning_effort(
@@ -914,36 +989,38 @@ impl CodergenHandler {
             ],
         ));
 
-        let (outcome, response_text, repair_attempts, violations, usage) = if self.backend.is_none()
-        {
-            crate::initial_context::capture_if_configured(&backend_request.metadata, &prompt)
-                .map_err(|source| CodergenError::Artifact(source.to_string()))?;
-            let response_text = format!("[Simulated] Response for stage: {}", request.node_id);
-            let outcome = with_builtin_response_context(
-                Outcome {
-                    status: OutcomeStatus::Success,
-                    notes: format!("Stage completed: {}", request.node_id),
-                    ..Outcome::new(OutcomeStatus::Success)
-                },
-                &request.node_id,
-                &response_text,
-            );
-            events.push(event(
-                "simulated_llm_request_completed",
-                [
-                    ("node_id", json!(request.node_id.clone())),
-                    ("context_capture_kind", json!("assembled_messages")),
-                ],
-            ));
-            (outcome, response_text, 0, Vec::new(), None)
-        } else {
-            self.run_backend_with_contract(
-                backend_request,
-                &write_contract,
-                &mut events,
-                &request.node_id,
-            )?
-        };
+        let session_model = backend_request.model.clone();
+        let session_provider = backend_request.provider.clone();
+        let (outcome, response_text, repair_attempts, violations, usage, resume_metadata) =
+            if self.backend.is_none() {
+                crate::initial_context::capture_if_configured(&backend_request.metadata, &prompt)
+                    .map_err(|source| CodergenError::Artifact(source.to_string()))?;
+                let response_text = format!("[Simulated] Response for stage: {}", request.node_id);
+                let outcome = with_builtin_response_context(
+                    Outcome {
+                        status: OutcomeStatus::Success,
+                        notes: format!("Stage completed: {}", request.node_id),
+                        ..Outcome::new(OutcomeStatus::Success)
+                    },
+                    &request.node_id,
+                    &response_text,
+                );
+                events.push(event(
+                    "simulated_llm_request_completed",
+                    [
+                        ("node_id", json!(request.node_id.clone())),
+                        ("context_capture_kind", json!("assembled_messages")),
+                    ],
+                ));
+                (outcome, response_text, 0, Vec::new(), None, BTreeMap::new())
+            } else {
+                self.run_backend_with_contract(
+                    backend_request,
+                    &write_contract,
+                    &mut events,
+                    &request.node_id,
+                )?
+            };
 
         write_stage_file(stage_dir.as_deref(), "response.md", &response_text)?;
         write_status_file(
@@ -953,7 +1030,7 @@ impl CodergenHandler {
             &violations,
             usage.as_ref(),
         )?;
-        Ok(CodergenExecution::from_parts(
+        let mut execution = CodergenExecution::from_parts(
             outcome,
             prompt,
             response_text,
@@ -961,7 +1038,19 @@ impl CodergenHandler {
             repair_attempts,
             violations,
             usage,
-        ))
+        );
+        execution.session = request.session.and_then(|session| {
+            if resume_metadata.is_empty() {
+                session.handle
+            } else {
+                Some(SessionHandle {
+                    provider: session_provider,
+                    model: session_model,
+                    resume: resume_metadata,
+                })
+            }
+        });
+        Ok(execution)
     }
 
     fn run_backend_with_contract(
@@ -977,6 +1066,7 @@ impl CodergenHandler {
             u32,
             Vec<StructuredContractViolation>,
             Option<Usage>,
+            BTreeMap<String, Value>,
         ),
         CodergenError,
     > {
@@ -1026,6 +1116,7 @@ impl CodergenHandler {
                         repair_attempts_used,
                         violations,
                         usage,
+                        output.resume_metadata,
                     ));
                 }
                 CoercedBackendResponse::Violation(violation) => {
@@ -1050,6 +1141,7 @@ impl CodergenHandler {
                             repair_attempts_used,
                             violations,
                             usage,
+                            output.resume_metadata,
                         ));
                     }
                     repair_attempts_used += 1;
@@ -1091,6 +1183,9 @@ pub struct CodergenExecution {
     pub contract_violations: Vec<StructuredContractViolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// The node's session after it ran, for a session node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionHandle>,
 }
 
 impl CodergenExecution {
@@ -1111,6 +1206,7 @@ impl CodergenExecution {
             repair_attempts,
             contract_violations,
             usage,
+            session: None,
         }
     }
 }
@@ -1246,16 +1342,6 @@ pub fn expand_goal(prompt: &str, context: &ContextMap, graph: &DotGraph) -> Stri
 
 pub fn compose_prompt(prompt: &str, context: &ContextMap, declared_keys: &[String]) -> String {
     let mut sections = Vec::new();
-    let carryover = context
-        .get(RUNTIME_CONTEXT_CARRYOVER_KEY)
-        .map(context_value_to_text)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !carryover.is_empty() {
-        sections.push("Context carryover:".to_string());
-        sections.push(carryover);
-    }
     let declared_reads = render_declared_context_reads(context, declared_keys);
     if !declared_reads.is_empty() {
         sections.push("Declared context reads:".to_string());

@@ -35,16 +35,13 @@ pub use checkpoints::{
 };
 pub use codergen::{codergen_outcome, RuntimeCodergen};
 pub use context::{
-    apply_outcome_context_updates, checkpoint_from_context,
-    checkpoint_requests_full_fidelity_degrade, clear_runtime_retry_context,
+    apply_outcome_context_updates, checkpoint_from_context, clear_runtime_retry_context,
     graph_attr_context_seed, initialize_runtime_context, reset_workflow_outcome_context,
-    resolve_runtime_fidelity, resolve_runtime_thread_id, seed_builtin_context,
-    set_runtime_fidelity_context, set_runtime_retry_context, CURRENT_NODE_KEY,
-    DEFAULT_MAX_RETRIES_KEY, INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, OUTCOME_KEY,
-    PREFERRED_LABEL_KEY, RUNTIME_FIDELITY_KEY, RUNTIME_RETRY_ATTEMPT_KEY,
-    RUNTIME_RETRY_FAILURE_REASON_KEY, RUNTIME_RETRY_MAX_ATTEMPTS_KEY, RUNTIME_RETRY_NODE_ID_KEY,
-    RUNTIME_THREAD_ID_KEY, WORKFLOW_OUTCOME_KEY, WORKFLOW_OUTCOME_REASON_CODE_KEY,
-    WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
+    seed_builtin_context, set_runtime_retry_context, CURRENT_NODE_KEY, DEFAULT_MAX_RETRIES_KEY,
+    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, OUTCOME_KEY, PREFERRED_LABEL_KEY,
+    RUNTIME_RETRY_ATTEMPT_KEY, RUNTIME_RETRY_FAILURE_REASON_KEY, RUNTIME_RETRY_MAX_ATTEMPTS_KEY,
+    RUNTIME_RETRY_NODE_ID_KEY, RUNTIME_SESSIONS_KEY, WORKFLOW_OUTCOME_KEY,
+    WORKFLOW_OUTCOME_REASON_CODE_KEY, WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
 };
 pub use controls::disk_execution_control;
 pub use controls::{

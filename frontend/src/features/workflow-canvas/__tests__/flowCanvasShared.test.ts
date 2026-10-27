@@ -529,6 +529,7 @@ describe('flowCanvasShared', () => {
                         kind: 'subflow',
                         flow_ref: 'child.yaml',
                         input_map: { 'context.ticket': 'context.ticket' },
+                        output_map: { 'context.verdict': 'context.child_verdict' },
                     },
                 },
                 done: {
@@ -641,6 +642,7 @@ describe('flowCanvasShared', () => {
             kind: 'subflow',
             flow_ref: 'child.yaml',
             input_map: { 'context.ticket': 'context.ticket' },
+            output_map: { 'context.verdict': 'context.child_verdict' },
         })
         expect(roundTripped.edges[0]).toMatchObject({
             from: 'start',

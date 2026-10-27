@@ -314,8 +314,6 @@ describe('Frontend contract behavior', () => {
           label: 'success',
           condition: 'outcome=success',
           weight: 7,
-          fidelity: 'summary:low',
-          thread_id: 'review-thread',
           loop_restart: true,
         },
       },
@@ -805,7 +803,7 @@ describe('Frontend contract behavior', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
               ],
             },
             diagnostics: [],
@@ -1310,7 +1308,6 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByLabelText('Description')).toBeVisible()
     expect(screen.getByLabelText('Goal')).toBeVisible()
     expect(screen.getByLabelText('Default Max Retries')).toBeVisible()
-    expect(screen.getByLabelText('Default Fidelity')).toBeVisible()
 
     const advancedToggle = screen.getByTestId('graph-advanced-toggle')
     expect(advancedToggle.className).toContain('focus-visible')
@@ -2295,7 +2292,6 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(within(edgeForm).getByPlaceholderText('e.g. Approve')).toBeVisible()
     expect(within(edgeForm).getByPlaceholderText('e.g. outcome = "success"')).toBeVisible()
     expect(within(edgeForm).getByPlaceholderText('0')).toBeVisible()
-    expect(within(edgeForm).getByPlaceholderText('full | truncate | compact | summary:low')).toBeVisible()
     expect(within(edgeForm).getByLabelText('Loop Restart')).toBeVisible()
   })
 
@@ -2369,8 +2365,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(screen.getByText('Goal Gate')).toBeVisible()
     expect(screen.getByText('Retry Target')).toBeVisible()
     expect(screen.getByText('Fallback Retry Target')).toBeVisible()
-    expect(screen.getByText('Fidelity')).toBeVisible()
-    expect(screen.getByText('Thread ID')).toBeVisible()
+    expect(screen.getByText('Session')).toBeVisible()
     expect(screen.getByText('Class')).toBeVisible()
     expect(screen.getByText('Timeout')).toBeVisible()
     expect(screen.getByText('Model')).toBeVisible()

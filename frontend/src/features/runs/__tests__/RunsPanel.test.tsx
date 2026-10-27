@@ -630,8 +630,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -884,7 +884,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -951,8 +951,8 @@ describe('RunsPanel', () => {
           { id: 'done', label: 'Done', shape: 'Msquare' },
         ],
         edges: [
-          { from: 'start', to: 'failed_node', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-          { from: 'failed_node', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+          { from: 'start', to: 'failed_node', label: null, condition: null, weight: null, loop_restart: false },
+          { from: 'failed_node', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
         ],
       },
       diagnostics: [],
@@ -1131,7 +1131,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -1212,8 +1212,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'task', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'task', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'task', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'task', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -1487,8 +1487,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'work', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'work', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'work', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'work', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -1603,7 +1603,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
               ],
             },
             diagnostics: [],
@@ -1704,7 +1704,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -1874,8 +1874,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'review', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'review', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -2004,8 +2004,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -2156,8 +2156,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'review', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'review', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -2380,8 +2380,8 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'work', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-                { from: 'work', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'start', to: 'work', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'work', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
               ],
             },
             diagnostics: [],
@@ -2543,8 +2543,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
             ],
           },
           diagnostics: [],
@@ -2819,7 +2819,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
               ],
             },
             diagnostics: [],
@@ -3274,7 +3274,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
               ],
             },
             diagnostics: [],

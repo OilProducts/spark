@@ -153,7 +153,7 @@ fn context_namespaces_and_path_lookup_match_runtime_contracts() {
         ("stack.supervisor", json!("manager")),
         ("human.gate.selected", json!("A")),
         ("work.item.id", json!("42")),
-        ("_attractor.runtime.fidelity", json!("compact")),
+        ("_attractor.runtime.sessions", json!({})),
     ] {
         context.set(key, value).expect("allowed namespace");
     }
@@ -738,4 +738,118 @@ fn execution_locks_require_project_scope_a_key_and_queue_policy() {
             .len(),
         1
     );
+}
+
+#[test]
+fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
+    let flow = |nodes: serde_json::Value, edges: serde_json::Value| {
+        serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+            "id": "sessions", "nodes": nodes, "edges": edges
+        }))
+    };
+    let rules = |nodes: serde_json::Value, edges: serde_json::Value| {
+        flow(nodes, edges)
+            .expect("flow JSON")
+            .diagnostics()
+            .into_iter()
+            .map(|d| (d.rule_id, d.message))
+            .collect::<Vec<_>>()
+    };
+    let linear = json!([{"from": "start", "to": "a"}, {"from": "a", "to": "b"}, {"from": "b", "to": "done"}]);
+    let agent = |runtime: serde_json::Value, execution: serde_json::Value| json!({"kind": "agent_task", "runtime": runtime, "execution": execution});
+
+    // Shared sessions with matching (or unset) providers and models are valid.
+    let shared = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "a": agent(json!({"session": "author"}), json!({"llm_provider": "codex"})),
+        "b": agent(json!({"session": "author"}), json!({})),
+    });
+    assert_eq!(rules(shared, linear.clone()), Vec::new());
+
+    // Conflicting providers or models in one session are rejected.
+    let conflicting = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "a": agent(json!({"session": "author"}), json!({"llm_provider": "codex", "llm_model": "m1"})),
+        "b": agent(json!({"session": "author"}), json!({"llm_provider": "claude-code", "llm_model": "m2"})),
+    });
+    let diagnostics = rules(conflicting, linear.clone());
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(diagnostics
+        .iter()
+        .all(|(rule, _)| rule == "session_conflict"));
+    assert!(diagnostics[0].1.contains("llm_provider") && diagnostics[1].1.contains("llm_model"));
+
+    // `session` is only for agent tasks, and its name must be a valid id.
+    let misplaced = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "a": {"kind": "tool", "runtime": {"session": "author"}, "config": {"kind": "tool", "command": "true"}},
+        "b": agent(json!({"session": "bad name"}), json!({})),
+    });
+    let diagnostics = rules(misplaced, linear.clone());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(rule, message)| rule == "session"
+                && message.contains("only allowed on agent_task"))
+    );
+    assert!(diagnostics
+        .iter()
+        .any(|(rule, message)| rule == "session" && message.contains("invalid session name")));
+
+    // Every output_map parent key must be declared in writes_context.
+    let subflow = |writes: serde_json::Value| {
+        json!({
+            "start": {"kind": "start"}, "done": {"kind": "exit"},
+            "a": {"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child",
+                "output_map": {"context.child.result": "context.result"}},
+                "contracts": {"writes_context": writes}},
+            "b": {"kind": "conditional"},
+        })
+    };
+    assert_eq!(
+        rules(subflow(json!(["context.result"])), linear.clone()),
+        Vec::new()
+    );
+    assert!(rules(subflow(json!([])), linear.clone())
+        .iter()
+        .any(|(rule, message)| rule == "subflow_output_map" && message.contains("context.result")));
+
+    // The removed fidelity and thread_id settings fail and are named.
+    for (nodes, defaults) in [
+        (
+            json!({"a": agent(json!({"fidelity": "full"}), json!({}))}),
+            json!({}),
+        ),
+        (
+            json!({"a": agent(json!({"thread_id": "t"}), json!({}))}),
+            json!({}),
+        ),
+        (json!({}), json!({"fidelity": "summary:high"})),
+    ] {
+        let error = serde_json::from_value::<attractor_core::FlowDefinition>(
+            json!({"id": "old", "nodes": nodes, "defaults": defaults}),
+        )
+        .expect_err("removed field");
+        assert!(
+            error.to_string().contains("unknown field `fidelity`")
+                || error.to_string().contains("unknown field `thread_id`"),
+            "{error}"
+        );
+    }
+    let edge_fidelity = json!([
+        {"from": "start", "to": "a", "extensions": {"fidelity": "full"}},
+        {"from": "a", "to": "b", "extensions": {"thread_id": "t"}},
+        {"from": "b", "to": "done"}
+    ]);
+    let diagnostics = rules(
+        json!({"start": {"kind": "start"}, "done": {"kind": "exit"},
+            "a": agent(json!({}), json!({})), "b": agent(json!({}), json!({}))}),
+        edge_fidelity,
+    );
+    assert!(diagnostics
+        .iter()
+        .any(|(rule, message)| rule == "removed_field" && message.contains("fidelity")));
+    assert!(diagnostics
+        .iter()
+        .any(|(rule, message)| rule == "removed_field" && message.contains("thread_id")));
 }

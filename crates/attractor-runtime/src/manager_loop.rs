@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use attractor_core::{
     evaluate_condition, AttractorContext, CheckpointState, ContextMap, FailureKind, FlowDefinition,
     LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, OutcomeStatus, RunRecord,
+    RUNTIME_SESSIONS_KEY,
 };
 use serde_json::{json, Value};
 
@@ -58,6 +59,7 @@ pub(crate) fn execute_manager_loop(
 
     if let Some(outcome) = autostart_child_pipeline(runner, &runtime, &mut context)? {
         return Ok(outcome_with_context_updates(
+            &runtime,
             outcome,
             &original_context,
             &context,
@@ -124,6 +126,7 @@ pub(crate) fn execute_manager_loop(
 
         if let Some(outcome) = resolve_child_status(&context) {
             return Ok(outcome_with_context_updates(
+                &runtime,
                 outcome,
                 &original_context,
                 &context,
@@ -132,6 +135,7 @@ pub(crate) fn execute_manager_loop(
 
         if !stop_condition.is_empty() && stop_condition_met(&stop_condition, &context) {
             return Ok(outcome_with_context_updates(
+                &runtime,
                 Outcome {
                     status: OutcomeStatus::Success,
                     notes: "Stop condition satisfied".to_string(),
@@ -150,6 +154,7 @@ pub(crate) fn execute_manager_loop(
     }
 
     Ok(outcome_with_context_updates(
+        &runtime,
         Outcome {
             status: OutcomeStatus::Fail,
             failure_reason: "Max cycles exceeded".to_string(),
@@ -229,7 +234,7 @@ fn autostart_child_pipeline(
                 }
             }
             if invocation_reset.is_none() {
-                apply_child_run_result(context, &child_result);
+                apply_child_run_result(context, &child_result, runtime);
                 return Ok(None);
             }
         }
@@ -328,7 +333,7 @@ fn autostart_child_pipeline(
                     result = resume_existing_child(runner.clone(), store.clone(), bundle).ok();
                 }
                 if let Some(result) = result {
-                    apply_child_run_result(context, &result);
+                    apply_child_run_result(context, &result, runtime);
                     if !matches!(result.status.as_str(), "running" | "waiting") {
                         runner
                             .emit(
@@ -434,7 +439,7 @@ fn autostart_child_pipeline(
     let child_run_id = generated_child_run_id();
     let parent_context = context.clone();
     let input_map = child_input_map(runtime);
-    let child_launch_context = mapped_child_context(&parent_context, &input_map);
+    let child_launch_context = mapped_child_context(&parent_context, &input_map, &runtime.node_id);
 
     set_context(
         context,
@@ -483,7 +488,7 @@ fn autostart_child_pipeline(
             },
         }
     };
-    apply_child_run_result(context, &child_result);
+    apply_child_run_result(context, &child_result, runtime);
     runner
         .emit(
             runtime,
@@ -838,6 +843,7 @@ fn pipeline_result_to_child_result(result: PipelineExecutionResult) -> ChildRunR
         completed_nodes: result.completed_nodes,
         route_trace: result.route_trace,
         failure_reason: result.failure_reason,
+        context: result.context,
         ..ChildRunResult::default()
     }
 }
@@ -852,7 +858,7 @@ fn ingest_child_telemetry(
         return;
     }
     if let Some(result) = resolve_child_result(runner, runtime, &child_run_id) {
-        apply_child_run_result(context, &result);
+        apply_child_run_result(context, &result, runtime);
     }
 }
 
@@ -878,6 +884,11 @@ fn resolve_child_result(
 /// manager never parses the child's full log on an observation cycle.
 fn child_result_from_meta(meta: crate::store::RunMeta) -> Option<ChildRunResult> {
     let record = meta.record?;
+    let child_context = meta
+        .checkpoint
+        .as_ref()
+        .map(|checkpoint| checkpoint.context.clone())
+        .unwrap_or_default();
     let (
         current_node,
         completed_nodes,
@@ -949,10 +960,32 @@ fn child_result_from_meta(meta: crate::store::RunMeta) -> Option<ChildRunResult>
         latest_event_at,
         started_at: record.started_at,
         ended_at: record.ended_at,
+        context: child_context,
     })
 }
 
-fn apply_child_run_result(context: &mut ContextMap, child_result: &ChildRunResult) {
+fn apply_child_run_result(
+    context: &mut ContextMap,
+    child_result: &ChildRunResult,
+    runtime: &HandlerRuntime,
+) {
+    if !matches!(child_result.status.as_str(), "running" | "waiting") {
+        if let Some(sessions) = child_result.context.get(RUNTIME_SESSIONS_KEY) {
+            let sessions = crate::context::sessions_with_entry(
+                context,
+                "subflows",
+                &runtime.node_id,
+                sessions.clone(),
+            );
+            context.insert(RUNTIME_SESSIONS_KEY.to_string(), sessions);
+        }
+        for (child_key, parent_key) in child_output_map(runtime) {
+            match child_result.context.get(&child_key) {
+                Some(value) => context.insert(parent_key, value.clone()),
+                None => context.remove(&parent_key),
+            };
+        }
+    }
     if !child_result.run_id.trim().is_empty() {
         set_context(
             context,
@@ -1328,6 +1361,18 @@ fn child_flow_ref(runtime: &HandlerRuntime) -> String {
         .unwrap_or_default()
 }
 
+fn child_output_map(runtime: &HandlerRuntime) -> BTreeMap<String, String> {
+    runtime
+        .flow
+        .nodes
+        .get(&runtime.node_id)
+        .and_then(|node| match node.config.as_ref() {
+            Some(NodeConfig::Subflow { output_map, .. }) => Some(output_map.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 fn child_input_map(runtime: &HandlerRuntime) -> BTreeMap<String, String> {
     runtime
         .flow
@@ -1343,9 +1388,16 @@ fn child_input_map(runtime: &HandlerRuntime) -> BTreeMap<String, String> {
 fn mapped_child_context(
     parent_context: &ContextMap,
     input_map: &BTreeMap<String, String>,
+    parent_node_id: &str,
 ) -> ContextMap {
     let mut child_context = parent_context.clone();
     apply_child_input_map(&mut child_context, parent_context, input_map);
+    // A child continues the sessions of its parent's subflow node, never
+    // the parent's own.
+    match crate::context::session_entry(parent_context, "subflows", parent_node_id) {
+        Some(sessions) => child_context.insert(RUNTIME_SESSIONS_KEY.to_string(), sessions),
+        None => child_context.remove(RUNTIME_SESSIONS_KEY),
+    };
     for key in [
         crate::retry::EXECUTION_BASES_KEY,
         crate::retry::RETRY_REQUEST_KEY,
@@ -1745,17 +1797,28 @@ fn append_manager_artifact(
 }
 
 fn outcome_with_context_updates(
+    runtime: &HandlerRuntime,
     outcome: Outcome,
     original: &ContextMap,
     current: &ContextMap,
 ) -> Outcome {
-    let updates = current
+    let mut updates: ContextMap = current
         .iter()
         .filter(|(key, value)| {
             key.starts_with("context.stack.child.") && original.get(key.as_str()) != Some(*value)
         })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
+    // Keys the child handed back; a cleared key is a null update.
+    for key in child_output_map(runtime)
+        .into_values()
+        .chain([RUNTIME_SESSIONS_KEY.to_string()])
+    {
+        if original.get(&key) != current.get(&key) {
+            let value = current.get(&key).cloned().unwrap_or(Value::Null);
+            updates.insert(key, value);
+        }
+    }
     Outcome {
         context_updates: updates,
         ..outcome

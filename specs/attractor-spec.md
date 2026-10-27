@@ -11,7 +11,7 @@ A flow document contains:
 - `schema_version`, `id`, `title`, `description`, and `goal` flow metadata.
 - `inputs` for launch-time context requirements.
 - `defaults` for execution defaults such as model, provider, reasoning effort,
-  fidelity, and retry limits.
+  and retry limits.
 - `nodes`, keyed by node id, where each node declares a typed `kind`.
 - `edges`, each with `from`, `to`, optional `label`, `condition`, `weight`, and
   transition metadata.
@@ -20,9 +20,11 @@ Core runtime behavior is represented by typed fields:
 
 - `config` stores node-specific behavior such as `AgentTask.prompt`,
   `Parallel.join_policy`, `Parallel.max_parallel`, `Parallel.join_k`,
-  `Parallel.join_quorum`, and `Subflow.flow_ref`.
+  `Parallel.join_quorum`, `Subflow.flow_ref`, `Subflow.input_map`, and
+  `Subflow.output_map`.
 - `runtime` stores execution flags such as `allow_partial`, `auto_status`,
-  `goal_gate`, `error_policy`, `fidelity`, and retry targets.
+  `goal_gate`, `error_policy`, `session` (a named provider session shared by
+  agent nodes), and retry targets.
 - `contracts` stores context read/write declarations and response contracts.
 - `manager` stores manager-loop settings.
 - `retry`, `execution`, and `ui` store retry policy, model selection, and layout

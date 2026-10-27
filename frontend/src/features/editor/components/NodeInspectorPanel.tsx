@@ -498,32 +498,17 @@ export function NodeInspectorPanel({
                                                 </div>
                                             </>
                                         ) : null}
-                                        <div className="grid grid-cols-2 gap-3">
+                                        {selectedNode?.data?.kind === 'agent_task' ? (
                                             <div className="space-y-1.5">
-                                                <Label htmlFor={`${id}-fidelity`}>Fidelity</Label>
+                                                <Label htmlFor={`${id}-session`}>Session</Label>
                                                 <Input
-                                                    id={`${id}-fidelity`}
-                                                    aria-describedby={nodeFieldDiagnostics.fidelity?.length ? `${id}-fidelity-diagnostics` : undefined}
-                                                    aria-invalid={nodeFieldDiagnostics.fidelity?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
-                                                    value={(selectedNode?.data?.fidelity as string) || ''}
-                                                    onChange={(event) => onPropertyChange('fidelity', event.target.value)}
-                                                    placeholder="full"
-                                                />
-                                                {nodeFieldDiagnostics.fidelity?.length ? (
-                                                    <div id={`${id}-fidelity-diagnostics`}>
-                                                        {renderFieldDiagnostics('node', 'fidelity', nodeFieldDiagnostics, 'node-field-diagnostics-fidelity')}
-                                                    </div>
-                                                ) : null}
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                <Label htmlFor={`${id}-thread-id`}>Thread ID</Label>
-                                                <Input
-                                                    id={`${id}-thread-id`}
-                                                    value={(selectedNode?.data?.thread_id as string) || ''}
-                                                    onChange={(event) => onPropertyChange('thread_id', event.target.value)}
+                                                    id={`${id}-session`}
+                                                    value={(selectedNode?.data?.session as string) || ''}
+                                                    onChange={(event) => onPropertyChange('session', event.target.value)}
+                                                    placeholder="Leave empty for a fresh session"
                                                 />
                                             </div>
-                                        </div>
+                                        ) : null}
                                         <div className="space-y-1.5">
                                             <Label htmlFor={`${id}-class`}>Class</Label>
                                             <Input
@@ -603,6 +588,7 @@ export function NodeInspectorPanel({
                                 'shape',
                                 'flow_ref',
                                 'input_map',
+                                'output_map',
                                 'decisions',
                                 'prompt',
                                 'tool.command',
@@ -621,8 +607,7 @@ export function NodeInspectorPanel({
                                 'goal_gate',
                                 'retry_target',
                                 'fallback_retry_target',
-                                'fidelity',
-                                'thread_id',
+                                'session',
                                 'class',
                                 'timeout',
                                 'llm_model',

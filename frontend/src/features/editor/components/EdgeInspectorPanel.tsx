@@ -107,22 +107,6 @@ export function EdgeInspectorPanel({
                                 placeholder="0"
                             />
                         </div>
-                        <div className="space-y-1.5">
-                            <Label>Fidelity</Label>
-                            <Input
-                                value={(selectedEdge.data?.fidelity as string) || ''}
-                                onChange={(event) => onPropertyChange('fidelity', event.target.value)}
-                                placeholder="full | truncate | compact | summary:low"
-                            />
-                            {renderFieldDiagnostics('edge', 'fidelity', edgeFieldDiagnostics, 'edge-field-diagnostics-fidelity')}
-                        </div>
-                        <div className="space-y-1.5">
-                            <Label>Thread ID</Label>
-                            <Input
-                                value={(selectedEdge.data?.thread_id as string) || ''}
-                                onChange={(event) => onPropertyChange('thread_id', event.target.value)}
-                            />
-                        </div>
                         <div className="flex items-center gap-2">
                             <Checkbox
                                 id="edge-loop-restart"
@@ -143,8 +127,6 @@ export function EdgeInspectorPanel({
                                 'label',
                                 'condition',
                                 'weight',
-                                'fidelity',
-                                'thread_id',
                                 'loop_restart',
                             ])}
                         />

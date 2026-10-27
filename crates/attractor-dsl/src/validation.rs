@@ -7,14 +7,6 @@ use attractor_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const VALID_FIDELITY: &[&str] = &[
-    "full",
-    "truncate",
-    "compact",
-    "summary:low",
-    "summary:medium",
-    "summary:high",
-];
 const KNOWN_HANDLER_TYPES: &[&str] = &[
     "start",
     "exit",
@@ -329,7 +321,6 @@ pub fn validate_graph(graph: &DotGraph) -> Vec<Diagnostic> {
 
     diagnostics.extend(validate_retry_targets(graph));
     diagnostics.extend(validate_goal_gate_retry_targets(graph));
-    diagnostics.extend(validate_fidelity_values(graph));
     diagnostics.extend(validate_known_types(graph));
     diagnostics.extend(validate_prompt_on_llm_nodes(graph));
     diagnostics.extend(validate_stylesheet(graph));
@@ -889,65 +880,6 @@ fn validate_goal_gate_retry_targets(graph: &DotGraph) -> Vec<Diagnostic> {
         }
     }
     diagnostics
-}
-
-fn validate_fidelity_values(graph: &DotGraph) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    if let Some(attr) = graph.graph_attrs.get("default_fidelity") {
-        check_fidelity_attr(&mut diagnostics, "graph", attr, attr.line, None, None);
-    }
-    for node in nodes_in_declaration_order(graph) {
-        if let Some(attr) = node.attrs.get("fidelity") {
-            check_fidelity_attr(
-                &mut diagnostics,
-                &format!("node '{}'", node.node_id),
-                attr,
-                attr.line,
-                Some(&node.node_id),
-                None,
-            );
-        }
-    }
-    for edge in &graph.edges {
-        if let Some(attr) = edge.attrs.get("fidelity") {
-            check_fidelity_attr(
-                &mut diagnostics,
-                &format!("edge {}->{}", edge.source, edge.target),
-                attr,
-                attr.line,
-                None,
-                Some((&edge.source, &edge.target)),
-            );
-        }
-    }
-    diagnostics
-}
-
-fn check_fidelity_attr(
-    diagnostics: &mut Vec<Diagnostic>,
-    owner: &str,
-    attr: &DotAttribute,
-    line: usize,
-    node_id: Option<&str>,
-    edge: Option<(&str, &str)>,
-) {
-    let value = attr_text(attr);
-    if value.is_empty() || VALID_FIDELITY.contains(&value.as_str()) {
-        return;
-    }
-    let mut diagnostic = Diagnostic::new(
-        "fidelity_valid",
-        DiagnosticSeverity::Warning,
-        format!("{owner} fidelity '{value}' is not a recognized mode"),
-    )
-    .with_line(line);
-    if let Some(node_id) = node_id {
-        diagnostic = diagnostic.with_node(node_id);
-    }
-    if let Some((source, target)) = edge {
-        diagnostic = diagnostic.with_edge(source, target);
-    }
-    diagnostics.push(diagnostic);
 }
 
 fn validate_known_types(graph: &DotGraph) -> Vec<Diagnostic> {

@@ -104,7 +104,7 @@ title: Done
 - `schema_version`: current value is `"1"`.
 - `inputs`: launch inputs with `key`, `label`, `type`, `description`, `required`,
   and optional `default`.
-- `defaults`: common model, provider, reasoning, fidelity, and retry defaults.
+- `defaults`: common model, provider, reasoning, and retry defaults.
 - `metadata` and `extensions`: compatibility and experimental metadata.
 
 The body is the flow's goal.
@@ -158,6 +158,38 @@ then behave like node settings, so they also beat launch-time model and
 reasoning overrides. The editor shows the authored form (`role` set, prompt
 without role text); runs execute and snapshot the resolved form.
 
+A role may set `isolated: true`. Its nodes always run in a fresh session: a
+node using an isolated role may not set `runtime.session`. Reviewers and
+verifiers use isolated roles so they never inherit the author's reasoning.
+
+## Sessions
+
+Every `agent_task` node runs in a fresh provider session unless it sets
+`runtime.session: <name>` (letters, digits, `_`, or `-`). Nodes with the same
+session name continue one provider session, including a node re-entered in a
+loop: the node's prompt, with its role persona and frame, is sent as the next
+turn of that conversation.
+
+```yaml
+runtime:
+  session: implementer
+```
+
+- In a root run, a session belongs to the run. In a child run, it belongs to
+  the parent's subflow node: re-entering the same subflow node continues the
+  child's sessions, and different subflow nodes never share one. Continues,
+  retries and crash recovery keep sessions.
+- Claude Code resumes the session (`--resume`), Codex resumes a persistent
+  thread, and native providers reload the saved history from
+  `<run dir>/sessions/<scope>/<name>.json`. When a stored session cannot be
+  resumed, the node starts a fresh one and records a `continuity_reset` event.
+- Nodes sharing a session may not set different `llm_provider` or `llm_model`
+  values, and a node whose resolved provider differs from the one its session
+  started with fails. Two nodes may not run in one session at once, so do not
+  share a session across parallel branches.
+- `session` is only allowed on `agent_task` nodes. The former `fidelity` and
+  `thread_id` settings are rejected.
+
 ## Execution Locks
 
 `flow.md` may declare an execution lock. Runs whose locks resolve to the same
@@ -183,11 +215,13 @@ Each run records the files it used in `artifacts/flow/files.json`:
 {
   "files": {"org/flows/<flow>/<node>.md": "<sha256>", "bundled/roles/<name>.md": "<sha256>"},
   "org": {"commit": "<org HEAD>", "dirty": false},
-  "spark_version": "<version>"
+  "spark_version": "<version>",
+  "sessions": {"implementer": ["work"]}
 }
 ```
 
-`org` is null when the run has no org repo. Launches, `flow_name` continues and
+`org` is null when the run has no org repo. `sessions` lists the nodes of each
+named session in the flow as launched, and is omitted when there are none. Launches, `flow_name` continues and
 subflow children compute their own manifest; snapshot continues keep the
 source run's.
 
@@ -271,6 +305,24 @@ inside the run's working directory or a linked git worktree of the same
 repository. Declaring both `child_workdir` and `child_workdir_from` fails the
 node. Run working directories are immutable once a run starts; crossing a
 workspace boundary always means launching a child run bound to that workspace.
+
+The child starts from the parent's context, with `config.input_map`
+(`child_key: parent_key`) copying parent values into child keys. To hand child
+values back, `config.output_map` (`child_key: parent_key`) copies each listed
+child key into the parent when the child run ends, whether it succeeded or
+failed; a listed child key that is absent clears the parent key. Every
+`parent_key` must be listed in the subflow node's `contracts.writes_context`.
+`context.stack.child.*` reports the child's status as before.
+
+```yaml
+config:
+  flow_ref: workers/implement-task
+  output_map:
+    context.task.summary: context.implementation.summary
+contracts:
+  writes_context:
+  - context.implementation.summary
+```
 
 `implement.md`:
 

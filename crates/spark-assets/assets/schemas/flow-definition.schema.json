@@ -57,16 +57,11 @@
       "type": "object"
     },
     "FlowDefaults": {
+      "additionalProperties": false,
       "properties": {
         "extensions": {
           "additionalProperties": true,
           "type": "object"
-        },
-        "fidelity": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "llm_model": {
           "type": [
@@ -588,6 +583,13 @@
                 "subflow"
               ],
               "type": "string"
+            },
+            "output_map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Child context keys copied into the parent (`child_key: parent_key`) when the child run ends; an absent child key clears the parent key.",
+              "type": "object"
             }
           },
           "required": [
@@ -650,6 +652,7 @@
       "type": "string"
     },
     "NodeRuntimeConfig": {
+      "additionalProperties": false,
       "properties": {
         "allow_partial": {
           "type": "boolean"
@@ -670,12 +673,6 @@
           ]
         },
         "fallback_retry_target": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fidelity": {
           "type": [
             "string",
             "null"
@@ -707,7 +704,8 @@
             "null"
           ]
         },
-        "thread_id": {
+        "session": {
+          "description": "Named session (`session: <name>`) this agent_task node continues. Nodes sharing a name continue one provider session; absent means a fresh session.",
           "type": [
             "string",
             "null"

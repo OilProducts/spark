@@ -1619,6 +1619,7 @@ fn envelope_node_request(
         fallback_reasoning_effort: None,
         project_path: Some(project_path.to_path_buf()),
         metadata: BTreeMap::new(),
+        session: None,
     }
 }
 
@@ -1948,4 +1949,74 @@ fn claude_code_subagent_frames_nest_under_the_spawning_call() {
         .events
         .iter()
         .any(|event| matches!(&event.kind, TurnStreamEventKind::Other(kind) if kind.starts_with("system_task"))));
+}
+
+#[test]
+fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "structured");
+    let run = |contract: Option<&str>, handle: Option<spark_agent_adapter::SessionHandle>| {
+        let _ = std::fs::remove_file(&log_path);
+        let mut request = envelope_node_request(temp.path(), contract);
+        request.session = Some(spark_agent_adapter::CodergenSession {
+            name: "reviewer".to_string(),
+            handle,
+            history_path: None,
+        });
+        let execution = spark_agent_adapter::CodergenHandler::with_backend(
+            RustLlmCodergenBackend::new(Client::new()),
+        )
+        .execute(request)
+        .expect("execution");
+        (execution, logged_invocations(&log_path))
+    };
+
+    let (first, invocations) = run(Some("status_envelope"), None);
+    assert_eq!(arg_after(&invocations[0], "--resume"), None);
+    let handle = first.session.expect("session handle");
+    assert_eq!(handle.provider, "claude-code");
+    assert_eq!(
+        handle.resume["spark.runtime.claude_code.session_id"],
+        "sess-fake-claude-1"
+    );
+    assert!(handle
+        .resume
+        .contains_key(spark_agent_adapter::MODEL_USAGE_SNAPSHOT_METADATA_KEY));
+
+    // The next node resumes it, and counts only its own usage.
+    let (second, invocations) = run(Some("status_envelope"), Some(handle.clone()));
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(
+        arg_after(&invocations[0], "--resume").as_deref(),
+        Some("sess-fake-claude-1")
+    );
+    let output_tokens = second
+        .events
+        .iter()
+        .find(|event| event.event_type == "claude_code_request_completed")
+        .map(|event| event.payload["token_usage"]["output_tokens"].clone());
+    assert_eq!(output_tokens, Some(json!(5)));
+    assert!(!second
+        .events
+        .iter()
+        .any(|event| event.event_type == "continuity_reset"));
+
+    // A session that cannot be resumed starts over, and the node says so.
+    drop(mode_guard);
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "resume-failure");
+    let (reset, _) = run(None, Some(handle));
+    let event = reset
+        .events
+        .iter()
+        .find(|event| event.event_type == "continuity_reset")
+        .expect("continuity_reset event");
+    assert_eq!(event.payload["session"], "reviewer");
+    assert_eq!(
+        reset.session.expect("fresh handle").resume["spark.runtime.claude_code.session_id"],
+        "sess-fake-claude-fresh"
+    );
 }

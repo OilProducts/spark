@@ -21,19 +21,14 @@ describe('graphAttrValidation', () => {
     expect(normalizeGraphAttrValue('goal', '  Ship release  ')).toBe('Ship release')
     expect(normalizeGraphAttrValue('max_retries', ' 003 ')).toBe('3')
     expect(normalizeGraphAttrValue('max_retries', 'abc')).toBe('abc')
-    expect(normalizeGraphAttrValue('fidelity', ' Summary:High ')).toBe('summary:high')
   })
 
-  it('validates fidelity and retry constraints', () => {
+  it('validates retry constraints', () => {
     expect(validateGraphAttrValue('max_retries', '')).toBeNull()
     expect(validateGraphAttrValue('max_retries', '2')).toBeNull()
     expect(validateGraphAttrValue('max_retries', '-1')).toBe(
       'Max retries default must be a non-negative integer.',
     )
-
-    expect(validateGraphAttrValue('fidelity', '')).toBeNull()
-    expect(validateGraphAttrValue('fidelity', 'summary:medium')).toBeNull()
-    expect(validateGraphAttrValue('fidelity', 'ultra')).toContain('Fidelity default must be one of')
   })
 
   it('warns for malformed tool hook commands', () => {

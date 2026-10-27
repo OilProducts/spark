@@ -3220,6 +3220,7 @@ fn chat_and_workflow_preserve_unlisted_effort_through_compatible_provider_dispat
                         .then(|| "FutureEffort".to_string()),
                     project_path: None,
                     metadata: BTreeMap::new(),
+                    session: None,
                 })
                 .unwrap();
         }
@@ -4210,4 +4211,145 @@ fn a_profiles_vision_applies_only_to_models_the_catalog_does_not_know() {
     assert_eq!(image_parts("team-text"), 0);
     // A self-hosted model the catalog does not know: the profile declares it.
     assert_eq!(image_parts("local-vl"), 1);
+}
+
+fn logged_codex_requests(log_path: &Path, method: &str) -> Vec<Value> {
+    fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|message| message["method"] == json!(method))
+        .collect()
+}
+
+#[test]
+fn codex_session_nodes_keep_a_resumable_thread_and_restart_one_that_fails_to_resume() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let capture_path = temp.path().join("initial-context.txt");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let thread_key = "spark.runtime.codex_app_server.thread_id";
+    let session_request = |resume: &BTreeMap<String, Value>| {
+        let mut request = codex_codergen_request(temp.path(), &capture_path, "work");
+        request.metadata.insert(
+            spark_agent_adapter::SESSION_NAME_METADATA_KEY.to_string(),
+            json!("worker"),
+        );
+        request.metadata.extend(resume.clone());
+        request
+    };
+
+    // A plain node's thread is throwaway.
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let plain = RustLlmCodergenBackend::new(Client::new())
+        .run(codex_codergen_request(temp.path(), &capture_path, "work"))
+        .expect("plain node");
+    assert!(plain.resume_metadata.is_empty());
+    assert_eq!(
+        logged_codex_requests(&log_path, "thread/start")[0]["params"]["ephemeral"],
+        json!(true)
+    );
+
+    // A session node keeps its thread, and the next node resumes it in a
+    // new app-server process.
+    fs::remove_file(&log_path).unwrap();
+    let first = RustLlmCodergenBackend::new(Client::new())
+        .run(session_request(&BTreeMap::new()))
+        .expect("first session node");
+    assert_eq!(
+        logged_codex_requests(&log_path, "thread/start")[0]["params"]["ephemeral"],
+        json!(false)
+    );
+    assert_eq!(first.resume_metadata[thread_key], json!("thread-test"));
+    fs::remove_file(&log_path).unwrap();
+    RustLlmCodergenBackend::new(Client::new())
+        .run(session_request(&first.resume_metadata))
+        .expect("resumed session node");
+    assert_eq!(
+        logged_codex_requests(&log_path, "thread/resume")[0]["params"]["threadId"],
+        json!("thread-test")
+    );
+    assert!(logged_codex_requests(&log_path, "thread/start").is_empty());
+
+    // A thread that cannot be resumed is replaced by a fresh persistent one.
+    fs::remove_file(&log_path).unwrap();
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", "thread-resume-error");
+    let reset = RustLlmCodergenBackend::new(Client::new())
+        .run(session_request(&first.resume_metadata))
+        .expect("restarted session node");
+    std::env::remove_var("SPARK_FAKE_CODEX_APP_SERVER_MODE");
+    assert!(matches!(
+        reset.response,
+        spark_agent_adapter::CodergenBackendResponse::Text(_)
+    ));
+    assert!(reset
+        .events
+        .iter()
+        .any(|event| event.event_type == "continuity_reset"
+            && event.payload["session"] == json!("worker")));
+    assert_eq!(
+        logged_codex_requests(&log_path, "thread/start")[0]["params"]["ephemeral"],
+        json!(false)
+    );
+    assert_eq!(reset.resume_metadata[thread_key], json!("thread-test"));
+}
+
+#[test]
+fn native_session_history_round_trips_through_the_sessions_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history_path = temp.path().join("sessions/run/planner.json");
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
+        "openai_compatible",
+        Arc::clone(&calls),
+    ));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let request = |prompt: &str, resume: &BTreeMap<String, Value>| {
+        let mut metadata = BTreeMap::from([(
+            spark_agent_adapter::SESSION_HISTORY_PATH_METADATA_KEY.to_string(),
+            json!(history_path.to_string_lossy()),
+        )]);
+        metadata.extend(resume.clone());
+        CodergenBackendRequest {
+            node_id: "plan".to_string(),
+            prompt: prompt.to_string(),
+            provider: "openai-compatible".to_string(),
+            model: Some("agent-model".to_string()),
+            runtime_mode: CodergenRuntimeMode::agent(),
+            project_path: Some(temp.path().to_path_buf()),
+            metadata,
+            ..CodergenBackendRequest::default()
+        }
+    };
+
+    let first = RustLlmCodergenBackend::new(client.clone())
+        .run(request("Draft the plan", &BTreeMap::new()))
+        .expect("first node");
+    let saved: Vec<HistoryTurn> =
+        serde_json::from_str(&fs::read_to_string(&history_path).expect("sessions file"))
+            .expect("history");
+    assert!(matches!(saved.first(), Some(HistoryTurn::User(_))));
+    assert_eq!(
+        first.resume_metadata[spark_agent_adapter::NATIVE_SESSION_HISTORY_METADATA_KEY],
+        json!(history_path.to_string_lossy())
+    );
+
+    // A later node in a fresh backend continues the saved conversation.
+    RustLlmCodergenBackend::new(client)
+        .run(request("Revise the plan", &first.resume_metadata))
+        .expect("second node");
+    let calls = calls.lock().unwrap();
+    let messages = serde_json::to_string(&calls.last().expect("second call").messages).unwrap();
+    assert!(messages.contains("Draft the plan"), "{messages}");
+    assert!(
+        messages.contains("adapter response for agent-model"),
+        "{messages}"
+    );
+    assert!(messages.contains("Revise the plan"), "{messages}");
 }

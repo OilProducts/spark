@@ -71,7 +71,6 @@ const FLOW_METADATA_CORE_KEYS = new Set([
     'goal',
     'inputs',
     'max_retries',
-    'fidelity',
     'llm_model',
     'llm_provider',
     'llm_profile',
@@ -101,6 +100,7 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'tool.command',
     'flow_ref',
     'input_map',
+    'output_map',
     'decisions',
     'stack.child_flow_ref',
     'retry_policy',
@@ -118,8 +118,7 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'auto_status',
     'goal_gate',
     'error_policy',
-    'fidelity',
-    'thread_id',
+    'session',
     'class',
     'timeout',
     'retry_target',
@@ -155,7 +154,6 @@ const DEPRECATED_DOT_METADATA_KEYS = new Set([
     'spark.description',
     'spark.launch_inputs',
     'default_max_retries',
-    'default_fidelity',
     'ui_default_llm_model',
     'ui_default_llm_provider',
     'ui_default_llm_profile',
@@ -295,6 +293,9 @@ function enrichNodeAttrsFromTypedPayload(
             if (asRecord(config.input_map)) {
                 attrs.input_map = cloneCanonicalAttrMap(config.input_map)
             }
+            if (asRecord(config.output_map)) {
+                attrs.output_map = cloneCanonicalAttrMap(config.output_map)
+            }
         }
         if (kind === 'parallel') {
             ;(['join_policy', 'max_parallel', 'join_k', 'join_quorum'] as const).forEach((key) => {
@@ -329,7 +330,7 @@ function enrichNodeAttrsFromTypedPayload(
                 attrs[key] = runtime[key]
             }
         })
-        ;(['error_policy', 'fidelity', 'thread_id', 'class', 'timeout', 'retry_target', 'fallback_retry_target'] as const).forEach((key) => {
+        ;(['error_policy', 'session', 'class', 'timeout', 'retry_target', 'fallback_retry_target'] as const).forEach((key) => {
             if (typeof runtime[key] === 'string') {
                 attrs[key] = runtime[key]
             }
@@ -380,7 +381,6 @@ function flowMetadataFromFlow(flow: CanonicalFlowDefinition | null, graphMetadat
     if (Array.isArray(flow?.inputs)) metadata.inputs = JSON.stringify(flow.inputs)
     if (defaults) {
         if (typeof defaults.max_retries === 'number') metadata.max_retries = defaults.max_retries
-        if (typeof defaults.fidelity === 'string') metadata.fidelity = defaults.fidelity
         if (typeof defaults.llm_model === 'string') metadata.llm_model = defaults.llm_model
         if (typeof defaults.llm_provider === 'string') metadata.llm_provider = defaults.llm_provider
         if (typeof defaults.llm_profile === 'string') metadata.llm_profile = defaults.llm_profile
@@ -575,6 +575,7 @@ function nodeConfigFromAttrs(kind: string, attrs: CanonicalAttrMap, baseConfig?:
             flow_ref: readStringAttr(attrs, 'flow_ref')
                 || String(base.flow_ref ?? 'child'),
             input_map: asRecord(attrs.input_map) ?? asRecord(base.input_map) ?? undefined,
+            output_map: asRecord(attrs.output_map) ?? asRecord(base.output_map) ?? undefined,
         })
     }
     if (kind === 'parallel') {
@@ -618,7 +619,6 @@ function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<st
     return compactObject({
         ...(baseDefaults ?? {}),
         max_retries: readNumberAttr(attrs, 'max_retries') ?? baseDefaults?.max_retries,
-        fidelity: readStringAttr(attrs, 'fidelity') || baseDefaults?.fidelity,
         llm_model: readStringAttr(attrs, 'llm_model') || baseDefaults?.llm_model,
         llm_provider: readStringAttr(attrs, 'llm_provider') || baseDefaults?.llm_provider,
         llm_profile: readStringAttr(attrs, 'llm_profile') || baseDefaults?.llm_profile,
@@ -661,8 +661,7 @@ function runtimeFromAttrs(attrs: CanonicalAttrMap, baseRuntime?: Record<string, 
         auto_status: readBooleanAttr(attrs, 'auto_status') ?? baseRuntime?.auto_status,
         goal_gate: readBooleanAttr(attrs, 'goal_gate') ?? baseRuntime?.goal_gate,
         error_policy: readStringAttr(attrs, 'error_policy') || baseRuntime?.error_policy,
-        fidelity: readStringAttr(attrs, 'fidelity') || baseRuntime?.fidelity,
-        thread_id: readStringAttr(attrs, 'thread_id') || baseRuntime?.thread_id,
+        session: readStringAttr(attrs, 'session') || baseRuntime?.session,
         class: readStringAttr(attrs, 'class') || baseRuntime?.class,
         timeout: readStringAttr(attrs, 'timeout') || baseRuntime?.timeout,
         retry_target: readStringAttr(attrs, 'retry_target') || baseRuntime?.retry_target,

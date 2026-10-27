@@ -864,3 +864,236 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
     .join("\n");
     assert!(prompt.contains(&routes), "{prompt}");
 }
+
+/// Records the Claude Code session id each node is asked to resume and
+/// hands out a new one per call (`h-<call>`). `check` answers `Again` once,
+/// then `Done`.
+#[derive(Clone, Default)]
+struct SessionBackend {
+    calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
+}
+
+impl spark_agent_adapter::CodergenBackend for SessionBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let key = "spark.runtime.claude_code.session_id";
+        let mut calls = self.calls.lock().unwrap();
+        calls.push((
+            request.node_id.clone(),
+            request
+                .metadata
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        ));
+        let checks = calls.iter().filter(|(node, _)| node == "check").count();
+        let response = if request.node_id == "a" {
+            // An agent cannot forge the runtime's session handles.
+            spark_agent_adapter::CodergenBackendResponse::Text(
+                json!({"outcome": "success", "context_updates": {
+                    "_attractor.runtime.sessions": {"named": {"s": "forged"}}}})
+                .to_string(),
+            )
+        } else {
+            spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome {
+                preferred_label: match (request.node_id.as_str(), checks) {
+                    ("check", 1) => "Again".to_string(),
+                    ("check", _) => "Done".to_string(),
+                    _ => String::new(),
+                },
+                ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success)
+            })
+        };
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response,
+            events: Vec::new(),
+            usage: None,
+            resume_metadata: BTreeMap::from([(
+                key.to_string(),
+                json!(format!("h-{}", calls.len())),
+            )]),
+        })
+    }
+}
+
+fn session_flow(nodes: serde_json::Value, edges: serde_json::Value) -> FlowDefinition {
+    attractor_dsl::validated_flow(
+        serde_json::from_value(json!({"schema_version": "1", "id": "sessions",
+            "nodes": nodes, "edges": edges}))
+        .expect("flow json"),
+    )
+    .expect("valid flow")
+}
+
+fn agent_in(session: Option<&str>) -> serde_json::Value {
+    json!({"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "work"},
+        "runtime": session.map(|s| json!({"session": s})).unwrap_or(json!({}))})
+}
+
+fn run_sessions(
+    temp: &std::path::Path,
+    run_id: &str,
+    flow: FlowDefinition,
+    backend: &SessionBackend,
+    start: attractor_runtime::ExecutionStart,
+) -> attractor_runtime::PipelineExecutionResult {
+    let backend = backend.clone();
+    let runner = RuntimeHandlerRunner::new()
+        .with_codergen_backend_factory(move || Box::new(backend.clone()));
+    attractor_runtime::PipelineExecutor::new(runner)
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: attractor_runtime::RunStore::for_runs_dir(temp.join("runs")),
+            record: attractor_core::RunRecord::new(run_id, temp.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context: ContextMap::from([(
+                "internal.bundled_root".to_string(),
+                json!(temp.to_string_lossy()),
+            )]),
+            max_steps: None,
+            start,
+        })
+        .expect("run executes")
+}
+
+#[test]
+fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
+    let temp = tempdir().unwrap();
+    let mut nodes = json!({
+        "start": {"kind": "start"}, "done": {"kind": "exit"},
+        "a": agent_in(Some("s")), "b": agent_in(Some("s")), "check": agent_in(None),
+        "c": agent_in(Some("s")),
+    });
+    nodes["a"]["contracts"] = json!({"response": "status_envelope"});
+    nodes["c"]["execution"] = json!({"llm_provider": "other-provider"});
+    let flow = session_flow(
+        nodes,
+        json!([
+            {"from": "start", "to": "a"}, {"from": "a", "to": "b"}, {"from": "b", "to": "check"},
+            {"from": "check", "to": "a", "label": "Again"},
+            {"from": "check", "to": "c", "label": "Done"},
+            {"from": "c", "to": "done"}
+        ]),
+    );
+    let backend = SessionBackend::default();
+    let result = run_sessions(
+        temp.path(),
+        "run-sessions",
+        flow.clone(),
+        &backend,
+        Default::default(),
+    );
+
+    let handle = |value: &str| Some(value.to_string());
+    assert_eq!(
+        *backend.calls.lock().unwrap(),
+        vec![
+            ("a".to_string(), None),
+            ("b".to_string(), handle("h-1")),
+            ("check".to_string(), None),
+            ("a".to_string(), handle("h-2")),
+            ("b".to_string(), handle("h-4")),
+            ("check".to_string(), None),
+        ]
+    );
+    // `c` resolves another provider than the session started with.
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .failure_reason
+            .contains("session 's' was started with provider"),
+        "{}",
+        result.failure_reason
+    );
+    let sessions = result.context["_attractor.runtime.sessions"].clone();
+    assert_eq!(
+        sessions["named"]["s"]["resume"]["spark.runtime.claude_code.session_id"],
+        "h-5"
+    );
+
+    // A run restored from that checkpoint context continues the session.
+    backend.calls.lock().unwrap().clear();
+    let checkpoint = attractor_core::CheckpointState {
+        timestamp: attractor_runtime::events::utc_timestamp(),
+        current_node: "b".to_string(),
+        completed_nodes: vec!["start".to_string(), "a".to_string()],
+        context: result.context.clone(),
+        retry_counts: BTreeMap::new(),
+        logs: Vec::new(),
+    };
+    run_sessions(
+        temp.path(),
+        "run-sessions-continued",
+        flow,
+        &backend,
+        attractor_runtime::ExecutionStart::FromCheckpoint {
+            start_node: "b".to_string(),
+            checkpoint,
+            flow_files: None,
+        },
+    );
+    assert_eq!(
+        backend.calls.lock().unwrap().first(),
+        Some(&("b".to_string(), handle("h-5")))
+    );
+}
+
+#[test]
+fn child_sessions_continue_per_subflow_node_across_reentries() {
+    let temp = tempdir().unwrap();
+    attractor_dsl::write_flow_dir(
+        &temp.path().join("flows/child"),
+        &session_flow(
+            json!({"start": {"kind": "start"}, "work": agent_in(Some("s")), "done": {"kind": "exit"}}),
+            json!([{"from": "start", "to": "work"}, {"from": "work", "to": "done"}]),
+        ),
+    )
+    .expect("child flow");
+    let subflow = json!({"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child"},
+        "manager": {"max_cycles": 1, "child_autostart": true}});
+    let parent = session_flow(
+        json!({"start": {"kind": "start"}, "done": {"kind": "exit"},
+            "one": subflow, "two": subflow, "check": agent_in(None)}),
+        json!([
+            {"from": "start", "to": "one"}, {"from": "one", "to": "check"},
+            {"from": "check", "to": "one", "label": "Again"},
+            {"from": "check", "to": "two", "label": "Done"},
+            {"from": "two", "to": "done"}
+        ]),
+    );
+    let backend = SessionBackend::default();
+    let result = run_sessions(
+        temp.path(),
+        "run-parent",
+        parent,
+        &backend,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+
+    let work = backend
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(node, _)| node == "work")
+        .map(|(_, handle)| handle.clone())
+        .collect::<Vec<_>>();
+    // `one`'s second child continues its first child's session; `two`'s
+    // child starts its own.
+    assert_eq!(work, vec![None, Some("h-1".to_string()), None]);
+    let sessions = &result.context["_attractor.runtime.sessions"];
+    assert!(sessions.get("named").is_none(), "{sessions}");
+    assert_eq!(
+        sessions["subflows"]["one"]["named"]["s"]["resume"]["spark.runtime.claude_code.session_id"],
+        "h-3"
+    );
+    assert_eq!(
+        sessions["subflows"]["two"]["named"]["s"]["resume"]["spark.runtime.claude_code.session_id"],
+        "h-5"
+    );
+}

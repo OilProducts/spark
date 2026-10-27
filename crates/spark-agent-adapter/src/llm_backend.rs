@@ -19,7 +19,8 @@ use crate::claude_code::{
 use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
     CodergenBackendResponse, CodergenError, CodergenEvent, CodergenEventSink,
-    CodergenSessionInterventionBroker,
+    CodergenSessionInterventionBroker, NATIVE_SESSION_HISTORY_METADATA_KEY,
+    SESSION_HISTORY_PATH_METADATA_KEY, SESSION_NAME_METADATA_KEY,
 };
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
@@ -113,19 +114,54 @@ impl CodergenBackend for RustLlmCodergenBackend {
 }
 
 impl RustLlmCodergenBackend {
-    /// The conversation a repair attempt continues: the one its request names.
-    fn resumed_history(&mut self, request: &CodergenBackendRequest) -> Vec<HistoryTurn> {
+    /// The conversation a request continues: a repair attempt's own, else
+    /// the saved history of the session it names.
+    fn resumed_history(
+        &mut self,
+        request: &CodergenBackendRequest,
+    ) -> Result<Vec<HistoryTurn>, CodergenError> {
         let id = metadata_string(&request.metadata, NATIVE_RESUME_METADATA_KEY);
-        match self.resume.take() {
-            Some((resume_id, history)) if Some(&resume_id) == id.as_ref() => history,
-            _ => Vec::new(),
+        if let Some((_, history)) = self
+            .resume
+            .take()
+            .filter(|(resume_id, _)| Some(resume_id) == id.as_ref())
+        {
+            return Ok(history);
         }
+        let Some(path) = metadata_string(&request.metadata, NATIVE_SESSION_HISTORY_METADATA_KEY)
+        else {
+            return Ok(Vec::new());
+        };
+        std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+            .map_err(|error| {
+                CodergenError::Artifact(format!("read session history {path}: {error}"))
+            })
     }
 
-    fn keep_for_repair(&mut self, history: Vec<HistoryTurn>) -> BTreeMap<String, Value> {
+    /// Keeps the conversation for a contract repair and, for a session
+    /// node, saves it as the session's history.
+    fn keep_for_repair(
+        &mut self,
+        metadata: &BTreeMap<String, Value>,
+        history: Vec<HistoryTurn>,
+    ) -> Result<BTreeMap<String, Value>, CodergenError> {
         let id = uuid::Uuid::new_v4().to_string();
-        self.resume = Some((id.clone(), history));
-        BTreeMap::from([(NATIVE_RESUME_METADATA_KEY.to_string(), json!(id))])
+        let mut resume = BTreeMap::from([(NATIVE_RESUME_METADATA_KEY.to_string(), json!(id))]);
+        if let Some(path) = metadata_string(metadata, SESSION_HISTORY_PATH_METADATA_KEY) {
+            spark_storage::write_json_atomic(
+                &path,
+                &history,
+                spark_storage::JsonWriteOptions::default(),
+            )
+            .map_err(|error| {
+                CodergenError::Artifact(format!("write session history {path}: {error}"))
+            })?;
+            resume.insert(NATIVE_SESSION_HISTORY_METADATA_KEY.to_string(), json!(path));
+        }
+        self.resume = Some((id, history));
+        Ok(resume)
     }
 
     /// Lets run steering reach this node's agent turn as a live message,
@@ -210,12 +246,32 @@ impl RustLlmCodergenBackend {
             SessionSteeringHandle::new(),
         );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
-        let result = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
-            agent_request,
-            turn_event_sink,
-            capture_sink,
-            stop.pausing(self.clarification_handler.clone()),
-        );
+        let session_node = request.metadata.contains_key(SESSION_NAME_METADATA_KEY);
+        let run_turn = |agent_request: AgentTurnRequest| {
+            CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
+                agent_request,
+                turn_event_sink.clone(),
+                capture_sink.clone(),
+                stop.pausing(self.clarification_handler.clone()),
+            )
+        };
+        let mut result = run_turn(agent_request.clone());
+        // A session whose thread cannot be resumed starts over in a fresh thread.
+        let mut continuity_reset = None;
+        if let Ok(output) = result.as_ref() {
+            if let Some(failure) = output
+                .thread_resume_failure
+                .clone()
+                .filter(|_| session_node)
+            {
+                let mut fresh_request = agent_request;
+                fresh_request
+                    .metadata
+                    .remove("spark.runtime.codex_app_server.thread_id");
+                result = run_turn(fresh_request);
+                continuity_reset = Some(failure);
+            }
+        }
         if let Some(output) = stop.finish() {
             return Ok(output);
         }
@@ -289,12 +345,30 @@ impl RustLlmCodergenBackend {
                 ),
             ]),
         );
+        events.extend(
+            continuity_reset
+                .as_ref()
+                .map(|failure| continuity_reset_event(&request, failure)),
+        );
         events.push(completed_event);
+        // Only a session node's thread outlives its process (others are ephemeral).
+        let resume_metadata = output
+            .app_thread_id
+            .as_deref()
+            .and_then(non_empty)
+            .filter(|_| session_node)
+            .map(|thread_id| {
+                BTreeMap::from([(
+                    "spark.runtime.codex_app_server.thread_id".to_string(),
+                    json!(thread_id),
+                )])
+            })
+            .unwrap_or_default();
         Ok(CodergenBackendOutput {
             response,
             events,
             usage,
-            resume_metadata: BTreeMap::new(),
+            resume_metadata,
         })
     }
 
@@ -382,6 +456,12 @@ impl RustLlmCodergenBackend {
                 &request, event,
             ));
         }
+        events.extend(
+            output
+                .thread_resume_failure
+                .as_ref()
+                .map(|failure| continuity_reset_event(&request, failure)),
+        );
         events.push(CodergenEvent::new(
             "claude_code_request_completed",
             BTreeMap::from([
@@ -461,7 +541,7 @@ impl RustLlmCodergenBackend {
                 ("runtime_mode", Some(request.runtime_mode.mode.as_str())),
             ],
         ));
-        let mut history = self.resumed_history(&request);
+        let mut history = self.resumed_history(&request)?;
         history.push(HistoryTurn::User(crate::history::UserTurn::new(
             request.prompt.clone(),
         )));
@@ -505,7 +585,7 @@ impl RustLlmCodergenBackend {
         history.push(HistoryTurn::Assistant(crate::history::AssistantTurn::new(
             text.clone(),
         )));
-        let resume_metadata = self.keep_for_repair(history);
+        let resume_metadata = self.keep_for_repair(&request.metadata, history)?;
 
         Ok(CodergenBackendOutput {
             response: CodergenBackendResponse::Text(text),
@@ -556,7 +636,7 @@ impl RustLlmCodergenBackend {
         event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let mut agent_request = codergen_agent_turn_request(&request);
-        agent_request.history = self.resumed_history(&request);
+        agent_request.history = self.resumed_history(&request)?;
         let mut prompt = agent_request.prompt.clone();
         let mut session = build_agent_session(&self.client, agent_request.clone())
             .map_err(codergen_adapter_error)?;
@@ -611,9 +691,11 @@ impl RustLlmCodergenBackend {
         {
             return Err(CodergenError::Artifact(error.message.clone()));
         }
+        let metadata = request.metadata.clone();
         let mut output =
             codergen_output_from_session(request, &mut session, initial_history_len, process_error);
-        output.resume_metadata = self.keep_for_repair(std::mem::take(&mut session.history));
+        output.resume_metadata =
+            self.keep_for_repair(&metadata, std::mem::take(&mut session.history))?;
         Ok(output)
     }
 }
@@ -1274,6 +1356,29 @@ fn codergen_conversation_id(request: &CodergenBackendRequest) -> String {
             .map(|run_id| format!("{run_id}:{}", request.node_id))
             .unwrap_or_else(|| format!("codergen:{}", request.node_id))
     })
+}
+
+/// A node's provider session could not be resumed, so it started over.
+fn continuity_reset_event(
+    request: &CodergenBackendRequest,
+    failure: &AgentThreadResumeFailure,
+) -> CodergenEvent {
+    CodergenEvent::new(
+        "continuity_reset",
+        BTreeMap::from([
+            ("node_id".to_string(), json!(request.node_id.clone())),
+            (
+                "session".to_string(),
+                json!(metadata_string(
+                    &request.metadata,
+                    SESSION_NAME_METADATA_KEY
+                )),
+            ),
+            ("message".to_string(), json!(failure.message.clone())),
+            ("error_code".to_string(), json!(failure.error_code.clone())),
+            ("details".to_string(), json!(failure.details.clone())),
+        ]),
+    )
 }
 
 fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {

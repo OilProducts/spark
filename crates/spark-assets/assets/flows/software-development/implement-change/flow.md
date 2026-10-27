@@ -41,7 +41,6 @@ inputs:
   description: ''
   required: false
 defaults:
-  fidelity: summary:high
   llm_provider: claude-code
   llm_model: claude-opus-5-5[1m]
   reasoning_effort: xhigh

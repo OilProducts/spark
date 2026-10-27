@@ -37,7 +37,7 @@ pub mod runtime;
 pub use conditions::{evaluate_condition, normalize_condition_literal, split_condition_clauses};
 pub use context::{
     apply_launch_context, validate_context_key, validate_launch_context, AttractorContext,
-    ContextMap, ContextValue, LaunchContext, ALLOWED_CONTEXT_PREFIXES,
+    ContextMap, ContextValue, LaunchContext, ALLOWED_CONTEXT_PREFIXES, RUNTIME_SESSIONS_KEY,
 };
 pub use context_contracts::{
     normalize_context_read_key, normalize_context_update_key, normalize_context_updates,

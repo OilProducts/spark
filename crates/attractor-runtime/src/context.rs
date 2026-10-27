@@ -4,7 +4,7 @@ use attractor_core::{
     apply_launch_context, attr_i64, attr_text, dot_value_to_json, normalize_context_updates,
     resolve_context_write_contract, validate_context_updates_against_contract_with_exemptions,
     AttractorContext, CheckpointState, ContextMap, DotAttribute, DotGraph, FailureKind,
-    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome, OutcomeStatus, RoutingEdge,
+    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome, OutcomeStatus,
 };
 use serde_json::{json, Value};
 
@@ -23,12 +23,13 @@ pub const RUNTIME_RETRY_NODE_ID_KEY: &str = "_attractor.runtime.retry.node_id";
 pub const RUNTIME_RETRY_ATTEMPT_KEY: &str = "_attractor.runtime.retry.attempt";
 pub const RUNTIME_RETRY_MAX_ATTEMPTS_KEY: &str = "_attractor.runtime.retry.max_attempts";
 pub const RUNTIME_RETRY_FAILURE_REASON_KEY: &str = "_attractor.runtime.retry.failure_reason";
-pub const RUNTIME_FIDELITY_KEY: &str = "_attractor.runtime.fidelity";
 pub const RUNTIME_LAST_NODE_ID_KEY: &str = "_attractor.runtime.last_node.id";
 pub const RUNTIME_LAST_NODE_UPDATES_KEY: &str = "_attractor.runtime.last_node.context_updates";
-pub const RUNTIME_THREAD_ID_KEY: &str = "_attractor.runtime.thread_id";
+pub use attractor_core::RUNTIME_SESSIONS_KEY;
 pub const INTERNAL_PIPELINE_RETRY_RUN_ID_KEY: &str = "internal.pipeline_retry_run_id";
-const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["last_response", "last_stage"];
+const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] =
+    &["last_response", "last_stage", RUNTIME_SESSIONS_KEY];
+const MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &[RUNTIME_SESSIONS_KEY];
 const PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["parallel.results"];
 const TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["context.tool."];
 const HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["human.gate."];
@@ -48,6 +49,32 @@ pub fn graph_attr_context_seed(graph: &DotGraph) -> ContextMap {
         json!(attr_i64(&graph.graph_attrs, DEFAULT_MAX_RETRIES_KEY, 0)),
     );
     seeded
+}
+
+/// The entry `key` of a sessions section: `named` (handles by session name)
+/// or `subflows` (the sessions of each subflow node's child runs).
+pub(crate) fn session_entry(context: &ContextMap, section: &str, key: &str) -> Option<Value> {
+    context
+        .get(RUNTIME_SESSIONS_KEY)?
+        .get(section)?
+        .get(key)
+        .cloned()
+}
+
+/// `context`'s sessions with `section.key` set to `value`.
+pub(crate) fn sessions_with_entry(
+    context: &ContextMap,
+    section: &str,
+    key: &str,
+    value: Value,
+) -> Value {
+    let mut sessions = context
+        .get(RUNTIME_SESSIONS_KEY)
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    sessions[section][key] = value;
+    sessions
 }
 
 pub fn initialize_runtime_context(
@@ -206,7 +233,7 @@ fn context_update_contract_exemptions(
             prefixes: HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
         },
         "stack.manager_loop" => ContextUpdateContractExemptions {
-            exact_keys: &[],
+            exact_keys: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS,
             prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
         },
         _ => ContextUpdateContractExemptions {
@@ -239,7 +266,7 @@ fn context_update_contract_exemptions_for_node(node: &FlowNode) -> ContextUpdate
             prefixes: HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
         },
         NodeKind::Subflow => ContextUpdateContractExemptions {
-            exact_keys: &[],
+            exact_keys: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS,
             prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
         },
         NodeKind::Start | NodeKind::Exit | NodeKind::Conditional => {
@@ -358,84 +385,6 @@ pub fn clear_runtime_retry_context(context: &mut AttractorContext) -> Result<()>
     Ok(())
 }
 
-pub fn set_runtime_fidelity_context(
-    flow: &FlowDefinition,
-    node_id: &str,
-    incoming_edge: Option<&RoutingEdge>,
-    context: &mut AttractorContext,
-    force_fidelity: Option<&str>,
-) -> Result<String> {
-    let fidelity = force_fidelity
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| resolve_runtime_fidelity(flow, node_id, incoming_edge));
-    let thread_id = resolve_runtime_thread_id(flow, node_id, incoming_edge, &fidelity);
-    context.set(RUNTIME_FIDELITY_KEY, json!(fidelity.clone()))?;
-    context.set(RUNTIME_THREAD_ID_KEY, json!(thread_id))?;
-    Ok(fidelity)
-}
-
-pub fn resolve_runtime_fidelity(
-    flow: &FlowDefinition,
-    node_id: &str,
-    incoming_edge: Option<&RoutingEdge>,
-) -> String {
-    if let Some(edge_fidelity) = incoming_edge.and_then(|edge| edge_attr_text(edge, "fidelity")) {
-        return edge_fidelity;
-    }
-    if let Some(node) = flow.nodes.get(node_id) {
-        if let Some(node_fidelity) = crate::flow_runtime::node_attr_text(node, "fidelity") {
-            return node_fidelity;
-        }
-    }
-    if let Some(graph_fidelity) = flow.defaults.fidelity.as_deref() {
-        return graph_fidelity.to_string();
-    }
-    "compact".to_string()
-}
-
-pub fn resolve_runtime_thread_id(
-    flow: &FlowDefinition,
-    node_id: &str,
-    incoming_edge: Option<&RoutingEdge>,
-    fidelity: &str,
-) -> String {
-    if fidelity != "full" {
-        return String::new();
-    }
-    if let Some(node) = flow.nodes.get(node_id) {
-        if let Some(thread_id) = crate::flow_runtime::node_attr_text(node, "thread_id") {
-            return thread_id;
-        }
-    }
-    if let Some(edge_thread_id) = incoming_edge.and_then(|edge| edge_attr_text(edge, "thread_id")) {
-        return edge_thread_id;
-    }
-    if let Some(graph_thread_id) = crate::flow_runtime::flow_attr_text(flow, "thread_id") {
-        return graph_thread_id;
-    }
-    if let Some(node) = flow.nodes.get(node_id) {
-        if let Some(class_name) = crate::flow_runtime::node_attr_text(node, "class")
-            .and_then(|value| value.split(',').next().map(str::trim).map(str::to_string))
-            .filter(|value| !value.is_empty())
-        {
-            return class_name;
-        }
-    }
-    incoming_edge
-        .map(|edge| edge.source.as_str().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| node_id.to_string())
-}
-
-pub fn checkpoint_requests_full_fidelity_degrade(checkpoint: &CheckpointState) -> bool {
-    checkpoint
-        .context
-        .get(RUNTIME_FIDELITY_KEY)
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("full"))
-}
-
 fn apply_runtime_outcome_fields(
     node_id: &str,
     context: &mut AttractorContext,
@@ -484,21 +433,4 @@ fn remember_node_outcome(
     outcomes.insert(node_id.to_string(), Value::String(status.to_string()));
     context.set(NODE_OUTCOMES_KEY, Value::Object(outcomes))?;
     Ok(())
-}
-
-fn edge_attr_text(edge: &RoutingEdge, key: &str) -> Option<String> {
-    edge.attributes
-        .get(key)
-        .and_then(value_to_trimmed_string)
-        .filter(|value| !value.is_empty())
-}
-
-fn value_to_trimmed_string(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::String(value) => Some(value.trim().to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Number(value) => Some(value.to_string()),
-        _ => None,
-    }
 }

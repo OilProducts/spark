@@ -234,6 +234,46 @@ fn roles_prepend_their_persona_and_merge_execution_under_the_node() {
 }
 
 #[test]
+fn isolated_roles_reject_sessions_and_manifests_list_session_nodes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("roles")).expect("roles");
+    let roots = FlowRoots::new(temp.path(), None);
+    let mut in_session = flow();
+    in_session.nodes.get_mut("review").expect("review").runtime =
+        Some(attractor_core::NodeRuntimeConfig {
+            session: Some("reviewer".to_string()),
+            ..Default::default()
+        });
+    write_flow_dir(&temp.path().join("flows/review"), &in_session).expect("flow");
+
+    fs::write(temp.path().join("roles/reviewer.md"), ROLE).expect("role");
+    let loaded = load_flow(&roots, "review").expect("shared role allows sessions");
+    assert_eq!(
+        serde_json::to_value(&loaded.manifest).expect("manifest")["sessions"],
+        json!({"reviewer": ["review"]})
+    );
+
+    fs::write(
+        temp.path().join("roles/reviewer.md"),
+        ROLE.replacen("type: Role\n", "type: Role\nisolated: true\n", 1),
+    )
+    .expect("isolated role");
+    let error = load_flow(&roots, "review").expect_err("isolated role with session");
+    assert!(
+        error
+            .detail()
+            .contains("role 'reviewer' is isolated, so the node may not set session"),
+        "{}",
+        error.detail()
+    );
+    // Without a session, an isolated role resolves as usual.
+    write_flow_dir(&temp.path().join("flows/review"), &flow()).expect("flow");
+    let manifest = serde_json::to_value(load_flow(&roots, "review").expect("load").manifest)
+        .expect("manifest");
+    assert!(manifest.get("sessions").is_none(), "{manifest}");
+}
+
+#[test]
 fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -438,6 +478,7 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
         let mut stale = parent.clone();
         stale.nodes.get_mut("run").expect("run").config = Some(NodeConfig::Subflow {
             flow_ref: "workers/child.yaml".to_string(),
+            output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
         });
         stale
@@ -479,6 +520,7 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
         .expect("parent");
         parent.nodes.get_mut("run").expect("run").config = Some(NodeConfig::Subflow {
             flow_ref: flow_ref.to_string(),
+            output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
         });
         parent

@@ -27,15 +27,6 @@ export const DEFAULT_PROJECT_SESSION_STATE: ProjectSessionState = {
     conversationId: null,
 }
 
-const GRAPH_FIDELITY_OPTION_SET = new Set<string>([
-    'full',
-    'truncate',
-    'compact',
-    'summary:low',
-    'summary:medium',
-    'summary:high',
-])
-
 const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
     'schema_version',
     'id',
@@ -46,7 +37,6 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
     'result_summary_enabled',
     'result_summary_prompt',
     'goal',
-    'fidelity',
     'llm_model',
     'llm_provider',
     'llm_profile',
@@ -110,9 +100,6 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
         if (!/^\d+$/.test(trimmed)) return trimmed
         return `${Math.max(0, parseInt(trimmed, 10))}`
     }
-    if (key === 'fidelity') {
-        return value.trim().toLowerCase()
-    }
     if (STRING_GRAPH_ATTR_KEYS.includes(key)) {
         return value.trim()
     }
@@ -124,13 +111,6 @@ export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): st
         if (!value) return null
         if (!/^\d+$/.test(value)) {
             return 'Max retries default must be a non-negative integer.'
-        }
-        return null
-    }
-    if (key === 'fidelity') {
-        if (!value) return null
-        if (!GRAPH_FIDELITY_OPTION_SET.has(value)) {
-            return 'Fidelity default must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
         }
         return null
     }

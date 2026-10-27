@@ -426,11 +426,16 @@ impl CodexAppServerBackend {
     }
 }
 
+/// Flow agent turns run in throwaway threads, except a session node's,
+/// which a later node resumes.
 fn codex_app_server_thread_is_ephemeral(request: &AgentTurnRequest) -> bool {
     request
         .chat_mode
         .as_deref()
         .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("agent"))
+        && !request
+            .metadata
+            .contains_key(crate::codergen::SESSION_NAME_METADATA_KEY)
 }
 
 fn agent_output_from_app_server_result(result: CodexAppServerTurnResult) -> AgentTurnOutput {

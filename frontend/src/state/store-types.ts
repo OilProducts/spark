@@ -59,7 +59,6 @@ export interface FlowDefinitionMetadata {
     result_summary_prompt?: string
     goal?: string
     max_retries?: number | string
-    fidelity?: string
     llm_model?: string
     llm_provider?: string
     llm_profile?: string

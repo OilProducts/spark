@@ -1,6 +1,8 @@
 ---
 type: agent_task
 title: Propose Repair Plan
+runtime:
+  session: planner
 contracts:
   reads_context:
   - context.investigation.summary

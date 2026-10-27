@@ -52,6 +52,7 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'shape',
     'flow_ref',
     'input_map',
+    'output_map',
     'decisions',
     'prompt',
     'tool.command',
@@ -70,8 +71,7 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'goal_gate',
     'retry_target',
     'fallback_retry_target',
-    'fidelity',
-    'thread_id',
+    'session',
     'class',
     'timeout',
     'llm_model',
@@ -93,8 +93,6 @@ const CORE_EDGE_ATTR_KEYS = new Set<string>([
     'label',
     'condition',
     'weight',
-    'fidelity',
-    'thread_id',
     'loop_restart',
 ])
 const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])

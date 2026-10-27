@@ -23,7 +23,6 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "codergen.runtime_mode",
     "error_policy",
     "fallback_retry_target",
-    "fidelity",
     "goal_gate",
     "join_k",
     "join_policy",
@@ -54,7 +53,6 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "spark.writes_context",
     "stack.child_autostart",
     "stack.child_flow_ref",
-    "thread_id",
     "timeout",
     "tool.artifacts.paths",
     "tool.artifacts.stderr",
@@ -139,9 +137,6 @@ pub fn flow_context_seed(flow: &FlowDefinition) -> ContextMap {
         "graph.default_max_retries".to_string(),
         json!(flow.defaults.max_retries.unwrap_or(0)),
     );
-    if let Some(value) = flow.defaults.fidelity.as_deref() {
-        seeded.insert("graph.default_fidelity".to_string(), json!(value));
-    }
     for (key, value) in &flow.metadata {
         seeded.insert(format!("graph.{key}"), value.clone());
     }
@@ -228,12 +223,6 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         insert_bool_attr(&mut attrs, "goal_gate", runtime.goal_gate);
         if let Some(value) = runtime.error_policy.as_deref() {
             insert_string_attr(&mut attrs, "error_policy", value);
-        }
-        if let Some(value) = runtime.fidelity.as_deref() {
-            insert_string_attr(&mut attrs, "fidelity", value);
-        }
-        if let Some(value) = runtime.thread_id.as_deref() {
-            insert_string_attr(&mut attrs, "thread_id", value);
         }
         if let Some(value) = runtime.class.as_deref() {
             insert_string_attr(&mut attrs, "class", value);
@@ -409,9 +398,6 @@ pub fn graph_attrs_for_handler(flow: &FlowDefinition) -> BTreeMap<String, DotAtt
     insert_string_attr(&mut attrs, "spark.title", &flow.title);
     insert_string_attr(&mut attrs, "spark.description", &flow.description);
     insert_string_attr(&mut attrs, "goal", &flow.goal);
-    if let Some(value) = flow.defaults.fidelity.as_deref() {
-        insert_string_attr(&mut attrs, "default_fidelity", value);
-    }
     if let Some(value) = flow.defaults.max_retries {
         insert_i64_attr(&mut attrs, "default_max_retries", value as i64);
     }
@@ -492,8 +478,6 @@ fn is_core_node_attr_key(key: &str) -> bool {
 fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
     let typed = match key {
         "error_policy" => node.runtime.as_ref()?.error_policy.clone(),
-        "fidelity" => node.runtime.as_ref()?.fidelity.clone(),
-        "thread_id" => node.runtime.as_ref()?.thread_id.clone(),
         "class" => node.runtime.as_ref()?.class.clone(),
         "retry_target" => node.runtime.as_ref()?.retry_target.clone(),
         "fallback_retry_target" => node.runtime.as_ref()?.fallback_retry_target.clone(),

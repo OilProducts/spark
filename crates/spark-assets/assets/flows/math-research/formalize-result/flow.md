@@ -20,7 +20,6 @@ inputs:
   description: Optional source for the result and its proof (paper, book, URL, or a proof sketch).
   required: false
 defaults:
-  fidelity: summary:high
   llm_provider: codex
   llm_model: gpt-6.1-sol
   reasoning_effort: xhigh

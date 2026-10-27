@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
-import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import type { FlowDefinitionMetadata, FlowMetadataErrors, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -29,7 +28,6 @@ export const FLOW_METADATA_HELP: Record<string, string> = {
     result_summary_prompt: 'Optional prompt used when result summarization is enabled.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
     max_retries: 'Used only when a node omits retry.max_retries. Node retry settings take precedence.',
-    fidelity: 'Default runtime fidelity when node runtime settings do not set it explicitly.',
 }
 
 export const CORE_FLOW_METADATA_KEYS = new Set<string>([
@@ -44,7 +42,6 @@ export const CORE_FLOW_METADATA_KEYS = new Set<string>([
     'result_summary_prompt',
     'goal',
     'max_retries',
-    'fidelity',
     'llm_model',
     'llm_provider',
     'llm_profile',
@@ -383,29 +380,6 @@ export function GraphExecutionDefaultsSection({
                             />
                         </GraphSettingsField>
                         {renderFieldDiagnostics('max_retries', 'graph-field-diagnostics-max_retries')}
-                    </div>
-                    <div className="space-y-1">
-                        <GraphSettingsField
-                            label="Default Fidelity"
-                            htmlFor="graph-attr-default-fidelity"
-                            helper={FLOW_METADATA_HELP.fidelity}
-                            error={flowMetadataErrors.fidelity}
-                        >
-                            <Input
-                                id="graph-attr-default-fidelity"
-                                value={flowMetadata.fidelity || ''}
-                                onChange={(event) => updateFlowMetadata('fidelity', event.target.value)}
-                                list="graph-fidelity-options"
-                                className="h-8 text-sm"
-                                placeholder="full"
-                            />
-                            <datalist id="graph-fidelity-options">
-                                {GRAPH_FIDELITY_OPTIONS.map((option) => (
-                                    <option key={option} value={option} />
-                                ))}
-                            </datalist>
-                        </GraphSettingsField>
-                        {renderFieldDiagnostics('fidelity', 'graph-field-diagnostics-fidelity')}
                     </div>
                 </div>
             </div>
