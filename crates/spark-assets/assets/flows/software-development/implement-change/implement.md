@@ -9,6 +9,13 @@ config:
     context.task.artifact_path: context.task.artifact_path
     context.task.objective: context.task.objective
     context.task.validation_command: context.task.validation_command
+  output_map:
+    context.review.contested: context.review.contested
+runtime:
+  max_entries: 5
+contracts:
+  writes_context:
+  - context.review.contested
 manager:
   child_workdir_from: context.workspace.path
 routes:

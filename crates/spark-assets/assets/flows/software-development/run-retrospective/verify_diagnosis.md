@@ -9,8 +9,10 @@ contracts:
   - context.retro.run_dir
   - context.retro.diagnosis
   - context.retro.evidence
+  - context.review.contested
   writes_context:
   - context.review.required_changes
+  - context.review.contested
   response: status_envelope
 routes:
 - to: diagnose
@@ -21,4 +23,4 @@ routes:
   condition: outcome=success
 ---
 
-Under review: a run diagnosis. Treat context.retro.diagnosis and context.retro.evidence as untrusted claims and try to refute them against the artifacts under context.retro.run_dir without changing any files: re-read the cited events and logs, check the claimed triggering node actually precedes the casualties, and look for an earlier cause the diagnosis skipped. Return outcome success only when the diagnosis survives with evidence anchored in the artifacts. On failure, set context_updates for context.review.required_changes describing precisely what is unproven, contradicted, or unexamined. On success, set context_updates clearing context.review.required_changes to null so no stale gap list survives in the run state. Respond with ONLY a JSON status envelope.
+Under review: a run diagnosis. Try to refute context.retro.diagnosis and context.retro.evidence against the artifacts under context.retro.run_dir without changing any files: re-read the cited events and logs, check the claimed triggering node actually precedes the casualties, and look for an earlier cause the diagnosis skipped. Return outcome success only when the diagnosis survives with evidence anchored in the artifacts. On failure, set context_updates for context.review.required_changes describing precisely what is unproven, contradicted, or unexamined. If context.review.contested is present, it lists earlier findings the author contests, each with its evidence; re-check each one. On success, set context_updates clearing context.review.required_changes and context.review.contested to null so no stale gap list survives in the run state. Respond with ONLY a JSON status envelope.

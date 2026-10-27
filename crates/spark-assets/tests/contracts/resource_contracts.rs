@@ -268,6 +268,95 @@ fn bundled_flows_use_named_sessions_instead_of_fidelity() {
     assert!(reviewer.isolated);
 }
 
+#[test]
+fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap() {
+    let role = |file: &str| {
+        spark_assets::roles::assets()
+            .into_iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file}"))
+            .1
+    };
+    let reviewer = role("adversarial-reviewer.md");
+    for rule in [
+        "strong is something you ran",
+        "A claimed action is not evidence that it happened.",
+        "A check whose record you cannot find stays open",
+        "Never raise a withdrawn finding again",
+    ] {
+        assert!(reviewer.contains(rule), "{rule}");
+    }
+    let author = attractor_dsl::parse_role("author", &role("author.md")).expect("author");
+    assert!(!author.isolated);
+    assert!(author.persona.contains("context.review.contested"));
+
+    // Reviewer and author nodes leave the generic rules to their roles.
+    for name in flows::starter_flow_names().expect("names") {
+        for (file, text) in flows::starter_flow_files(&name).expect("files") {
+            if !text.contains("role: adversarial-reviewer") && !text.contains("role: author") {
+                continue;
+            }
+            for duplicate in [
+                "untrusted claim",
+                "weak (",
+                "weak evidence",
+                "strong or sufficient medium",
+                "mandatory feedback",
+            ] {
+                assert!(!text.contains(duplicate), "{name}/{file}: {duplicate}");
+            }
+        }
+    }
+
+    let node = |flow: &str, id: &str| json!(bundled_flow(flow).nodes[id]);
+    let contested = json!("context.review.contested");
+    for (flow, id, cap) in [
+        ("software-development/implement-change", "implement", 5),
+        ("software-development/investigate-bug", "investigate", 4),
+        ("software-development/investigate-bug", "propose_plan", 4),
+        ("software-development/run-retrospective", "diagnose", 4),
+    ] {
+        let node = node(flow, id);
+        assert_eq!(node["runtime"]["max_entries"], json!(cap), "{flow}/{id}");
+        let writes = node["contracts"]["writes_context"].as_array().unwrap();
+        assert!(writes.contains(&contested), "{flow}/{id}");
+        if id != "implement" {
+            assert_eq!(node["role"], json!("author"), "{flow}/{id}");
+        }
+    }
+    let work = node("software-development/workers/implement-task", "work");
+    assert_eq!(work["role"], json!("author"));
+    assert!(work["contracts"]["writes_context"]
+        .as_array()
+        .unwrap()
+        .contains(&contested));
+    assert_eq!(
+        node("software-development/implement-change", "implement")["config"]["output_map"],
+        json!({"context.review.contested": "context.review.contested"})
+    );
+    for (flow, id) in [
+        ("software-development/implement-change", "evaluate"),
+        (
+            "software-development/investigate-bug",
+            "verify_investigation",
+        ),
+        ("software-development/investigate-bug", "verify_plan"),
+        ("software-development/run-retrospective", "verify_diagnosis"),
+    ] {
+        let node = node(flow, id);
+        assert_eq!(node["role"], json!("adversarial-reviewer"), "{flow}/{id}");
+        for direction in ["reads_context", "writes_context"] {
+            assert!(
+                node["contracts"][direction]
+                    .as_array()
+                    .unwrap()
+                    .contains(&contested),
+                "{flow}/{id} {direction}"
+            );
+        }
+    }
+}
+
 /// A bundled flow in its authored form, assembled like the loader does.
 fn bundled_flow(name: &str) -> attractor_dsl::FlowDefinition {
     let files = flows::starter_flow_files(name).expect("bundled flow files");
