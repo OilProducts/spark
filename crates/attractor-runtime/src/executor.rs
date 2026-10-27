@@ -1561,9 +1561,11 @@ fn select_route_after_outcome(
         Err(reason) => return Ok(no_route(reason)),
         Ok(None) => {}
     }
-    // Only an exhausted edge reaches here with a condition. Its selection has
-    // no selected node and carries the visit-limit reason.
     if let Some(edge) = selection.selected_edge.as_ref() {
+        // An exhausted edge has no selected node and carries the visit-limit reason.
+        if selection.selected_node.is_none() {
+            return Ok(selection);
+        }
         let target = edge.target.as_str();
         if !edge.condition_text().is_empty() || is_conditional_node(flow, target) {
             return Ok(selection);

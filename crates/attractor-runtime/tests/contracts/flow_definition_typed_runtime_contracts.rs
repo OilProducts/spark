@@ -1800,6 +1800,34 @@ fn exhausted_unconditional_fail_route_reports_the_visit_limit() {
     assert_eq!(implement_runs(&calls), 2);
 }
 
+/// A failed node with no retry target whose unconditional route is exhausted
+/// fails with the visit-limit reason, not its own failure.
+#[test]
+fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("implement", "", "")], None);
+    flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
+        max_visits: Some(1),
+        ..NodeRuntimeConfig::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-fail-unconditional",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+    );
+    assert_eq!(implement_runs(&calls), 1);
+}
+
 /// Recovery that routes past a completed node fails when its only route is
 /// exhausted, instead of inferring completion from the prior outcome.
 #[test]
