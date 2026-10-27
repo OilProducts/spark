@@ -362,6 +362,25 @@ where
                         &visit_counts,
                     )?;
                     let Some(next_node) = selection.selected_node.clone() else {
+                        if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+                            return finalize_failed(
+                                &store,
+                                &paths,
+                                &run_id,
+                                &mut record,
+                                &mut self.node_executor,
+                                &flow,
+                                &current_node,
+                                &completed_nodes,
+                                &context,
+                                &retry_counts,
+                                &visit_counts,
+                                &node_outcomes,
+                                &route_trace,
+                                selection.reason,
+                                0,
+                            );
+                        }
                         return terminal_checkpoint_result(&checkpoint, &flow);
                     };
                     current_node = next_node;
@@ -1515,10 +1534,11 @@ fn select_route_after_outcome(
     if outcome.status != OutcomeStatus::Fail {
         return Ok(selection);
     }
-    if selection
-        .selected_edge
-        .as_ref()
-        .is_some_and(|edge| !edge.condition_text().is_empty())
+    if selection.selected_node.is_some()
+        && selection
+            .selected_edge
+            .as_ref()
+            .is_some_and(|edge| !edge.condition_text().is_empty())
     {
         return Ok(selection);
     }
@@ -1541,8 +1561,11 @@ fn select_route_after_outcome(
         Err(reason) => return Ok(no_route(reason)),
         Ok(None) => {}
     }
-    if let Some(target) = selection.selected_node.as_deref() {
-        if is_conditional_node(flow, target) {
+    // Only an exhausted edge reaches here with a condition. Its selection has
+    // no selected node and carries the visit-limit reason.
+    if let Some(edge) = selection.selected_edge.as_ref() {
+        let target = edge.target.as_str();
+        if !edge.condition_text().is_empty() || is_conditional_node(flow, target) {
             return Ok(selection);
         }
         if is_goal_gate_node(flow, node_id) && is_exit_node(flow, target) {

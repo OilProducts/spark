@@ -1738,6 +1738,118 @@ fn loop_with_another_route_takes_it_when_its_target_used_all_visits() {
         .contains_key(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY));
 }
 
+/// A failed node whose conditional route is exhausted still takes its
+/// retry target.
+#[test]
+fn exhausted_conditional_route_falls_back_to_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-fallback",
+        temp.path(),
+        visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done")),
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
+    assert_eq!(implement_runs(&calls), 3);
+}
+
+/// A failed node whose unconditional route into a conditional node is
+/// exhausted fails with the visit-limit reason, not its own failure.
+#[test]
+fn exhausted_unconditional_fail_route_reports_the_visit_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("check", "", "")], None);
+    flow.nodes.insert(
+        "check".to_string(),
+        FlowNode {
+            kind: NodeKind::Conditional,
+            config: Some(NodeConfig::Conditional {}),
+            runtime: Some(NodeRuntimeConfig {
+                max_visits: Some(1),
+                ..NodeRuntimeConfig::default()
+            }),
+            ..FlowNode::default()
+        },
+    );
+    flow.edges.push(FlowEdge {
+        from: "check".to_string(),
+        to: "implement".to_string(),
+        condition: "outcome=fail".to_string(),
+        ..FlowEdge::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-unconditional",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: check used all 1 visits; no other route from evaluate"
+    );
+    assert_eq!(implement_runs(&calls), 2);
+}
+
+/// Recovery that routes past a completed node fails when its only route is
+/// exhausted, instead of inferring completion from the prior outcome.
+#[test]
+fn resume_routing_into_an_exhausted_target_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    let (paused, _) = run_visit_loop(
+        &store,
+        "run-visit-resume",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        Some(6),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta("run-visit-resume").unwrap().unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "evaluate");
+    assert_eq!(checkpoint.visit_counts["implement"], 3);
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        None,
+        attractor_runtime::ExecutionStart::Resume {
+            paths: meta.paths,
+            checkpoint,
+        },
+    );
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(
+        resumed.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+    );
+    assert!(calls.is_empty(), "{calls:?}");
+    let record = store
+        .read_run_meta("run-visit-resume")
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(record.status, "failed");
+    assert_eq!(record.last_error, resumed.failure_reason);
+}
+
 /// Visit counts are run-wide: neither resuming a paused or crashed run nor
 /// continuing it as a new run grants the loop target fresh visits.
 #[test]

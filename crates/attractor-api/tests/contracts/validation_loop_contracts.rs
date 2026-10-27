@@ -166,6 +166,69 @@ fn validate_fix_budget_exhaustion_fails_the_run() {
     );
 }
 
+/// Continue through the API: each continuation's start counts as a visit, so
+/// an exhausted start target fails without running again.
+#[test]
+fn continue_counts_its_start_visit() {
+    let (_, settings) = run_fix_loop_flow(&format!("{GATE_LOG}\nexit 1"), "run-continue-visits");
+    let store = RunStore::for_settings(&settings);
+    let continue_from = |source: &str, start_node: &str| {
+        let response = attractor_api::handle_attractor_request(
+            "POST",
+            &format!("/attractor/pipelines/{source}/continue"),
+            &json!({"start_node": start_node, "flow_source_mode": "snapshot"}).to_string(),
+            settings.clone(),
+        );
+        assert_eq!(response.status_code, 200, "{:?}", response.body);
+        let run_id = response.body["pipeline_id"].as_str().unwrap().to_string();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let record = store
+                .read_run_bundle(&run_id)
+                .unwrap()
+                .unwrap()
+                .record
+                .unwrap();
+            if attractor_runtime::normalize_run_status(&record.status) == "failed" {
+                return (run_id, record.last_error);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{run_id}: {}",
+                record.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    let attempts = || fs::read_to_string(settings.project_root.join("attempts.txt")).unwrap();
+    assert_eq!(attempts().lines().count(), 4);
+
+    // diagnose_validation used all 3 visits: continuing from it fails at entry.
+    let (exhausted, error) = continue_from("run-continue-visits", "diagnose_validation");
+    assert!(
+        error.starts_with("visit_limit_reached: diagnose_validation"),
+        "{error}"
+    );
+    assert_eq!(
+        final_checkpoint(&settings, &exhausted).visit_counts["diagnose_validation"],
+        4
+    );
+    assert_eq!(attempts().lines().count(), 4);
+
+    // Continuing from implement counts that start, then validate's Fix route
+    // finds diagnose_validation still exhausted.
+    let (continued, error) = continue_from("run-continue-visits", "implement");
+    assert_eq!(
+        error,
+        "visit_limit_reached: diagnose_validation used all 3 visits; no other route from validate",
+    );
+    assert_eq!(
+        final_checkpoint(&settings, &continued).visit_counts["implement"],
+        5
+    );
+    assert_eq!(attempts().lines().count(), 5);
+}
+
 /// Every packaged software-development flow must survive the real DSL
 /// pipeline (parse, transforms, validation) without error diagnostics.
 #[test]
