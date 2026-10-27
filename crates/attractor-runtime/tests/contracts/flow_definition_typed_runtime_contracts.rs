@@ -1375,6 +1375,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
                 completed_nodes: vec!["run_child".to_string()],
                 context: Default::default(),
                 retry_counts: Default::default(),
+                visit_counts: Default::default(),
                 logs: Vec::new(),
             },
             Default::default(),
@@ -1513,27 +1514,37 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     );
 }
 
-/// Failure routing that never converges fails the run at the node's entry
-/// limit with an explicit reason instead of looping forever.
-#[test]
-fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let agent = |prompt: &str, max_entries: Option<u64>| FlowNode {
+/// `start → implement → evaluate`, with `implement` limited to three visits
+/// and `evaluate`'s routes given by the caller.
+fn visit_loop_flow(
+    evaluate_edges: Vec<FlowEdge>,
+    evaluate_retry_target: Option<&str>,
+) -> FlowDefinition {
+    let agent = |prompt: &str, runtime: Option<NodeRuntimeConfig>| FlowNode {
         kind: NodeKind::AgentTask,
         config: Some(NodeConfig::AgentTask {
             prompt: prompt.to_string(),
         }),
-        runtime: max_entries.map(|max_entries| NodeRuntimeConfig {
-            max_entries: Some(max_entries),
-            ..NodeRuntimeConfig::default()
-        }),
+        runtime,
         ..FlowNode::default()
     };
-    let flow = FlowDefinition {
+    let mut edges = vec![
+        FlowEdge {
+            from: "start".to_string(),
+            to: "implement".to_string(),
+            ..FlowEdge::default()
+        },
+        FlowEdge {
+            from: "implement".to_string(),
+            to: "evaluate".to_string(),
+            ..FlowEdge::default()
+        },
+    ];
+    edges.extend(evaluate_edges);
+    FlowDefinition {
         schema_version: "1".to_string(),
-        id: "retry-loop".to_string(),
-        title: "Retry Loop".to_string(),
+        id: "visit-loop".to_string(),
+        title: "Visit Loop".to_string(),
         nodes: [
             (
                 "start".to_string(),
@@ -1543,8 +1554,26 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
                     ..FlowNode::default()
                 },
             ),
-            ("implement".to_string(), agent("implement", None)),
-            ("evaluate".to_string(), agent("evaluate", Some(3))),
+            (
+                "implement".to_string(),
+                agent(
+                    "implement",
+                    Some(NodeRuntimeConfig {
+                        max_visits: Some(3),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                ),
+            ),
+            (
+                "evaluate".to_string(),
+                agent(
+                    "evaluate",
+                    evaluate_retry_target.map(|target| NodeRuntimeConfig {
+                        retry_target: Some(target.to_string()),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                ),
+            ),
             (
                 "done".to_string(),
                 FlowNode {
@@ -1559,49 +1588,137 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
         ]
         .into_iter()
         .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "implement".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "implement".to_string(),
-                to: "evaluate".to_string(),
-                condition: "outcome=success".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "evaluate".to_string(),
-                to: "done".to_string(),
-                label: "Ready".to_string(),
-                condition: "outcome=success".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "evaluate".to_string(),
-                to: "implement".to_string(),
-                label: "Fix".to_string(),
-                condition: "outcome=fail".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
+        edges,
         ..FlowDefinition::default()
-    };
-    let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| {
+    }
+}
+
+fn edge(to: &str, label: &str, condition: &str) -> FlowEdge {
+    FlowEdge {
+        from: "evaluate".to_string(),
+        to: to.to_string(),
+        label: label.to_string(),
+        condition: condition.to_string(),
+        ..FlowEdge::default()
+    }
+}
+
+/// Runs `flow` with `evaluate` answering `evaluate_status` and the label
+/// `Again`; returns the result and the node ids executed, in order.
+fn run_visit_loop(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    evaluate_status: OutcomeStatus,
+    max_steps: Option<usize>,
+    start: attractor_runtime::ExecutionStart,
+) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        seen.lock().unwrap().push(request.node_id.clone());
         if request.node_id == "evaluate" {
             return Ok(Outcome {
-                status: OutcomeStatus::Fail,
+                status: evaluate_status,
+                preferred_label: "Again".to_string(),
                 failure_reason: "not good enough".to_string(),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::new(evaluate_status)
             });
         }
         Ok(Outcome::new(OutcomeStatus::Success))
     });
     let result = executor
         .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps,
+            start,
+        })
+        .expect("execute visit loop");
+    let calls = calls.lock().unwrap().clone();
+    (result, calls)
+}
+
+fn implement_runs(calls: &[String]) -> usize {
+    calls
+        .iter()
+        .filter(|node| node.as_str() == "implement")
+        .count()
+}
+
+/// A loop with no other route fails at the target's visit limit, whatever
+/// the outcome and whether it loops by edge or by retry target.
+#[test]
+fn loop_without_another_route_fails_when_its_target_used_all_visits() {
+    for (evaluate_status, edges, retry_target) in [
+        (
+            OutcomeStatus::Fail,
+            vec![edge("implement", "Fix", "outcome=fail")],
+            None,
+        ),
+        (OutcomeStatus::Fail, Vec::new(), Some("implement")),
+        (
+            OutcomeStatus::Success,
+            vec![edge("implement", "", "")],
+            None,
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (result, calls) = run_visit_loop(
+            &store,
+            "run-visit-loop",
+            temp.path(),
+            visit_loop_flow(edges, retry_target),
+            evaluate_status,
+            None,
+            Default::default(),
+        );
+        assert_eq!(result.status, "failed", "{evaluate_status:?}");
+        assert_eq!(
+            result.failure_reason,
+            "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+        );
+        assert_eq!(implement_runs(&calls), 3);
+        assert_eq!(calls.iter().filter(|node| *node == "evaluate").count(), 3);
+    }
+}
+
+/// A node with a "loop again" route and a "done" route takes "done" once the
+/// loop target is exhausted, and its request names the unavailable target.
+#[test]
+fn loop_with_another_route_takes_it_when_its_target_used_all_visits() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = visit_loop_flow(
+        vec![edge("implement", "Again", ""), edge("done", "Done", "")],
+        None,
+    );
+    let unavailable = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = unavailable.clone();
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        if request.node_id == "evaluate" {
+            seen.lock().unwrap().push(
+                request
+                    .context
+                    .get(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY)
+                    .cloned(),
+            );
+        }
+        Ok(Outcome {
+            preferred_label: "Again".to_string(),
+            ..Outcome::new(OutcomeStatus::Success)
+        })
+    });
+    let result = executor
+        .execute(ExecuteRunRequest {
             store,
-            record: RunRecord::new("run-retry-loop", temp.path().to_string_lossy()),
+            record: RunRecord::new("run-visit-done", temp.path().to_string_lossy()),
             flow,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
@@ -1609,21 +1726,94 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
             max_steps: None,
             start: Default::default(),
         })
-        .expect("execute retry loop");
-    assert_eq!(result.status, "failed");
-    assert!(
-        result.failure_reason.contains("node_entry_limit_exceeded"),
-        "unexpected failure reason: {}",
-        result.failure_reason
-    );
+        .expect("execute");
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
     assert_eq!(
-        result
-            .route_trace
-            .iter()
-            .filter(|node| node.as_str() == "evaluate")
-            .count(),
-        4
+        *unavailable.lock().unwrap(),
+        vec![None, None, Some(json!(["implement"]))]
     );
+    assert!(!result
+        .context
+        .contains_key(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY));
+}
+
+/// Visit counts are run-wide: neither resuming a paused or crashed run nor
+/// continuing it as a new run grants the loop target fresh visits.
+#[test]
+fn visit_counts_survive_resume_and_continue() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], None);
+    let read_checkpoint = |run_id: &str| {
+        let meta = store.read_run_meta(run_id).unwrap().unwrap();
+        (meta.paths, meta.checkpoint.unwrap())
+    };
+
+    // Pause after routing back into implement: two of its three visits used.
+    // Resume, as crash recovery does, and continue both start from here.
+    let (paused, calls) = run_visit_loop(
+        &store,
+        "run-visits",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        Some(3),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    assert_eq!(implement_runs(&calls), 1);
+    let (paths, checkpoint) = read_checkpoint("run-visits");
+    assert_eq!(checkpoint.visit_counts["implement"], 2);
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visits",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        attractor_runtime::ExecutionStart::Resume {
+            paths,
+            checkpoint: checkpoint.clone(),
+        },
+    );
+    assert_eq!(resumed.status, "failed");
+    assert!(resumed
+        .failure_reason
+        .starts_with("visit_limit_reached: implement"));
+    // Resume routes past the checkpointed implement (it is in completion
+    // history), so only its third visit runs before the limit.
+    assert_eq!(calls, vec!["evaluate", "implement", "evaluate"]);
+
+    // Continue from implement: its third visit is the continuation's start.
+    let (continued, calls) = run_visit_loop(
+        &store,
+        "run-visits-continued",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        attractor_runtime::ExecutionStart::FromCheckpoint {
+            start_node: "implement".to_string(),
+            checkpoint,
+            flow_files: None,
+        },
+    );
+    assert_eq!(continued.status, "failed");
+    assert!(continued
+        .failure_reason
+        .starts_with("visit_limit_reached: implement"));
+    assert_eq!(calls, vec!["implement", "evaluate"]);
+}
+
+#[test]
+fn max_entries_is_rejected_by_name() {
+    let error = serde_json::from_value::<NodeRuntimeConfig>(json!({"max_entries": 3}))
+        .expect_err("max_entries is not a field");
+    assert!(error.to_string().contains("max_entries"), "{error}");
+    let runtime = serde_json::from_value::<NodeRuntimeConfig>(json!({"max_visits": 3})).unwrap();
+    assert_eq!(runtime.max_visits, Some(3));
 }
 
 #[test]

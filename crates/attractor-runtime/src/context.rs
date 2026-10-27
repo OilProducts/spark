@@ -93,6 +93,7 @@ pub fn checkpoint_from_context(
     completed_nodes: impl IntoIterator<Item = impl Into<String>>,
     context: &AttractorContext,
     retry_counts: impl IntoIterator<Item = (impl Into<String>, u64)>,
+    visit_counts: &BTreeMap<String, u64>,
 ) -> CheckpointState {
     CheckpointState {
         timestamp: utc_timestamp(),
@@ -103,6 +104,7 @@ pub fn checkpoint_from_context(
             .into_iter()
             .map(|(key, value)| (key.into(), value))
             .collect(),
+        visit_counts: visit_counts.clone(),
         logs: context.logs().to_vec(),
     }
 }

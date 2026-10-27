@@ -847,6 +847,7 @@ impl CodergenHandler {
                     Some(&write_contract),
                     &request.graph,
                     &request.node_id,
+                    &request.context,
                 )
             );
         }

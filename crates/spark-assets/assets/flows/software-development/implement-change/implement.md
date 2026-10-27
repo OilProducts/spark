@@ -12,7 +12,7 @@ config:
   output_map:
     context.review.contested: context.review.contested
 runtime:
-  max_entries: 5
+  max_visits: 5
 contracts:
   writes_context:
   - context.review.contested

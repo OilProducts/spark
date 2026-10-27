@@ -1,6 +1,8 @@
 ---
 type: agent_task
 title: Diagnose Validation
+runtime:
+  max_visits: 3
 contracts:
   reads_context:
   - context.workspace.path

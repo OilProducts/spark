@@ -237,10 +237,11 @@ pub struct NodeRuntimeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_retry_target: Option<String>,
     /// Maximum number of times routing may enter this node within one run.
-    /// Exceeding it fails the run instead of looping (failure-edge
-    /// convergence guard). Absent means the engine default.
+    /// Routing never selects a node that used all its visits; with no other
+    /// route the source node fails with `visit_limit_reached`. Absent means
+    /// the engine default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_entries: Option<u64>,
+    pub max_visits: Option<u64>,
     /// Maximum node execution time, in seconds or as a duration such as
     /// `90s`, `15m` or `2h`. Agent and tool nodes past it fail.
     #[serde(default, skip_serializing_if = "Option::is_none")]

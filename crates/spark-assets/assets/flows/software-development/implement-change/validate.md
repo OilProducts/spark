@@ -6,7 +6,7 @@ config:
     SPARK_VALIDATION_COMMAND: context.task.validation_command
     SPARK_WORKSPACE_PATH: context.workspace.path
 routes:
-- to: count_validate_attempt
+- to: diagnose_validation
   label: Fix
   condition: outcome=fail
 - to: finalize_commit

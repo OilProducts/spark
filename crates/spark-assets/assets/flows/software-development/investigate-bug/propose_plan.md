@@ -4,7 +4,7 @@ title: Propose Repair Plan
 role: author
 runtime:
   session: planner
-  max_entries: 4
+  max_visits: 4
 contracts:
   reads_context:
   - context.investigation.summary

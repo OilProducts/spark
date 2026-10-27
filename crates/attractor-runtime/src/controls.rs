@@ -347,6 +347,7 @@ impl RuntimeControls {
             completed_nodes: Vec::new(),
             context,
             retry_counts: BTreeMap::new(),
+            visit_counts: source_checkpoint.visit_counts.clone(),
             logs: source_checkpoint.logs.clone(),
         };
         let paths = self.store.create_run(CreateRunRequest {

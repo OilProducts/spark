@@ -317,13 +317,22 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
         ("software-development/run-retrospective", "diagnose", 4),
     ] {
         let node = node(flow, id);
-        assert_eq!(node["runtime"]["max_entries"], json!(cap), "{flow}/{id}");
+        assert_eq!(node["runtime"]["max_visits"], json!(cap), "{flow}/{id}");
         let writes = node["contracts"]["writes_context"].as_array().unwrap();
         assert!(writes.contains(&contested), "{flow}/{id}");
         if id != "implement" {
             assert_eq!(node["role"], json!("author"), "{flow}/{id}");
         }
     }
+    // The validation fix loop is bounded by diagnose_validation's visits, not a counter node.
+    let implement_change = bundled_flow("software-development/implement-change");
+    assert_eq!(
+        json!(implement_change.nodes["diagnose_validation"])["runtime"]["max_visits"],
+        json!(3)
+    );
+    assert!(!implement_change
+        .nodes
+        .contains_key("count_validate_attempt"));
     let work = node("software-development/workers/implement-task", "work");
     assert_eq!(work["role"], json!("author"));
     assert!(work["contracts"]["writes_context"]

@@ -41,6 +41,7 @@ fn seed(store: &RunStore) {
                     json!({"task":"fail"}),
                 )]),
                 retry_counts: [("task".into(), 1), ("start".into(), 7)].into(),
+                visit_counts: Default::default(),
                 logs: vec!["preserve log".into()],
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }),

@@ -4,7 +4,7 @@ title: Investigate
 role: author
 runtime:
   session: investigator
-  max_entries: 4
+  max_visits: 4
 contracts:
   reads_context:
   - context.request.objective

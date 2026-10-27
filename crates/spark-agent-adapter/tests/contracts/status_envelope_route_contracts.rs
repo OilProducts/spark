@@ -20,6 +20,14 @@ impl CodergenBackend for CapturePrompt {
 }
 
 fn rendered_prompt(response_contract: Option<&str>, edges: Value) -> String {
+    rendered_prompt_with_context(response_contract, edges, json!({}))
+}
+
+fn rendered_prompt_with_context(
+    response_contract: Option<&str>,
+    edges: Value,
+    context: Value,
+) -> String {
     let flow = flow(edges);
     let mut graph = attractor_dsl::apply_graph_transforms(&flow.to_runtime_dot_graph());
     if let Some(contract) = response_contract {
@@ -36,7 +44,7 @@ fn rendered_prompt(response_contract: Option<&str>, edges: Value) -> String {
     }
     let node_id = "work";
     let request: CodergenRequest = serde_json::from_value(
-        json!({"node_id": node_id, "node": graph.nodes[node_id], "graph": graph, "context": {}}),
+        json!({"node_id": node_id, "node": graph.nodes[node_id], "graph": graph, "context": context}),
     )
     .unwrap();
     let prompt = Arc::new(Mutex::new(String::new()));
@@ -89,6 +97,27 @@ fn status_envelope_appendix_lists_routes_in_routing_precedence_order() {
     ]
     .join("\n");
     assert!(prompt.contains(&routes), "{prompt}");
+}
+
+#[test]
+fn status_envelope_appendix_marks_routes_to_exhausted_targets_unavailable() {
+    let prompt = rendered_prompt_with_context(
+        Some("status_envelope"),
+        routed_edges(),
+        json!({"_attractor.runtime.unavailable_routes": ["review"]}),
+    );
+    for line in [
+        "- When the condition `outcome=fail` holds: go to \"Fix It\".",
+        "- When the condition `outcome=fail && context.flag=1` holds: go to \"Human Review\" (unavailable: visit limit reached).",
+        "- With \"preferred_label\": \"Escalate\": go to \"Human Review\" (unavailable: visit limit reached).",
+        "- Default: go to \"Done\".",
+    ] {
+        assert!(prompt.contains(line), "{line}\n{prompt}");
+    }
+    assert!(
+        !prompt.contains("_attractor.runtime.unavailable_routes"),
+        "{prompt}"
+    );
 }
 
 #[test]

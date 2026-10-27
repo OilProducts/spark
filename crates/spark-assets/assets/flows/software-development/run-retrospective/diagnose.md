@@ -4,7 +4,7 @@ title: Diagnose Run
 role: author
 runtime:
   session: diagnostician
-  max_entries: 4
+  max_visits: 4
 contracts:
   reads_context:
   - context.retro.run_dir

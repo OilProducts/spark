@@ -27,9 +27,9 @@ fn settings(root: &Path) -> SparkSettings {
 }
 
 /// Tool-only replica of implement-change's validate fix loop: a deterministic
-/// gate whose failure routes through a bounded counter and a diagnosis stage
-/// back to the implementer, with the counter failing the run once the fix
-/// budget is spent.
+/// gate whose failure routes through a diagnosis stage back to the
+/// implementer. The diagnosis's visit limit ends the loop once the fix budget
+/// is spent: the gate's Fix route then has no eligible target.
 fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
     json!({
         "schema_version": "1",
@@ -37,17 +37,6 @@ fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
         "title": "Validate Fix Loop",
         "nodes": {
             "start": {"kind": "start"},
-            "prepare": {
-                "kind": "tool",
-                "config": {
-                    "kind": "tool",
-                    "command": "printf '{\"validation_attempts\":0}'",
-                    "output_map": {
-                        "context.validation.attempts": "validation_attempts"
-                    }
-                },
-                "contracts": {"writes_context": ["context.validation.attempts"]}
-            },
             "implement": {
                 "kind": "tool",
                 "config": {
@@ -59,36 +48,21 @@ fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
                 "kind": "tool",
                 "config": {"kind": "tool", "command": gate_command}
             },
-            "count_validate_attempt": {
-                "kind": "tool",
-                "config": {
-                    "kind": "tool",
-                    "command": "set -eu\nattempts=$((SPARK_VALIDATION_ATTEMPTS + 1))\nif [ \"$attempts\" -gt 3 ]; then\n  echo \"validation gate failed ${attempts} times; fix budget (3 attempts) exhausted\" >&2\n  exit 1\nfi\nprintf '{\"attempts\":%s}' \"$attempts\"\n",
-                    "env_map": {
-                        "SPARK_VALIDATION_ATTEMPTS": "context.validation.attempts"
-                    },
-                    "output_map": {"context.validation.attempts": "attempts"}
-                },
-                "contracts": {"writes_context": ["context.validation.attempts"]}
-            },
             "diagnose_validation": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "printf '{\"summary\":\"gate red\"}'",
+                    "command": "printf '{\"summary\":\"diagnosed: %s\"}' \"$SPARK_GATE_OUTPUT\"",
+                    "env_map": {"SPARK_GATE_OUTPUT": "context.tool.output"},
                     "output_map": {"context.review.summary": "summary"}
                 },
-                "contracts": {"writes_context": ["context.review.summary"]}
+                "contracts": {"writes_context": ["context.review.summary"]},
+                "runtime": {"max_visits": 3}
             },
             "done": {"kind": "exit"}
         },
         "edges": [
-            {"from": "start", "to": "prepare"},
-            {
-                "from": "prepare",
-                "to": "implement",
-                "condition": "outcome=success"
-            },
+            {"from": "start", "to": "implement"},
             {
                 "from": "implement",
                 "to": "validate",
@@ -101,13 +75,9 @@ fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
             },
             {
                 "from": "validate",
-                "to": "count_validate_attempt",
-                "condition": "outcome=fail"
-            },
-            {
-                "from": "count_validate_attempt",
                 "to": "diagnose_validation",
-                "condition": "outcome=success"
+                "label": "Fix",
+                "condition": "outcome=fail"
             },
             {
                 "from": "diagnose_validation",
@@ -140,62 +110,59 @@ fn run_fix_loop_flow(gate_command: &str, run_id: &str) -> (serde_json::Value, Sp
     (response.body, settings)
 }
 
+fn final_checkpoint(settings: &SparkSettings, run_id: &str) -> attractor_core::CheckpointState {
+    let store = RunStore::for_settings(settings);
+    let bundle = store
+        .read_run_bundle(run_id)
+        .expect("bundle")
+        .expect("bundle exists");
+    store
+        .read_checkpoint(&bundle.paths)
+        .expect("checkpoint")
+        .expect("checkpoint exists")
+}
+
+const GATE_LOG: &str = "echo \"gate red after $(wc -l < attempts.txt) attempts\"";
+
 #[test]
 fn validate_failure_routes_through_diagnosis_back_to_implement() {
     // The gate fails until the implementer has run twice.
     let (body, settings) = run_fix_loop_flow(
-        "test \"$(wc -l < attempts.txt)\" -ge 2",
+        &format!("{GATE_LOG}\ntest \"$(wc -l < attempts.txt)\" -ge 2"),
         "run-validate-fix-loop",
     );
     assert_eq!(body["terminal_status"], json!("completed"), "{body:?}");
 
-    let store = RunStore::for_settings(&settings);
-    let bundle = store
-        .read_run_bundle("run-validate-fix-loop")
-        .expect("bundle")
-        .expect("bundle exists");
-    let checkpoint = store
-        .read_checkpoint(&bundle.paths)
-        .expect("checkpoint")
-        .expect("checkpoint exists");
-    assert_eq!(
-        checkpoint.context.get("context.validation.attempts"),
-        Some(&json!(1)),
-        "exactly one gate failure should be counted",
-    );
+    let checkpoint = final_checkpoint(&settings, "run-validate-fix-loop");
+    assert_eq!(checkpoint.visit_counts["diagnose_validation"], 1);
     assert_eq!(
         checkpoint.context.get("context.review.summary"),
-        Some(&json!("gate red")),
-        "diagnosis must land in the review feedback the implementer reads",
+        Some(&json!("diagnosed: gate red after 1 attempts")),
+        "the diagnosis reads the gate's own failure output",
     );
 }
 
 #[test]
 fn validate_fix_budget_exhaustion_fails_the_run() {
-    let (body, settings) = run_fix_loop_flow("exit 1", "run-validate-budget");
+    let (body, settings) = run_fix_loop_flow(&format!("{GATE_LOG}\nexit 1"), "run-validate-budget");
     assert_eq!(body["terminal_status"], json!("failed"), "{body:?}");
 
-    let store = RunStore::for_settings(&settings);
-    let bundle = store
+    let record = RunStore::for_settings(&settings)
         .read_run_bundle("run-validate-budget")
         .expect("bundle")
-        .expect("bundle exists");
-    let record = bundle.record.expect("record");
-    assert!(
-        record
-            .last_error
-            .contains("fix budget (3 attempts) exhausted"),
-        "budget exhaustion must be the recorded failure: {}",
-        record.last_error,
-    );
-    let checkpoint = store
-        .read_checkpoint(&bundle.paths)
-        .expect("checkpoint")
-        .expect("checkpoint exists");
+        .expect("bundle exists")
+        .record
+        .expect("record");
     assert_eq!(
-        checkpoint.context.get("context.validation.attempts"),
-        Some(&json!(3)),
-        "the counter stops at the budget",
+        record.last_error,
+        "visit_limit_reached: diagnose_validation used all 3 visits; no other route from validate",
+    );
+    // Three fixes after the first attempt; the fourth gate failure ends it.
+    let checkpoint = final_checkpoint(&settings, "run-validate-budget");
+    assert_eq!(checkpoint.visit_counts["implement"], 4);
+    assert_eq!(
+        checkpoint.context.get("context.review.summary"),
+        Some(&json!("diagnosed: gate red after 3 attempts")),
     );
 }
 
@@ -244,10 +211,10 @@ fn packaged_software_development_flows_validate_cleanly() {
 
 /// Tool-only replica of implement-change's review loop: the child `work`
 /// node contests a finding through its write contract, the parent's subflow
-/// `output_map` carries it to `evaluate`, and `implement`'s entry cap ends a
-/// loop that never converges.
+/// `output_map` carries it to `evaluate`, and `implement`'s visit limit ends
+/// a loop that never converges.
 #[test]
-fn contest_reaches_evaluate_through_output_map_and_entry_cap_ends_the_loop() {
+fn contest_reaches_evaluate_through_output_map_and_visit_limit_ends_the_loop() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
@@ -297,7 +264,7 @@ fn contest_reaches_evaluate_through_output_map_and_entry_cap_ends_the_loop() {
                         "output_map": {"context.review.contested": "context.review.contested"}
                     },
                     "contracts": {"writes_context": ["context.review.contested"]},
-                    "runtime": {"max_entries": 5}
+                    "runtime": {"max_visits": 5}
                 },
                 "evaluate": {
                     "kind": "tool",
@@ -366,10 +333,9 @@ fn contest_reaches_evaluate_through_output_map_and_entry_cap_ends_the_loop() {
         .expect("bundle")
         .expect("bundle exists");
     let record = bundle.record.expect("record");
-    assert!(
-        record.last_error.contains("node_entry_limit_exceeded"),
-        "the entry cap must be the recorded failure: {}",
+    assert_eq!(
         record.last_error,
+        "visit_limit_reached: implement used all 5 visits; no other route from evaluate",
     );
     let checkpoint = store
         .read_checkpoint(&bundle.paths)

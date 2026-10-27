@@ -27,6 +27,9 @@ const ALLOWED_LAUNCH_CONTEXT_KEYS: &[&str] = &[
 /// Live named-session handles (`session: <name>` on agent nodes). Runtime
 /// owned: exempt from write contracts, and never written by agents.
 pub const RUNTIME_SESSIONS_KEY: &str = "_attractor.runtime.sessions";
+/// Runtime-only: the current node's route targets that used all their
+/// `max_visits`, set on each node request so its prompt marks them unavailable.
+pub const RUNTIME_UNAVAILABLE_ROUTES_KEY: &str = "_attractor.runtime.unavailable_routes";
 
 /// JSON-compatible context value.
 pub type ContextValue = Value;

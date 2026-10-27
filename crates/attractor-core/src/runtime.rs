@@ -243,6 +243,10 @@ pub struct CheckpointState {
     pub context: std::collections::BTreeMap<String, Value>,
     #[serde(default)]
     pub retry_counts: std::collections::BTreeMap<String, u64>,
+    /// Run-wide count of routing entries per node, checked against
+    /// `max_visits`. Continue carries it to the new run.
+    #[serde(default)]
+    pub visit_counts: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub logs: Vec<String>,
 }
@@ -255,6 +259,7 @@ impl CheckpointState {
             completed_nodes: Vec::new(),
             context: std::collections::BTreeMap::new(),
             retry_counts: std::collections::BTreeMap::new(),
+            visit_counts: std::collections::BTreeMap::new(),
             logs: Vec::new(),
         }
     }

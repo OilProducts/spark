@@ -487,6 +487,7 @@ fn retry_route_executes_the_prepared_run() {
         completed_nodes: Vec::new(),
         context: Default::default(),
         retry_counts: Default::default(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     };
     let paths = store

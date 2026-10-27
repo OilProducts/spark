@@ -681,8 +681,8 @@
         "goal_gate": {
           "type": "boolean"
         },
-        "max_entries": {
-          "description": "Maximum number of times routing may enter this node within one run. Exceeding it fails the run instead of looping (failure-edge convergence guard). Absent means the engine default.",
+        "max_visits": {
+          "description": "Maximum number of times routing may enter this node within one run. Routing never selects a node that used all its visits; with no other route the source node fails with `visit_limit_reached`. Absent means the engine default.",
           "format": "uint64",
           "minimum": 0.0,
           "type": [

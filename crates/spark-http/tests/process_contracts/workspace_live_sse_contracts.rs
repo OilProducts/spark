@@ -2943,6 +2943,7 @@ async fn live_route_streams_execution_transcript_upserts_through_the_publisher()
         completed_nodes: Vec::new(),
         context: Default::default(),
         retry_counts: Default::default(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     };
     let paths = store

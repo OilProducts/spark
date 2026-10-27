@@ -432,6 +432,7 @@ fn seed_retry(settings: &SparkSettings, run_id: &str) {
                 )]
                 .into(),
                 retry_counts: Default::default(),
+                visit_counts: Default::default(),
                 logs: Vec::new(),
             }),
             manifest: None,

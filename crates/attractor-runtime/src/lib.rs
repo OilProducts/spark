@@ -92,16 +92,16 @@ pub use retry::{
 };
 pub use routing::{
     is_conditional_node, is_exit_node, outgoing_routing_edges, resolve_start_node,
-    routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node,
-    select_next_node_with_prior, NextNodeSelection,
+    routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node_with_prior,
+    NextNodeSelection,
 };
 pub use store::{
     CreateRunRequest, NodeExecution, RunArtifactFile, RunBundle, RunEventObserver, RunMeta,
     RunStore, FLOW_FILES_MANIFEST,
 };
 pub use terminal::{
-    check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,
-    resolve_failure_retry_target, resolve_goal_gate_retry_target,
+    check_goal_gates, failure_retry_targets, goal_gate_retry_targets,
+    invalid_workflow_outcome_reason, is_goal_gate_node, resolve_failure_retry_target,
     resolve_terminal_workflow_outcome, GoalGateCheck, TerminalWorkflowOutcome,
     GOAL_GATE_NO_RETRY_TARGET_REASON, GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
 };

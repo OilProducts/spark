@@ -97,34 +97,31 @@ impl GoalGateCheck {
 }
 
 pub fn resolve_failure_retry_target(flow: &FlowDefinition, node_id: &str) -> Option<String> {
-    let node = flow.nodes.get(node_id)?;
-    for key in ["retry_target", "fallback_retry_target"] {
-        if let Some(target) = crate::flow_runtime::node_attr_text(node, key) {
-            if flow.nodes.contains_key(&target) {
-                return Some(target);
-            }
-        }
-    }
-    None
+    failure_retry_targets(flow, node_id).into_iter().next()
 }
 
-pub fn resolve_goal_gate_retry_target(
-    flow: &FlowDefinition,
-    failed_gate_node: &str,
-) -> Option<String> {
-    resolve_failure_retry_target(flow, failed_gate_node)
-        .or_else(|| resolve_graph_retry_target(flow))
+/// The node's `retry_target` then `fallback_retry_target`, where they exist.
+pub fn failure_retry_targets(flow: &FlowDefinition, node_id: &str) -> Vec<String> {
+    let Some(node) = flow.nodes.get(node_id) else {
+        return Vec::new();
+    };
+    ["retry_target", "fallback_retry_target"]
+        .into_iter()
+        .filter_map(|key| crate::flow_runtime::node_attr_text(node, key))
+        .filter(|target| flow.nodes.contains_key(target))
+        .collect()
 }
 
-fn resolve_graph_retry_target(flow: &FlowDefinition) -> Option<String> {
-    for key in ["retry_target", "fallback_retry_target"] {
-        if let Some(target) = crate::flow_runtime::flow_attr_text(flow, key) {
-            if flow.nodes.contains_key(&target) {
-                return Some(target);
-            }
-        }
-    }
-    None
+/// The failed gate's retry targets, then the graph-level ones.
+pub fn goal_gate_retry_targets(flow: &FlowDefinition, failed_gate_node: &str) -> Vec<String> {
+    let mut targets = failure_retry_targets(flow, failed_gate_node);
+    targets.extend(
+        ["retry_target", "fallback_retry_target"]
+            .into_iter()
+            .filter_map(|key| crate::flow_runtime::flow_attr_text(flow, key))
+            .filter(|target| flow.nodes.contains_key(target)),
+    );
+    targets
 }
 
 pub fn is_goal_gate_node(flow: &FlowDefinition, node_id: &str) -> bool {

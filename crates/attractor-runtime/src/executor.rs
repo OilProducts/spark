@@ -27,15 +27,15 @@ use crate::records::{mark_record_canceled, mark_record_paused, write_run_record}
 use crate::results::{canceled_run_result, failed_run_result, result_summary_request};
 use crate::retry::{coerce_retry_exhausted_outcome, retry_policy_for_node, should_retry_attempt};
 use crate::routing::{
-    is_conditional_node, is_exit_node, outgoing_routing_edges, resolve_start_node,
-    select_next_node_with_prior, NextNodeSelection,
+    first_target_with_visits_left, is_conditional_node, is_exit_node, mark_unavailable_routes,
+    max_visits, outgoing_routing_edges, resolve_start_node, select_next_node_with_prior,
+    NextNodeSelection, VISIT_LIMIT_REACHED,
 };
 use crate::store::{CreateRunRequest, RunStore};
 use crate::terminal::{
-    check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,
-    resolve_failure_retry_target, resolve_goal_gate_retry_target,
-    resolve_terminal_workflow_outcome, GOAL_GATE_NO_RETRY_TARGET_REASON,
-    GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
+    check_goal_gates, failure_retry_targets, goal_gate_retry_targets,
+    invalid_workflow_outcome_reason, is_goal_gate_node, resolve_terminal_workflow_outcome,
+    GOAL_GATE_NO_RETRY_TARGET_REASON, GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
 };
 use unified_llm_adapter::{
     is_display_model_placeholder, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROFILE_KEY,
@@ -241,6 +241,7 @@ where
         let mut context;
         let mut completed_nodes;
         let mut retry_counts;
+        let mut visit_counts: BTreeMap<String, u64>;
         let mut node_outcomes = BTreeMap::<String, Outcome>::new();
         let mut status_transitions = BTreeMap::<String, Vec<String>>::new();
         let mut artifact_node_ids = BTreeSet::<String>::new();
@@ -254,6 +255,7 @@ where
                 context = fresh.context;
                 completed_nodes = Vec::new();
                 retry_counts = BTreeMap::new();
+                visit_counts = fresh.checkpoint.visit_counts.clone();
                 current_node = fresh.current_node;
                 route_trace = vec![current_node.clone()];
                 let paths = store.create_run(CreateRunRequest {
@@ -281,6 +283,7 @@ where
                 context = fresh.context;
                 completed_nodes = Vec::new();
                 retry_counts = BTreeMap::new();
+                visit_counts = fresh.checkpoint.visit_counts.clone();
                 current_node = fresh.current_node;
                 route_trace = vec![current_node.clone()];
                 (paths, false)
@@ -328,6 +331,8 @@ where
                     .filter(|(node_id, _)| flow.nodes.contains_key(node_id.as_str()))
                     .map(|(node_id, count)| (node_id.clone(), *count))
                     .collect();
+                // The checkpoint already counts the visit to its current node.
+                visit_counts = checkpoint.visit_counts.clone();
                 current_node = if flow.nodes.contains_key(&checkpoint.current_node) {
                     checkpoint.current_node.clone()
                 } else {
@@ -354,11 +359,13 @@ where
                         &context,
                         None,
                         "",
+                        &visit_counts,
                     )?;
                     let Some(next_node) = selection.selected_node.clone() else {
                         return terminal_checkpoint_result(&checkpoint, &flow);
                     };
                     current_node = next_node;
+                    record_visit(&mut visit_counts, &current_node);
                     route_trace.push(current_node.clone());
                     context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
                 }
@@ -379,13 +386,17 @@ where
                 seed_execution_record_context(&mut context, &record)?;
                 completed_nodes = Vec::new();
                 retry_counts = checkpoint.retry_counts.clone();
+                // Continue keeps the source run's visits.
+                visit_counts = checkpoint.visit_counts.clone();
                 current_node = start_node.clone();
+                record_visit(&mut visit_counts, &current_node);
                 route_trace = vec![current_node.clone()];
                 let initial_checkpoint = checkpoint_from_context(
                     &current_node,
                     completed_nodes.clone(),
                     &context,
                     retry_counts.clone(),
+                    &visit_counts,
                 );
                 let paths = store.create_run(CreateRunRequest {
                     record: record.clone(),
@@ -416,6 +427,7 @@ where
                 &completed_nodes,
                 &context,
                 &retry_counts,
+                &visit_counts,
             )?;
         }
 
@@ -433,6 +445,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                     ),
@@ -445,6 +458,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                         "aborted_by_user",
@@ -455,11 +469,37 @@ where
                 let gate_check = check_goal_gates(&flow, &context, &completed_nodes);
                 if !gate_check.satisfied {
                     if let Some(failed_gate_node) = gate_check.failed_node_id.as_deref() {
-                        if let Some(retry_target) =
-                            resolve_goal_gate_retry_target(&flow, failed_gate_node)
-                        {
+                        let retry_target = match first_target_with_visits_left(
+                            &flow,
+                            &current_node,
+                            &visit_counts,
+                            goal_gate_retry_targets(&flow, failed_gate_node),
+                        ) {
+                            Ok(target) => target,
+                            Err(reason) => {
+                                return finalize_failed(
+                                    &store,
+                                    &paths,
+                                    &run_id,
+                                    &mut record,
+                                    &mut self.node_executor,
+                                    &flow,
+                                    &current_node,
+                                    &completed_nodes,
+                                    &context,
+                                    &retry_counts,
+                                    &visit_counts,
+                                    &node_outcomes,
+                                    &route_trace,
+                                    reason,
+                                    artifact_node_ids.len(),
+                                );
+                            }
+                        };
+                        if let Some(retry_target) = retry_target {
                             current_node = retry_target;
                             context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
+                            record_visit(&mut visit_counts, &current_node);
                             route_trace.push(current_node.clone());
                             save_checkpoint_event(
                                 &store,
@@ -469,6 +509,7 @@ where
                                 &completed_nodes,
                                 &context,
                                 &retry_counts,
+                                &visit_counts,
                             )?;
                             continue;
                         }
@@ -491,6 +532,7 @@ where
                             &completed_nodes,
                             &context,
                             &retry_counts,
+                            &visit_counts,
                             &node_outcomes,
                             &route_trace,
                             reason,
@@ -508,6 +550,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                         &terminal.outcome,
@@ -548,6 +591,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                         reason,
@@ -565,6 +609,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                     &node_outcomes,
                     &route_trace,
                     &terminal.outcome,
@@ -574,17 +619,13 @@ where
                 );
             }
 
-            // Failure routing must converge. A node re-entered more times than
-            // its entry limit fails the run with an explicit reason instead of
-            // spinning (the original incident looped 3,400 cycles).
-            let entry_count = route_trace
-                .iter()
-                .filter(|visited| visited.as_str() == current_node)
-                .count() as u64;
-            let entry_limit = node_entry_limit(&flow, &current_node);
-            if entry_count > entry_limit {
+            // Backstop: routing never selects an exhausted node, so this only
+            // fires for a routing path that skipped the visit-limit check.
+            let visit_count = visit_counts.get(&current_node).copied().unwrap_or(0);
+            let visit_limit = max_visits(&flow, &current_node);
+            if visit_count > visit_limit {
                 let reason = format!(
-                    "node_entry_limit_exceeded: node `{current_node}` entered {entry_count} times (limit {entry_limit}); failure routing is not converging"
+                    "{VISIT_LIMIT_REACHED}: {current_node} entered {visit_count} times, over its {visit_limit} visits"
                 );
                 save_checkpoint_event(
                     &store,
@@ -594,6 +635,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                 )?;
                 return finalize_failed(
                     &store,
@@ -606,6 +648,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                     &node_outcomes,
                     &route_trace,
                     reason,
@@ -648,6 +691,8 @@ where
                 stage_started_event(&run_id, stage_index, &current_node),
             )?;
             let outgoing_edges = outgoing_routing_edges(&flow, &current_node)?;
+            let mut request_context = context.snapshot();
+            mark_unavailable_routes(&mut request_context, &flow, &outgoing_edges, &visit_counts);
             let run_workdir = context
                 .get("internal.run_workdir")
                 .and_then(|value| value.as_str())
@@ -660,7 +705,7 @@ where
                 node_id: current_node.clone(),
                 stage_index,
                 attempt,
-                context: context.snapshot(),
+                context: request_context,
                 prompt: prompt.clone(),
                 node: node.clone(),
                 node_attrs: node_attrs.clone(),
@@ -715,6 +760,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                     &node_outcomes,
                     &route_trace,
                     "aborted_by_user",
@@ -782,6 +828,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                 )?;
                 continue;
             }
@@ -867,6 +914,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                     ),
@@ -879,6 +927,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                         "aborted_by_user",
@@ -886,17 +935,24 @@ where
                 };
             }
 
-            let next_selection = select_route_after_outcome(
+            let selection = select_route_after_outcome(
                 &flow,
                 &current_node,
                 &outcome,
                 &context,
                 prior_status,
                 &prior_preferred_label,
+                &visit_counts,
             )?;
-            let Some(selection) = next_selection else {
-                if outcome.status == OutcomeStatus::Fail {
-                    let reason = stage_failure_reason(&outcome);
+            let Some(next_node) = selection.selected_node else {
+                // An exhausted target with no other route fails whatever the outcome.
+                let visit_limited = selection.reason.starts_with(VISIT_LIMIT_REACHED);
+                if outcome.status == OutcomeStatus::Fail || visit_limited {
+                    let reason = if visit_limited {
+                        selection.reason
+                    } else {
+                        stage_failure_reason(&outcome)
+                    };
                     save_checkpoint_event(
                         &store,
                         &paths,
@@ -905,6 +961,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                     )?;
                     return finalize_failed(
                         &store,
@@ -917,6 +974,7 @@ where
                         &completed_nodes,
                         &context,
                         &retry_counts,
+                        &visit_counts,
                         &node_outcomes,
                         &route_trace,
                         reason,
@@ -934,6 +992,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                     &node_outcomes,
                     &route_trace,
                     "success",
@@ -943,8 +1002,9 @@ where
                 );
             };
 
-            current_node = selection.selected_node.unwrap_or_default();
+            current_node = next_node;
             context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
+            record_visit(&mut visit_counts, &current_node);
             route_trace.push(current_node.clone());
             save_checkpoint_event(
                 &store,
@@ -954,6 +1014,7 @@ where
                 &completed_nodes,
                 &context,
                 &retry_counts,
+                &visit_counts,
             )?;
 
             steps += 1;
@@ -967,6 +1028,7 @@ where
                     &completed_nodes,
                     &context,
                     &retry_counts,
+                    &visit_counts,
                     &node_outcomes,
                     &route_trace,
                 );
@@ -1019,6 +1081,7 @@ fn build_fresh_run_state(
         Vec::<String>::new(),
         &context,
         BTreeMap::<String, u64>::new(),
+        &BTreeMap::from([(start_node.clone(), 1)]),
     );
     Ok(FreshRunState {
         context,
@@ -1438,7 +1501,8 @@ fn select_route_after_outcome(
     context: &AttractorContext,
     prior_status: Option<OutcomeStatus>,
     prior_preferred_label: &str,
-) -> Result<Option<NextNodeSelection>> {
+    visits: &BTreeMap<String, u64>,
+) -> Result<NextNodeSelection> {
     let selection = select_next_node_with_prior(
         flow,
         node_id,
@@ -1446,36 +1510,54 @@ fn select_route_after_outcome(
         context,
         prior_status,
         prior_preferred_label,
+        visits,
     )?;
     if outcome.status != OutcomeStatus::Fail {
-        return Ok(selection.selected_node.is_some().then_some(selection));
+        return Ok(selection);
     }
     if selection
         .selected_edge
         .as_ref()
         .is_some_and(|edge| !edge.condition_text().is_empty())
     {
-        return Ok(selection.selected_node.is_some().then_some(selection));
+        return Ok(selection);
     }
-    if let Some(target) = resolve_failure_retry_target(flow, node_id) {
-        return Ok(Some(NextNodeSelection {
-            current_node: node_id.to_string(),
-            selected_node: Some(target),
-            selected_edge: None,
-            reason: "retry_target".to_string(),
-        }));
+    let no_route = |reason: String| NextNodeSelection {
+        current_node: node_id.to_string(),
+        selected_node: None,
+        selected_edge: None,
+        reason,
+    };
+    match first_target_with_visits_left(flow, node_id, visits, failure_retry_targets(flow, node_id))
+    {
+        Ok(Some(target)) => {
+            return Ok(NextNodeSelection {
+                current_node: node_id.to_string(),
+                selected_node: Some(target),
+                selected_edge: None,
+                reason: "retry_target".to_string(),
+            })
+        }
+        Err(reason) => return Ok(no_route(reason)),
+        Ok(None) => {}
     }
     if let Some(target) = selection.selected_node.as_deref() {
         if is_conditional_node(flow, target) {
-            return Ok(Some(selection));
+            return Ok(selection);
         }
         if is_goal_gate_node(flow, node_id) && is_exit_node(flow, target) {
-            return Ok(Some(selection));
+            return Ok(selection);
         }
     }
-    Ok(None)
+    Ok(no_route("no_route".to_string()))
 }
 
+/// Counts one routing entry into `node_id`.
+fn record_visit(visits: &mut BTreeMap<String, u64>, node_id: &str) {
+    *visits.entry(node_id.to_string()).or_default() += 1;
+}
+
+#[allow(clippy::too_many_arguments)]
 fn save_checkpoint_event(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,
@@ -1484,6 +1566,7 @@ fn save_checkpoint_event(
     completed_nodes: &[String],
     context: &AttractorContext,
     retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
 ) -> Result<CheckpointState> {
     let checkpoint = checkpoint_from_context(
         current_node,
@@ -1492,6 +1575,7 @@ fn save_checkpoint_event(
         retry_counts
             .iter()
             .map(|(key, value)| (key.clone(), *value)),
+        visit_counts,
     );
     store.save_checkpoint(paths, &checkpoint, CheckpointWriteOptions::default())?;
     store.append_event(
@@ -1578,6 +1662,7 @@ fn run_result_summary<E: NodeExecutor>(
     Ok(text)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_completed<E: NodeExecutor>(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,
@@ -1589,6 +1674,7 @@ fn finalize_completed<E: NodeExecutor>(
     completed_nodes: &[String],
     context: &AttractorContext,
     retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
     outcome: &str,
@@ -1604,6 +1690,7 @@ fn finalize_completed<E: NodeExecutor>(
         completed_nodes,
         context,
         retry_counts,
+        visit_counts,
     )?;
     // Cancellation is persisted while a node runs; every completion route must honor it.
     // Hold the record lock from this check through the completed write, so a cancel
@@ -1623,6 +1710,7 @@ fn finalize_completed<E: NodeExecutor>(
             completed_nodes,
             context,
             retry_counts,
+            visit_counts,
             node_outcomes,
             route_trace,
             "aborted_by_user",
@@ -1692,6 +1780,7 @@ fn finalize_failed<E: NodeExecutor>(
     completed_nodes: &[String],
     context: &AttractorContext,
     retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
     failure_reason: String,
@@ -1705,6 +1794,7 @@ fn finalize_failed<E: NodeExecutor>(
         completed_nodes,
         context,
         retry_counts,
+        visit_counts,
     )?;
     record.status = "failed".to_string();
     record.outcome = None;
@@ -1759,6 +1849,7 @@ fn finalize_paused(
     completed_nodes: &[String],
     context: &AttractorContext,
     retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
 ) -> Result<PipelineExecutionResult> {
@@ -1770,6 +1861,7 @@ fn finalize_paused(
         completed_nodes,
         context,
         retry_counts,
+        visit_counts,
     )?;
     mark_record_paused(record);
     write_run_record(paths, record)?;
@@ -1802,6 +1894,7 @@ fn finalize_canceled(
     completed_nodes: &[String],
     context: &AttractorContext,
     retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
     last_error: &str,
@@ -1814,6 +1907,7 @@ fn finalize_canceled(
         completed_nodes,
         context,
         retry_counts,
+        visit_counts,
     )?;
     mark_record_canceled(record, last_error);
     write_run_record(paths, record)?;
@@ -1858,19 +1952,4 @@ fn stage_failure_reason(outcome: &Outcome) -> String {
     } else {
         reason.to_string()
     }
-}
-
-/// Engine default for how many times routing may enter one node in a run
-/// before the run fails as non-converging. CR-0100's own implement-change run
-/// legitimately needed eleven implement entries; the default leaves ample
-/// headroom while ruling out unbounded spins.
-pub const DEFAULT_NODE_ENTRY_LIMIT: u64 = 32;
-
-fn node_entry_limit(flow: &FlowDefinition, node_id: &str) -> u64 {
-    flow.nodes
-        .get(node_id)
-        .and_then(|node| node.runtime.as_ref())
-        .and_then(|runtime| runtime.max_entries)
-        .filter(|limit| *limit > 0)
-        .unwrap_or(DEFAULT_NODE_ENTRY_LIMIT)
 }
