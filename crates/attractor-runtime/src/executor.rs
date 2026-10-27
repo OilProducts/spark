@@ -339,11 +339,11 @@ where
                     start_node.clone()
                 };
                 route_trace = vec![current_node.clone()];
-                // Earlier visits remain in completion history. A prepared retry
+                // Only a completion of this visit routes onward; an earlier
+                // visit's completion leaves this one pending. A prepared retry
                 // names this exact invocation and still needs execution/recovery.
-                if completed_nodes
-                    .iter()
-                    .any(|node_id| node_id == &current_node)
+                if context.get(COMPLETED_VISIT_KEY)
+                    == Some(&completed_visit(&current_node, &visit_counts))
                     && !crate::retry::retry_authorizes_checkpoint(
                         &checkpoint.context,
                         &run_id,
@@ -912,6 +912,10 @@ where
                 )?;
             }
             completed_nodes.push(current_node.clone());
+            context.set(
+                COMPLETED_VISIT_KEY,
+                completed_visit(&current_node, &visit_counts),
+            )?;
             refresh_record_usage(&store, &paths, &mut record);
             // Fold usage into the record on disk without clobbering it: the
             // persisted record doubles as the control channel (cancel/pause
@@ -1548,8 +1552,14 @@ fn select_route_after_outcome(
         selected_edge: None,
         reason,
     };
-    match first_target_with_visits_left(flow, node_id, visits, failure_retry_targets(flow, node_id))
-    {
+    // An exhausted retry target still leaves the edge fallbacks below; its
+    // reason is reported only when none of them applies.
+    let exhausted_retry = match first_target_with_visits_left(
+        flow,
+        node_id,
+        visits,
+        failure_retry_targets(flow, node_id),
+    ) {
         Ok(Some(target)) => {
             return Ok(NextNodeSelection {
                 current_node: node_id.to_string(),
@@ -1558,9 +1568,9 @@ fn select_route_after_outcome(
                 reason: "retry_target".to_string(),
             })
         }
-        Err(reason) => return Ok(no_route(reason)),
-        Ok(None) => {}
-    }
+        Ok(None) => None,
+        Err(reason) => Some(reason),
+    };
     if let Some(edge) = selection.selected_edge.as_ref() {
         // An exhausted edge has no selected node and carries the visit-limit reason.
         if selection.selected_node.is_none() {
@@ -1574,7 +1584,17 @@ fn select_route_after_outcome(
             return Ok(selection);
         }
     }
-    Ok(no_route("no_route".to_string()))
+    Ok(no_route(
+        exhausted_retry.unwrap_or_else(|| "no_route".to_string()),
+    ))
+}
+
+/// Context key naming the last node visit that finished executing, so resume
+/// can tell a completed checkpointed visit from a pending one.
+const COMPLETED_VISIT_KEY: &str = "_attractor.runtime.completed_visit";
+
+fn completed_visit(node_id: &str, visits: &BTreeMap<String, u64>) -> serde_json::Value {
+    json!({"node": node_id, "visit": visits.get(node_id).copied().unwrap_or(0)})
 }
 
 /// Counts one routing entry into `node_id`.

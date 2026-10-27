@@ -1909,6 +1909,68 @@ fn exhausted_conditional_route_falls_back_to_retry_target() {
     assert_eq!(implement_runs(&calls), 3);
 }
 
+/// A failed node whose retry target is exhausted still takes an
+/// unconditional route into a conditional node.
+#[test]
+fn exhausted_retry_target_falls_back_to_an_unconditional_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("check", "", "")], Some("implement"));
+    flow.nodes.insert(
+        "check".to_string(),
+        FlowNode {
+            kind: NodeKind::Conditional,
+            config: Some(NodeConfig::Conditional {}),
+            ..FlowNode::default()
+        },
+    );
+    flow.edges.push(FlowEdge {
+        from: "check".to_string(),
+        to: "done".to_string(),
+        ..FlowEdge::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-retry-fallback",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.current_node, "done", "{}", result.failure_reason);
+    assert_eq!(implement_runs(&calls), 3);
+}
+
+/// A failed goal gate whose retry target is exhausted still takes its exit
+/// route; the exit's goal-gate check then reports the visit limit.
+#[test]
+fn exhausted_retry_target_falls_back_to_a_goal_gate_exit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("done", "", "")], Some("implement"));
+    flow.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
+        goal_gate: true,
+        retry_target: Some("implement".to_string()),
+        ..NodeRuntimeConfig::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-gate-exit",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from done"
+    );
+    assert_eq!(implement_runs(&calls), 3);
+}
+
 /// A failed node whose unconditional route into a conditional node is
 /// exhausted fails with the visit-limit reason, not its own failure.
 #[test]
@@ -1979,22 +2041,40 @@ fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
     assert_eq!(implement_runs(&calls), 1);
 }
 
-/// Recovery that routes past a completed node fails when its only route is
-/// exhausted, instead of inferring completion from the prior outcome.
+/// Recovery from a checkpoint taken after the current visit completed routes
+/// onward without re-running it, and fails when that route is exhausted.
 #[test]
 fn resume_routing_into_an_exhausted_target_fails() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
-    let (paused, _) = run_visit_loop(
-        &store,
-        "run-visit-resume",
-        temp.path(),
-        flow(),
-        OutcomeStatus::Success,
-        Some(6),
-        Default::default(),
+    // Pause right after evaluate's third execution completes.
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let polled = calls.clone();
+    let mut executor = PipelineExecutor::with_control(
+        move |request: NodeExecutionRequest| {
+            seen.lock().unwrap().push(request.node_id.clone());
+            Ok(Outcome::new(OutcomeStatus::Success))
+        },
+        move || {
+            let calls = polled.lock().unwrap();
+            (calls.iter().filter(|node| *node == "evaluate").count() == 3)
+                .then_some(attractor_runtime::ExecutionControlAction::Pause)
+        },
     );
+    let paused = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-visit-resume", temp.path().to_string_lossy()),
+            flow: flow(),
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("execute");
     assert_eq!(paused.status, "paused");
     let meta = store.read_run_meta("run-visit-resume").unwrap().unwrap();
     let checkpoint = meta.checkpoint.unwrap();
@@ -2027,6 +2107,49 @@ fn resume_routing_into_an_exhausted_target_fails() {
         .unwrap();
     assert_eq!(record.status, "failed");
     assert_eq!(record.last_error, resumed.failure_reason);
+}
+
+/// Recovery from a checkpoint taken after routing into a node runs that
+/// pending visit, even though an earlier visit to the node completed.
+#[test]
+fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    // Six steps end routed into evaluate's third visit, not yet executed.
+    let (paused, _) = run_visit_loop(
+        &store,
+        "run-visit-pending",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        Some(6),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta("run-visit-pending").unwrap().unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "evaluate");
+    assert!(checkpoint.completed_nodes.contains(&"evaluate".to_string()));
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-pending",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        None,
+        attractor_runtime::ExecutionStart::Resume {
+            paths: meta.paths,
+            checkpoint,
+        },
+    );
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(
+        resumed.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+    );
+    assert_eq!(calls, vec!["evaluate"]);
 }
 
 /// Visit counts are run-wide: neither resuming a paused or crashed run nor
@@ -2073,9 +2196,11 @@ fn visit_counts_survive_resume_and_continue() {
     assert!(resumed
         .failure_reason
         .starts_with("visit_limit_reached: implement"));
-    // Resume routes past the checkpointed implement (it is in completion
-    // history), so only its third visit runs before the limit.
-    assert_eq!(calls, vec!["evaluate", "implement", "evaluate"]);
+    // The checkpointed second visit is pending: it runs, then the third.
+    assert_eq!(
+        calls,
+        vec!["implement", "evaluate", "implement", "evaluate"]
+    );
 
     // Continue from implement: its third visit is the continuation's start.
     let (continued, calls) = run_visit_loop(
