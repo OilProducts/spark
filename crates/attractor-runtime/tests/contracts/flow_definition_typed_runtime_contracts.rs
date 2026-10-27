@@ -2041,20 +2041,27 @@ fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
     assert_eq!(implement_runs(&calls), 1);
 }
 
-/// Recovery from a checkpoint taken after the current visit completed routes
-/// onward without re-running it, and fails when that route is exhausted.
-#[test]
-fn resume_routing_into_an_exhausted_target_fails() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
-    // Pause right after evaluate's third execution completes.
+/// Runs `flow` with `evaluate` answering `evaluate_status` and pauses right
+/// after evaluate's third execution completes; returns the resume start.
+fn pause_after_third_evaluate(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    evaluate_status: OutcomeStatus,
+) -> attractor_runtime::ExecutionStart {
     let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen = calls.clone();
     let polled = calls.clone();
     let mut executor = PipelineExecutor::with_control(
         move |request: NodeExecutionRequest| {
             seen.lock().unwrap().push(request.node_id.clone());
+            if request.node_id == "evaluate" {
+                return Ok(Outcome {
+                    failure_reason: "not good enough".to_string(),
+                    ..Outcome::new(evaluate_status)
+                });
+            }
             Ok(Outcome::new(OutcomeStatus::Success))
         },
         move || {
@@ -2066,8 +2073,8 @@ fn resume_routing_into_an_exhausted_target_fails() {
     let paused = executor
         .execute(ExecuteRunRequest {
             store: store.clone(),
-            record: RunRecord::new("run-visit-resume", temp.path().to_string_lossy()),
-            flow: flow(),
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            flow,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: ContextMap::new(),
@@ -2076,10 +2083,30 @@ fn resume_routing_into_an_exhausted_target_fails() {
         })
         .expect("execute");
     assert_eq!(paused.status, "paused");
-    let meta = store.read_run_meta("run-visit-resume").unwrap().unwrap();
+    let meta = store.read_run_meta(run_id).unwrap().unwrap();
     let checkpoint = meta.checkpoint.unwrap();
     assert_eq!(checkpoint.current_node, "evaluate");
     assert_eq!(checkpoint.visit_counts["implement"], 3);
+    attractor_runtime::ExecutionStart::Resume {
+        paths: meta.paths,
+        checkpoint,
+    }
+}
+
+/// Recovery from a checkpoint taken after the current visit completed routes
+/// onward without re-running it, and fails when that route is exhausted.
+#[test]
+fn resume_routing_into_an_exhausted_target_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+    );
 
     let (resumed, calls) = run_visit_loop(
         &store,
@@ -2088,10 +2115,7 @@ fn resume_routing_into_an_exhausted_target_fails() {
         flow(),
         OutcomeStatus::Success,
         None,
-        attractor_runtime::ExecutionStart::Resume {
-            paths: meta.paths,
-            checkpoint,
-        },
+        start,
     );
     assert_eq!(resumed.status, "failed");
     assert_eq!(
@@ -2107,6 +2131,77 @@ fn resume_routing_into_an_exhausted_target_fails() {
         .unwrap();
     assert_eq!(record.status, "failed");
     assert_eq!(record.last_error, resumed.failure_reason);
+}
+
+/// Recovery of a completed failed visit routes like uninterrupted execution:
+/// an exhausted conditional target falls through to the retry target.
+#[test]
+fn resume_of_a_failed_visit_falls_back_to_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done"));
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume-retry",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+    );
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume-retry",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        start,
+    );
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(resumed.current_node, "done");
+    assert!(calls.is_empty(), "{calls:?}");
+}
+
+/// Recovery of a completed failed visit skips an exhausted retry target for
+/// an available fallback retry target.
+#[test]
+fn resume_of_a_failed_visit_falls_back_to_fallback_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || {
+        let mut flow = visit_loop_flow(
+            vec![edge("implement", "Fix", "outcome=fail")],
+            Some("implement"),
+        );
+        flow.nodes
+            .get_mut("evaluate")
+            .unwrap()
+            .runtime
+            .as_mut()
+            .unwrap()
+            .fallback_retry_target = Some("done".to_string());
+        flow
+    };
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume-fallback",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+    );
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume-fallback",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        start,
+    );
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(resumed.current_node, "done");
+    assert!(calls.is_empty(), "{calls:?}");
 }
 
 /// Recovery from a checkpoint taken after routing into a node runs that

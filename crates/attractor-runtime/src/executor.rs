@@ -352,7 +352,7 @@ where
                     )
                 {
                     let resume_outcome = resume_outcome_for_node(&current_node, &context);
-                    let selection = select_next_node_with_prior(
+                    let selection = select_route_after_outcome(
                         &flow,
                         &current_node,
                         &resume_outcome,
