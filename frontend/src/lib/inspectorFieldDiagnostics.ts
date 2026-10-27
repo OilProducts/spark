@@ -40,9 +40,6 @@ const mapNodeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
     if (diagnostic.rule_id === 'retry_target_exists') {
         return resolveRetryTargetFields(diagnostic)
     }
-    if (diagnostic.rule_id === 'fidelity_valid') {
-        return ['fidelity']
-    }
     return []
 }
 
@@ -50,18 +47,12 @@ const mapEdgeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
     if (diagnostic.rule_id === 'condition_syntax') {
         return ['condition']
     }
-    if (diagnostic.rule_id === 'fidelity_valid') {
-        return ['fidelity']
-    }
     return []
 }
 
 const mapGraphDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
     if (diagnostic.rule_id === 'retry_target_exists') {
         return resolveRetryTargetFields(diagnostic)
-    }
-    if (diagnostic.rule_id === 'fidelity_valid' && diagnostic.message.toLowerCase().startsWith('graph fidelity')) {
-        return ['fidelity']
     }
     return []
 }

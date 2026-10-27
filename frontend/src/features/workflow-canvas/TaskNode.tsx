@@ -150,8 +150,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftFallbackRetryTarget, setDraftFallbackRetryTarget] = useState<string>(
         (data.fallback_retry_target as string) || '',
     )
-    const [draftFidelity, setDraftFidelity] = useState<string>((data.fidelity as string) || '')
-    const [draftThreadId, setDraftThreadId] = useState<string>((data.thread_id as string) || '')
     const [draftClassName, setDraftClassName] = useState<string>((data.class as string) || '')
     const [draftTimeout, setDraftTimeout] = useState<string>((data.timeout as string) || '')
     const [draftLlmModel, setDraftLlmModel] = useState<string>((data.llm_model as string) || '')
@@ -313,8 +311,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftGoalGate(data.goal_gate === true || data.goal_gate === 'true')
         setDraftRetryTarget((data.retry_target as string) || '')
         setDraftFallbackRetryTarget((data.fallback_retry_target as string) || '')
-        setDraftFidelity((data.fidelity as string) || '')
-        setDraftThreadId((data.thread_id as string) || '')
         setDraftClassName((data.class as string) || '')
         setDraftTimeout((data.timeout as string) || '')
         setDraftLlmModel((data.llm_model as string) || '')
@@ -366,8 +362,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             goal_gate: draftGoalGate,
             retry_target: draftRetryTarget,
             fallback_retry_target: draftFallbackRetryTarget,
-            fidelity: draftFidelity,
-            thread_id: draftThreadId,
             class: draftClassName,
             timeout: draftTimeout,
             llm_model: draftLlmModel,
@@ -796,24 +790,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 </div>
                                             </>
                                         )}
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">Fidelity</label>
-                                                <input
-                                                    value={draftFidelity}
-                                                    onChange={(event) => setDraftFidelity(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">Thread ID</label>
-                                                <input
-                                                    value={draftThreadId}
-                                                    onChange={(event) => setDraftThreadId(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                            </div>
-                                        </div>
                                         <div className="space-y-1">
                                             <label className="text-xs font-medium text-foreground">Class</label>
                                             <input

@@ -21,7 +21,6 @@ inputs:
   description: Optional criteria the finished work should satisfy.
   required: false
 defaults:
-  fidelity: summary:high
   llm_provider: codex
   llm_model: gpt-6.1-sol
   reasoning_effort: xhigh

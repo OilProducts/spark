@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use attractor_core::{
-    AttractorContext, ContextMap, DotAttribute, DotGraph, DotNode, DotValue, DotValueType,
-};
+use attractor_core::{ContextMap, DotAttribute, DotGraph, DotNode, DotValue, DotValueType};
 use serde_json::{Number, Value};
 
 const DEFAULT_MAX_RETRIES_KEY: &str = "default_max_retries";
@@ -16,11 +14,6 @@ const ALLOWED_STYLE_PROPERTIES: [&str; 8] = [
     "reasoning_mode",
     "reasoning_summary",
 ];
-const NODE_OUTCOMES_KEY: &str = "_attractor.node_outcomes";
-const RUNTIME_RETRY_NODE_ID_KEY: &str = "_attractor.runtime.retry.node_id";
-const RUNTIME_RETRY_ATTEMPT_KEY: &str = "_attractor.runtime.retry.attempt";
-const RUNTIME_RETRY_MAX_ATTEMPTS_KEY: &str = "_attractor.runtime.retry.max_attempts";
-const RUNTIME_RETRY_FAILURE_REASON_KEY: &str = "_attractor.runtime.retry.failure_reason";
 
 pub trait GraphTransform: std::fmt::Debug + Send + Sync {
     fn apply(&self, graph: &mut DotGraph);
@@ -144,11 +137,6 @@ impl GraphTransform for AttributeDefaultsTransform {
                 DotValue::String(String::new()),
             ),
             (
-                "default_fidelity",
-                DotValueType::String,
-                DotValue::String(String::new()),
-            ),
-            (
                 "stack.child_dotfile",
                 DotValueType::String,
                 DotValue::String(String::new()),
@@ -204,16 +192,6 @@ impl GraphTransform for AttributeDefaultsTransform {
                 ),
                 (
                     "fallback_retry_target",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
-                (
-                    "fidelity",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
-                (
-                    "thread_id",
                     DotValueType::String,
                     DotValue::String(String::new()),
                 ),
@@ -328,133 +306,6 @@ impl GraphTransform for ModelStylesheetTransform {
         for node in graph.nodes.values_mut() {
             apply_style_rules_to_node(node, &rules, stylesheet_line, &graph_defaults);
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimePreambleTransform {
-    pub node_outcomes_key: String,
-}
-
-impl RuntimePreambleTransform {
-    pub fn new() -> Self {
-        Self {
-            node_outcomes_key: NODE_OUTCOMES_KEY.to_string(),
-        }
-    }
-
-    pub fn apply(
-        &self,
-        fidelity: &str,
-        context: &AttractorContext,
-        completed_nodes: &[impl AsRef<str>],
-    ) -> String {
-        self.apply_with_options(fidelity, context, completed_nodes, true)
-    }
-
-    pub fn apply_with_options(
-        &self,
-        fidelity: &str,
-        context: &AttractorContext,
-        completed_nodes: &[impl AsRef<str>],
-        include_context_items: bool,
-    ) -> String {
-        let mode = fidelity.trim().to_ascii_lowercase();
-        if mode == "full" {
-            return String::new();
-        }
-
-        let snapshot = context.snapshot();
-        let goal = snapshot
-            .get("graph.goal")
-            .map(json_value_to_text)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let run_id = snapshot
-            .get("internal.run_id")
-            .map(json_value_to_text)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let statuses = snapshot
-            .get(&self.node_outcomes_key)
-            .and_then(Value::as_object);
-        let retry_lines = retry_context_lines(&snapshot);
-
-        if mode == "truncate" {
-            let mut lines = vec![
-                "carryover:truncate".to_string(),
-                format!("goal={goal}"),
-                format!("run_id={run_id}"),
-            ];
-            lines.extend(retry_lines);
-            return lines.join("\n");
-        }
-
-        let context_items = if include_context_items {
-            carryover_context_items(&snapshot)
-        } else {
-            Vec::new()
-        };
-
-        if mode == "compact" {
-            let mut lines = vec![
-                "carryover:compact".to_string(),
-                format!("goal={goal}"),
-                format!("run_id={run_id}"),
-            ];
-            if !completed_nodes.is_empty() {
-                lines.push(format!(
-                    "completed={}",
-                    completed_summary(completed_nodes, statuses)
-                ));
-            }
-            lines.extend(retry_lines);
-            lines.extend(
-                context_items
-                    .into_iter()
-                    .take(8)
-                    .map(|(key, value)| format!("- {key}={value}")),
-            );
-            return lines.join("\n");
-        }
-
-        let Some((max_stages, max_context_items)) = summary_limits(&mode) else {
-            return self.apply_with_options(
-                "compact",
-                context,
-                completed_nodes,
-                include_context_items,
-            );
-        };
-
-        let recent_start = completed_nodes.len().saturating_sub(max_stages);
-        let recent_nodes = &completed_nodes[recent_start..];
-        let mut lines = vec![
-            format!("carryover:{mode}"),
-            format!("goal={goal}"),
-            format!("run_id={run_id}"),
-            format!(
-                "recent_stages={}",
-                completed_summary(recent_nodes, statuses)
-            ),
-            format!("log_entries={}", context.logs().len()),
-        ];
-        lines.extend(retry_lines);
-        lines.extend(
-            context_items
-                .into_iter()
-                .take(max_context_items)
-                .map(|(key, value)| format!("{key}={value}")),
-        );
-        lines.join("\n")
-    }
-}
-
-impl Default for RuntimePreambleTransform {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -848,80 +699,6 @@ fn split_unquoted(text: &str, token: char) -> Vec<String> {
     parts
 }
 
-fn summary_limits(mode: &str) -> Option<(usize, usize)> {
-    match mode {
-        "summary:low" => Some((3, 4)),
-        "summary:medium" => Some((6, 8)),
-        "summary:high" => Some((12, 16)),
-        _ => None,
-    }
-}
-
-fn completed_summary(
-    completed_nodes: &[impl AsRef<str>],
-    statuses: Option<&serde_json::Map<String, Value>>,
-) -> String {
-    completed_nodes
-        .iter()
-        .map(|node_id| {
-            let node_id = node_id.as_ref();
-            let status = statuses
-                .and_then(|items| items.get(node_id))
-                .map(json_value_to_text)
-                .unwrap_or_default();
-            format!("{node_id}:{status}")
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn carryover_context_items(snapshot: &ContextMap) -> Vec<(String, String)> {
-    snapshot
-        .iter()
-        .filter(|(key, _)| {
-            key.as_str() != "graph.goal"
-                && key.as_str() != "internal.run_id"
-                && !key.starts_with("_attractor.")
-                && !key.starts_with("internal.")
-        })
-        .map(|(key, value)| (key.clone(), json_value_to_text(value)))
-        .collect()
-}
-
-fn retry_context_lines(snapshot: &ContextMap) -> Vec<String> {
-    let attempt = snapshot
-        .get(RUNTIME_RETRY_ATTEMPT_KEY)
-        .map(json_value_to_int)
-        .unwrap_or_default();
-    let max_attempts = snapshot
-        .get(RUNTIME_RETRY_MAX_ATTEMPTS_KEY)
-        .map(json_value_to_int)
-        .unwrap_or_default();
-    if attempt <= 0 && max_attempts <= 0 {
-        return Vec::new();
-    }
-
-    let mut lines = vec![
-        format!(
-            "retry.node_id={}",
-            snapshot
-                .get(RUNTIME_RETRY_NODE_ID_KEY)
-                .map(json_value_to_text)
-                .unwrap_or_default()
-        ),
-        format!("retry.attempt={attempt}"),
-        format!("retry.max_attempts={max_attempts}"),
-    ];
-    let failure_reason = snapshot
-        .get(RUNTIME_RETRY_FAILURE_REASON_KEY)
-        .map(json_value_to_text)
-        .unwrap_or_default();
-    if !failure_reason.is_empty() {
-        lines.push(format!("retry.failure_reason={failure_reason}"));
-    }
-    lines
-}
-
 fn resolve_default_max_retries_value(attrs: &BTreeMap<String, DotAttribute>, default: i64) -> i64 {
     let Some(attr) = attrs.get(DEFAULT_MAX_RETRIES_KEY) else {
         return default;
@@ -956,32 +733,5 @@ fn dot_value_text(value: &DotValue) -> String {
         DotValue::Boolean(true) => "true".to_string(),
         DotValue::Boolean(false) => "false".to_string(),
         DotValue::Duration(value) => value.raw.clone(),
-    }
-}
-
-fn json_value_to_text(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        Value::String(text) => text.clone(),
-        Value::Number(number) => number.to_string(),
-        Value::Array(_) | Value::Object(_) => {
-            serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
-        }
-    }
-}
-
-fn json_value_to_int(value: &Value) -> i64 {
-    match value {
-        Value::Bool(value) => i64::from(*value),
-        Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .unwrap_or_else(|| number.to_string().trim().parse().unwrap_or_default()),
-        Value::String(value) => value.trim().parse().unwrap_or_default(),
-        Value::Null | Value::Array(_) | Value::Object(_) => {
-            json_value_to_text(value).trim().parse().unwrap_or_default()
-        }
     }
 }

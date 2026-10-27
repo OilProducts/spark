@@ -108,14 +108,19 @@ struct RoleFile {
     title: Option<String>,
     #[serde(default)]
     execution: Option<ExecutionConfig>,
+    #[serde(default)]
+    isolated: bool,
 }
 
 /// A parsed role file: its persona (the body) and execution defaults.
+/// An `isolated` role always runs in a fresh session: its nodes may not set
+/// `session`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Role {
     pub title: Option<String>,
     pub persona: String,
     pub execution: Option<ExecutionConfig>,
+    pub isolated: bool,
 }
 
 /// Loads a flow directory in its authored form (roles unresolved), validated
@@ -334,6 +339,7 @@ pub fn load_flow(roots: &FlowRoots, flow_name: &str) -> Result<LoadedFlow, FlowS
         name: resolved.name,
         flow,
         manifest: FlowManifest {
+            sessions: authored.sessions(),
             files,
             org: roots.org_state(),
             spark_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -363,7 +369,10 @@ pub(crate) fn resolve_flow_roles_with(
             continue;
         };
         let Role {
-            persona, execution, ..
+            persona,
+            execution,
+            isolated,
+            ..
         } = match role_text(&role).and_then(|text| parse_role(&role, &text)) {
             Ok(role) => role,
             Err(message) => {
@@ -376,6 +385,17 @@ pub(crate) fn resolve_flow_roles_with(
                 continue;
             }
         };
+        if isolated && node.runtime.as_ref().is_some_and(|r| r.session.is_some()) {
+            errors.push(FlowDiagnostic {
+                rule_id: "session".to_string(),
+                message: format!(
+                    "node '{node_id}': role '{role}' is isolated, so the node may not set session"
+                ),
+                node_id: Some(node_id.clone()),
+                edge: None,
+            });
+            continue;
+        }
         if let Some(NodeConfig::AgentTask { prompt }) = node.config.as_mut() {
             *prompt = format!("{persona}\n\n{prompt}");
         }
@@ -419,6 +439,7 @@ pub fn parse_role(name: &str, text: &str) -> Result<Role, String> {
         title: role.title,
         persona: body.trim().to_string(),
         execution: role.execution,
+        isolated: role.isolated,
     })
 }
 

@@ -265,12 +265,11 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
 
-    const fidelityInput = screen.getByPlaceholderText('full')
-    await user.clear(fidelityInput)
-    await user.type(fidelityInput, 'invalid')
+    await user.clear(screen.getByLabelText('Default Max Retries'))
+    await user.type(screen.getByLabelText('Default Max Retries'), '-1')
 
-    expect(screen.getByText(/Fidelity default must be one of/i)).toBeVisible()
-    expect(useStore.getState().flowMetadataErrors.fidelity).toContain('Fidelity default must be one of')
+    expect(screen.getByText('Max retries default must be a non-negative integer.')).toBeVisible()
+    expect(useStore.getState().flowMetadataErrors.max_retries).toContain('non-negative integer')
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
@@ -390,15 +389,25 @@ describe('Graph and settings behavior', () => {
 
     await user.clear(screen.getByLabelText('Default Max Retries'))
     await user.type(screen.getByLabelText('Default Max Retries'), '3')
-    await user.clear(screen.getByPlaceholderText('full'))
-    await user.type(screen.getByPlaceholderText('full'), 'summary:high')
 
     const state = useStore.getState()
     const flow = buildFlow([], [], state.flowMetadata)
     expect(flow.schema_version).toBe('1.0')
-    expect(flow.defaults).toMatchObject({ max_retries: 3, fidelity: 'summary:high' })
+    expect(flow.defaults).toMatchObject({ max_retries: 3 })
     expect(JSON.stringify(flow)).not.toContain('legacy default prompt')
     expect(JSON.stringify(flow)).not.toContain('cluster_legacy')
+  })
+
+  it('round-trips a node session through runtime config', () => {
+    const flow = buildFlow(
+      [{ id: 'task', position: { x: 0, y: 0 }, data: { label: 'Task', kind: 'agent_task', session: 'work' } }],
+      [],
+      {},
+    )
+    expect((flow.nodes as Record<string, { runtime?: Record<string, unknown> }>).task.runtime).toEqual({ session: 'work' })
+
+    const model = buildCanonicalFlowModelFromPreviewGraph(TEST_GRAPH_FLOW, { nodes: [{ id: 'task' }], edges: [] }, { flow })
+    expect(model.nodes.find((node) => node.id === 'task')?.attrs.session).toBe('work')
   })
 
   it('does not derive FlowDefinition node kind or metadata from DOT shape/type attrs', () => {

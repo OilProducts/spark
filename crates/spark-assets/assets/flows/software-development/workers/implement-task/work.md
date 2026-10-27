@@ -1,6 +1,8 @@
 ---
 type: agent_task
 title: Implement
+runtime:
+  session: implementer
 contracts:
   reads_context:
   - context.task.objective

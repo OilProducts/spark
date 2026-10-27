@@ -1,6 +1,8 @@
 ---
 type: agent_task
 title: Investigate
+runtime:
+  session: investigator
 contracts:
   reads_context:
   - context.request.objective

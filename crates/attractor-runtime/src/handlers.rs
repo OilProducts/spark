@@ -27,9 +27,7 @@ use crate::artifacts::{
     write_tool_text_artifact, ToolHookFailureRecord,
 };
 use crate::codergen::{codergen_outcome, RuntimeCodergen};
-use crate::context::{
-    clear_runtime_retry_context, seed_builtin_context, set_runtime_fidelity_context,
-};
+use crate::context::{clear_runtime_retry_context, seed_builtin_context};
 use crate::error::Result;
 use crate::events::{
     append_event, interview_completed_event, interview_started_event,
@@ -285,6 +283,36 @@ impl RegisteredRuntimeHandler {
     }
 }
 
+/// Sessions held by running nodes, by run id and session name, so two
+/// nodes never drive one provider session at once.
+static SESSIONS_IN_USE: Mutex<BTreeMap<(String, String), String>> = Mutex::new(BTreeMap::new());
+
+struct SessionLease((String, String));
+
+impl SessionLease {
+    /// Holds `name` for `node_id`, or names the node already holding it.
+    fn acquire(run_id: &str, name: &str, node_id: &str) -> std::result::Result<Self, String> {
+        let key = (run_id.to_string(), name.to_string());
+        let mut in_use = SESSIONS_IN_USE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(holder) = in_use.get(&key) {
+            return Err(holder.clone());
+        }
+        in_use.insert(key.clone(), node_id.to_string());
+        Ok(Self(key))
+    }
+}
+
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        SESSIONS_IN_USE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.0);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandlerRuntime {
     pub node_id: String,
@@ -510,6 +538,10 @@ pub struct ChildRunResult {
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+    /// The child's context at its last checkpoint, for `output_map` and the
+    /// sessions it hands back.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub context: ContextMap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1011,6 +1043,50 @@ impl RuntimeHandlerRunner {
             .filter(|value| !value.is_empty())
             .unwrap_or(runtime.run_id.as_str())
             .to_string();
+        let session_name = runtime
+            .node
+            .runtime
+            .as_ref()
+            .and_then(|config| config.session.clone());
+        let _session_lease = match session_name.as_deref() {
+            Some(name) => match SessionLease::acquire(&runtime.run_id, name, &runtime.node_id) {
+                Ok(lease) => Some(lease),
+                Err(holder) => {
+                    return Ok(Outcome {
+                        status: OutcomeStatus::Fail,
+                        failure_reason: format!(
+                            "session '{name}' is already in use by running node '{holder}'"
+                        ),
+                        retryable: Some(false),
+                        failure_kind: Some(attractor_core::FailureKind::Runtime),
+                        ..Outcome::new(OutcomeStatus::Fail)
+                    });
+                }
+            },
+            None => None,
+        };
+        // A child run's sessions belong to its parent's subflow node.
+        let session_scope = runtime
+            .context
+            .get("internal.parent_node_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("run")
+            .to_string();
+        let session = session_name
+            .clone()
+            .map(|name| spark_agent_adapter::CodergenSession {
+                handle: crate::context::session_entry(&runtime.context, "named", &name)
+                    .and_then(|value| serde_json::from_value(value).ok()),
+                history_path: runtime.run_paths.as_ref().map(|paths| {
+                    paths
+                        .root
+                        .join("sessions")
+                        .join(&session_scope)
+                        .join(format!("{name}.json"))
+                }),
+                name,
+            });
         let clarification_interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut codergen = if let Some(factory) = self.codergen_backend_factory.as_ref() {
             RuntimeCodergen::with_boxed_backend(
@@ -1101,7 +1177,8 @@ impl RuntimeHandlerRunner {
                 metadata.insert("spark.runtime.execution_root".to_string(), json!(root));
             }
             metadata
-        });
+        })
+        .with_session(session);
         // Persist detailed codergen events in the owning execution while the
         // node runs, then materialize completed logical units into its transcript.
         let live_sink_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1257,7 +1334,20 @@ impl RuntimeHandlerRunner {
                     .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             }
         }
-        Ok(codergen_outcome(execution))
+        let handle = execution.session.clone();
+        let mut outcome = codergen_outcome(execution);
+        if let Some((name, handle)) = session_name.zip(handle) {
+            outcome.context_updates.insert(
+                crate::context::RUNTIME_SESSIONS_KEY.to_string(),
+                crate::context::sessions_with_entry(
+                    &runtime.context,
+                    "named",
+                    &name,
+                    serde_json::to_value(handle).unwrap_or_default(),
+                ),
+            );
+        }
+        Ok(outcome)
     }
 
     fn execute_tool(
@@ -1833,13 +1923,14 @@ impl RuntimeHandlerRunner {
             .enumerate()
             .map(|(index, edge)| (index, edge.target.as_str().to_string()))
             .collect::<Vec<_>>();
-        let results = self.execute_parallel_branches(
+        let mut results = self.execute_parallel_branches(
             runtime.clone(),
             branches,
             max_parallel as usize,
             &join_policy,
             &error_policy,
         )?;
+        let sessions = take_branch_sessions(&runtime.context, &mut results);
 
         let event_success_count = results
             .iter()
@@ -1915,12 +2006,14 @@ impl RuntimeHandlerRunner {
             _ => OutcomeStatus::Fail,
         };
 
+        let mut context_updates =
+            ContextMap::from([("parallel.results".to_string(), json!(results_for_policy))]);
+        if let Some(sessions) = sessions {
+            context_updates.insert(crate::context::RUNTIME_SESSIONS_KEY.to_string(), sessions);
+        }
         Ok(Outcome {
             status,
-            context_updates: ContextMap::from([(
-                "parallel.results".to_string(),
-                json!(results_for_policy),
-            )]),
+            context_updates,
             notes: "parallel fan-out completed".to_string(),
             ..Outcome::new(status)
         })
@@ -2093,8 +2186,6 @@ impl RuntimeHandlerRunner {
             };
             context
                 .set("current_node", json!(current_node.clone()))
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            set_runtime_fidelity_context(&runtime.flow, &current_node, None, &mut context, None)
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             let prior_status = context
                 .get("outcome")
@@ -2971,6 +3062,33 @@ fn branch_payload(
         "node_outcomes": node_outcomes,
         "failure_reason": failure_reason,
     })
+}
+
+/// Removes the runtime's session handles from each branch payload, which
+/// agents can read, and returns the parent's sessions with every entry a
+/// branch started or continued, or `None` when no branch changed one.
+// ponytail: branches updating the same session race; last completed wins.
+fn take_branch_sessions(parent: &ContextMap, results: &mut [Value]) -> Option<Value> {
+    let key = crate::context::RUNTIME_SESSIONS_KEY;
+    let before = parent.get(key).cloned().unwrap_or_else(|| json!({}));
+    let mut merged = before.clone();
+    for result in results.iter_mut() {
+        let Some(branch) = result
+            .get_mut("context")
+            .and_then(Value::as_object_mut)
+            .and_then(|context| context.remove(key))
+        else {
+            continue;
+        };
+        for (section, entries) in branch.as_object().into_iter().flatten() {
+            for (name, handle) in entries.as_object().into_iter().flatten() {
+                if before.get(section).and_then(|s| s.get(name)) != Some(handle) {
+                    merged[section][name] = handle.clone();
+                }
+            }
+        }
+    }
+    (merged != before).then_some(merged)
 }
 
 fn branch_succeeded(payload: &Value) -> bool {

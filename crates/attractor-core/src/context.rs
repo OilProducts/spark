@@ -24,6 +24,10 @@ const ALLOWED_LAUNCH_CONTEXT_KEYS: &[&str] = &[
     "_attractor.runtime.launch_reasoning_effort",
 ];
 
+/// Live named-session handles (`session: <name>` on agent nodes). Runtime
+/// owned: exempt from write contracts, and never written by agents.
+pub const RUNTIME_SESSIONS_KEY: &str = "_attractor.runtime.sessions";
+
 /// JSON-compatible context value.
 pub type ContextValue = Value;
 

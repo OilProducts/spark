@@ -28,8 +28,8 @@ const buildPreviewPayload = (inputs: Array<Record<string, unknown>> = []) => ({
       { id: 'done', label: 'Done', shape: 'Msquare' },
     ],
     edges: [
-      { from: 'start', to: 'task', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-      { from: 'task', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+      { from: 'start', to: 'task', label: null, condition: null, weight: null, loop_restart: false },
+      { from: 'task', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
     ],
   },
   diagnostics: [],

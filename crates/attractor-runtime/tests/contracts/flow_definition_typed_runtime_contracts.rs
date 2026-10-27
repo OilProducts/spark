@@ -370,6 +370,7 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
             flow_ref: "typed-child".to_string(),
+            output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -516,6 +517,7 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
                 kind: NodeKind::Subflow,
                 config: Some(NodeConfig::Subflow {
                     flow_ref: "child".to_string(),
+                    output_map: BTreeMap::new(),
                     input_map: [
                         (
                             "context.child_ticket".to_string(),
@@ -671,6 +673,7 @@ fn dynamic_workdir_subflow_node(child_workdir_from: &str) -> FlowNode {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
             flow_ref: "child".to_string(),
+            output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -791,6 +794,7 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
             flow_ref: "child".to_string(),
+            output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -1240,6 +1244,7 @@ fn reentry_parent_flow() -> FlowDefinition {
                 kind: NodeKind::Subflow,
                 config: Some(NodeConfig::Subflow {
                     flow_ref: "child".to_string(),
+                    output_map: BTreeMap::new(),
                     input_map: Default::default(),
                 }),
                 manager: Some(ManagerLoopConfig {
@@ -1707,5 +1712,99 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
         assert!(!events
             .iter()
             .any(|event| event.event_type == "PipelineCompleted"));
+    }
+}
+
+#[test]
+fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
+    for status in ["completed", "failed"] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_child_flow(&temp.path().join("child"), child_flow_source());
+        let node = FlowNode {
+            kind: NodeKind::Subflow,
+            config: Some(NodeConfig::Subflow {
+                flow_ref: "child".to_string(),
+                input_map: BTreeMap::new(),
+                output_map: BTreeMap::from([
+                    ("context.child.a".to_string(), "context.a".to_string()),
+                    ("context.child.b".to_string(), "context.b".to_string()),
+                ]),
+            }),
+            contracts: Some(NodeContracts {
+                writes_context: vec!["context.a".to_string(), "context.b".to_string()],
+                ..NodeContracts::default()
+            }),
+            manager: Some(ManagerLoopConfig {
+                max_cycles: Some(1),
+                child_autostart: Some(true),
+                ..ManagerLoopConfig::default()
+            }),
+            ..FlowNode::default()
+        };
+        let flow = FlowDefinition {
+            id: "output-map".to_string(),
+            nodes: [("run_child".to_string(), node.clone())]
+                .into_iter()
+                .collect(),
+            ..FlowDefinition::default()
+        };
+        let mut runner = RuntimeHandlerRunner::new();
+        runner.set_child_run_launcher(move |request| ChildRunResult {
+            run_id: request.child_run_id,
+            status: status.to_string(),
+            context: ContextMap::from([("context.child.a".to_string(), json!("A"))]),
+            ..ChildRunResult::default()
+        });
+        let parent_context = ContextMap::from([
+            ("context.b".to_string(), json!("stale")),
+            (
+                "internal.bundled_root".to_string(),
+                json!(temp.path().to_string_lossy()),
+            ),
+        ]);
+        let node_attrs =
+            attractor_runtime::flow_runtime::node_attrs_for_handler("run_child", &node);
+        let outcome = runner
+            .execute(NodeExecutionRequest {
+                node_id: "run_child".to_string(),
+                stage_index: 0,
+                attempt: 0,
+                context: parent_context.clone(),
+                prompt: String::new(),
+                node,
+                node_attrs: node_attrs.clone(),
+                flow,
+                outgoing_edges: Vec::new(),
+                run_paths: None,
+                run_workdir: temp.path().to_path_buf(),
+                run_id: "parent-run".to_string(),
+                fallback_model: None,
+                fallback_provider: None,
+                fallback_profile: None,
+                fallback_reasoning_effort: None,
+            })
+            .expect("subflow outcome");
+        assert_eq!(outcome.context_updates["context.a"], json!("A"), "{status}");
+        assert_eq!(
+            outcome.context_updates["context.b"],
+            json!(null),
+            "{status}"
+        );
+
+        // The parent's write contract admits them, and a null clears the key.
+        let mut context = attractor_core::AttractorContext::from_map(parent_context).unwrap();
+        let applied = attractor_runtime::apply_outcome_context_updates(
+            "run_child",
+            &node_attrs,
+            &mut context,
+            &outcome,
+        )
+        .expect("apply");
+        assert_ne!(
+            applied.failure_kind,
+            Some(attractor_core::FailureKind::Contract)
+        );
+        assert_eq!(context.get("context.a"), Some(&json!("A")));
+        assert_eq!(context.get("context.b"), None, "{status}");
     }
 }

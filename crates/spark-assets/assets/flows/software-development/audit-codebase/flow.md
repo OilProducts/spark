@@ -11,7 +11,6 @@ inputs:
   description: Optional focus areas or subsystems to weight the audit toward.
   required: false
 defaults:
-  fidelity: summary:high
   llm_provider: codex
   llm_model: gpt-6.1-sol
   reasoning_effort: xhigh

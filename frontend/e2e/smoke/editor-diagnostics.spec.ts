@@ -371,7 +371,6 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
   const nodeDiagnosticMessage = `Prompt is required ${Date.now()}`
   const edgeDiagnosticMessage = `Condition syntax is invalid ${Date.now()}`
   const nodeFallbackDiagnosticMessage = `Fallback retry target missing ${Date.now()}`
-  const edgeFidelityDiagnosticMessage = `Edge fidelity value not recognized ${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-field-diags", projectPath)
   let selectedNodeId: string | null = null
   const selectedEdgeSource = "audit_human_gate"
@@ -404,12 +403,6 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
                 severity: "warning",
                 message: `node '${selectedNodeId}' fallback_retry_target references missing node '${nodeFallbackDiagnosticMessage}'`,
                 node_id: selectedNodeId,
-              },
-              {
-                rule_id: "fidelity_valid",
-                severity: "warning",
-                message: `edge ${selectedEdgeSource}->${selectedEdgeTarget} fidelity '${edgeFidelityDiagnosticMessage}' is not a recognized mode`,
-                edge: [selectedEdgeSource, selectedEdgeTarget],
               },
             ],
           }),
@@ -458,7 +451,6 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
 
     await dispatchEdgeSelection(page, "Edge from audit_human_gate to audit_rework")
     await expect(page.getByTestId("edge-field-diagnostics-condition")).toContainText(edgeDiagnosticMessage)
-    await expect(page.getByTestId("edge-field-diagnostics-fidelity")).toContainText(edgeFidelityDiagnosticMessage)
     await page.screenshot({ path: screenshotPath("15-inspector-field-level-diagnostics.png"), fullPage: true })
   } finally {
     await deleteFlowAfterSmoke(page, flowName)

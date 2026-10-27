@@ -582,8 +582,10 @@ fn string_list(payload: &BTreeMap<String, Value>, key: &str) -> Result<Vec<Strin
 fn context_updates(payload: &BTreeMap<String, Value>) -> Result<ContextMap, String> {
     match payload.get("context_updates") {
         None | Some(Value::Null) => Ok(ContextMap::new()),
+        // Session handles are runtime-owned; an agent never writes them.
         Some(Value::Object(items)) => Ok(items
             .iter()
+            .filter(|(key, _)| key.as_str() != attractor_core::RUNTIME_SESSIONS_KEY)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()),
         _ => {

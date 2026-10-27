@@ -529,6 +529,7 @@ describe('flowCanvasShared', () => {
                         kind: 'subflow',
                         flow_ref: 'child.yaml',
                         input_map: { 'context.ticket': 'context.ticket' },
+                        output_map: { 'context.verdict': 'context.child_verdict' },
                     },
                 },
                 done: {
@@ -641,6 +642,7 @@ describe('flowCanvasShared', () => {
             kind: 'subflow',
             flow_ref: 'child.yaml',
             input_map: { 'context.ticket': 'context.ticket' },
+            output_map: { 'context.verdict': 'context.child_verdict' },
         })
         expect(roundTripped.edges[0]).toMatchObject({
             from: 'start',
@@ -681,6 +683,50 @@ describe('flowCanvasShared', () => {
         expect(saved.nodes.second).toEqual(flow.nodes.second)
         expect(saved.edges).toEqual(flow.edges)
         expect(saved.nodes.first).toEqual({ ...flow.nodes.first, config: { kind: 'agent_task', prompt: 'Review A twice.' } })
+    })
+
+    it('saves a cleared Session as absent while preserving or renaming it otherwise', () => {
+        const flow = {
+            schema_version: '1',
+            id: 'sessions',
+            title: 'Sessions',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
+                work: { kind: 'agent_task', label: 'Work', runtime: { session: 'implementer' }, config: { kind: 'agent_task', prompt: 'Work.' } },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+            },
+            edges: [
+                { from: 'start', to: 'work' },
+                { from: 'work', to: 'done' },
+            ],
+        }
+        const saveWith = (source: typeof flow, edit: (data: Record<string, unknown>) => Record<string, unknown>) => {
+            const hydrated = buildHydratedFlowGraph('sessions', { status: 'ok', flow: source, graph: flowDefinitionToPreviewGraph(source) }, {
+                llm_model: '',
+                llm_provider: '',
+                reasoning_effort: '',
+            })
+            const edited = (hydrated?.nodes ?? []).map((node) => (
+                node.id === 'work' ? { ...node, data: edit({ ...node.data }) } : node
+            ))
+            return buildFlow('sessions', edited, hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, hydrated?.flow)
+        }
+
+        const preserved = saveWith(flow, (data) => data)
+        expect(preserved.nodes.work.runtime).toEqual({ session: 'implementer' })
+        const withoutAttr = saveWith(flow, (data) => {
+            delete data.session
+            return data
+        })
+        expect(withoutAttr.nodes.work.runtime).toEqual({ session: 'implementer' })
+
+        const renamed = saveWith(flow, (data) => ({ ...data, session: 'reviewer' }))
+        expect(renamed.nodes.work.runtime).toEqual({ session: 'reviewer' })
+
+        const cleared = saveWith(flow, (data) => ({ ...data, session: '' }))
+        expect(cleared.nodes.work.runtime?.session).toBeUndefined()
+        const reloaded = saveWith(cleared as typeof flow, (data) => data)
+        expect(reloaded.nodes.work.runtime?.session).toBeUndefined()
     })
 
     it('does not materialize implicit node or graph defaults when saving after apply-to-nodes style edits', () => {

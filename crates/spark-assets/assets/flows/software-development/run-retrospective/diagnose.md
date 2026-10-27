@@ -1,6 +1,8 @@
 ---
 type: agent_task
 title: Diagnose Run
+runtime:
+  session: diagnostician
 contracts:
   reads_context:
   - context.retro.run_dir

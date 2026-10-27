@@ -104,10 +104,14 @@ pub struct ResolvedFlowDir {
 }
 
 /// A run's `artifacts/flow/files.json`: the SHA-256 of every file the flow
-/// used (`org/...` or `bundled/...`), the org repo state, and Spark's version.
+/// used (`org/...` or `bundled/...`), the org repo state, Spark's version,
+/// and the flow's named sessions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowManifest {
     pub files: BTreeMap<String, String>,
+    /// Node ids of each named session in the flow as launched.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sessions: BTreeMap<String, Vec<String>>,
     pub org: Option<OrgState>,
     pub spark_version: String,
 }

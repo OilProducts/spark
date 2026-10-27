@@ -10,7 +10,6 @@ const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
     'result_summary_enabled',
     'result_summary_prompt',
     'goal',
-    'fidelity',
     'llm_model',
     'llm_provider',
     'llm_profile',
@@ -22,26 +21,12 @@ const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
 
 ]
 
-export const GRAPH_FIDELITY_OPTIONS = [
-    'full',
-    'truncate',
-    'compact',
-    'summary:low',
-    'summary:medium',
-    'summary:high',
-] as const
-
-const GRAPH_FIDELITY_OPTION_SET = new Set<string>(GRAPH_FIDELITY_OPTIONS)
-
 export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {
     if (key === 'max_retries') {
         const trimmed = value.trim()
         if (!trimmed) return ''
         if (!/^\d+$/.test(trimmed)) return trimmed
         return `${Math.max(0, parseInt(trimmed, 10))}`
-    }
-    if (key === 'fidelity') {
-        return value.trim().toLowerCase()
     }
     if (GRAPH_ATTR_STRING_KEYS.includes(key)) {
         return value.trim()
@@ -58,13 +43,6 @@ export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): st
         if (!value) return null
         if (!/^\d+$/.test(value)) {
             return 'Max retries default must be a non-negative integer.'
-        }
-        return null
-    }
-    if (key === 'fidelity') {
-        if (!value) return null
-        if (!GRAPH_FIDELITY_OPTION_SET.has(value)) {
-            return 'Fidelity default must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
         }
         return null
     }

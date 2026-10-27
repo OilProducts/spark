@@ -130,7 +130,6 @@ while True:
                     "start": {"kind": "start"},
                     "work": {
                         "kind": "agent_task",
-                        "runtime": {"max_retries": 2},
                         "config": {
                             "kind": "agent_task",
                             "prompt": "Resolve the intended audience"
@@ -670,7 +669,7 @@ fn assert_cancel_and_timeout(
         &id,
         provider,
         "LONG work",
-        json!({"timeout": "1s", "max_retries": 0}),
+        json!({"timeout": "1s"}),
     );
     wait(|| run_status(settings, &id) == "failed");
     let failures = stage_failures(settings, &id);
@@ -1116,7 +1115,7 @@ fn native_node_clarification_outlasts_its_timeout_and_stops_on_cancel() {
                         "start": {"kind": "start"},
                         "work": {
                             "kind": "agent_task",
-                            "runtime": {"timeout": "1s", "max_retries": 0},
+                            "runtime": {"timeout": "1s"},
                             "contracts": {"runtime_mode": "agent"},
                             "config": {
                                 "kind": "agent_task",

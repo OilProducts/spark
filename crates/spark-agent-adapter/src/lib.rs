@@ -42,7 +42,9 @@ pub use codergen::{
     CodergenBackendRequest, CodergenBackendResponse, CodergenChildInterventionRequest,
     CodergenChildInterventionResult, CodergenError, CodergenEvent, CodergenEventSink,
     CodergenExecution, CodergenExecutionMode, CodergenHandler, CodergenRequest,
-    CodergenRuntimeMode, CodergenSessionInterventionBroker,
+    CodergenRuntimeMode, CodergenSession, CodergenSessionInterventionBroker, SessionHandle,
+    NATIVE_SESSION_HISTORY_METADATA_KEY, SESSION_HISTORY_PATH_METADATA_KEY,
+    SESSION_NAME_METADATA_KEY,
 };
 pub use codex_app_server::{
     build_codex_runtime_environment, codex_models_from_list_result, configure_codex_api_base_url,

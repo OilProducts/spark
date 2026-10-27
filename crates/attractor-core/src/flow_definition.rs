@@ -71,9 +71,8 @@ pub struct FlowInput {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FlowDefaults {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fidelity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,8 +99,7 @@ pub struct FlowDefaults {
 
 impl FlowDefaults {
     pub fn is_empty(&self) -> bool {
-        self.fidelity.is_none()
-            && self.max_retries.is_none()
+        self.max_retries.is_none()
             && self.llm_provider.is_none()
             && self.llm_profile.is_none()
             && self.llm_model.is_none()
@@ -206,10 +204,15 @@ pub enum NodeConfig {
         flow_ref: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         input_map: BTreeMap<String, String>,
+        /// Child context keys copied into the parent (`child_key: parent_key`)
+        /// when the child run ends; an absent child key clears the parent key.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        output_map: BTreeMap<String, String>,
     },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeRuntimeConfig {
     /// Behavior when this node was started but not checkpointed before a restart.
     #[serde(default, skip_serializing_if = "RecoveryPolicy::is_default")]
@@ -222,10 +225,11 @@ pub struct NodeRuntimeConfig {
     pub goal_gate: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_policy: Option<String>,
+    /// Named session (`session: <name>`) this agent_task node continues.
+    /// Nodes sharing a name continue one provider session; absent means a
+    /// fresh session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fidelity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
+    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,9 +492,6 @@ impl FlowDefinition {
         insert_string_attr(&mut graph_attrs, "spark.title", &self.title);
         insert_string_attr(&mut graph_attrs, "spark.description", &self.description);
         insert_string_attr(&mut graph_attrs, "goal", &self.goal);
-        if let Some(value) = self.defaults.fidelity.as_deref() {
-            insert_string_attr(&mut graph_attrs, "default_fidelity", value);
-        }
         if let Some(value) = self.defaults.max_retries {
             insert_i64_attr(&mut graph_attrs, "default_max_retries", value as i64);
         }
@@ -709,9 +710,38 @@ impl FlowDefinition {
                     }
                 }
             }
+            if let Some(session) = node.runtime.as_ref().and_then(|r| r.session.as_deref()) {
+                if node.kind != NodeKind::AgentTask {
+                    diagnostics.push(node_diagnostic(
+                        "session",
+                        format!("session '{session}' is only allowed on agent_task nodes"),
+                        node_id,
+                    ));
+                } else if !valid_id(session) {
+                    diagnostics.push(node_diagnostic(
+                        "session",
+                        format!("invalid session name '{session}'"),
+                        node_id,
+                    ));
+                }
+            }
+            for (key, _) in node
+                .extensions
+                .iter()
+                .filter(|(key, _)| is_removed_field(key))
+            {
+                diagnostics.push(node_diagnostic(
+                    "removed_field",
+                    format!(
+                        "node '{node_id}' sets {key}, which is no longer supported; use session"
+                    ),
+                    node_id,
+                ));
+            }
             if let Some(NodeConfig::Subflow {
                 flow_ref,
                 input_map,
+                output_map,
             }) = node.config.as_ref()
             {
                 if !valid_flow_ref(flow_ref) {
@@ -730,10 +760,51 @@ impl FlowDefinition {
                         ));
                     }
                 }
+                let writes = node
+                    .contracts
+                    .as_ref()
+                    .map(|contracts| contracts.writes_context.as_slice())
+                    .unwrap_or_default();
+                for parent_key in output_map.values() {
+                    if !writes.contains(parent_key) {
+                        diagnostics.push(node_diagnostic(
+                            "subflow_output_map",
+                            format!(
+                                "output_map parent key '{parent_key}' must be listed in the node's writes_context"
+                            ),
+                            node_id,
+                        ));
+                    }
+                }
             }
+        }
+        diagnostics.extend(self.session_diagnostics());
+        for (key, _) in self
+            .extensions
+            .iter()
+            .filter(|(key, _)| is_removed_field(key))
+        {
+            diagnostics.push(diagnostic(
+                "removed_field",
+                format!("flow sets {key}, which is no longer supported; use session"),
+            ));
         }
 
         for edge in &self.edges {
+            for (key, _) in edge
+                .extensions
+                .iter()
+                .filter(|(key, _)| is_removed_field(key))
+            {
+                diagnostics.push(edge_diagnostic(
+                    "removed_field",
+                    format!(
+                        "edge {} -> {} sets {key}, which is no longer supported; use session",
+                        edge.from, edge.to
+                    ),
+                    edge,
+                ));
+            }
             if !self.nodes.contains_key(&edge.from) {
                 diagnostics.push(edge_diagnostic(
                     "edge_source",
@@ -776,6 +847,60 @@ impl FlowDefinition {
             diagnostics.extend(self.reachability_diagnostics(start_nodes.first()));
         }
 
+        diagnostics
+    }
+
+    /// Node ids of each named session, by session name.
+    pub fn sessions(&self) -> BTreeMap<String, Vec<String>> {
+        let mut sessions = BTreeMap::<String, Vec<String>>::new();
+        for (node_id, node) in &self.nodes {
+            if let Some(session) = node.runtime.as_ref().and_then(|r| r.session.as_deref()) {
+                sessions
+                    .entry(session.to_string())
+                    .or_default()
+                    .push(node_id.clone());
+            }
+        }
+        sessions
+    }
+
+    /// Nodes sharing a session continue one provider session, so they may
+    /// not name different providers or models.
+    fn session_diagnostics(&self) -> Vec<FlowDiagnostic> {
+        let mut diagnostics = Vec::new();
+        for (session, node_ids) in self.sessions() {
+            let executions = node_ids
+                .iter()
+                .filter_map(|node_id| self.nodes[node_id].execution.as_ref())
+                .collect::<Vec<_>>();
+            for (field, values) in [
+                (
+                    "llm_provider",
+                    executions
+                        .iter()
+                        .filter_map(|e| e.llm_provider.as_deref())
+                        .collect::<BTreeSet<_>>(),
+                ),
+                (
+                    "llm_model",
+                    executions
+                        .iter()
+                        .filter_map(|e| e.llm_model.as_deref())
+                        .collect::<BTreeSet<_>>(),
+                ),
+            ] {
+                if values.len() > 1 {
+                    diagnostics.push(diagnostic(
+                        "session_conflict",
+                        format!(
+                            "nodes in session '{session}' ({}) set conflicting {field} values: {}",
+                            node_ids.join(", "),
+                            values.into_iter().collect::<Vec<_>>().join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
         diagnostics
     }
 
@@ -1135,6 +1260,12 @@ fn edge_diagnostic(rule_id: &str, message: impl Into<String>, edge: &FlowEdge) -
         node_id: None,
         edge: Some((edge.from.clone(), edge.to.clone())),
     }
+}
+
+/// Settings removed in favor of named sessions; a flow still setting one
+/// fails validation instead of silently ignoring it.
+fn is_removed_field(key: &str) -> bool {
+    matches!(key, "fidelity" | "default_fidelity" | "thread_id")
 }
 
 fn valid_id(value: &str) -> bool {

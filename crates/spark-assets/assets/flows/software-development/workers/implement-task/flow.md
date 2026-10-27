@@ -5,7 +5,6 @@ title: Implement Task
 description: Hidden reusable software-development worker.
 schema_version: '1'
 defaults:
-  fidelity: summary:high
   llm_provider: claude-code
   llm_model: claude-opus-5-5[1m]
   reasoning_effort: xhigh

@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event'
 import { ContextKeyListEditor } from '@/features/editor/components/ContextKeyListEditor'
 import {
   resolveEdgeFieldDiagnostics,
-  resolveGraphFieldDiagnostics,
   resolveNodeFieldDiagnostics,
 } from '@/lib/inspectorFieldDiagnostics'
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
@@ -72,7 +71,7 @@ describe('Inspector and node authoring behavior', () => {
     expect(nodeDiagnostics.label).toHaveLength(1)
   })
 
-  it('maps edge and graph diagnostics to condition/fidelity/stylesheet fields', () => {
+  it('maps edge diagnostics to condition fields', () => {
     const diagnostics = [
       {
         rule_id: 'condition_syntax',
@@ -80,30 +79,10 @@ describe('Inspector and node authoring behavior', () => {
         message: 'Condition parser failed near token.',
         edge: ['start', 'review'] as [string, string],
       },
-      {
-        rule_id: 'fidelity_valid',
-        severity: 'warning' as const,
-        message: 'Edge fidelity value is not recognized.',
-        edge: ['start', 'review'] as [string, string],
-      },
-      {
-        rule_id: 'stylesheet_syntax',
-        severity: 'error' as const,
-        message: 'Invalid stylesheet selector syntax.',
-      },
-      {
-        rule_id: 'fidelity_valid',
-        severity: 'error' as const,
-        message: 'Graph fidelity must be one of supported values.',
-      },
     ]
 
     const edgeDiagnostics = resolveEdgeFieldDiagnostics(diagnostics, 'start', 'review')
     expect(edgeDiagnostics.condition).toHaveLength(1)
-    expect(edgeDiagnostics.fidelity).toHaveLength(1)
-
-    const graphDiagnostics = resolveGraphFieldDiagnostics(diagnostics)
-    expect(graphDiagnostics.fidelity).toHaveLength(1)
   })
 
   it('renders conditional parallel threshold fields in the node inspector', () => {
@@ -302,8 +281,8 @@ function expectLabelsAndReferences() {
 describe('Accessible node inspector fields', () => {
   it.each([
     ['agent_task', [['Prompt Instruction', 'prompt'], ['Max Retries', 'max_retries'], ['Timeout', 'timeout'],
-      ['Retry Target', 'retry_target'], ['Fallback Retry Target', 'fallback_retry_target'], ['Fidelity', 'fidelity'],
-      ['Thread ID', 'thread_id'], ['Class', 'class']]],
+      ['Retry Target', 'retry_target'], ['Fallback Retry Target', 'fallback_retry_target'], ['Session', 'session'],
+      ['Class', 'class']]],
     ['tool', [['Tool Command', 'tool.command'], ['Pre Hook Override', 'tool.hooks.pre'],
       ['Post Hook Override', 'tool.hooks.post'], ['Artifact Paths', 'tool.artifacts.paths'],
       ['Stdout Artifact', 'tool.artifacts.stdout'], ['Stderr Artifact', 'tool.artifacts.stderr']]],
@@ -343,6 +322,16 @@ describe('Accessible node inspector fields', () => {
     expectLabelsAndReferences()
   })
 
+  it('shows the stored session only on agent_task nodes', () => {
+    const props = panelProps()
+    const { rerender } = render(<NodeInspectorPanel {...props} selectedNode={{ ...props.selectedNode!, data: { ...props.selectedNode!.data, session: 'work' } }} />)
+    expect(screen.getByRole('textbox', { name: 'Session' })).toHaveValue('work')
+    for (const kind of ['tool', 'parallel', 'subflow', 'fan_in']) {
+      rerender(<NodeInspectorPanel {...panelProps(kind)} />)
+      expect(screen.queryByRole('textbox', { name: 'Session' })).not.toBeInTheDocument()
+    }
+  })
+
   it('keeps advanced field associations when expanded and panel IDs unique', () => {
     const props = panelProps()
     const { rerender } = render(<NodeInspectorPanel {...props} showAdvanced={false} />)
@@ -358,7 +347,7 @@ describe('Accessible node inspector fields', () => {
     const props = panelProps()
     const error = { rule_id: 'test', severity: 'error' as const, message: 'Retry target is missing.' }
     const warning = { rule_id: 'test', severity: 'warning' as const, message: 'Prompt is recommended.' }
-    props.nodeFieldDiagnostics = { prompt: [warning], goal_gate: [error], retry_target: [error], fallback_retry_target: [error], fidelity: [warning] }
+    props.nodeFieldDiagnostics = { prompt: [warning], goal_gate: [error], retry_target: [error], fallback_retry_target: [error] }
     const { rerender } = render(<NodeInspectorPanel {...props} />)
     const prompt = screen.getByRole('textbox', { name: 'Prompt Instruction' })
     expect(prompt).toHaveAccessibleDescription(warning.message)
@@ -368,7 +357,6 @@ describe('Accessible node inspector fields', () => {
       expect(control).toHaveAccessibleDescription(error.message)
       expect(control).toHaveAttribute('aria-invalid', 'true')
     }
-    expect(screen.getByRole('textbox', { name: 'Fidelity' })).toHaveAccessibleDescription(warning.message)
     expect(props.renderFieldDiagnostics).toHaveBeenCalledWith('node', 'retry_target', props.nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')
     expectLabelsAndReferences()
     rerender(<NodeInspectorPanel {...props} nodeFieldDiagnostics={{}} />)

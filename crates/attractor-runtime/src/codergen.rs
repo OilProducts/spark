@@ -5,6 +5,7 @@ use attractor_core::{ContextMap, DotGraph, Outcome};
 use serde_json::Value;
 use spark_agent_adapter::{
     CodergenBackend, CodergenError, CodergenExecution, CodergenHandler, CodergenRequest,
+    CodergenSession,
 };
 
 pub struct RuntimeCodergen {
@@ -17,6 +18,7 @@ pub struct RuntimeCodergen {
     fallback_reasoning_effort: Option<String>,
     project_path: Option<PathBuf>,
     metadata: BTreeMap<String, Value>,
+    session: Option<CodergenSession>,
 }
 
 impl RuntimeCodergen {
@@ -31,6 +33,7 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
+            session: None,
         }
     }
 
@@ -49,6 +52,7 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
+            session: None,
         }
     }
 
@@ -67,6 +71,7 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
+            session: None,
         }
     }
 
@@ -91,6 +96,12 @@ impl RuntimeCodergen {
     ) -> Self {
         self.project_path = project_path;
         self.metadata = metadata;
+        self
+    }
+
+    /// The named session the node continues.
+    pub fn with_session(mut self, session: Option<CodergenSession>) -> Self {
+        self.session = session;
         self
     }
 
@@ -125,6 +136,7 @@ impl RuntimeCodergen {
                 fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
                 project_path: self.project_path.clone(),
                 metadata: self.metadata.clone(),
+                session: self.session.clone(),
             },
             event_sink,
         )

@@ -12,11 +12,9 @@ use serde_json::json;
 use crate::artifacts::NodeArtifacts;
 use crate::checkpoints::CheckpointWriteOptions;
 use crate::context::{
-    apply_outcome_context_updates_for_node, checkpoint_from_context,
-    checkpoint_requests_full_fidelity_degrade, clear_runtime_retry_context,
+    apply_outcome_context_updates_for_node, checkpoint_from_context, clear_runtime_retry_context,
     initialize_runtime_context, reset_workflow_outcome_context, seed_builtin_context,
-    set_runtime_fidelity_context, set_runtime_retry_context, CURRENT_NODE_KEY, OUTCOME_KEY,
-    PREFERRED_LABEL_KEY,
+    set_runtime_retry_context, CURRENT_NODE_KEY, OUTCOME_KEY, PREFERRED_LABEL_KEY,
 };
 use crate::error::{Result, RuntimeStorageError};
 use crate::events::{
@@ -248,8 +246,6 @@ where
         let mut artifact_node_ids = BTreeSet::<String>::new();
         let mut route_trace;
         let mut current_node;
-        let mut incoming_edge: Option<RoutingEdge> = None;
-        let mut degrade_resume_fidelity_once = false;
 
         let (paths, resumed) = match start {
             ExecutionStart::Fresh => {
@@ -363,12 +359,9 @@ where
                         return terminal_checkpoint_result(&checkpoint, &flow);
                     };
                     current_node = next_node;
-                    incoming_edge = selection.selected_edge.clone();
                     route_trace.push(current_node.clone());
                     context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
                 }
-                degrade_resume_fidelity_once =
-                    checkpoint_requests_full_fidelity_degrade(&checkpoint);
                 (paths, true)
             }
             ExecutionStart::FromCheckpoint {
@@ -466,7 +459,6 @@ where
                             resolve_goal_gate_retry_target(&flow, failed_gate_node)
                         {
                             current_node = retry_target;
-                            incoming_edge = None;
                             context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
                             route_trace.push(current_node.clone());
                             save_checkpoint_event(
@@ -635,19 +627,6 @@ where
                     json!(record.working_directory.clone()),
                 )?;
             }
-            let forced_fidelity = if degrade_resume_fidelity_once {
-                degrade_resume_fidelity_once = false;
-                Some("summary:high")
-            } else {
-                None
-            };
-            set_runtime_fidelity_context(
-                &flow,
-                &current_node,
-                incoming_edge.as_ref(),
-                &mut context,
-                forced_fidelity,
-            )?;
             let stage_index = completed_nodes.len() as u64;
             let attempt = crate::retry::execution_attempt(
                 &context.snapshot(),
@@ -965,7 +944,6 @@ where
             };
 
             current_node = selection.selected_node.unwrap_or_default();
-            incoming_edge = selection.selected_edge.clone();
             context.set(CURRENT_NODE_KEY, json!(current_node.clone()))?;
             route_trace.push(current_node.clone());
             save_checkpoint_event(
