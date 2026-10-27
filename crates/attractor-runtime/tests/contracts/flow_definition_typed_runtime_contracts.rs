@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -213,6 +213,157 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
         .expect("parallel outcome");
 
     assert_eq!(outcome.status, OutcomeStatus::Success);
+}
+
+fn looping_branch_flow(max_visits: Option<u64>, route_to_fan_in: bool) -> FlowDefinition {
+    let mut nodes: BTreeMap<String, FlowNode> = [
+        (
+            "fan".to_string(),
+            FlowNode {
+                kind: NodeKind::Parallel,
+                ..FlowNode::default()
+            },
+        ),
+        (
+            "work".to_string(),
+            FlowNode {
+                kind: NodeKind::AgentTask,
+                runtime: Some(NodeRuntimeConfig {
+                    max_visits,
+                    ..NodeRuntimeConfig::default()
+                }),
+                ..FlowNode::default()
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let mut edges = vec![
+        FlowEdge {
+            from: "fan".to_string(),
+            to: "work".to_string(),
+            ..FlowEdge::default()
+        },
+        FlowEdge {
+            from: "work".to_string(),
+            to: "work".to_string(),
+            condition: "outcome=success".to_string(),
+            ..FlowEdge::default()
+        },
+    ];
+    if route_to_fan_in {
+        nodes.insert(
+            "join".to_string(),
+            FlowNode {
+                kind: NodeKind::FanIn,
+                ..FlowNode::default()
+            },
+        );
+        edges.push(FlowEdge {
+            from: "work".to_string(),
+            to: "join".to_string(),
+            ..FlowEdge::default()
+        });
+    }
+    FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "looping-branch".to_string(),
+        nodes: nodes.into_iter().collect(),
+        edges,
+        ..FlowDefinition::default()
+    }
+}
+
+/// Runs `fan` through the real parallel path and returns its single branch
+/// result plus how many times the branch ran `work`.
+fn execute_looping_branch(
+    runner: &mut RuntimeHandlerRunner,
+    calls: &Arc<AtomicUsize>,
+    flow: &FlowDefinition,
+) -> serde_json::Value {
+    calls.store(0, Ordering::SeqCst);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RunStore::for_runs_dir(temp.path().join("runs"))
+        .create_run(CreateRunRequest {
+            record: RunRecord::new("run-looping-branch", temp.path().to_string_lossy()),
+            checkpoint: None,
+            manifest: None,
+            flow_definition_json: None,
+            flow_files: None,
+        })
+        .expect("create run");
+    let outcome = runner
+        .execute(NodeExecutionRequest {
+            node_id: "fan".to_string(),
+            stage_index: 0,
+            attempt: 1,
+            context: ContextMap::new(),
+            prompt: String::new(),
+            node: flow.nodes["fan"].clone(),
+            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
+                "fan",
+                &flow.nodes["fan"],
+            ),
+            flow: flow.clone(),
+            outgoing_edges: attractor_runtime::outgoing_routing_edges(flow, "fan")
+                .expect("outgoing"),
+            run_paths: Some(paths),
+            run_workdir: temp.path().to_path_buf(),
+            run_id: "run-looping-branch".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("parallel outcome");
+    let mut result = outcome.context_updates["parallel.results"][0].clone();
+    result["work_calls"] = json!(calls.load(Ordering::SeqCst));
+    result
+}
+
+fn counting_runner() -> (RuntimeHandlerRunner, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut runner = RuntimeHandlerRunner::new();
+    let counter = calls.clone();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    (runner, calls)
+}
+
+#[test]
+fn parallel_branch_loop_without_alternative_fails_at_default_visit_limit() {
+    let flow = looping_branch_flow(None, false);
+    let (mut runner, calls) = counting_runner();
+
+    for _ in 0..2 {
+        // Each branch execution starts its visit counts afresh.
+        let result = execute_looping_branch(&mut runner, &calls, &flow);
+        assert_eq!(result["status"], "failed", "{result}");
+        assert_eq!(result["work_calls"], 32, "{result}");
+        assert_eq!(
+            result["failure_reason"],
+            "visit_limit_reached: work used all 32 visits; no other route from work"
+        );
+    }
+}
+
+#[test]
+fn parallel_branch_loop_routes_to_fan_in_after_exhausting_its_target() {
+    // Both limits exceed nodes.len() + edges.len(), the old branch step cap.
+    for (max_visits, expected_calls) in [(None, 32), (Some(12), 12)] {
+        let flow = looping_branch_flow(max_visits, true);
+        assert!(expected_calls > flow.nodes.len() + flow.edges.len());
+        let (mut runner, calls) = counting_runner();
+
+        for _ in 0..2 {
+            let result = execute_looping_branch(&mut runner, &calls, &flow);
+            assert_eq!(result["status"], "completed", "{result}");
+            assert_eq!(result["current_node"], "join", "{result}");
+            assert_eq!(result["work_calls"], expected_calls, "{result}");
+        }
+    }
 }
 
 #[test]

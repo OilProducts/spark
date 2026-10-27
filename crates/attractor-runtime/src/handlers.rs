@@ -2157,14 +2157,9 @@ impl RuntimeHandlerRunner {
         let mut completed_nodes = Vec::<String>::new();
         let mut node_outcomes = BTreeMap::<String, Outcome>::new();
         // Each branch execution counts its own visits from zero.
+        // Visit-limit routing bounds the loop: every step enters a node with visits left.
         let mut visits = BTreeMap::from([(current_node.clone(), 1u64)]);
-        let max_steps = runtime
-            .flow
-            .nodes
-            .len()
-            .saturating_add(runtime.flow.edges.len())
-            .max(1);
-        for _ in 0..=max_steps {
+        loop {
             if fan_in_nodes.contains(&current_node) {
                 return Ok(branch_payload(
                     start_node,
@@ -2313,17 +2308,6 @@ impl RuntimeHandlerRunner {
             current_node = next_node;
             *visits.entry(current_node.clone()).or_default() += 1;
         }
-
-        Ok(branch_payload(
-            start_node,
-            "failed",
-            None,
-            &current_node,
-            &completed_nodes,
-            &context,
-            &node_outcomes,
-            "parallel branch exceeded step limit",
-        ))
     }
 
     fn execute_fan_in(
