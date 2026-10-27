@@ -39,7 +39,10 @@ use crate::executor::{
     panic_payload_message, NodeExecutionRequest, NodeExecutor, RuntimeNodeError,
 };
 use crate::paths::RunRootPaths;
-use crate::routing::{outgoing_routing_edges, select_next_node_with_prior};
+use crate::routing::{
+    mark_unavailable_routes, outgoing_routing_edges, select_next_node_with_prior,
+    VISIT_LIMIT_REACHED,
+};
 
 pub const HANDLER_START: &str = "start";
 pub const HANDLER_EXIT: &str = "exit";
@@ -2153,13 +2156,10 @@ impl RuntimeHandlerRunner {
         let mut current_node = start_node.to_string();
         let mut completed_nodes = Vec::<String>::new();
         let mut node_outcomes = BTreeMap::<String, Outcome>::new();
-        let max_steps = runtime
-            .flow
-            .nodes
-            .len()
-            .saturating_add(runtime.flow.edges.len())
-            .max(1);
-        for _ in 0..=max_steps {
+        // Each branch execution counts its own visits from zero.
+        // Visit-limit routing bounds the loop: every step enters a node with visits left.
+        let mut visits = BTreeMap::from([(current_node.clone(), 1u64)]);
+        loop {
             if fan_in_nodes.contains(&current_node) {
                 return Ok(branch_payload(
                     start_node,
@@ -2200,12 +2200,19 @@ impl RuntimeHandlerRunner {
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current_node, &node);
             let prompt = crate::flow_runtime::node_prompt(&node);
+            let mut request_context = context.snapshot();
+            mark_unavailable_routes(
+                &mut request_context,
+                &runtime.flow,
+                &outgoing_edges,
+                &visits,
+            );
             let request = NodeExecutionRequest {
                 node_id: current_node.clone(),
                 stage_index: completed_nodes.len() as u64,
                 // Branch artifacts belong to the owning parallel execution attempt.
                 attempt: runtime.attempt,
-                context: context.snapshot(),
+                context: request_context,
                 prompt,
                 node: node.clone(),
                 node_attrs: node_attrs.clone(),
@@ -2259,9 +2266,22 @@ impl RuntimeHandlerRunner {
                 &context,
                 prior_status,
                 &prior_preferred_label,
+                &visits,
             )
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             let Some(next_node) = selection.selected_node else {
+                if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+                    return Ok(branch_payload(
+                        start_node,
+                        "failed",
+                        None,
+                        &current_node,
+                        &completed_nodes,
+                        &context,
+                        &node_outcomes,
+                        &selection.reason,
+                    ));
+                }
                 if outcome.status == OutcomeStatus::Fail {
                     return Ok(branch_payload(
                         start_node,
@@ -2286,18 +2306,8 @@ impl RuntimeHandlerRunner {
                 ));
             };
             current_node = next_node;
+            *visits.entry(current_node.clone()).or_default() += 1;
         }
-
-        Ok(branch_payload(
-            start_node,
-            "failed",
-            None,
-            &current_node,
-            &completed_nodes,
-            &context,
-            &node_outcomes,
-            "parallel branch exceeded step limit",
-        ))
     }
 
     fn execute_fan_in(

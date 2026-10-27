@@ -1033,6 +1033,7 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
         completed_nodes: vec!["start".to_string(), "a".to_string()],
         context: result.context.clone(),
         retry_counts: BTreeMap::new(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     };
     run_sessions(

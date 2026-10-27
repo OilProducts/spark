@@ -801,6 +801,7 @@ fn launch_default_child_run(
         completed_nodes: Vec::new(),
         context: child_context,
         retry_counts: BTreeMap::new(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     };
     let store_for_result = store.clone();

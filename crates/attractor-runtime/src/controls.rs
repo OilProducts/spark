@@ -341,12 +341,16 @@ impl RuntimeControls {
         record.token_usage_breakdown = None;
         record.estimated_model_cost = None;
 
+        // The continuation's start is a visit; Resume expects it counted.
+        let mut visit_counts = source_checkpoint.visit_counts.clone();
+        *visit_counts.entry(start_node.to_string()).or_default() += 1;
         let checkpoint = CheckpointState {
             timestamp: crate::events::utc_timestamp(),
             current_node: start_node.to_string(),
             completed_nodes: Vec::new(),
             context,
             retry_counts: BTreeMap::new(),
+            visit_counts,
             logs: source_checkpoint.logs.clone(),
         };
         let paths = self.store.create_run(CreateRunRequest {

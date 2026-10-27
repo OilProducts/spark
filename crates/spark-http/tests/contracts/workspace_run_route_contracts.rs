@@ -388,6 +388,7 @@ fn checkpoint(current_node: &str) -> CheckpointState {
         .into_iter()
         .collect(),
         retry_counts: Default::default(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     }
 }

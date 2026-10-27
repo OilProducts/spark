@@ -29,6 +29,7 @@ fn checkpoint(current_node: &str, completed_nodes: &[&str]) -> CheckpointState {
             json!({"start": "success", "work": "success"}),
         )]),
         retry_counts: BTreeMap::new(),
+        visit_counts: Default::default(),
         logs: Vec::new(),
     }
 }

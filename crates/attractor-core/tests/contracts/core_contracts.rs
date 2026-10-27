@@ -610,6 +610,7 @@ fn checkpoint_event_and_journal_dtos_round_trip_with_payloads() {
             ("_attractor.runtime.retry.attempt", json!(0)),
         ]),
         retry_counts: BTreeMap::from([("work".to_string(), 1)]),
+        visit_counts: Default::default(),
         logs: vec!["first".to_string()],
     };
     let checkpoint_json = serde_json::to_value(&checkpoint).expect("checkpoint json");

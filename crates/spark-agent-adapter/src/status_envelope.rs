@@ -6,6 +6,7 @@ use attractor_core::{
     attr_i64, attr_string, is_exact_outcome_fail_condition, normalize_condition_literal,
     routing_edge_from_dot_edge, split_condition_clauses, validate_context_updates_against_contract,
     ContextMap, ContextWriteContract, DotGraph, FailureKind, Outcome, OutcomeStatus,
+    RUNTIME_UNAVAILABLE_ROUTES_KEY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,6 +53,7 @@ pub fn build_status_envelope_prompt_appendix(
     write_contract: Option<&ContextWriteContract>,
     graph: &DotGraph,
     node_id: &str,
+    context: &ContextMap,
 ) -> String {
     let mut sections = vec![[
         "Structured response contract:".to_string(),
@@ -67,14 +69,29 @@ pub fn build_status_envelope_prompt_appendix(
         "- If no routing or context updates are needed, prefer: {\"outcome\":\"success\"}".to_string(),
     ]
     .join("\n")];
-    sections.extend(build_status_envelope_routes_text(graph, node_id));
+    sections.extend(build_status_envelope_routes_text(graph, node_id, context));
     sections.join("\n")
 }
 
 /// Lists the node's outgoing edges in the order routing checks them:
 /// conditional edges (an exact `outcome=fail` first, as it wins on failure),
-/// then labeled unconditional edges, then the default.
-fn build_status_envelope_routes_text(graph: &DotGraph, node_id: &str) -> Option<String> {
+/// then labeled unconditional edges, then the default. Targets the runtime
+/// lists under `RUNTIME_UNAVAILABLE_ROUTES_KEY` used all their visits.
+fn build_status_envelope_routes_text(
+    graph: &DotGraph,
+    node_id: &str,
+    context: &ContextMap,
+) -> Option<String> {
+    let unavailable = context
+        .get(RUNTIME_UNAVAILABLE_ROUTES_KEY)
+        .and_then(Value::as_array)
+        .map(|targets| {
+            targets
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let mut edges = graph
         .edges
         .iter()
@@ -117,7 +134,15 @@ fn build_status_envelope_routes_text(graph: &DotGraph, node_id: &str) -> Option<
         } else {
             "Default".to_string()
         };
-        lines.push(format!("- {selector}: go to {}.", json!(target_label)));
+        let availability = if unavailable.contains(target) {
+            " (unavailable: visit limit reached)"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "- {selector}: go to {}{availability}.",
+            json!(target_label)
+        ));
     }
     Some(lines.join("\n"))
 }

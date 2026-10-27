@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -213,6 +213,157 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
         .expect("parallel outcome");
 
     assert_eq!(outcome.status, OutcomeStatus::Success);
+}
+
+fn looping_branch_flow(max_visits: Option<u64>, route_to_fan_in: bool) -> FlowDefinition {
+    let mut nodes: BTreeMap<String, FlowNode> = [
+        (
+            "fan".to_string(),
+            FlowNode {
+                kind: NodeKind::Parallel,
+                ..FlowNode::default()
+            },
+        ),
+        (
+            "work".to_string(),
+            FlowNode {
+                kind: NodeKind::AgentTask,
+                runtime: Some(NodeRuntimeConfig {
+                    max_visits,
+                    ..NodeRuntimeConfig::default()
+                }),
+                ..FlowNode::default()
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let mut edges = vec![
+        FlowEdge {
+            from: "fan".to_string(),
+            to: "work".to_string(),
+            ..FlowEdge::default()
+        },
+        FlowEdge {
+            from: "work".to_string(),
+            to: "work".to_string(),
+            condition: "outcome=success".to_string(),
+            ..FlowEdge::default()
+        },
+    ];
+    if route_to_fan_in {
+        nodes.insert(
+            "join".to_string(),
+            FlowNode {
+                kind: NodeKind::FanIn,
+                ..FlowNode::default()
+            },
+        );
+        edges.push(FlowEdge {
+            from: "work".to_string(),
+            to: "join".to_string(),
+            ..FlowEdge::default()
+        });
+    }
+    FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "looping-branch".to_string(),
+        nodes: nodes.into_iter().collect(),
+        edges,
+        ..FlowDefinition::default()
+    }
+}
+
+/// Runs `fan` through the real parallel path and returns its single branch
+/// result plus how many times the branch ran `work`.
+fn execute_looping_branch(
+    runner: &mut RuntimeHandlerRunner,
+    calls: &Arc<AtomicUsize>,
+    flow: &FlowDefinition,
+) -> serde_json::Value {
+    calls.store(0, Ordering::SeqCst);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = RunStore::for_runs_dir(temp.path().join("runs"))
+        .create_run(CreateRunRequest {
+            record: RunRecord::new("run-looping-branch", temp.path().to_string_lossy()),
+            checkpoint: None,
+            manifest: None,
+            flow_definition_json: None,
+            flow_files: None,
+        })
+        .expect("create run");
+    let outcome = runner
+        .execute(NodeExecutionRequest {
+            node_id: "fan".to_string(),
+            stage_index: 0,
+            attempt: 1,
+            context: ContextMap::new(),
+            prompt: String::new(),
+            node: flow.nodes["fan"].clone(),
+            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
+                "fan",
+                &flow.nodes["fan"],
+            ),
+            flow: flow.clone(),
+            outgoing_edges: attractor_runtime::outgoing_routing_edges(flow, "fan")
+                .expect("outgoing"),
+            run_paths: Some(paths),
+            run_workdir: temp.path().to_path_buf(),
+            run_id: "run-looping-branch".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("parallel outcome");
+    let mut result = outcome.context_updates["parallel.results"][0].clone();
+    result["work_calls"] = json!(calls.load(Ordering::SeqCst));
+    result
+}
+
+fn counting_runner() -> (RuntimeHandlerRunner, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut runner = RuntimeHandlerRunner::new();
+    let counter = calls.clone();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    (runner, calls)
+}
+
+#[test]
+fn parallel_branch_loop_without_alternative_fails_at_default_visit_limit() {
+    let flow = looping_branch_flow(None, false);
+    let (mut runner, calls) = counting_runner();
+
+    for _ in 0..2 {
+        // Each branch execution starts its visit counts afresh.
+        let result = execute_looping_branch(&mut runner, &calls, &flow);
+        assert_eq!(result["status"], "failed", "{result}");
+        assert_eq!(result["work_calls"], 32, "{result}");
+        assert_eq!(
+            result["failure_reason"],
+            "visit_limit_reached: work used all 32 visits; no other route from work"
+        );
+    }
+}
+
+#[test]
+fn parallel_branch_loop_routes_to_fan_in_after_exhausting_its_target() {
+    // Both limits exceed nodes.len() + edges.len(), the old branch step cap.
+    for (max_visits, expected_calls) in [(None, 32), (Some(12), 12)] {
+        let flow = looping_branch_flow(max_visits, true);
+        assert!(expected_calls > flow.nodes.len() + flow.edges.len());
+        let (mut runner, calls) = counting_runner();
+
+        for _ in 0..2 {
+            let result = execute_looping_branch(&mut runner, &calls, &flow);
+            assert_eq!(result["status"], "completed", "{result}");
+            assert_eq!(result["current_node"], "join", "{result}");
+            assert_eq!(result["work_calls"], expected_calls, "{result}");
+        }
+    }
 }
 
 #[test]
@@ -1375,6 +1526,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
                 completed_nodes: vec!["run_child".to_string()],
                 context: Default::default(),
                 retry_counts: Default::default(),
+                visit_counts: Default::default(),
                 logs: Vec::new(),
             },
             Default::default(),
@@ -1513,27 +1665,37 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     );
 }
 
-/// Failure routing that never converges fails the run at the node's entry
-/// limit with an explicit reason instead of looping forever.
-#[test]
-fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let agent = |prompt: &str, max_entries: Option<u64>| FlowNode {
+/// `start → implement → evaluate`, with `implement` limited to three visits
+/// and `evaluate`'s routes given by the caller.
+fn visit_loop_flow(
+    evaluate_edges: Vec<FlowEdge>,
+    evaluate_retry_target: Option<&str>,
+) -> FlowDefinition {
+    let agent = |prompt: &str, runtime: Option<NodeRuntimeConfig>| FlowNode {
         kind: NodeKind::AgentTask,
         config: Some(NodeConfig::AgentTask {
             prompt: prompt.to_string(),
         }),
-        runtime: max_entries.map(|max_entries| NodeRuntimeConfig {
-            max_entries: Some(max_entries),
-            ..NodeRuntimeConfig::default()
-        }),
+        runtime,
         ..FlowNode::default()
     };
-    let flow = FlowDefinition {
+    let mut edges = vec![
+        FlowEdge {
+            from: "start".to_string(),
+            to: "implement".to_string(),
+            ..FlowEdge::default()
+        },
+        FlowEdge {
+            from: "implement".to_string(),
+            to: "evaluate".to_string(),
+            ..FlowEdge::default()
+        },
+    ];
+    edges.extend(evaluate_edges);
+    FlowDefinition {
         schema_version: "1".to_string(),
-        id: "retry-loop".to_string(),
-        title: "Retry Loop".to_string(),
+        id: "visit-loop".to_string(),
+        title: "Visit Loop".to_string(),
         nodes: [
             (
                 "start".to_string(),
@@ -1543,8 +1705,26 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
                     ..FlowNode::default()
                 },
             ),
-            ("implement".to_string(), agent("implement", None)),
-            ("evaluate".to_string(), agent("evaluate", Some(3))),
+            (
+                "implement".to_string(),
+                agent(
+                    "implement",
+                    Some(NodeRuntimeConfig {
+                        max_visits: Some(3),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                ),
+            ),
+            (
+                "evaluate".to_string(),
+                agent(
+                    "evaluate",
+                    evaluate_retry_target.map(|target| NodeRuntimeConfig {
+                        retry_target: Some(target.to_string()),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                ),
+            ),
             (
                 "done".to_string(),
                 FlowNode {
@@ -1559,49 +1739,137 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
         ]
         .into_iter()
         .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "implement".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "implement".to_string(),
-                to: "evaluate".to_string(),
-                condition: "outcome=success".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "evaluate".to_string(),
-                to: "done".to_string(),
-                label: "Ready".to_string(),
-                condition: "outcome=success".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "evaluate".to_string(),
-                to: "implement".to_string(),
-                label: "Fix".to_string(),
-                condition: "outcome=fail".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
+        edges,
         ..FlowDefinition::default()
-    };
-    let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| {
+    }
+}
+
+fn edge(to: &str, label: &str, condition: &str) -> FlowEdge {
+    FlowEdge {
+        from: "evaluate".to_string(),
+        to: to.to_string(),
+        label: label.to_string(),
+        condition: condition.to_string(),
+        ..FlowEdge::default()
+    }
+}
+
+/// Runs `flow` with `evaluate` answering `evaluate_status` and the label
+/// `Again`; returns the result and the node ids executed, in order.
+fn run_visit_loop(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    evaluate_status: OutcomeStatus,
+    max_steps: Option<usize>,
+    start: attractor_runtime::ExecutionStart,
+) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        seen.lock().unwrap().push(request.node_id.clone());
         if request.node_id == "evaluate" {
             return Ok(Outcome {
-                status: OutcomeStatus::Fail,
+                status: evaluate_status,
+                preferred_label: "Again".to_string(),
                 failure_reason: "not good enough".to_string(),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::new(evaluate_status)
             });
         }
         Ok(Outcome::new(OutcomeStatus::Success))
     });
     let result = executor
         .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps,
+            start,
+        })
+        .expect("execute visit loop");
+    let calls = calls.lock().unwrap().clone();
+    (result, calls)
+}
+
+fn implement_runs(calls: &[String]) -> usize {
+    calls
+        .iter()
+        .filter(|node| node.as_str() == "implement")
+        .count()
+}
+
+/// A loop with no other route fails at the target's visit limit, whatever
+/// the outcome and whether it loops by edge or by retry target.
+#[test]
+fn loop_without_another_route_fails_when_its_target_used_all_visits() {
+    for (evaluate_status, edges, retry_target) in [
+        (
+            OutcomeStatus::Fail,
+            vec![edge("implement", "Fix", "outcome=fail")],
+            None,
+        ),
+        (OutcomeStatus::Fail, Vec::new(), Some("implement")),
+        (
+            OutcomeStatus::Success,
+            vec![edge("implement", "", "")],
+            None,
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (result, calls) = run_visit_loop(
+            &store,
+            "run-visit-loop",
+            temp.path(),
+            visit_loop_flow(edges, retry_target),
+            evaluate_status,
+            None,
+            Default::default(),
+        );
+        assert_eq!(result.status, "failed", "{evaluate_status:?}");
+        assert_eq!(
+            result.failure_reason,
+            "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+        );
+        assert_eq!(implement_runs(&calls), 3);
+        assert_eq!(calls.iter().filter(|node| *node == "evaluate").count(), 3);
+    }
+}
+
+/// A node with a "loop again" route and a "done" route takes "done" once the
+/// loop target is exhausted, and its request names the unavailable target.
+#[test]
+fn loop_with_another_route_takes_it_when_its_target_used_all_visits() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = visit_loop_flow(
+        vec![edge("implement", "Again", ""), edge("done", "Done", "")],
+        None,
+    );
+    let unavailable = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = unavailable.clone();
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        if request.node_id == "evaluate" {
+            seen.lock().unwrap().push(
+                request
+                    .context
+                    .get(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY)
+                    .cloned(),
+            );
+        }
+        Ok(Outcome {
+            preferred_label: "Again".to_string(),
+            ..Outcome::new(OutcomeStatus::Success)
+        })
+    });
+    let result = executor
+        .execute(ExecuteRunRequest {
             store,
-            record: RunRecord::new("run-retry-loop", temp.path().to_string_lossy()),
+            record: RunRecord::new("run-visit-done", temp.path().to_string_lossy()),
             flow,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
@@ -1609,21 +1877,501 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
             max_steps: None,
             start: Default::default(),
         })
-        .expect("execute retry loop");
-    assert_eq!(result.status, "failed");
-    assert!(
-        result.failure_reason.contains("node_entry_limit_exceeded"),
-        "unexpected failure reason: {}",
-        result.failure_reason
-    );
+        .expect("execute");
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
     assert_eq!(
-        result
-            .route_trace
-            .iter()
-            .filter(|node| node.as_str() == "evaluate")
-            .count(),
-        4
+        *unavailable.lock().unwrap(),
+        vec![None, None, Some(json!(["implement"]))]
     );
+    assert!(!result
+        .context
+        .contains_key(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY));
+}
+
+/// A failed node whose conditional route is exhausted still takes its
+/// retry target.
+#[test]
+fn exhausted_conditional_route_falls_back_to_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-fallback",
+        temp.path(),
+        visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done")),
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
+    assert_eq!(implement_runs(&calls), 3);
+}
+
+/// A failed node whose retry target is exhausted still takes an
+/// unconditional route into a conditional node.
+#[test]
+fn exhausted_retry_target_falls_back_to_an_unconditional_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("check", "", "")], Some("implement"));
+    flow.nodes.insert(
+        "check".to_string(),
+        FlowNode {
+            kind: NodeKind::Conditional,
+            config: Some(NodeConfig::Conditional {}),
+            ..FlowNode::default()
+        },
+    );
+    flow.edges.push(FlowEdge {
+        from: "check".to_string(),
+        to: "done".to_string(),
+        ..FlowEdge::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-retry-fallback",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.current_node, "done", "{}", result.failure_reason);
+    assert_eq!(implement_runs(&calls), 3);
+}
+
+/// A failed goal gate whose retry target is exhausted still takes its exit
+/// route; the exit's goal-gate check then reports the visit limit.
+#[test]
+fn exhausted_retry_target_falls_back_to_a_goal_gate_exit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("done", "", "")], Some("implement"));
+    flow.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
+        goal_gate: true,
+        retry_target: Some("implement".to_string()),
+        ..NodeRuntimeConfig::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-gate-exit",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from done"
+    );
+    assert_eq!(implement_runs(&calls), 3);
+}
+
+/// A failed node whose unconditional route into a conditional node is
+/// exhausted fails with the visit-limit reason, not its own failure.
+#[test]
+fn exhausted_unconditional_fail_route_reports_the_visit_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("check", "", "")], None);
+    flow.nodes.insert(
+        "check".to_string(),
+        FlowNode {
+            kind: NodeKind::Conditional,
+            config: Some(NodeConfig::Conditional {}),
+            runtime: Some(NodeRuntimeConfig {
+                max_visits: Some(1),
+                ..NodeRuntimeConfig::default()
+            }),
+            ..FlowNode::default()
+        },
+    );
+    flow.edges.push(FlowEdge {
+        from: "check".to_string(),
+        to: "implement".to_string(),
+        condition: "outcome=fail".to_string(),
+        ..FlowEdge::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-unconditional",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: check used all 1 visits; no other route from evaluate"
+    );
+    assert_eq!(implement_runs(&calls), 2);
+}
+
+/// A failed node with no retry target whose unconditional route is exhausted
+/// fails with the visit-limit reason, not its own failure.
+#[test]
+fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(vec![edge("implement", "", "")], None);
+    flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
+        max_visits: Some(1),
+        ..NodeRuntimeConfig::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-fail-unconditional",
+        temp.path(),
+        flow,
+        OutcomeStatus::Fail,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(
+        result.failure_reason,
+        "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+    );
+    assert_eq!(implement_runs(&calls), 1);
+}
+
+/// A failed node whose exhausted `outcome=fail` route leaves only an
+/// unconditional route, which failure routing does not take, fails with the
+/// visit-limit reason naming the exhausted target.
+#[test]
+fn exhausted_fail_condition_beside_an_unconditional_route_reports_the_visit_limit() {
+    for (target, kind) in [("polish", NodeKind::AgentTask), ("done", NodeKind::Exit)] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let mut flow = visit_loop_flow(
+            vec![edge("implement", "", "outcome=fail"), edge(target, "", "")],
+            None,
+        );
+        flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
+            max_visits: Some(1),
+            ..NodeRuntimeConfig::default()
+        });
+        if kind == NodeKind::AgentTask {
+            flow.nodes.insert(
+                target.to_string(),
+                FlowNode {
+                    kind,
+                    config: Some(NodeConfig::AgentTask {
+                        prompt: target.to_string(),
+                    }),
+                    ..FlowNode::default()
+                },
+            );
+        }
+        let (result, calls) = run_visit_loop(
+            &store,
+            "run-visit-fail-condition",
+            temp.path(),
+            flow,
+            OutcomeStatus::Fail,
+            None,
+            Default::default(),
+        );
+        assert_eq!(result.status, "failed", "{target}");
+        assert_eq!(
+            result.failure_reason,
+            "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+        );
+        assert_eq!(implement_runs(&calls), 1);
+        assert!(!calls.iter().any(|node| node == target), "{target}");
+    }
+}
+
+/// Runs `flow` with `evaluate` answering `evaluate_status` and pauses right
+/// after evaluate's third execution completes; returns the resume start.
+fn pause_after_third_evaluate(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    evaluate_status: OutcomeStatus,
+) -> attractor_runtime::ExecutionStart {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let polled = calls.clone();
+    let mut executor = PipelineExecutor::with_control(
+        move |request: NodeExecutionRequest| {
+            seen.lock().unwrap().push(request.node_id.clone());
+            if request.node_id == "evaluate" {
+                return Ok(Outcome {
+                    failure_reason: "not good enough".to_string(),
+                    ..Outcome::new(evaluate_status)
+                });
+            }
+            Ok(Outcome::new(OutcomeStatus::Success))
+        },
+        move || {
+            let calls = polled.lock().unwrap();
+            (calls.iter().filter(|node| *node == "evaluate").count() == 3)
+                .then_some(attractor_runtime::ExecutionControlAction::Pause)
+        },
+    );
+    let paused = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("execute");
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta(run_id).unwrap().unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "evaluate");
+    assert_eq!(checkpoint.visit_counts["implement"], 3);
+    attractor_runtime::ExecutionStart::Resume {
+        paths: meta.paths,
+        checkpoint,
+    }
+}
+
+/// Recovery from a checkpoint taken after the current visit completed routes
+/// onward without re-running it, and fails when that route is exhausted.
+#[test]
+fn resume_routing_into_an_exhausted_target_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+    );
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        None,
+        start,
+    );
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(
+        resumed.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+    );
+    assert!(calls.is_empty(), "{calls:?}");
+    let record = store
+        .read_run_meta("run-visit-resume")
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(record.status, "failed");
+    assert_eq!(record.last_error, resumed.failure_reason);
+}
+
+/// Recovery of a completed failed visit routes like uninterrupted execution:
+/// an exhausted conditional target falls through to the retry target.
+#[test]
+fn resume_of_a_failed_visit_falls_back_to_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done"));
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume-retry",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+    );
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume-retry",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        start,
+    );
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(resumed.current_node, "done");
+    assert!(calls.is_empty(), "{calls:?}");
+}
+
+/// Recovery of a completed failed visit skips an exhausted retry target for
+/// an available fallback retry target.
+#[test]
+fn resume_of_a_failed_visit_falls_back_to_fallback_retry_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || {
+        let mut flow = visit_loop_flow(
+            vec![edge("implement", "Fix", "outcome=fail")],
+            Some("implement"),
+        );
+        flow.nodes
+            .get_mut("evaluate")
+            .unwrap()
+            .runtime
+            .as_mut()
+            .unwrap()
+            .fallback_retry_target = Some("done".to_string());
+        flow
+    };
+    let start = pause_after_third_evaluate(
+        &store,
+        "run-visit-resume-fallback",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+    );
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-resume-fallback",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        start,
+    );
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(resumed.current_node, "done");
+    assert!(calls.is_empty(), "{calls:?}");
+}
+
+/// Recovery from a checkpoint taken after routing into a node runs that
+/// pending visit, even though an earlier visit to the node completed.
+#[test]
+fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    // Six steps end routed into evaluate's third visit, not yet executed.
+    let (paused, _) = run_visit_loop(
+        &store,
+        "run-visit-pending",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        Some(6),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta("run-visit-pending").unwrap().unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "evaluate");
+    assert!(checkpoint.completed_nodes.contains(&"evaluate".to_string()));
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visit-pending",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Success,
+        None,
+        attractor_runtime::ExecutionStart::Resume {
+            paths: meta.paths,
+            checkpoint,
+        },
+    );
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(
+        resumed.failure_reason,
+        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+    );
+    assert_eq!(calls, vec!["evaluate"]);
+}
+
+/// Visit counts are run-wide: neither resuming a paused or crashed run nor
+/// continuing it as a new run grants the loop target fresh visits.
+#[test]
+fn visit_counts_survive_resume_and_continue() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], None);
+    let read_checkpoint = |run_id: &str| {
+        let meta = store.read_run_meta(run_id).unwrap().unwrap();
+        (meta.paths, meta.checkpoint.unwrap())
+    };
+
+    // Pause after routing back into implement: two of its three visits used.
+    // Resume, as crash recovery does, and continue both start from here.
+    let (paused, calls) = run_visit_loop(
+        &store,
+        "run-visits",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        Some(3),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    assert_eq!(implement_runs(&calls), 1);
+    let (paths, checkpoint) = read_checkpoint("run-visits");
+    assert_eq!(checkpoint.visit_counts["implement"], 2);
+
+    let (resumed, calls) = run_visit_loop(
+        &store,
+        "run-visits",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        attractor_runtime::ExecutionStart::Resume {
+            paths,
+            checkpoint: checkpoint.clone(),
+        },
+    );
+    assert_eq!(resumed.status, "failed");
+    assert!(resumed
+        .failure_reason
+        .starts_with("visit_limit_reached: implement"));
+    // The checkpointed second visit is pending: it runs, then the third.
+    assert_eq!(
+        calls,
+        vec!["implement", "evaluate", "implement", "evaluate"]
+    );
+
+    // Continue from implement: its third visit is the continuation's start.
+    let (continued, calls) = run_visit_loop(
+        &store,
+        "run-visits-continued",
+        temp.path(),
+        flow(),
+        OutcomeStatus::Fail,
+        None,
+        attractor_runtime::ExecutionStart::FromCheckpoint {
+            start_node: "implement".to_string(),
+            checkpoint,
+            flow_files: None,
+        },
+    );
+    assert_eq!(continued.status, "failed");
+    assert!(continued
+        .failure_reason
+        .starts_with("visit_limit_reached: implement"));
+    assert_eq!(calls, vec!["implement", "evaluate"]);
+}
+
+#[test]
+fn max_entries_is_rejected_by_name() {
+    let error = serde_json::from_value::<NodeRuntimeConfig>(json!({"max_entries": 3}))
+        .expect_err("max_entries is not a field");
+    assert!(error.to_string().contains("max_entries"), "{error}");
+    let runtime = serde_json::from_value::<NodeRuntimeConfig>(json!({"max_visits": 3})).unwrap();
+    assert_eq!(runtime.max_visits, Some(3));
 }
 
 #[test]

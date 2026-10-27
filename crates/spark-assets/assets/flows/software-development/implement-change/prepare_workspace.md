@@ -7,7 +7,6 @@ config:
     SPARK_RUN_ID: internal.run_id
     SPARK_TASK_ARTIFACT: context.task.artifact_path
   output_map:
-    context.validation.attempts: validation_attempts
     context.workspace.base_commit: base_commit
     context.workspace.branch: branch
     context.workspace.path: path
@@ -18,7 +17,6 @@ contracts:
   - context.workspace.branch
   - context.workspace.base_commit
   - context.workspace.source_dirty
-  - context.validation.attempts
 routes:
 - to: implement
   condition: outcome=success
@@ -89,6 +87,6 @@ if [ -n "$artifact" ]; then
 fi
 dirty=false
 if [ -n "$(git status --porcelain)" ]; then dirty=true; fi
-printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s,"validation_attempts":0}' \
+printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s}' \
   "$worktree" "$branch" "$base_commit" "$dirty"
 ```

@@ -348,6 +348,54 @@ condition: outcome=success
 condition: outcome=fail && preferred_label=Rewrite
 ```
 
+## Loops and Visit Limits
+
+A visit is one entry into a node through routing. Every node may be visited
+32 times per run; `runtime.max_visits` sets its own limit. Counts cover the
+whole run: crash recovery, retries and continues keep them. A child run counts
+its own nodes, and each parallel branch execution counts its nodes from zero.
+
+Routing never selects a route whose target has used all its visits; it moves
+on to the node's next eligible route, retry target or fallback. An agent's
+route list marks such a route `(unavailable: visit limit reached)`. When no
+other route remains, the node fails with
+`visit_limit_reached: <target> used all <N> visits; no other route from <node>`,
+whatever its outcome. This gives two loop patterns without counter nodes:
+
+- **Fail at the limit**: the loop has no alternative route. Validation fails
+  into a diagnosis node limited to three visits; the fourth failure fails the
+  run.
+
+  ```yaml
+  # validate.md
+  routes:
+  - to: diagnose_validation
+    label: Fix
+    condition: outcome=fail
+  - to: finalize
+    condition: outcome=success
+  # diagnose_validation.md
+  runtime:
+    max_visits: 3
+  ```
+
+- **Continue at the limit**: the loop has another route. A review that allows
+  one re-review sends its author once more, then takes the other route.
+
+  ```yaml
+  # review.md
+  routes:
+  - to: revise
+    label: Revise
+  - to: done
+    label: Accept
+  # revise.md
+  runtime:
+    max_visits: 1
+  ```
+
+  Once `revise` is used, a `Revise` answer falls through to `Accept`.
+
 ## Validation
 
 Validate a flow directory before launching:
