@@ -490,7 +490,12 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
             json!(["context.design.path"]),
             "{id}"
         );
-        assert!(reviewer["contracts"]["writes_context"].is_null(), "{id}");
+        // Complete findings reach `synthesize` through the branch context.
+        assert_eq!(
+            reviewer["contracts"]["writes_context"],
+            json!(["context.review.lens_findings"]),
+            "{id}"
+        );
     }
     let synthesize = node("synthesize");
     assert!(synthesize["role"].is_null());
@@ -520,6 +525,7 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
         ("synthesize", "resolve", "", "outcome=success"),
         ("resolve", "review", "Re-review", ""),
         ("resolve", "done", "Done", ""),
+        ("review", "fan_in", "", ""),
     ];
     for id in reviewers {
         expected.push(("review", id, "", ""));
@@ -527,6 +533,14 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
     }
     expected.sort();
     assert_eq!(edges, expected);
+    // After the fan-out, `review` continues to the join, not to a reviewer.
+    let heaviest = flow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == "review")
+        .max_by_key(|edge| edge.weight)
+        .unwrap();
+    assert_eq!((heaviest.to.as_str(), heaviest.weight), ("fan_in", 1));
 }
 
 #[test]

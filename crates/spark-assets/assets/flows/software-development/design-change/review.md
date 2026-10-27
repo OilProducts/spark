@@ -12,4 +12,6 @@ routes:
 - to: naive_reader
 - to: readiness
 - to: zoom_out
+- to: fan_in
+  weight: 1
 ---

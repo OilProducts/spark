@@ -406,7 +406,13 @@ isolated roles and a visit limit into a review loop:
 - A `parallel` node, `review`, fans out to reviewers that use the isolated
   `adversarial-reviewer` role. Each reviews through one lens and reads only
   the document's path, never the request or the author's reasoning: the
-  document has to stand on its own.
+  document has to stand on its own. Each reviewer writes its complete
+  findings to `context.review.lens_findings`; its branch's context, and so
+  that key, lands in `parallel.results`. A response itself reaches later
+  nodes only as `last_response`, cut to 200 characters.
+- `review` also routes to `fan_in` with `weight: 1`. After the fan-out,
+  routing takes a `parallel` node's own edges like any node's, and the
+  heaviest edge sends it to the join instead of rerunning a reviewer.
 - `synthesize`, after the `fan_in`, merges the reviewers' findings from
   `parallel.results` into one list without judging them again.
 - `resolve` fixes each finding, contests it with checkable evidence, or asks
