@@ -244,6 +244,10 @@ fn bundled_flows_use_named_sessions_instead_of_fidelity() {
             json!({"implementer": ["work"]}),
         ),
         (
+            "software-development/design-change",
+            json!({"designer": ["draft", "resolve"]}),
+        ),
+        (
             "software-development/investigate-bug",
             json!({"investigator": ["investigate"], "planner": ["propose_plan"]}),
         ),
@@ -439,6 +443,104 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
             .iter()
             .any(|edge| edge.from == from && edge.to == to && edge.condition == condition));
     }
+}
+
+#[test]
+fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
+    let flow = bundled_flow("software-development/design-change");
+    let node = |id: &str| json!(flow.nodes[id]);
+    let mut ids = flow.nodes.keys().map(String::as_str).collect::<Vec<_>>();
+    ids.sort();
+    let reviewers = [
+        "codebase_check",
+        "critic",
+        "naive_reader",
+        "readiness",
+        "zoom_out",
+    ];
+    let mut expected = vec![
+        "done",
+        "draft",
+        "fan_in",
+        "resolve",
+        "review",
+        "start",
+        "synthesize",
+    ];
+    expected.extend(reviewers);
+    expected.sort();
+    assert_eq!(ids, expected);
+
+    for id in ["draft", "resolve"] {
+        assert_eq!(node(id)["role"], json!("author"), "{id}");
+        assert_eq!(node(id)["runtime"]["session"], json!("designer"), "{id}");
+        assert!(node(id)["contracts"]["writes_context"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("context.review.contested")));
+    }
+    assert_eq!(node("review")["kind"], json!("parallel"));
+    assert_eq!(node("review")["runtime"]["max_visits"], json!(2));
+    for id in reviewers {
+        let reviewer = node(id);
+        assert_eq!(reviewer["role"], json!("adversarial-reviewer"), "{id}");
+        assert!(reviewer["runtime"]["session"].is_null(), "{id}");
+        assert_eq!(
+            reviewer["contracts"]["reads_context"],
+            json!(["context.design.path"]),
+            "{id}"
+        );
+        // Complete findings reach `synthesize` through the branch context.
+        assert_eq!(
+            reviewer["contracts"]["writes_context"],
+            json!(["context.review.lens_findings"]),
+            "{id}"
+        );
+    }
+    let synthesize = node("synthesize");
+    assert!(synthesize["role"].is_null());
+    assert!(synthesize["runtime"]["session"].is_null());
+    assert_eq!(
+        synthesize["contracts"]["writes_context"],
+        json!(["context.review.findings"])
+    );
+
+    let mut edges = flow
+        .edges
+        .iter()
+        .map(|edge| {
+            (
+                edge.from.as_str(),
+                edge.to.as_str(),
+                edge.label.as_str(),
+                edge.condition.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    edges.sort();
+    let mut expected = vec![
+        ("start", "draft", "", ""),
+        ("draft", "review", "", "outcome=success"),
+        ("fan_in", "synthesize", "", ""),
+        ("synthesize", "resolve", "", "outcome=success"),
+        ("resolve", "review", "Re-review", ""),
+        ("resolve", "done", "Done", ""),
+        ("review", "fan_in", "", ""),
+    ];
+    for id in reviewers {
+        expected.push(("review", id, "", ""));
+        expected.push((id, "fan_in", "", ""));
+    }
+    expected.sort();
+    assert_eq!(edges, expected);
+    // After the fan-out, `review` continues to the join, not to a reviewer.
+    let heaviest = flow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == "review")
+        .max_by_key(|edge| edge.weight)
+        .unwrap();
+    assert_eq!((heaviest.to.as_str(), heaviest.weight), ("fan_in", 1));
 }
 
 #[test]

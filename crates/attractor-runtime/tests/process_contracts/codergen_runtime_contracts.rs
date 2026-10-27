@@ -867,7 +867,10 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
 
 /// Records the Claude Code session id each node is asked to resume and
 /// hands out a new one per call (`h-<call>`). `check` answers `Again` once,
-/// then `Done`. The first call of `flaky` fails retryably.
+/// then `Done`; `resolve` always answers `Re-review`. A design-change
+/// reviewer records [`lens_findings`]; `synthesize` forwards every branch's
+/// findings from `parallel.results`. The first call of `flaky` fails
+/// retryably.
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -907,11 +910,31 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
                     "_attractor.runtime.sessions": {"named": {"s": "forged"}}}})
                 .to_string(),
             )
+        } else if DESIGN_REVIEWERS.contains(&request.node_id.as_str()) {
+            spark_agent_adapter::CodergenBackendResponse::Text(
+                json!({"outcome": "success", "context_updates": {
+                    "context.review.lens_findings": lens_findings(&request.node_id)}})
+                .to_string(),
+            )
+        } else if request.node_id == "synthesize" {
+            let findings = request.context["parallel.results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|branch| branch["context"].get("context.review.lens_findings"))
+                .flat_map(|findings| findings.as_array().unwrap().clone())
+                .collect::<Vec<_>>();
+            spark_agent_adapter::CodergenBackendResponse::Text(
+                json!({"outcome": "success", "context_updates": {
+                    "context.review.findings": findings}})
+                .to_string(),
+            )
         } else {
             spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome {
                 preferred_label: match (request.node_id.as_str(), checks) {
                     ("check", 1) => "Again".to_string(),
                     ("check", _) => "Done".to_string(),
+                    ("resolve", _) => "Re-review".to_string(),
                     _ => String::new(),
                 },
                 ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success)
@@ -927,6 +950,24 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
             )]),
         })
     }
+}
+
+const DESIGN_REVIEWERS: [&str; 5] = [
+    "codebase_check",
+    "critic",
+    "naive_reader",
+    "readiness",
+    "zoom_out",
+];
+
+/// Two findings, a Blocker and a Major, whose evidence ends well past the
+/// 200 characters `last_response` keeps.
+fn lens_findings(lens: &str) -> serde_json::Value {
+    let padding = "the cited line does not match the code ".repeat(6);
+    json!([
+        format!("Blocker, Approach: {lens} problem. Evidence: {padding}{lens}-tail-1"),
+        format!("Major, Risks: {lens} problem. Evidence: {padding}{lens}-tail-2"),
+    ])
 }
 
 fn session_flow(nodes: serde_json::Value, edges: serde_json::Value) -> FlowDefinition {
@@ -1050,6 +1091,89 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
     assert_eq!(
         backend.calls.lock().unwrap().first(),
         Some(&("b".to_string(), handle("h-5")))
+    );
+}
+
+#[test]
+fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() {
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../spark-assets/assets");
+    let flow = attractor_dsl::resolve_flow_roles(
+        &attractor_dsl::read_flow_dir(&assets.join("flows/software-development/design-change"))
+            .unwrap(),
+        &attractor_dsl::FlowRoots::new(&assets, None),
+    )
+    .unwrap();
+    let temp = tempdir().unwrap();
+    let backend = SessionBackend::default();
+    // `resolve` always asks for a re-review.
+    let result = run_sessions(
+        temp.path(),
+        "run-design",
+        flow,
+        &backend,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
+
+    let calls = backend.calls.lock().unwrap().clone();
+    let handles = |id: &str| {
+        calls
+            .iter()
+            .enumerate()
+            .filter(|(_, (node, _))| node == id)
+            .map(|(index, (_, handle))| (format!("h-{}", index + 1), handle.clone()))
+            .collect::<Vec<_>>()
+    };
+    // `resolve` continues `draft`'s session, then its own on the second pass.
+    let draft = handles("draft");
+    let resolve = handles("resolve");
+    assert_eq!(draft.len(), 1);
+    assert_eq!(resolve.len(), 2);
+    assert_eq!(resolve[0].1, Some(draft[0].0.clone()));
+    assert_eq!(resolve[1].1, Some(resolve[0].0.clone()));
+    // The review runs exactly twice; every reviewer call starts a fresh session.
+    assert_eq!(handles("synthesize").len(), 2);
+    for id in DESIGN_REVIEWERS {
+        let runs = handles(id);
+        assert_eq!(runs.len(), 2, "{id} {calls:?}");
+        assert!(runs.iter().all(|(_, handle)| handle.is_none()), "{id}");
+    }
+    let prompts = backend.prompts.lock().unwrap().clone();
+    let prompts_of = |id: &str| {
+        calls
+            .iter()
+            .zip(&prompts)
+            .filter(|((node, _), _)| node == id)
+            .map(|(_, prompt)| prompt.clone())
+            .collect::<Vec<_>>()
+    };
+    // Every reviewer's complete findings, Blockers included, reach
+    // `synthesize` and then `resolve` in both rounds.
+    for id in DESIGN_REVIEWERS {
+        for finding in lens_findings(id).as_array().unwrap() {
+            let finding = finding.as_str().unwrap();
+            assert!(finding.find(&format!("{id}-tail")).unwrap() > 200);
+            for prompt in prompts_of("synthesize")
+                .iter()
+                .chain(&prompts_of("resolve"))
+            {
+                assert!(prompt.contains(finding), "{finding}\n{prompt}");
+            }
+        }
+    }
+    // The second `resolve` sees Re-review marked unavailable; routing takes Done.
+    let resolve_prompts = prompts_of("resolve");
+    let marked = "go to \"Review Design\" (unavailable: visit limit reached).";
+    assert!(
+        !resolve_prompts[0].contains(marked),
+        "{}",
+        resolve_prompts[0]
+    );
+    assert!(
+        resolve_prompts[1].contains(marked),
+        "{}",
+        resolve_prompts[1]
     );
 }
 

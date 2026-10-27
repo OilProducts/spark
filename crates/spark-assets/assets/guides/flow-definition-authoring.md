@@ -396,6 +396,36 @@ whatever its outcome. This gives two loop patterns without counter nodes:
 
   Once `revise` is used, a `Revise` answer falls through to `Accept`.
 
+### Author and Isolated Reviewers
+
+The bundled `software-development/design-change` flow combines sessions,
+isolated roles and a visit limit into a review loop:
+
+- `draft` and `resolve` use the `author` role and share `session: designer`,
+  so the author keeps everything it learned while drafting.
+- A `parallel` node, `review`, fans out to reviewers that use the isolated
+  `adversarial-reviewer` role. Each reviews through one lens and reads only
+  the document's path, never the request or the author's reasoning: the
+  document has to stand on its own. Each reviewer writes its complete
+  findings to `context.review.lens_findings`; its branch's context, and so
+  that key, lands in `parallel.results`. A response itself reaches later
+  nodes only as `last_response`, cut to 200 characters.
+- `review` also routes to `fan_in` with `weight: 1`. After the fan-out,
+  routing takes a `parallel` node's own edges like any node's, and the
+  heaviest edge sends it to the join instead of rerunning a reviewer.
+- `synthesize`, after the `fan_in`, merges the reviewers' findings from
+  `parallel.results` into one list without judging them again.
+- `resolve` fixes each finding, contests it with checkable evidence, or asks
+  the owner, then answers `Re-review` (back to `review`) or `Done`.
+  `review` sets `max_visits: 2`, so once the re-review is used, `Re-review`
+  shows as unavailable and routing takes `Done`.
+
+The approach is adapted from the elephant/goldfish model
+([google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model),
+Apache-2.0): an author who holds the context, reviewers who see only the
+document, findings settled by fix, contest or escalation, and a single
+re-review.
+
 ## Validation
 
 Validate a flow directory before launching:
