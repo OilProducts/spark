@@ -47,8 +47,8 @@ async function stubMissions(page: Page, draft: Record<string, unknown> = {}, gat
   await page.route('**/workspace/api/conversations/mission-*', route => route.request().method() === 'GET'
     ? route.fulfill({ json: transcript(new URL(route.request().url()).pathname.split('/').pop()!) })
     : route.fallback())
-  await page.route('**/workspace/api/playbooks/bug-report', route => route.fulfill({ json: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }))
-  await page.route('**/workspace/api/playbooks', route => route.fulfill({ json: [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }))
+  await page.route('**/workspace/api/playbooks/bug-report?*', route => route.fulfill({ json: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }))
+  await page.route('**/workspace/api/playbooks?*', route => route.fulfill({ json: [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }))
   await page.route('**/workspace/api/missions**', route => {
     const request = route.request()
     const id = /\/missions\/([^/?]+)/.exec(request.url())?.[1]

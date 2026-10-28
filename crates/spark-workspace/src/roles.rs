@@ -18,20 +18,7 @@ pub const CHIEF_OF_STAFF: &str = "chief-of-staff";
 const DAY_SECONDS: i64 = 86_400;
 const FINISHED_RUNS_KEPT: usize = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RoleBudget {
-    pub concurrent_runs: usize,
-    pub runs_per_day: usize,
-}
-impl Default for RoleBudget {
-    fn default() -> Self {
-        Self {
-            concurrent_runs: 4,
-            runs_per_day: 20,
-        }
-    }
-}
+pub use attractor_dsl::RoleBudget;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,8 +34,6 @@ pub struct RoleRecord {
     pub name: String,
     pub project_id: String,
     pub project_path: String,
-    #[serde(default)]
-    pub budget: RoleBudget,
     /// Unix seconds of the launches in the last day, for `runs_per_day`.
     #[serde(default)]
     pub recent_launches: Vec<i64>,
@@ -63,11 +48,14 @@ pub struct RoleRecord {
     pub title: String,
     #[serde(default, skip_deserializing)]
     pub state: RoleState,
+    /// From the role file, as the project resolves it.
+    #[serde(default, skip_deserializing)]
+    pub budget: RoleBudget,
 }
 
 fn stored(role: &RoleRecord) -> Value {
     let mut value = serde_json::to_value(role).unwrap();
-    for key in ["conversation_id", "title", "state"] {
+    for key in ["conversation_id", "title", "state", "budget"] {
         value.as_object_mut().unwrap().remove(key);
     }
     value
@@ -140,8 +128,9 @@ impl WorkspaceRoleService {
     }
     fn with_derived(&self, mut role: RoleRecord) -> RoleRecord {
         role.conversation_id = conversation_id(&role.project_id, &role.name);
-        role.title = role_file(&self.settings, &role.project_path, &role.name)
-            .ok()
+        let file = role_file(&self.settings, &role.project_path, &role.name).ok();
+        role.budget = file.as_ref().map(|file| file.budget).unwrap_or_default();
+        role.title = file
             .and_then(|file| file.title)
             .unwrap_or_else(|| role.name.clone());
         role.state = if role.stopped_at.is_some() {
@@ -308,7 +297,11 @@ impl WorkspaceRoleService {
     /// for the first time gets a turn to begin its work.
     pub fn start(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         let scope = self.scope(project)?;
-        role_file(&self.settings, &scope.project_path, name)?;
+        if !role_file(&self.settings, &scope.project_path, name)?.standing && name != COORDINATOR {
+            return Err(invalid(format!(
+                "Role {name} cannot be started: its role file (roles/{name}.md) does not declare standing: true"
+            )));
+        }
         self.locked(project, name, true, false, |repo, role| {
             let begin = repo
                 .read(name)?
@@ -341,16 +334,18 @@ impl WorkspaceRoleService {
         self.locked(project, name, false, false, |_, role| {
             let now = time::OffsetDateTime::now_utc().unix_timestamp();
             role.recent_launches.retain(|at| now - at < DAY_SECONDS);
-            let limit = if role.inbox.in_flight() >= role.budget.concurrent_runs {
-                Some(format!("concurrent_runs ({})", role.budget.concurrent_runs))
-            } else if role.recent_launches.len() >= role.budget.runs_per_day {
-                Some(format!("runs_per_day ({})", role.budget.runs_per_day))
+            let budget = role_file(&self.settings, &role.project_path, &role.name)?.budget;
+            let limit = if role.inbox.in_flight() >= budget.concurrent_runs {
+                Some(format!("concurrent_runs ({})", budget.concurrent_runs))
+            } else if role.recent_launches.len() >= budget.runs_per_day {
+                Some(format!("runs_per_day ({})", budget.runs_per_day))
             } else {
                 None
             };
             if let Some(limit) = limit {
                 return Err(WorkspaceError::Conflict(format!(
-                    "Role budget reached: {limit}. Wait for a run to finish, or ask the user to raise the budget."
+                    "Role budget reached: {limit}. Wait for a run to finish, or ask the user to raise the budget in this role's file (roles/{}.md, `budget`).",
+                    role.name
                 )));
             }
             let owner = Owner::Role(role.name.clone());
@@ -504,6 +499,7 @@ pub(crate) fn role_frame(settings: &SparkSettings, role: &RoleRecord, handle: &s
         .as_ref()
         .map(|file| file.persona.clone())
         .unwrap_or_else(|error| format!("(Your role file could not be read: {error})"));
+    let budget = file.as_ref().map(|file| file.budget).unwrap_or_default();
     let title = file
         .ok()
         .and_then(|file| file.title)
@@ -520,8 +516,8 @@ pub(crate) fn role_frame(settings: &SparkSettings, role: &RoleRecord, handle: &s
         Conversation handle: {handle}\n\
         Project path: {project}",
         name = role.name,
-        concurrent = role.budget.concurrent_runs,
-        per_day = role.budget.runs_per_day,
+        concurrent = budget.concurrent_runs,
+        per_day = budget.runs_per_day,
         questions = crate::conversations::run_question_instructions("your role, your memory"),
         memory = memory_dir(project, &role.name).display(),
         playbooks = crate::conversations::playbook_instructions(handle, project),

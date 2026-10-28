@@ -497,11 +497,11 @@ Questions from all descendants return to the mission with their owning run ID. L
 
 ### Playbooks
 
-A playbook is named, reusable guidance for a kind of mission: `$SPARK_HOME/playbooks/<name>.md`, Markdown with YAML frontmatter (`title`, `description`) and free-form instructions in the body. `spark-server init` seeds the bundled playbooks, such as `bug-report`, updating unmodified copies and keeping edited ones. The mission agent follows a playbook as the broad shape of the work, decides each step from run results and logs, and departs from it when the evidence calls for it.
+A playbook is named, reusable guidance for a kind of mission: `playbooks/<name>.md`, Markdown with YAML frontmatter (`title`, `description`) and free-form instructions in the body. Playbooks resolve like flows and roles: the project's org repo (`<project>/.spark/agent-org/playbooks/`) first, then the bundled library (`$SPARK_HOME/bundled/playbooks/`, rewritten on every start, with playbooks such as `bug-report`). A project copy replaces the bundled playbook of the same name; to change a playbook for a project, edit or add it in the org repo. A mission resolves its playbook through its own project. The mission agent follows a playbook as the broad shape of the work, decides each step from run results and logs, and departs from it when the evidence calls for it.
 
 ```sh
-spark playbook list
-spark playbook get --name bug-report
+spark playbook list --project /absolute/project
+spark playbook get --project /absolute/project --name bug-report
 ```
 
 To run a playbook against an issue, list the playbooks, create a mission with the playbook and the issue as its objective, and start it:
@@ -525,6 +525,17 @@ spark role stop --project /absolute/project --role chief-of-staff
 spark role send --project /absolute/project --role coordinator --conversation <sender handle> --message "Fixed the review flow"
 ```
 
+Only a role whose file declares `standing: true` can be started; the bundled `coordinator` and `chief-of-staff` do. The Coordinator is standing in every project whatever its file says. The role file also sets the role's launch limits:
+
+```yaml
+standing: true
+budget:
+  concurrent_runs: 4
+  runs_per_day: 20
+```
+
+`budget` and each field are optional and default to the values shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its org repo. Spark's role record keeps only runtime state: inbox, runs, recent launches, and whether the role is stopped.
+
 The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop|send?project_path=...` (`send` takes `{"conversation_handle", "message"}`).
 
-A role wakes on a new turn when the user writes in its conversation, when a run launched from it reports back (launches carry `context.spark_owner` with `kind` `role`), when a `role`-mode trigger fires, when a mission created from its conversation closes, and when another conversation sends it a message; a message from another role names that role. Launches count against `budget` (`{"concurrent_runs":4,"runs_per_day":20}` by default). A stopped role still records events but delivers none until it starts again; its triggers stay enabled, and a `role` trigger skips runs the role launched itself and runs of other projects. A role file's `execution` settings apply to its conversation below the conversation's own model settings and above the project's.
+A role wakes on a new turn when the user writes in its conversation, when a run launched from it reports back (launches carry `context.spark_owner` with `kind` `role`), when a `role`-mode trigger fires, when a mission created from its conversation closes, and when another conversation sends it a message; a message from another role names that role. Launches count against the role file's `budget`; a refused launch names the limit it hit. A stopped role still records events but delivers none until it starts again; its triggers stay enabled, and a `role` trigger skips runs the role launched itself and runs of other projects. A role file's `execution` settings apply to its conversation below the conversation's own model settings and above the project's.

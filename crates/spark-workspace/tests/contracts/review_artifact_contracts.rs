@@ -1014,7 +1014,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
         "Every flow can be launched",
         ".spark/agent-org",
         "$SPARK_HOME/attractor/runs",
-        "spark playbook list",
+        "spark playbook list --project ",
     ] {
         assert!(frame.contains(expected), "frame lacks {expected}: {frame}");
     }

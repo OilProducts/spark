@@ -2630,7 +2630,7 @@ fn build_playbook_plan(
 ) -> Result<ApiRequestPlan, CommandOutput> {
     let options = parse_api_options(
         &args[2..],
-        &["--name", "--base-url"],
+        &["--name", "--project", "--base-url"],
         &[],
         PositionalMode::None,
     )?;
@@ -2639,6 +2639,7 @@ fn build_playbook_plan(
         let name = non_empty_value(&options, "--name", "Playbook name is required")?;
         path.push_str(&format!("/{}", percent_encode_component(&name)));
     }
+    path.push_str(&project_query(&options));
     Ok(ApiRequestPlan {
         method: HttpMethod::Get,
         base_url: resolve_base_url(&options, "spark playbook", env)?,

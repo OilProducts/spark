@@ -1,8 +1,10 @@
-//! Mission playbooks: `$SPARK_HOME/playbooks/<name>.md`, Markdown with YAML
+//! Mission playbooks: `playbooks/<name>.md`, resolved project first (the org
+//! repo), then bundled (`$SPARK_HOME/bundled/playbooks`). Markdown with YAML
 //! frontmatter (`title`, `description`) and free-form instructions in the body.
 use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};
 use spark_common::settings::SparkSettings;
+use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Playbook {
@@ -18,8 +20,10 @@ pub struct Playbook {
     pub text: String,
 }
 
-fn dir(settings: &SparkSettings) -> std::path::PathBuf {
-    settings.data_dir.join("playbooks")
+/// The roots for `project` (none or blank: bundled only).
+fn roots(settings: &SparkSettings, project: Option<&str>) -> attractor_dsl::FlowRoots {
+    let project = project.map(str::trim).filter(|path| !path.is_empty());
+    attractor_dsl::FlowRoots::new(settings.bundled_dir(), project.map(Path::new))
 }
 
 fn parse(name: &str, source: &str) -> WorkspaceResult<Playbook> {
@@ -38,32 +42,27 @@ fn parse(name: &str, source: &str) -> WorkspaceResult<Playbook> {
     Ok(playbook)
 }
 
-/// Installed playbooks without their text, sorted by name; unreadable files
-/// are skipped.
-pub fn list(settings: &SparkSettings) -> WorkspaceResult<Vec<Playbook>> {
-    let Ok(entries) = std::fs::read_dir(dir(settings)) else {
-        return Ok(vec![]);
-    };
-    let mut playbooks: Vec<Playbook> = entries
-        .filter_map(|entry| {
-            let name = entry
-                .ok()?
-                .file_name()
-                .to_str()?
-                .strip_suffix(".md")?
-                .to_string();
-            let playbook = get(settings, &name).ok()?;
+/// The playbooks `project` sees (none: bundled only), without their text,
+/// sorted by name; unreadable files are skipped.
+pub fn list(settings: &SparkSettings, project: Option<&str>) -> WorkspaceResult<Vec<Playbook>> {
+    Ok(roots(settings, project)
+        .list_playbook_names()
+        .into_iter()
+        .filter_map(|name| {
+            let playbook = get(settings, project, &name).ok()?;
             Some(Playbook {
                 text: String::new(),
                 ..playbook
             })
         })
-        .collect();
-    playbooks.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(playbooks)
+        .collect())
 }
 
-pub fn get(settings: &SparkSettings, name: &str) -> WorkspaceResult<Playbook> {
+pub fn get(
+    settings: &SparkSettings,
+    project: Option<&str>,
+    name: &str,
+) -> WorkspaceResult<Playbook> {
     if name.is_empty()
         || !name
             .chars()
@@ -73,7 +72,8 @@ pub fn get(settings: &SparkSettings, name: &str) -> WorkspaceResult<Playbook> {
             "Invalid playbook name `{name}`"
         )));
     }
-    let source = std::fs::read_to_string(dir(settings).join(format!("{name}.md")))
-        .map_err(|_| WorkspaceError::NotFound(format!("Unknown playbook `{name}`")))?;
+    let (_, source) = roots(settings, project)
+        .playbook_text(name)
+        .ok_or_else(|| WorkspaceError::NotFound(format!("Unknown playbook `{name}`")))?;
     parse(name, &source)
 }

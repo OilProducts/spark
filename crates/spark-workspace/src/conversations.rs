@@ -4435,7 +4435,7 @@ fn workspace_assistant_frame(
 /// How a chat or standing role runs a playbook through a mission.
 pub(crate) fn playbook_instructions(conversation_handle: &str, project_path: &str) -> String {
     format!(
-        "To run a playbook against an issue: `spark playbook list` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {conversation_handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`."
+        "To run a playbook against an issue: `spark playbook list --project {project_path}` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {conversation_handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`."
     )
 }
 

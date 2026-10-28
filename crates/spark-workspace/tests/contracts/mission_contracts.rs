@@ -389,9 +389,93 @@ fn a_model_set_on_a_draft_missions_conversation_runs_its_turns() {
 }
 
 #[test]
+fn playbooks_resolve_through_the_missions_project_then_bundled() {
+    let harness = Harness::new();
+    let write = |dir: &std::path::Path, name: &str, title: &str| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{name}.md")),
+            format!("---\ntitle: {title}\n---\n\n{title} text.\n"),
+        )
+        .unwrap();
+    };
+    let org_playbooks = |project: &str| {
+        spark_common::project::org_dir(std::path::Path::new(project)).join("playbooks")
+    };
+    let bundled = harness.settings.bundled_dir().join("playbooks");
+    write(&bundled, "bug-report", "Bundled bug report");
+    write(&bundled, "triage", "Bundled triage");
+    write(
+        &org_playbooks(&harness.project),
+        "bug-report",
+        "Org bug report",
+    );
+    write(&org_playbooks(&harness.project), "release", "Org release");
+    let other = harness.settings.project_root.with_file_name("project-b");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.to_str().unwrap();
+    write(&org_playbooks(other), "secret", "B only");
+
+    let titles = |project: Option<&str>| {
+        spark_workspace::playbooks::list(&harness.settings, project)
+            .unwrap()
+            .into_iter()
+            .map(|playbook| format!("{}={}", playbook.name, playbook.title))
+            .collect::<Vec<_>>()
+    };
+    // The org copy replaces the bundled one; listing covers both layers.
+    assert_eq!(
+        titles(Some(&harness.project)),
+        [
+            "bug-report=Org bug report",
+            "release=Org release",
+            "triage=Bundled triage"
+        ]
+    );
+    // No project, or a project without an org, sees bundled only.
+    let bundled_only = ["bug-report=Bundled bug report", "triage=Bundled triage"];
+    assert_eq!(titles(None), bundled_only);
+    let no_org = harness.settings.project_root.with_file_name("project-c");
+    std::fs::create_dir_all(&no_org).unwrap();
+    assert_eq!(titles(no_org.to_str()), bundled_only);
+    let get = |project: &str, name: &str| {
+        spark_workspace::playbooks::get(&harness.settings, Some(project), name)
+    };
+    assert_eq!(
+        get(&harness.project, "bug-report").unwrap().text,
+        "Org bug report text."
+    );
+    for name in ["../secret", ".hidden", "a/b", ""] {
+        assert!(
+            matches!(get(&harness.project, name), Err(WorkspaceError::Validation(message)) if message.contains("Invalid playbook name")),
+            "{name}"
+        );
+    }
+
+    // A mission in this project does not see the other project's playbooks.
+    assert!(matches!(
+        harness.missions.create(
+            &harness.project,
+            mutation(json!({"fields": {"title": "Leak", "playbook": "secret"}}))
+        ),
+        Err(WorkspaceError::Validation(message)) if message.contains("Unknown playbook `secret`")
+    ));
+    let mission = harness.create(json!({"title": "Release", "playbook": "release"}));
+    let started = harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    assert_eq!(started.playbook.unwrap().text, "Org release text.");
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+}
+
+#[test]
 fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
     let harness = Harness::new();
-    let playbooks = harness.settings.data_dir.join("playbooks");
+    let playbooks =
+        spark_common::project::org_dir(std::path::Path::new(&harness.project)).join("playbooks");
     std::fs::create_dir_all(&playbooks).unwrap();
     let file = playbooks.join("bug-report.md");
     std::fs::write(

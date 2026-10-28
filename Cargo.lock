@@ -4137,7 +4137,6 @@ dependencies = [
  "attractor-runtime",
  "axum",
  "serde_json",
- "sha2",
  "spark-agent-adapter",
  "spark-assets",
  "spark-common",

@@ -1681,14 +1681,25 @@ async fn mission_call(
 
 async fn list_playbooks(
     State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<FlowSurfaceQuery>, QueryRejection>,
 ) -> ApiResult<Vec<spark_workspace::playbooks::Playbook>> {
-    Ok(Json(spark_workspace::playbooks::list(&settings)?))
+    let query = optional_query_payload(payload)?;
+    Ok(Json(spark_workspace::playbooks::list(
+        &settings,
+        query.project_path.as_deref(),
+    )?))
 }
 async fn get_playbook(
     State(settings): State<Arc<SparkSettings>>,
     AxumPath(name): AxumPath<String>,
+    payload: Result<Query<FlowSurfaceQuery>, QueryRejection>,
 ) -> ApiResult<spark_workspace::playbooks::Playbook> {
-    Ok(Json(spark_workspace::playbooks::get(&settings, &name)?))
+    let query = optional_query_payload(payload)?;
+    Ok(Json(spark_workspace::playbooks::get(
+        &settings,
+        query.project_path.as_deref(),
+        &name,
+    )?))
 }
 
 async fn list_missions(

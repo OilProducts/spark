@@ -246,7 +246,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             {editing !== undefined
                 ? (mode === 'read' && editing
                     ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
-                    : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
+                    : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} project={project} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
                 : <div className="p-6"><Empty><EmptyDescription>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</EmptyDescription></Empty></div>}
         </section>

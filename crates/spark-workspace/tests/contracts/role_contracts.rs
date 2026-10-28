@@ -406,30 +406,47 @@ fn a_stopped_role_records_events_and_delivers_them_when_started_again() {
 }
 
 #[test]
-fn launches_over_either_budget_are_refused() {
+fn launches_over_either_budget_in_the_role_file_are_refused() {
     let harness = Harness::new();
     crate::install_named_flow(&harness.settings, "work/ok", tool_flow("true"));
+    // The org copy's budget replaces the bundled file's defaults.
+    let budget = |concurrent: usize, per_day: usize| {
+        harness.org_role(
+            CHIEF_OF_STAFF,
+            &CHIEF_OF_STAFF_FILE.replacen(
+                "standing: true",
+                &format!(
+                    "standing: true\nbudget:\n  concurrent_runs: {concurrent}\n  runs_per_day: {per_day}"
+                ),
+                1,
+            ),
+        )
+    };
+    budget(0, 2);
     harness
         .roles
         .start(&harness.project, CHIEF_OF_STAFF)
         .unwrap();
-    harness.request(0);
-    harness.edit_record(CHIEF_OF_STAFF, |role| {
-        role["budget"]["concurrent_runs"] = json!(0)
-    });
+    assert!(
+        frame(&harness.request(0)).contains("budget (0 concurrent runs, 2 runs per day)"),
+        "{}",
+        frame(&harness.request(0))
+    );
     let refused = harness
         .launch(CHIEF_OF_STAFF, "work/ok", "One")
         .unwrap_err();
     assert!(
-        refused.to_string().contains("concurrent_runs (0)"),
+        refused.to_string().contains("concurrent_runs (0)")
+            && refused.to_string().contains("roles/chief-of-staff.md"),
         "{refused}"
     );
+    budget(4, 2);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     harness.edit_record(CHIEF_OF_STAFF, |role| {
-        role["budget"]["concurrent_runs"] = json!(4);
+        // The record holds no budget, only runtime state.
+        assert!(role.get("budget").is_none(), "{role}");
         // Launches older than a day no longer count.
         role["recent_launches"] = json!([now - 90_000, now, now]);
-        role["budget"]["runs_per_day"] = json!(2);
     });
     let refused = harness
         .launch(CHIEF_OF_STAFF, "work/ok", "Two")
@@ -438,8 +455,31 @@ fn launches_over_either_budget_are_refused() {
         refused.to_string().contains("runs_per_day (2)"),
         "{refused}"
     );
-    assert!(harness.get(CHIEF_OF_STAFF).inbox.runs.is_empty());
+    let role = harness.get(CHIEF_OF_STAFF);
+    assert!(role.inbox.runs.is_empty());
+    assert_eq!(
+        (role.budget.concurrent_runs, role.budget.runs_per_day),
+        (4, 2)
+    );
     harness.finish_turn(CHIEF_OF_STAFF);
+}
+
+#[test]
+fn only_a_role_file_declaring_standing_can_start() {
+    let harness = Harness::new();
+    harness.org_role("helper", "---\ntype: Role\n---\n\nYou help.\n");
+    let refused = harness.roles.start(&harness.project, "helper").unwrap_err();
+    assert!(
+        matches!(&refused, WorkspaceError::Validation(message) if message.contains("standing: true")),
+        "{refused}"
+    );
+    assert!(harness.roles.get(&harness.project, "helper").is_err());
+    // The Coordinator stays standing whatever its file says, with its file's budget.
+    harness.org_role(COORDINATOR, "---\ntype: Role\n---\n\nYou coordinate.\n");
+    let coordinator = harness.roles.start(&harness.project, COORDINATOR).unwrap();
+    assert_eq!(coordinator.budget.runs_per_day, 20);
+    harness.request(0);
+    harness.finish_turn(COORDINATOR);
 }
 
 #[test]

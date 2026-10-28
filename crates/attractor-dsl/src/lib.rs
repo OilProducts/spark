@@ -14,7 +14,7 @@ pub use attractor_core::{
 pub use flow_files::{
     assemble_flow_files, flow_file_list, load_flow, parse_role, read_flow_dir, read_flow_dir_texts,
     render_flow_files, resolve_flow_roles, write_flow_dir, write_flow_files, FlowFileText,
-    LoadedFlow, Role, FLOW_FILE, RESERVED_FILES,
+    LoadedFlow, Role, RoleBudget, FLOW_FILE, RESERVED_FILES,
 };
 pub use flow_sources::{
     flow_ref_name, normalize_flow_name, validate_flow_definition, validated_flow, FlowManifest,

@@ -273,6 +273,35 @@ fn bundled_flows_use_named_sessions_instead_of_fidelity() {
 }
 
 #[test]
+fn role_files_declare_standing_and_its_budget() {
+    // Only the Coordinator and the Chief of Staff are bundled standing roles,
+    // on the default budget.
+    for (file, text) in spark_assets::roles::assets() {
+        let name = file.strip_suffix(".md").unwrap();
+        let role = attractor_dsl::parse_role(name, &text).expect("role");
+        assert_eq!(
+            role.standing,
+            matches!(name, "coordinator" | "chief-of-staff"),
+            "{name}"
+        );
+        assert_eq!(role.budget, attractor_dsl::RoleBudget::default(), "{name}");
+    }
+    let parse = |front: &str| {
+        attractor_dsl::parse_role("r", &format!("---\ntype: Role\n{front}---\nBody.\n"))
+    };
+    let role = parse("standing: true\nbudget:\n  runs_per_day: 3\n").expect("role");
+    assert!(role.standing);
+    assert_eq!(
+        (role.budget.concurrent_runs, role.budget.runs_per_day),
+        (4, 3)
+    );
+    assert!(!parse("").expect("role").standing);
+    let error = parse("budget:\n  concurrent_runs: 1\n").unwrap_err();
+    assert!(error.contains("budget without standing: true"), "{error}");
+    assert!(parse("standing: false\nbudget: {}\n").is_err());
+}
+
+#[test]
 fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap() {
     let role = |file: &str| {
         spark_assets::roles::assets()

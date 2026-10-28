@@ -110,17 +110,40 @@ struct RoleFile {
     execution: Option<ExecutionConfig>,
     #[serde(default)]
     isolated: bool,
+    #[serde(default)]
+    standing: bool,
+    #[serde(default)]
+    budget: Option<RoleBudget>,
+}
+
+/// A standing role's launch limits, from its role file's `budget`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoleBudget {
+    pub concurrent_runs: usize,
+    pub runs_per_day: usize,
+}
+impl Default for RoleBudget {
+    fn default() -> Self {
+        Self {
+            concurrent_runs: 4,
+            runs_per_day: 20,
+        }
+    }
 }
 
 /// A parsed role file: its persona (the body) and execution defaults.
 /// An `isolated` role always runs in a fresh session: its nodes may not set
-/// `session`.
+/// `session`. A `standing` role may be started as a standing role, within
+/// `budget` (defaults when the file sets none).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Role {
     pub title: Option<String>,
     pub persona: String,
     pub execution: Option<ExecutionConfig>,
     pub isolated: bool,
+    pub standing: bool,
+    pub budget: RoleBudget,
 }
 
 /// Loads a flow directory in its authored form (roles unresolved), validated
@@ -435,11 +458,18 @@ pub fn parse_role(name: &str, text: &str) -> Result<Role, String> {
     if role.file_type != "Role" {
         return Err(format!("role file {name}.md must declare type: Role"));
     }
+    if role.budget.is_some() && !role.standing {
+        return Err(format!(
+            "role file {name}.md sets budget without standing: true"
+        ));
+    }
     Ok(Role {
         title: role.title,
         persona: body.trim().to_string(),
         execution: role.execution,
         isolated: role.isolated,
+        standing: role.standing,
+        budget: role.budget.unwrap_or_default(),
     })
 }
 

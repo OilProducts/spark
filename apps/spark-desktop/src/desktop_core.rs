@@ -221,7 +221,6 @@ pub fn bootstrap_desktop_runtime(
         &RuntimeInitializationOptions {
             data_dir: None,
             ui_dir: None,
-            force: false,
         },
         env,
     )?;
