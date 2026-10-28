@@ -13,6 +13,7 @@ import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
+import { triggerKey } from "@/lib/workspaceClient"
 import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
 import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
@@ -40,11 +41,11 @@ export function TriggersPanel() {
     setSelectedTriggerId,
     systemTriggers,
   } = useTriggersList({ manageSync: false })
-  const revealWebhookSecret = (triggerId: string, secret: string) => {
+  const revealWebhookSecret = (key: string, secret: string) => {
     updateTriggersSession({
       revealedWebhookSecrets: {
         ...revealedWebhookSecrets,
-        [triggerId]: secret,
+        [key]: secret,
       },
     })
   }
@@ -83,10 +84,10 @@ export function TriggersPanel() {
     if (status !== 'ready') {
       return
     }
-    if (selectedTriggerId && visibleTriggers.some((trigger) => trigger.id === selectedTriggerId)) {
+    if (selectedTriggerId && visibleTriggers.some((trigger) => triggerKey(trigger) === selectedTriggerId)) {
       return
     }
-    const firstVisibleTriggerId = visibleTriggers[0]?.id ?? null
+    const firstVisibleTriggerId = visibleTriggers[0] ? triggerKey(visibleTriggers[0]) : null
     if (firstVisibleTriggerId !== selectedTriggerId) {
       setSelectedTriggerId(firstVisibleTriggerId)
     }
@@ -120,10 +121,10 @@ export function TriggersPanel() {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
             return (
               <SidePanelRow
-                key={trigger.id}
+                key={triggerKey(trigger)}
                 data-testid={`trigger-row-${trigger.id}`}
                 data-unregistered-target={unregistered ? 'true' : undefined}
-                selected={selectedTriggerId === trigger.id && !createFormOpen}
+                selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
                 tone="neutral"
                 hollow={!trigger.enabled}
@@ -142,7 +143,7 @@ export function TriggersPanel() {
                   </>
                 )}
                 onClick={() => {
-                  setSelectedTriggerId(trigger.id)
+                  setSelectedTriggerId(triggerKey(trigger))
                   updateTriggersSession({ createFormOpen: false })
                 }}
               />
@@ -257,7 +258,7 @@ export function TriggersPanel() {
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
                     </div>
                     <div className="font-mono text-xs text-foreground">
-                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[selectedTrigger.id] ?? 'Hidden after creation'}
+                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[triggerKey(selectedTrigger)] ?? 'Hidden after creation'}
                     </div>
                     <Button
                       type="button"

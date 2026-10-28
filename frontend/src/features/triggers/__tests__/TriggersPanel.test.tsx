@@ -1,6 +1,7 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { triggerKey } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -99,10 +100,10 @@ describe('TriggersPanel', () => {
   it('keeps a restored selection while the list loads and falls back once a missing one is known', async () => {
     let respond: (triggers: unknown[]) => void = () => undefined
     vi.mocked(fetch).mockImplementation(() => new Promise((resolve) => { respond = (triggers) => resolve(jsonResponse(triggers)) }))
-    act(() => useStore.getState().updateTriggersSession({ selectedTriggerId: 'second' }))
+    act(() => useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey({ project_path: '/project', id: 'second' }) }))
     renderTriggersPanel()
     await waitFor(() => expect(fetch).toHaveBeenCalled())
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('second')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/project', id: 'second' }))
     await act(async () => respond([makeTrigger({ id: 'first', name: 'First' }), makeTrigger({ id: 'second', name: 'Second' })]))
     expect(await screen.findByTestId('trigger-row-second')).toHaveAttribute('aria-current', 'true')
 
@@ -491,10 +492,10 @@ describe('TriggersPanel', () => {
     })
     expect(screen.getByDisplayValue('My draft')).toBeVisible()
     expect(save).toBeEnabled()
-    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default'].expectedRevision).toBe('revision-1')
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId[triggerKey(trigger)].expectedRevision).toBe('revision-1')
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     expect(await screen.findByDisplayValue('External')).toBeVisible()
-    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default']).toBeUndefined()
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId[triggerKey(trigger)]).toBeUndefined()
   })
 
   it('hides the create form until New trigger and restores the selected trigger on cancel', async () => {
@@ -514,10 +515,104 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
     expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Existing')).toBeVisible()
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('trigger-default')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/project', id: 'trigger-default' }))
 
     await openCreateTriggerForm(user)
     expect(screen.getByDisplayValue('Draft')).toBeVisible()
   })
 
+
+  describe('the same id in two projects', () => {
+    const projectA = '/tmp/project-a'
+    const projectB = '/tmp/project-b'
+    const rowFor = (name: string) => screen.getByRole('button', { name: new RegExp(name) })
+    const editorScope = () => within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
+    const twins = () => [
+      makeTrigger({ id: 'daily', name: 'Daily A', project_path: projectA, source_type: 'webhook', source: { webhook_key: 'key-a' } }),
+      makeTrigger({ id: 'daily', name: 'Daily B', project_path: projectB, source_type: 'webhook', source: { webhook_key: 'key-b' } }),
+    ]
+
+    it('selects, edits and deletes each one independently, scoped to its project', async () => {
+      let triggers = twins()
+      const requests: Array<{ method: string; url: string; body?: Record<string, unknown> }> = []
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = resolveRequestUrl(input as RequestInfo | URL)
+        const method = init?.method ?? 'GET'
+        if (method === 'GET') return jsonResponse(triggers)
+        const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
+        requests.push({ method, url, body })
+        const project = new URL(url, 'http://local').searchParams.get('project_path')
+        const target = triggers.find((trigger) => trigger.project_path === project)!
+        if (method === 'DELETE') {
+          triggers = triggers.filter((trigger) => trigger !== target)
+          return jsonResponse({ status: 'deleted', id: 'daily', project_path: project })
+        }
+        const updated = { ...target, name: String(body?.name ?? target.name), revision: 'revision-2' }
+        triggers = triggers.map((trigger) => trigger === target ? updated : trigger)
+        return jsonResponse(updated)
+      })
+      const user = userEvent.setup()
+      renderTriggersPanel()
+
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(2))
+      await user.click(rowFor('Daily B'))
+      expect(rowFor('Daily B')).toHaveAttribute('aria-current', 'true')
+      expect(rowFor('Daily A')).not.toHaveAttribute('aria-current', 'true')
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily B')
+
+      await user.clear(editorScope().getByLabelText('Name'))
+      await user.type(editorScope().getByLabelText('Name'), 'Daily B renamed')
+      await user.click(screen.getByTestId('trigger-save-button'))
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({ method: 'PATCH', body: { name: 'Daily B renamed' } })
+      expect(requests[0].url).toContain(`project_path=${encodeURIComponent(projectB)}`)
+      await waitFor(() => expect(rowFor('Daily B renamed')).toBeVisible())
+      expect(rowFor('Daily A')).toBeVisible()
+
+      await user.click(rowFor('Daily A'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A')
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      await user.click(screen.getByTestId('trigger-delete-button'))
+      await waitFor(() => expect(requests.map((request) => request.method)).toEqual(['PATCH', 'DELETE']))
+      expect(requests[1].url).toContain(`project_path=${encodeURIComponent(projectA)}`)
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(1))
+      expect(rowFor('Daily B renamed')).toBeVisible()
+    })
+
+    it('keeps separate drafts and secrets, and applies one project\'s live events without touching the other', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => jsonResponse(twins()))
+      const user = userEvent.setup()
+      renderTriggersPanel()
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(2))
+      const [a, b] = twins()
+      act(() => useStore.getState().updateTriggersSession({
+        revealedWebhookSecrets: { [triggerKey(a)]: 'secret-a', [triggerKey(b)]: 'secret-b' },
+      }))
+
+      await user.click(rowFor('Daily A'))
+      await user.type(editorScope().getByLabelText('Name'), ' draft')
+      await user.click(rowFor('Daily B'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily B')
+      expect(screen.getByText(/secret-b/)).toBeVisible()
+      expect(screen.queryByText(/secret-a/)).not.toBeInTheDocument()
+      await user.click(rowFor('Daily A'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A draft')
+      expect(screen.getByText(/secret-a/)).toBeVisible()
+      const drafts = useStore.getState().triggersSession.editTriggerDraftsByTriggerId
+      expect(Object.keys(drafts)).toEqual([triggerKey(a)])
+
+      const live = (type: string, trigger: unknown) => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:trigger-live-event', { detail: { type, payload: { trigger } } }))
+      })
+      live('trigger.upsert', { ...b, name: 'Daily B live', revision: 'revision-2' })
+      expect(rowFor('Daily B live')).toBeVisible()
+      expect(useStore.getState().triggersSession.triggers.find((trigger) => trigger.project_path === projectA)).toMatchObject({ name: 'Daily A', revision: 'revision-1' })
+      expect(rowFor('Daily A')).toHaveAttribute('aria-current', 'true')
+
+      live('trigger.delete', { status: 'deleted', id: 'daily', project_path: projectB })
+      expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(1)
+      expect(rowFor('Daily A')).toHaveAttribute('aria-current', 'true')
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A draft')
+    })
+  })
 })

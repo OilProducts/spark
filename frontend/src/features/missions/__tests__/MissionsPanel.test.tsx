@@ -617,7 +617,7 @@ it('shows waiting in Running and links targeting triggers from mission detail', 
     fireEvent.click(screen.getByRole('button', { name: task.fields.title }))
     fireEvent.click(await screen.findByRole('button', { name: 'Review watcher · webhook · Enabled' }))
     expect(useStore.getState().viewMode).toBe('triggers')
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('watcher')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(JSON.stringify(['/project', 'watcher']))
 })
 
 

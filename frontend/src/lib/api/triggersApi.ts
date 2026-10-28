@@ -113,6 +113,13 @@ export function parseTriggerListResponse(payload: unknown, endpoint = '/workspac
     return payload.map((entry) => parseTriggerResponse(entry, endpoint))
 }
 
+/**
+ * A trigger's identity: its project plus its id, since ids are unique only
+ * within a project. Selection, drafts and revealed secrets are keyed by it.
+ */
+export const triggerKey = (trigger: { project_path: string; id: string }) =>
+    JSON.stringify([trigger.project_path, trigger.id])
+
 const triggerPath = (projectPath: string, triggerId: string) =>
     `/triggers/${encodeURIComponent(triggerId)}?project_path=${encodeURIComponent(projectPath)}`
 

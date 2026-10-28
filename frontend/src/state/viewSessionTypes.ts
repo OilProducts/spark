@@ -113,6 +113,7 @@ export interface TriggerCreateDraftState {
     form: TriggerFormState
 }
 
+/** Trigger maps and selection below are keyed by `triggerKey` (project plus id). */
 export interface TriggerEditDraftState {
     expectedRevision?: string
     triggerId: string | null

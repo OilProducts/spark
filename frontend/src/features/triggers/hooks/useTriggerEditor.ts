@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import {
     createTriggerValidated,
     deleteTriggerValidated,
+    triggerKey,
     updateTriggerValidated,
     type TriggerResponse,
 } from '@/lib/workspaceClient'
@@ -53,7 +54,7 @@ export function useTriggerEditor({
         [selectedTrigger],
     )
     const newTriggerForm = newTriggerDraft.form
-    const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[selectedTrigger.id] ?? null : null
+    const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[triggerKey(selectedTrigger)] ?? null : null
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
     const dirty = Boolean(currentEditDraft?.form)
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
@@ -73,13 +74,13 @@ export function useTriggerEditor({
                 source: buildTriggerSourcePayload(newTriggerForm),
             })
             if (created.webhook_secret) {
-                revealWebhookSecret(created.id, created.webhook_secret)
+                revealWebhookSecret(triggerKey(created), created.webhook_secret)
             }
             setTriggersSessionNewDraft({
                 form: createEmptyTriggerForm(defaultProjectChoice(useStore.getState().projectRegistry, useStore.getState().activeProjectPath)),
             })
             await refreshTriggers()
-            setSelectedTriggerId(created.id)
+            setSelectedTriggerId(triggerKey(created))
             updateTriggersSession({ createFormOpen: false })
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to create trigger.')
@@ -106,9 +107,9 @@ export function useTriggerEditor({
                 }
             const updated = await updateTriggerValidated(selectedTrigger.project_path, selectedTrigger.id, { ...payload, expected_revision: currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision })
             if (updated.webhook_secret) {
-                revealWebhookSecret(updated.id, updated.webhook_secret)
+                revealWebhookSecret(triggerKey(selectedTrigger), updated.webhook_secret)
             }
-            setTriggersSessionEditDraft(selectedTrigger.id, null)
+            setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to save trigger.')
@@ -137,7 +138,7 @@ export function useTriggerEditor({
         setPending(true)
         try {
             await deleteTriggerValidated(selectedTrigger.project_path, selectedTrigger.id, currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision)
-            setTriggersSessionEditDraft(selectedTrigger.id, null)
+            setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
             setSelectedTriggerId(null)
             await refreshTriggers()
         } catch (nextError) {
@@ -154,7 +155,7 @@ export function useTriggerEditor({
         externalChange,
         discard: () => {
             if (pendingRef.current || !selectedTrigger) return
-            setTriggersSessionEditDraft(selectedTrigger.id, null)
+            setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
             void refreshTriggers()
         },
         editTriggerForm: resolvedEditTriggerForm,
@@ -167,8 +168,8 @@ export function useTriggerEditor({
                 return
             }
             const currentDraft = currentEditDraft
-            setTriggersSessionEditDraft(selectedTrigger.id, {
-                triggerId: selectedTrigger.id,
+            setTriggersSessionEditDraft(triggerKey(selectedTrigger), {
+                triggerId: triggerKey(selectedTrigger),
                 expectedRevision: currentDraft?.form ? currentDraft.expectedRevision ?? '' : selectedTrigger.revision,
                 form: next,
             })

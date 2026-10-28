@@ -69,6 +69,7 @@ export {
     parseProjectRecordResponsePayload,
     parseTriggerListResponse,
     parseTriggerResponse,
+    triggerKey,
     parseWorkspaceFlowListResponse,
     parseWorkspaceFlowResponse,
     parseWorkspaceSettingsResponse,
