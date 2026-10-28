@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
-use spark_common::project::normalize_project_path;
+use spark_common::project::{commit_org_paths, ensure_org_repo, org_dir};
 use spark_common::settings::SparkSettings;
 use toml::Value as TomlValue;
 
 use crate::error::{Result, StorageError};
-use crate::{write_json_atomic, write_text_atomic, JsonWriteOptions};
+use crate::{write_json_atomic, JsonWriteOptions, ProjectRegistry};
 
 const SOURCE_SCHEDULE: &str = "schedule";
 const SOURCE_POLL: &str = "poll";
@@ -39,7 +39,6 @@ pub struct TriggerAction {
     /// The standing role a `role` action delivers to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    pub project_path: Option<String>,
     pub static_context: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_profile_id: Option<String>,
@@ -53,13 +52,17 @@ fn is_static_action_mode(value: &str) -> bool {
     value == ACTION_MODE_STATIC
 }
 
+/// A trigger's definition, read from `<org>/triggers/<id>.toml` in the org
+/// repo of the project it belongs to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TriggerDefinition {
     #[serde(skip)]
     pub revision: String,
+    /// The project whose org holds the definition; derived, never stored.
+    #[serde(skip)]
+    pub project_path: String,
     pub id: String,
     pub name: String,
-    pub enabled: bool,
     pub protected: bool,
     pub source_type: String,
     pub action: TriggerAction,
@@ -68,8 +71,11 @@ pub struct TriggerDefinition {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// A trigger's runtime state, kept by Spark beside the project's records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TriggerState {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default)]
@@ -80,6 +86,30 @@ pub struct TriggerState {
     pub next_run_at: Option<String>,
     #[serde(default)]
     pub recent_history: Vec<TriggerStateHistoryEntry>,
+    /// Webhook credentials live only here, never in a git repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_hash: Option<String>,
+}
+
+impl Default for TriggerState {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            last_error: None,
+            last_fired_at: None,
+            last_result: None,
+            next_run_at: None,
+            recent_history: Vec::new(),
+            webhook_key: None,
+            secret_hash: None,
+        }
+    }
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,34 +121,40 @@ pub struct TriggerStateHistoryEntry {
     pub run_id: Option<String>,
 }
 
+/// One project's trigger definitions in its org repo. Reads never create
+/// directories there; the first write creates the org repo. Locks live
+/// under Spark's data directory, and every write commits only its file.
 #[derive(Debug, Clone)]
 pub struct TriggerDefinitionRepository {
     config_dir: PathBuf,
+    project_path: String,
+    lock_dir: PathBuf,
 }
 
 impl TriggerDefinitionRepository {
-    pub fn new(config_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            config_dir: config_dir.into(),
-        }
+    pub fn project_path(&self) -> &str {
+        &self.project_path
     }
 
-    pub fn root_dir(&self) -> Result<PathBuf> {
-        trigger_config_dir(&self.config_dir)
+    pub fn root_dir(&self) -> PathBuf {
+        org_dir(Path::new(&self.project_path)).join("triggers")
     }
 
     pub fn definition_path(&self, trigger_id: &str) -> Result<PathBuf> {
         let id = validate_trigger_id(trigger_id)?;
-        Ok(self.root_dir()?.join(format!("{id}.toml")))
+        Ok(self.root_dir().join(format!("{id}.toml")))
     }
 
     pub fn list(&self) -> Result<Vec<TriggerDefinition>> {
-        let root = self.root_dir()?;
-        let mut paths = fs::read_dir(&root)
-            .map_err(|source| StorageError::io("list trigger definitions", &root, source))?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
-            .collect::<Vec<_>>();
+        let root = self.root_dir();
+        let mut paths = match fs::read_dir(&root) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
+                .collect::<Vec<_>>(),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(source) => return Err(StorageError::io("list trigger definitions", &root, source)),
+        };
         paths.sort();
         let mut definitions = Vec::new();
         for path in paths {
@@ -151,17 +187,20 @@ impl TriggerDefinitionRepository {
             .ok_or_else(|| invalid_trigger(&path, "Trigger definition must be a TOML table."))?;
         let mut definition = parse_trigger_definition(trigger_id, table, &path)?;
         definition.revision = format!("{:x}", Sha1::digest(text.as_bytes()));
+        definition.project_path = self.project_path.clone();
         Ok(Some(definition))
     }
 
-    pub fn put(&self, definition: &TriggerDefinition) -> Result<String> {
+    /// Writes the definition and commits it, with `message` or "Create/Edit
+    /// trigger <name>". Returns the new revision.
+    pub fn put(&self, definition: &TriggerDefinition, message: Option<&str>) -> Result<String> {
         let _references = crate::settings::lock_profile_references(&self.config_dir)?;
         crate::settings::validate_profile_references(
             &self.config_dir,
             &serde_json::json!(definition.action),
         )?;
         let path = self.definition_path(&definition.id)?;
-        let _lock = crate::settings::lock_document(&path)?;
+        let _lock = self.lock(&definition.id)?;
         let current = crate::settings::read_settings_document(&path)?;
         let expected = if definition.revision.is_empty() {
             "absent"
@@ -171,47 +210,92 @@ impl TriggerDefinitionRepository {
         if current.revision != expected {
             return Err(StorageError::SettingsConflict { path });
         }
-        let text = trigger_definition_toml(definition);
-        let payload: toml::Table =
-            toml::from_str(&text).map_err(|_| invalid_trigger(&path, "Invalid trigger TOML."))?;
-        parse_trigger_definition(&definition.id, &payload, &path)?;
-        write_text_atomic(&path, &text)?;
+        let payload: toml::Table = toml::from_str(&trigger_definition_toml(definition))
+            .map_err(|_| invalid_trigger(&path, "Invalid trigger TOML."))?;
+        // Written as normalized, which drops anything the file never holds,
+        // such as webhook credentials.
+        let text =
+            trigger_definition_toml(&parse_trigger_definition(&definition.id, &payload, &path)?);
+        ensure_org_repo(Path::new(&self.project_path)).map_err(|error| git_error(&path, error))?;
+        fs::create_dir_all(self.root_dir())
+            .map_err(|source| StorageError::io("create trigger directory", &path, source))?;
+        // A plain write: an atomic one would put a temp file in the org repo.
+        fs::write(&path, &text)
+            .map_err(|source| StorageError::io("write trigger definition", &path, source))?;
+        let verb = if current.revision == "absent" {
+            "Create"
+        } else {
+            "Edit"
+        };
+        self.commit(
+            &definition.id,
+            message,
+            &format!("{verb} trigger {}", definition.name),
+        )?;
         Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
-    pub fn delete(&self, trigger_id: &str, expected_revision: &str) -> Result<()> {
+    /// Deletes the definition and commits the deletion, with `message` or
+    /// "Delete trigger <name>".
+    pub fn delete(
+        &self,
+        trigger_id: &str,
+        expected_revision: &str,
+        message: Option<&str>,
+    ) -> Result<()> {
         let path = self.definition_path(trigger_id)?;
-        let _lock = crate::settings::lock_document(&path)?;
-        if crate::settings::read_settings_document(&path)?.revision != expected_revision {
+        let _lock = self.lock(trigger_id)?;
+        let current = crate::settings::read_settings_document(&path)?;
+        if current.revision != expected_revision {
             return Err(StorageError::SettingsConflict { path });
         }
+        let name = toml_scalar_to_string(current.values.get("name"));
         match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(StorageError::io("delete trigger definition", &path, source)),
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(StorageError::io("delete trigger definition", &path, source))
+            }
         }
+        self.commit(
+            trigger_id,
+            message,
+            &format!("Delete trigger {}", name.trim()),
+        )
+    }
+
+    fn lock(&self, trigger_id: &str) -> Result<fs::File> {
+        let id = validate_trigger_id(trigger_id)?;
+        crate::settings::lock_document(&self.lock_dir.join(format!("{id}.toml")))
+    }
+
+    fn commit(&self, trigger_id: &str, message: Option<&str>, default: &str) -> Result<()> {
+        let path = self.definition_path(trigger_id)?;
+        let message = message
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .unwrap_or(default);
+        let org = org_dir(Path::new(&self.project_path));
+        let pathspec = format!(":(literal)triggers/{}.toml", trigger_id.trim());
+        commit_org_paths(&org, &[pathspec], message).map_err(|error| git_error(&path, error))
     }
 }
 
+/// One project's trigger runtime state, at
+/// `<data>/workspace/projects/<project id>/triggers/<id>.json`.
 #[derive(Debug, Clone)]
 pub struct TriggerRuntimeStateRepository {
-    data_dir: PathBuf,
+    root: PathBuf,
 }
 
 impl TriggerRuntimeStateRepository {
-    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            data_dir: data_dir.into(),
-        }
-    }
-
-    pub fn root_dir(&self) -> Result<PathBuf> {
-        trigger_state_dir(&self.data_dir)
+    pub fn root_dir(&self) -> &Path {
+        &self.root
     }
 
     pub fn state_path(&self, trigger_id: &str) -> Result<PathBuf> {
         let id = validate_trigger_id(trigger_id)?;
-        Ok(self.root_dir()?.join(format!("{id}.json")))
+        Ok(self.root.join(format!("{id}.json")))
     }
 
     pub fn load(&self, trigger_id: &str) -> Result<TriggerState> {
@@ -252,90 +336,53 @@ impl TriggerRuntimeStateRepository {
     }
 }
 
+/// Triggers across projects: each project's definitions in its org repo and
+/// their runtime state under Spark's data directory.
 #[derive(Debug, Clone)]
 pub struct TriggerRepositories {
-    pub definitions: TriggerDefinitionRepository,
-    pub runtime_state: TriggerRuntimeStateRepository,
+    config_dir: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl TriggerRepositories {
     pub fn new(config_dir: impl Into<PathBuf>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            definitions: TriggerDefinitionRepository::new(config_dir),
-            runtime_state: TriggerRuntimeStateRepository::new(data_dir),
+            config_dir: config_dir.into(),
+            data_dir: data_dir.into(),
         }
     }
 
     pub fn from_settings(settings: &SparkSettings) -> Self {
         Self::new(settings.config_dir.clone(), settings.data_dir.clone())
     }
-}
 
-pub fn trigger_config_dir(config_dir: impl AsRef<Path>) -> Result<PathBuf> {
-    let path = config_dir.as_ref().join("triggers");
-    fs::create_dir_all(&path)
-        .map_err(|source| StorageError::io("create trigger config directory", &path, source))?;
-    Ok(path)
-}
+    fn state_root(&self, project_path: &str) -> Result<(String, PathBuf)> {
+        let paths = ProjectRegistry::new(self.data_dir.clone()).project_paths(project_path)?;
+        Ok((paths.project_path, paths.root.join("triggers")))
+    }
 
-pub fn trigger_definition_path(config_dir: impl AsRef<Path>, trigger_id: &str) -> Result<PathBuf> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf()).definition_path(trigger_id)
-}
+    pub fn definitions(&self, project_path: &str) -> Result<TriggerDefinitionRepository> {
+        let (project_path, lock_dir) = self.state_root(project_path)?;
+        Ok(TriggerDefinitionRepository {
+            config_dir: self.config_dir.clone(),
+            project_path,
+            lock_dir,
+        })
+    }
 
-pub fn trigger_state_dir(data_dir: impl AsRef<Path>) -> Result<PathBuf> {
-    let path = data_dir.as_ref().join("workspace").join("trigger-state");
-    fs::create_dir_all(&path)
-        .map_err(|source| StorageError::io("create trigger state directory", &path, source))?;
-    Ok(path)
-}
+    pub fn runtime_state(&self, project_path: &str) -> Result<TriggerRuntimeStateRepository> {
+        let (_, root) = self.state_root(project_path)?;
+        Ok(TriggerRuntimeStateRepository { root })
+    }
 
-pub fn trigger_state_path(data_dir: impl AsRef<Path>, trigger_id: &str) -> Result<PathBuf> {
-    TriggerRuntimeStateRepository::new(data_dir.as_ref().to_path_buf()).state_path(trigger_id)
-}
-
-pub fn list_trigger_definitions(config_dir: impl AsRef<Path>) -> Result<Vec<TriggerDefinition>> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf()).list()
-}
-
-pub fn read_trigger_definition(
-    config_dir: impl AsRef<Path>,
-    trigger_id: &str,
-) -> Result<Option<TriggerDefinition>> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf()).get(trigger_id)
-}
-
-pub fn write_trigger_definition(
-    config_dir: impl AsRef<Path>,
-    definition: &TriggerDefinition,
-) -> Result<PathBuf> {
-    let repository = TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf());
-    repository.put(definition)?;
-    repository.definition_path(&definition.id)
-}
-
-pub fn delete_trigger_definition(
-    config_dir: impl AsRef<Path>,
-    trigger_id: &str,
-    expected_revision: &str,
-) -> Result<()> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf())
-        .delete(trigger_id, expected_revision)
-}
-
-pub fn load_trigger_state(data_dir: impl AsRef<Path>, trigger_id: &str) -> Result<TriggerState> {
-    TriggerRuntimeStateRepository::new(data_dir.as_ref().to_path_buf()).load(trigger_id)
-}
-
-pub fn save_trigger_state(
-    data_dir: impl AsRef<Path>,
-    trigger_id: &str,
-    state: &TriggerState,
-) -> Result<PathBuf> {
-    TriggerRuntimeStateRepository::new(data_dir.as_ref().to_path_buf()).save(trigger_id, state)
-}
-
-pub fn delete_trigger_state(data_dir: impl AsRef<Path>, trigger_id: &str) -> Result<()> {
-    TriggerRuntimeStateRepository::new(data_dir.as_ref().to_path_buf()).delete(trigger_id)
+    /// Every registered project's trigger definitions.
+    pub fn list_all(&self) -> Result<Vec<TriggerDefinition>> {
+        let mut definitions = Vec::new();
+        for project in ProjectRegistry::new(self.data_dir.clone()).list_project_records()? {
+            definitions.extend(self.definitions(&project.project_path)?.list()?);
+        }
+        Ok(definitions)
+    }
 }
 
 pub fn normalize_trigger_action_payload(payload: &Map<String, Value>) -> Result<TriggerAction> {
@@ -345,14 +392,8 @@ pub fn normalize_trigger_action_payload(payload: &Map<String, Value>) -> Result<
 pub fn normalize_trigger_source_payload(
     source_type: &str,
     payload: &Map<String, Value>,
-    preserve_secret_hash: Option<&Value>,
 ) -> Result<Map<String, Value>> {
-    normalize_trigger_source_payload_at(
-        source_type,
-        payload,
-        preserve_secret_hash,
-        Path::new("trigger definition"),
-    )
+    normalize_trigger_source_payload_at(source_type, payload, Path::new("trigger definition"))
 }
 
 fn parse_trigger_definition(
@@ -385,19 +426,15 @@ fn parse_trigger_definition(
     let source = normalize_trigger_source_payload_at(
         &source_type,
         &parse_source(source_payload, path)?,
-        None,
         path,
     )?;
     Ok(TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id: trigger_id.to_string(),
         name: toml_scalar_to_string(payload.get("name"))
             .trim()
             .to_string(),
-        enabled: payload
-            .get("enabled")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(true),
         protected: payload
             .get("protected")
             .and_then(|value| value.as_bool())
@@ -465,28 +502,14 @@ fn normalize_trigger_action_payload_at(
             "Trigger action requires a flow_name.",
         ));
     }
-    let project_path = payload
-        .get("project_path")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            normalize_project_path(value)
-                .map_err(|error| invalid_trigger(path, error.to_string()))?
-                .map(|path| path.to_string_lossy().into_owned())
-                .ok_or_else(|| invalid_trigger(path, "Project path is required."))
-        })
-        .transpose()?;
     let mission_id = payload
         .get("mission_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
-    if mode == "mission" && (mission_id.is_none() || project_path.is_none()) {
-        return Err(invalid_trigger(
-            path,
-            "Mission actions require mission_id and project_path.",
-        ));
+    if mode == "mission" && mission_id.is_none() {
+        return Err(invalid_trigger(path, "Mission actions require mission_id."));
     }
     let role = payload
         .get("role")
@@ -496,11 +519,8 @@ fn normalize_trigger_action_payload_at(
         .map(str::to_string)
         .filter(|_| mode == "role");
     let mission_id = mission_id.filter(|_| mode == "mission");
-    if mode == "role" && (role.is_none() || project_path.is_none()) {
-        return Err(invalid_trigger(
-            path,
-            "Role actions require role and project_path.",
-        ));
+    if mode == "role" && role.is_none() {
+        return Err(invalid_trigger(path, "Role actions require role."));
     }
     let flow_name = if mode != ACTION_MODE_STATIC {
         String::new()
@@ -542,7 +562,6 @@ fn normalize_trigger_action_payload_at(
         mission_id,
         role,
         flow_name,
-        project_path,
         static_context,
         execution_profile_id,
     })
@@ -551,13 +570,13 @@ fn normalize_trigger_action_payload_at(
 fn normalize_trigger_source_payload_at(
     source_type: &str,
     payload: &Map<String, Value>,
-    preserve_secret_hash: Option<&Value>,
     path: &Path,
 ) -> Result<Map<String, Value>> {
     match source_type.trim() {
         SOURCE_SCHEDULE => normalize_schedule_source(payload, path),
         SOURCE_POLL => normalize_poll_source(payload, path),
-        SOURCE_WEBHOOK => normalize_webhook_source(payload, preserve_secret_hash, path),
+        // Webhook credentials live in runtime state, not the definition.
+        SOURCE_WEBHOOK => Ok(Map::new()),
         SOURCE_FLOW_EVENT => normalize_flow_event_source(payload, path),
         other => Err(invalid_trigger(
             path,
@@ -724,42 +743,6 @@ fn normalize_poll_source(payload: &Map<String, Value>, path: &Path) -> Result<Ma
     ]))
 }
 
-fn normalize_webhook_source(
-    payload: &Map<String, Value>,
-    preserve_secret_hash: Option<&Value>,
-    path: &Path,
-) -> Result<Map<String, Value>> {
-    let webhook_key = payload
-        .get("webhook_key")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let secret_hash = payload
-        .get("secret_hash")
-        .or(preserve_secret_hash)
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if webhook_key.is_empty() {
-        return Err(invalid_trigger(
-            path,
-            "Webhook triggers require webhook_key.",
-        ));
-    }
-    if secret_hash.is_empty() {
-        return Err(invalid_trigger(
-            path,
-            "Webhook triggers require secret_hash.",
-        ));
-    }
-    Ok(Map::from_iter([
-        ("webhook_key".to_string(), Value::String(webhook_key)),
-        ("secret_hash".to_string(), Value::String(secret_hash)),
-    ]))
-}
-
 fn normalize_flow_event_source(
     payload: &Map<String, Value>,
     path: &Path,
@@ -847,7 +830,6 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
     let mut lines = vec![
         format!("id = {}", toml_string(&definition.id)),
         format!("name = {}", toml_string(&definition.name)),
-        format!("enabled = {}", toml_bool(definition.enabled)),
         format!("protected = {}", toml_bool(definition.protected)),
         format!("source_type = {}", toml_string(&definition.source_type)),
         format!("created_at = {}", toml_string(&definition.created_at)),
@@ -869,9 +851,6 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
             "flow_name = {}",
             toml_string(&definition.action.flow_name)
         ));
-    }
-    if let Some(project_path) = definition.action.project_path.as_deref() {
-        lines.push(format!("project_path = {}", toml_string(project_path)));
     }
     if !definition.action.static_context.is_empty() {
         lines.push(format!(
@@ -1030,4 +1009,12 @@ fn invalid_trigger(path: &Path, reason: impl Into<String>) -> StorageError {
         path: path.to_path_buf(),
         reason: reason.into(),
     }
+}
+
+fn git_error(path: &Path, error: String) -> StorageError {
+    StorageError::io(
+        "commit trigger definition",
+        path,
+        std::io::Error::other(error),
+    )
 }

@@ -280,16 +280,19 @@ pub fn validate_profile_candidate(
         }
         Ok(())
     })?;
-    for trigger in spark_storage::list_trigger_definitions(&settings.config_dir)? {
-        inspect(
-            json!(trigger.action),
-            format!("trigger {}.action", trigger.id),
-        );
+    let projects =
+        spark_storage::ProjectRegistry::new(settings.data_dir.clone()).list_project_records()?;
+    let triggers = spark_storage::TriggerRepositories::from_settings(settings);
+    for project in &projects {
+        for trigger in triggers.definitions(&project.project_path)?.list()? {
+            inspect(
+                json!(trigger.action),
+                format!("trigger {}.action in {}", trigger.id, project.project_path),
+            );
+        }
     }
     // Bundled flows, then each registered project's flows with its org
     // files layered over them.
-    let projects =
-        spark_storage::ProjectRegistry::new(settings.data_dir.clone()).list_project_records()?;
     let scopes = std::iter::once((attractor_api::flow_roots(settings, None), String::new()))
         .chain(projects.iter().map(|project| {
             (

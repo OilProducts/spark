@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Map, Value};
+use spark_common::project::normalize_project_path;
 use spark_storage::TriggerRepositories;
 use time::{Duration, OffsetDateTime};
 
@@ -73,13 +75,12 @@ impl TriggerSourceRuntime {
 
     pub fn reload_refresh_state(&self) -> TriggerResult<Vec<SerializedTrigger>> {
         self.repositories
-            .definitions
-            .list()?
+            .list_all()?
             .into_iter()
             .map(|definition| {
                 let state = self
                     .repositories
-                    .runtime_state
+                    .runtime_state(&definition.project_path)?
                     .update(&definition.id, |state| {
                         state::refresh_next_run_at(&definition, state);
                     })?;
@@ -93,10 +94,10 @@ impl TriggerSourceRuntime {
         now: OffsetDateTime,
     ) -> TriggerResult<Vec<TriggerActivationOutcome>> {
         let mut outcomes = Vec::new();
-        for definition in self.repositories.definitions.list()? {
-            if !definition.enabled {
-                continue;
-            }
+        // ponytail: reads every registered project's org triggers each tick,
+        // so hand edits apply without a restart; cache by directory mtime if
+        // projects or triggers grow large.
+        for definition in self.repositories.list_all()? {
             match definition.source_type.as_str() {
                 SOURCE_SCHEDULE => {
                     outcomes.extend(self.process_schedule_source(&definition, now)?);
@@ -115,15 +116,17 @@ impl TriggerSourceRuntime {
         definition: &TriggerDefinition,
         now: OffsetDateTime,
     ) -> TriggerResult<Vec<TriggerActivationOutcome>> {
-        if definition.source_type != SOURCE_SCHEDULE || !definition.enabled {
+        if definition.source_type != SOURCE_SCHEDULE {
             return Ok(Vec::new());
         }
-        let mut trigger_state = self.repositories.runtime_state.load(&definition.id)?;
+        let states = self.repositories.runtime_state(&definition.project_path)?;
+        let mut trigger_state = states.load(&definition.id)?;
+        if !trigger_state.enabled {
+            return Ok(Vec::new());
+        }
         let due_at = state::schedule_due_at(definition, &trigger_state, now);
         trigger_state.next_run_at = state::compute_next_run_at_at(definition, &trigger_state, now);
-        self.repositories
-            .runtime_state
-            .save(&definition.id, &trigger_state)?;
+        states.save(&definition.id, &trigger_state)?;
         let Some(due_at) = due_at else {
             return Ok(Vec::new());
         };
@@ -141,10 +144,14 @@ impl TriggerSourceRuntime {
         definition: &TriggerDefinition,
         now: OffsetDateTime,
     ) -> TriggerResult<Vec<TriggerActivationOutcome>> {
-        if definition.source_type != SOURCE_POLL || !definition.enabled {
+        if definition.source_type != SOURCE_POLL {
             return Ok(Vec::new());
         }
-        let mut trigger_state = self.repositories.runtime_state.load(&definition.id)?;
+        let states = self.repositories.runtime_state(&definition.project_path)?;
+        let mut trigger_state = states.load(&definition.id)?;
+        if !trigger_state.enabled {
+            return Ok(Vec::new());
+        }
         if state::parse_iso_datetime(trigger_state.next_run_at.as_deref())
             .is_some_and(|next_run_at| now < next_run_at)
         {
@@ -159,9 +166,7 @@ impl TriggerSourceRuntime {
         trigger_state.next_run_at = Some(state::datetime_to_iso(
             now + Duration::seconds(interval_seconds),
         ));
-        self.repositories
-            .runtime_state
-            .save(&definition.id, &trigger_state)?;
+        states.save(&definition.id, &trigger_state)?;
 
         let payload = match self.fetch_poll_payload(definition).await {
             Ok(payload) => payload,
@@ -207,6 +212,8 @@ impl TriggerSourceRuntime {
         Ok(outcomes)
     }
 
+    /// Fires the enabled `flow_event` triggers that match a terminal run, each
+    /// only for runs in its own project.
     pub fn emit_flow_event(
         &self,
         payload: Map<String, Value>,
@@ -225,11 +232,25 @@ impl TriggerSourceRuntime {
         if flow_name.is_empty() || !TERMINAL_PIPELINE_STATUSES.contains(&status.as_str()) {
             return Ok(Vec::new());
         }
+        let run_project = payload
+            .get("project_path")
+            .and_then(Value::as_str)
+            .and_then(|path| normalize_project_path(path).ok().flatten());
 
         let now = OffsetDateTime::now_utc();
         let mut outcomes = Vec::new();
-        for definition in self.repositories.definitions.list()? {
-            if definition.source_type != SOURCE_FLOW_EVENT || !definition.enabled {
+        for definition in self.repositories.list_all()? {
+            if definition.source_type != SOURCE_FLOW_EVENT
+                || run_project.as_deref() != Some(Path::new(&definition.project_path))
+            {
+                continue;
+            }
+            if !self
+                .repositories
+                .runtime_state(&definition.project_path)?
+                .load(&definition.id)?
+                .enabled
+            {
                 continue;
             }
             let configured_flow_name = definition
@@ -301,13 +322,15 @@ impl TriggerSourceRuntime {
     ) -> TriggerResult<TriggerActivationOutcome> {
         let sink_result = self.sink.activate(TriggerActivationRequest {
             trigger_id: definition.id.clone(),
+            project_path: definition.project_path.clone(),
             trigger_name: definition.name.clone(),
             source_type: definition.source_type.clone(),
             action: definition.action.clone(),
             source_payload: source_payload.clone(),
             delivery_id,
         });
-        let mut trigger_state = self.repositories.runtime_state.load(&definition.id)?;
+        let states = self.repositories.runtime_state(&definition.project_path)?;
+        let mut trigger_state = states.load(&definition.id)?;
         match sink_result {
             Ok(sink_outcome) => {
                 let message = sink_outcome
@@ -330,9 +353,7 @@ impl TriggerSourceRuntime {
                         sink_outcome.run_id.clone(),
                     );
                 }
-                self.repositories
-                    .runtime_state
-                    .save(&definition.id, &trigger_state)?;
+                states.save(&definition.id, &trigger_state)?;
                 Ok(TriggerActivationOutcome {
                     trigger_id: definition.id.clone(),
                     source_type: definition.source_type.clone(),
@@ -357,11 +378,10 @@ impl TriggerSourceRuntime {
         source_payload: Value,
     ) -> TriggerResult<TriggerActivationOutcome> {
         let message = message.into();
-        let mut trigger_state = self.repositories.runtime_state.load(&definition.id)?;
+        let states = self.repositories.runtime_state(&definition.project_path)?;
+        let mut trigger_state = states.load(&definition.id)?;
         state::record_activation_failure(definition, &mut trigger_state, timestamp, &message);
-        self.repositories
-            .runtime_state
-            .save(&definition.id, &trigger_state)?;
+        states.save(&definition.id, &trigger_state)?;
         Ok(TriggerActivationOutcome {
             trigger_id: definition.id.clone(),
             source_type: definition.source_type.clone(),

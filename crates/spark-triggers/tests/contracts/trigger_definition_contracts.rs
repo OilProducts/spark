@@ -1,11 +1,9 @@
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
+use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
-use spark_storage::{
-    load_trigger_state, read_trigger_definition, save_trigger_state, TriggerAction,
-    TriggerDefinition, TriggerRepositories, TriggerRuntimeStateRepository, TriggerState,
-};
+use spark_storage::{TriggerAction, TriggerDefinition, TriggerRepositories, TriggerState};
 use spark_triggers::{
     state, TriggerCreateRequest, TriggerError, TriggerService, TriggerUpdateRequest,
     WebhookHandleRequest,
@@ -15,11 +13,13 @@ use spark_triggers::{
 fn create_list_webhook_generates_credentials_and_hides_secret_hash() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let created = TriggerService::new(settings.clone())
-        .create_trigger(webhook_create_request())
+        .create_trigger(webhook_create_request(&project))
         .expect("create webhook");
 
     assert!(created.id.starts_with("trigger-"));
+    assert_eq!(created.project_path, project);
     assert_eq!(
         created.source["webhook_key"]
             .as_str()
@@ -29,26 +29,45 @@ fn create_list_webhook_generates_credentials_and_hides_secret_hash() {
     );
     assert_eq!(created.webhook_secret.as_deref().expect("secret").len(), 32);
     assert!(created.source.get("secret_hash").is_none());
-    assert!(settings
-        .workspace_dir
-        .join("trigger-state")
-        .join(format!("{}.json", created.id))
-        .exists());
+    assert!(created.state.secret_hash.is_none());
 
-    let persisted = read_trigger_definition(&settings.config_dir, &created.id)
+    // Credentials live in runtime state only, never in the org repo.
+    let repositories = TriggerRepositories::from_settings(&settings);
+    let persisted = repositories
+        .definitions(&project)
+        .unwrap()
+        .get(&created.id)
         .expect("read")
         .expect("definition");
-    assert!(
-        persisted.source["secret_hash"]
-            .as_str()
-            .expect("hash")
-            .len()
-            == 64
+    assert!(persisted.source.is_empty());
+    let org_file = std::fs::read_to_string(
+        repositories
+            .definitions(&project)
+            .unwrap()
+            .definition_path(&created.id)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!org_file.contains("webhook_key") && !org_file.contains("secret_hash"));
+    let state = repositories
+        .runtime_state(&project)
+        .unwrap()
+        .load(&created.id)
+        .expect("state");
+    assert_eq!(
+        state.webhook_key.as_deref(),
+        created.source["webhook_key"].as_str()
     );
+    assert_eq!(state.secret_hash.as_deref().expect("hash").len(), 64);
+
     let listed = TriggerService::new(settings)
-        .list_triggers()
+        .list_triggers(None)
         .expect("list triggers");
     assert_eq!(listed[0].id, created.id);
+    assert_eq!(
+        listed[0].source["webhook_key"],
+        created.source["webhook_key"]
+    );
     assert!(listed[0].webhook_secret.is_none());
 }
 
@@ -56,8 +75,11 @@ fn create_list_webhook_generates_credentials_and_hides_secret_hash() {
 fn schedule_create_computes_next_run_at() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let created = TriggerService::new(settings)
         .create_trigger(TriggerCreateRequest {
+            project_path: project,
+            message: None,
             name: "Schedule".to_string(),
             enabled: true,
             source_type: "schedule".to_string(),
@@ -78,16 +100,23 @@ fn schedule_create_computes_next_run_at() {
 }
 
 #[test]
-fn service_crud_uses_production_repositories_for_definition_and_state_files() {
+fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let repositories = TriggerRepositories::from_settings(&settings);
     let service = TriggerService::with_repositories(repositories.clone());
+    let definitions = repositories.definitions(&project).unwrap();
+    let states = repositories.runtime_state(&project).unwrap();
+    let org = spark_common::project::org_dir(Path::new(&project));
+    let head = || run_git(&org, &["log", "-1", "--format=%H %s"]).unwrap();
 
     let created = service
         .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: Some("Nightly digest for the team".into()),
             name: "Schedule".to_string(),
-            enabled: true,
+            enabled: false,
             source_type: "schedule".to_string(),
             action: action(),
             source: Map::from_iter([
@@ -96,46 +125,52 @@ fn service_crud_uses_production_repositories_for_definition_and_state_files() {
             ]),
         })
         .expect("create trigger");
-    let definition_path = repositories
-        .definitions
-        .definition_path(&created.id)
-        .expect("definition path");
-    let state_path = repositories
-        .runtime_state
-        .state_path(&created.id)
-        .expect("state path");
-    assert!(definition_path.exists());
-    assert!(state_path.exists());
+    assert!(head().ends_with(" Nightly digest for the team"));
+    let definition_path = definitions.definition_path(&created.id).unwrap();
     assert_eq!(
-        repositories
-            .definitions
-            .get(&created.id)
-            .expect("read definition")
-            .expect("definition")
-            .name,
-        "Schedule"
+        definition_path,
+        org.join(format!("triggers/{}.toml", created.id))
     );
+    let state_path = states.state_path(&created.id).unwrap();
+    assert!(state_path.exists());
+    assert!(!created.enabled);
+    assert!(!states.load(&created.id).unwrap().enabled);
 
-    service
+    // Switching enabled writes state only: no definition change, no commit.
+    let before = (head(), std::fs::read(&definition_path).unwrap());
+    let enabled = service
         .update_trigger(
+            &project,
             &created.id,
             TriggerUpdateRequest {
-                expected_revision: service.get_trigger(&created.id).unwrap().unwrap().revision,
-                name: Some("Schedule disabled".to_string()),
-                enabled: Some(false),
+                expected_revision: created.revision.clone(),
+                enabled: Some(true),
+                ..TriggerUpdateRequest::default()
+            },
+        )
+        .expect("enable trigger");
+    assert!(enabled.enabled);
+    assert_eq!(enabled.revision, created.revision);
+    assert!(states.load(&created.id).unwrap().enabled);
+    assert_eq!(before, (head(), std::fs::read(&definition_path).unwrap()));
+
+    let renamed = service
+        .update_trigger(
+            &project,
+            &created.id,
+            TriggerUpdateRequest {
+                expected_revision: enabled.revision,
+                name: Some("Schedule renamed".to_string()),
                 ..TriggerUpdateRequest::default()
             },
         )
         .expect("update trigger");
-    let updated = repositories
-        .definitions
-        .get(&created.id)
-        .expect("read updated")
-        .expect("definition");
-    assert_eq!(updated.name, "Schedule disabled");
-    assert!(!updated.enabled);
-    assert!(repositories
-        .runtime_state
+    assert!(head().ends_with(" Edit trigger Schedule renamed"));
+    assert_eq!(
+        definitions.get(&created.id).unwrap().unwrap().name,
+        "Schedule renamed"
+    );
+    assert!(states
         .load(&created.id)
         .expect("read state")
         .next_run_at
@@ -144,41 +179,94 @@ fn service_crud_uses_production_repositories_for_definition_and_state_files() {
         .ends_with('Z'));
 
     service
-        .delete_trigger(
-            &created.id,
-            &service.get_trigger(&created.id).unwrap().unwrap().revision,
-        )
+        .delete_trigger(&project, &created.id, &renamed.revision, None)
         .expect("delete trigger");
-    assert!(repositories
-        .definitions
-        .get(&created.id)
-        .expect("read deleted")
-        .is_none());
+    assert!(head().ends_with(" Delete trigger Schedule renamed"));
+    assert!(definitions.get(&created.id).unwrap().is_none());
     assert!(!state_path.exists());
+    assert_eq!(run_git(&org, &["status", "--porcelain"]).unwrap(), "");
+}
+
+#[test]
+fn the_same_id_in_two_projects_gives_two_independent_triggers() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let first = project(&settings, "first");
+    let second = project(&settings, "second");
+    let repositories = TriggerRepositories::from_settings(&settings);
+    for project in [&first, &second] {
+        repositories
+            .definitions(project)
+            .unwrap()
+            .put(&protected_definition("trigger-shared"), None)
+            .expect("write");
+    }
+    let service = TriggerService::new(settings.clone());
+    let revision = service
+        .get_trigger(&first, "trigger-shared")
+        .unwrap()
+        .unwrap()
+        .revision;
+    service
+        .update_trigger(
+            &first,
+            "trigger-shared",
+            TriggerUpdateRequest {
+                expected_revision: revision,
+                name: Some("First only".into()),
+                enabled: Some(false),
+                ..TriggerUpdateRequest::default()
+            },
+        )
+        .expect("update first");
+
+    let listed = service.list_triggers(None).expect("list");
+    assert_eq!(listed.len(), 2);
+    let first_trigger = service
+        .get_trigger(&first, "trigger-shared")
+        .unwrap()
+        .unwrap();
+    let second_trigger = service
+        .get_trigger(&second, "trigger-shared")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (first_trigger.name.as_str(), first_trigger.enabled),
+        ("First only", false)
+    );
+    assert_eq!(
+        (second_trigger.name.as_str(), second_trigger.enabled),
+        ("Protected", true)
+    );
+    let filtered = service.list_triggers(Some(&second)).expect("filtered");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].project_path, second);
 }
 
 #[test]
 fn validation_errors_cover_source_action_and_static_context_contracts() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = TriggerService::new(settings(temp.path()));
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings);
     assert_validation(
         service.create_trigger(TriggerCreateRequest {
             name: " ".to_string(),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Trigger name is required.",
     );
     assert_validation(
         service.create_trigger(TriggerCreateRequest {
             source_type: "unknown".to_string(),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Unsupported trigger source type: unknown",
     );
     assert_validation(
         service.create_trigger(TriggerCreateRequest {
             action: Map::new(),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Trigger action requires a flow_name.",
     );
@@ -186,7 +274,7 @@ fn validation_errors_cover_source_action_and_static_context_contracts() {
         service.create_trigger(TriggerCreateRequest {
             source_type: "poll".to_string(),
             source: Map::from_iter([("url".to_string(), json!("ftp://bad"))]),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Poll triggers require an http(s) url.",
     );
@@ -196,7 +284,7 @@ fn validation_errors_cover_source_action_and_static_context_contracts() {
                 ("flow_name".to_string(), json!("ops/run.dot")),
                 ("static_context".to_string(), json!(["not-object"])),
             ]),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Trigger action static_context must be a JSON object.",
     );
@@ -204,7 +292,7 @@ fn validation_errors_cover_source_action_and_static_context_contracts() {
         service.create_trigger(TriggerCreateRequest {
             source_type: "flow_event".to_string(),
             source: Map::from_iter([("statuses".to_string(), json!(["running"]))]),
-            ..webhook_create_request()
+            ..webhook_create_request(&project)
         }),
         "Flow-event triggers require terminal statuses when statuses are provided.",
     );
@@ -214,9 +302,10 @@ fn validation_errors_cover_source_action_and_static_context_contracts() {
 fn update_regenerates_webhook_secret_and_preserves_immutable_fields() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let service = TriggerService::new(settings.clone());
     let created = service
-        .create_trigger(webhook_create_request())
+        .create_trigger(webhook_create_request(&project))
         .expect("create webhook");
     let original_key = created.source["webhook_key"]
         .as_str()
@@ -226,9 +315,10 @@ fn update_regenerates_webhook_secret_and_preserves_immutable_fields() {
 
     let updated = service
         .update_trigger(
+            &project,
             &created.id,
             TriggerUpdateRequest {
-                expected_revision: service.get_trigger(&created.id).unwrap().unwrap().revision,
+                expected_revision: created.revision.clone(),
                 name: Some("Webhook updated".to_string()),
                 regenerate_webhook_secret: true,
                 ..TriggerUpdateRequest::default()
@@ -241,26 +331,66 @@ fn update_regenerates_webhook_secret_and_preserves_immutable_fields() {
     assert_eq!(updated.name, "Webhook updated");
     assert_eq!(updated.source["webhook_key"], original_key);
     assert_ne!(updated.webhook_secret, created.webhook_secret);
-    let persisted = read_trigger_definition(&settings.config_dir, &created.id)
-        .expect("read")
-        .expect("definition");
-    assert_eq!(persisted.source["webhook_key"], original_key);
-    assert!(
-        persisted.source["secret_hash"]
-            .as_str()
-            .expect("hash")
-            .len()
-            == 64
-    );
+    let state = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap()
+        .load(&created.id)
+        .unwrap();
+    assert_eq!(state.webhook_key.as_deref(), Some(original_key.as_str()));
+    assert_eq!(state.secret_hash.as_deref().expect("hash").len(), 64);
+}
+
+#[test]
+fn a_webhook_definition_without_state_credentials_has_no_key_until_regenerated() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let mut definition = protected_definition("trigger-copied");
+    definition.protected = false;
+    // As if copied from another project's org: the file has no credentials.
+    TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap()
+        .put(&definition, None)
+        .unwrap();
+    let service = TriggerService::new(settings);
+    let copied = service
+        .get_trigger(&project, "trigger-copied")
+        .unwrap()
+        .unwrap();
+    assert!(copied.source.get("webhook_key").is_none());
+
+    let regenerated = service
+        .update_trigger(
+            &project,
+            "trigger-copied",
+            TriggerUpdateRequest {
+                expected_revision: copied.revision.clone(),
+                regenerate_webhook_secret: true,
+                ..TriggerUpdateRequest::default()
+            },
+        )
+        .expect("regenerate");
+    assert_eq!(regenerated.revision, copied.revision, "state only");
+    let key = regenerated.source["webhook_key"].as_str().expect("key");
+    let response = service
+        .handle_webhook(webhook_request(
+            key,
+            regenerated.webhook_secret.as_deref().unwrap(),
+            json!({}),
+        ))
+        .expect("webhook");
+    assert_eq!(response.trigger_id, "trigger-copied");
 }
 
 #[test]
 fn webhook_handler_authenticates_by_stored_key_and_secret() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let service = TriggerService::new(settings.clone());
     let created = service
-        .create_trigger(webhook_create_request())
+        .create_trigger(webhook_create_request(&project))
         .expect("create webhook");
     let webhook_key = created.source["webhook_key"]
         .as_str()
@@ -300,26 +430,30 @@ fn webhook_handler_authenticates_by_stored_key_and_secret() {
 fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let mut original_definition = protected_definition("trigger-protected");
+    let project = project(&settings, "project");
+    let repositories = TriggerRepositories::from_settings(&settings);
+    let definitions = repositories.definitions(&project).unwrap();
+    let states = repositories.runtime_state(&project).unwrap();
     let original_state = TriggerState {
         last_result: Some("existing".to_string()),
         ..TriggerState::default()
     };
-    spark_storage::write_trigger_definition(&settings.config_dir, &original_definition)
+    definitions
+        .put(&protected_definition("trigger-protected"), None)
         .expect("write protected");
-    original_definition = read_trigger_definition(&settings.config_dir, &original_definition.id)
-        .unwrap()
-        .unwrap();
-    save_trigger_state(&settings.data_dir, "trigger-protected", &original_state)
+    let original_definition = definitions.get("trigger-protected").unwrap().unwrap();
+    states
+        .save("trigger-protected", &original_state)
         .expect("write protected state");
     let service = TriggerService::new(settings.clone());
 
     assert_validation(
         service.update_trigger(
+            &project,
             "trigger-protected",
             TriggerUpdateRequest {
                 expected_revision: service
-                    .get_trigger("trigger-protected")
+                    .get_trigger(&project, "trigger-protected")
                     .unwrap()
                     .unwrap()
                     .revision,
@@ -331,10 +465,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
     );
     assert_validation(
         service.update_trigger(
+            &project,
             "trigger-protected",
             TriggerUpdateRequest {
                 expected_revision: service
-                    .get_trigger("trigger-protected")
+                    .get_trigger(&project, "trigger-protected")
                     .unwrap()
                     .unwrap()
                     .revision,
@@ -349,28 +484,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
     );
     assert_validation(
         service.update_trigger(
+            &project,
             "trigger-protected",
             TriggerUpdateRequest {
                 expected_revision: service
-                    .get_trigger("trigger-protected")
-                    .unwrap()
-                    .unwrap()
-                    .revision,
-                action: Some(Map::from_iter([(
-                    "project_path".to_string(),
-                    json!("/tmp/other"),
-                )])),
-                ..TriggerUpdateRequest::default()
-            },
-        ),
-        "Protected triggers do not allow project target changes.",
-    );
-    assert_validation(
-        service.update_trigger(
-            "trigger-protected",
-            TriggerUpdateRequest {
-                expected_revision: service
-                    .get_trigger("trigger-protected")
+                    .get_trigger(&project, "trigger-protected")
                     .unwrap()
                     .unwrap()
                     .revision,
@@ -382,32 +500,38 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
     );
     assert!(matches!(
         service.delete_trigger(
+            &project,
             "trigger-protected",
             &service
-                .get_trigger("trigger-protected")
+                .get_trigger(&project, "trigger-protected")
                 .unwrap()
                 .unwrap()
-                .revision
+                .revision,
+            None,
         ),
         Err(TriggerError::ProtectedDelete)
     ));
     assert_eq!(
-        read_trigger_definition(&settings.config_dir, "trigger-protected")
+        definitions
+            .get("trigger-protected")
             .expect("read protected")
             .expect("definition"),
         original_definition
     );
     assert_eq!(
-        load_trigger_state(&settings.data_dir, "trigger-protected").expect("read protected state"),
+        states
+            .load("trigger-protected")
+            .expect("read protected state"),
         original_state
     );
 
     let updated = service
         .update_trigger(
+            &project,
             "trigger-protected",
             TriggerUpdateRequest {
                 expected_revision: service
-                    .get_trigger("trigger-protected")
+                    .get_trigger(&project, "trigger-protected")
                     .unwrap()
                     .unwrap()
                     .revision,
@@ -426,8 +550,9 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
 fn service_rejects_malformed_persisted_definitions_and_list_skips_them() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     write_persisted_trigger_toml(
-        &settings,
+        &project,
         "trigger-missing-flow",
         "webhook",
         "",
@@ -435,14 +560,14 @@ fn service_rejects_malformed_persisted_definitions_and_list_skips_them() {
 secret_hash = "hash""#,
     );
     write_persisted_trigger_toml(
-        &settings,
-        "trigger-missing-secret",
-        "webhook",
+        &project,
+        "trigger-bad-statuses",
+        "flow_event",
         "ops/run.dot",
-        r#"webhook_key = "key""#,
+        r#"statuses = ["running"]"#,
     );
     write_persisted_trigger_toml(
-        &settings,
+        &project,
         "trigger-invalid-poll",
         "poll",
         "ops/run.dot",
@@ -452,7 +577,7 @@ items_path = "items"
 item_id_path = "id""#,
     );
     write_persisted_trigger_toml(
-        &settings,
+        &project,
         "trigger-unknown-source",
         "unknown",
         "ops/run.dot",
@@ -461,13 +586,14 @@ run_at = "2026-06-23T10:00:00Z""#,
     );
 
     let service = TriggerService::new(settings);
-    assert!(service.list_triggers().expect("list").is_empty());
+    assert!(service.list_triggers(None).expect("list").is_empty());
     assert_validation(
-        service.get_trigger("trigger-missing-flow"),
+        service.get_trigger(&project, "trigger-missing-flow"),
         "Trigger action requires a flow_name.",
     );
     assert_validation(
         service.update_trigger(
+            &project,
             "trigger-unknown-source",
             TriggerUpdateRequest {
                 expected_revision: "invalid-document".into(),
@@ -478,11 +604,11 @@ run_at = "2026-06-23T10:00:00Z""#,
         "Unsupported trigger source type: unknown",
     );
     assert_validation(
-        service.delete_trigger("trigger-missing-secret", "invalid-document"),
-        "Webhook triggers require secret_hash.",
+        service.delete_trigger(&project, "trigger-bad-statuses", "invalid-document", None),
+        "Flow-event triggers require terminal statuses when statuses are provided.",
     );
     assert_validation(
-        service.get_trigger("trigger-invalid-poll"),
+        service.get_trigger(&project, "trigger-invalid-poll"),
         "Poll triggers require an http(s) url.",
     );
 }
@@ -490,7 +616,9 @@ run_at = "2026-06-23T10:00:00Z""#,
 #[test]
 fn state_helpers_record_outcomes_and_bound_recent_history() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let repository = TriggerRuntimeStateRepository::new(temp.path().join("spark-home"));
+    let repository = TriggerRepositories::from_settings(&settings(temp.path()))
+        .runtime_state("/spark-contract-fixture/project")
+        .unwrap();
     let mut trigger_state = repository
         .load("trigger-state-history")
         .expect("load default state");
@@ -589,8 +717,10 @@ fn assert_validation<T>(result: Result<T, TriggerError>, expected: &str) {
     }
 }
 
-fn webhook_create_request() -> TriggerCreateRequest {
+fn webhook_create_request(project: &str) -> TriggerCreateRequest {
     TriggerCreateRequest {
+        project_path: project.to_string(),
+        message: None,
         name: "Webhook".to_string(),
         enabled: true,
         source_type: "webhook".to_string(),
@@ -602,12 +732,6 @@ fn webhook_create_request() -> TriggerCreateRequest {
 fn action() -> Map<String, Value> {
     Map::from_iter([
         ("flow_name".to_string(), json!("ops/run.dot")),
-        // A prefix that exists on no platform: /tmp is a symlink on macOS and
-        // would be rewritten by canonicalization.
-        (
-            "project_path".to_string(),
-            json!("/spark-contract-fixture/project"),
-        ),
         ("static_context".to_string(), json!({"origin": "test"})),
     ])
 }
@@ -615,9 +739,9 @@ fn action() -> Map<String, Value> {
 fn protected_definition(id: &str) -> TriggerDefinition {
     TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id: id.to_string(),
         name: "Protected".to_string(),
-        enabled: true,
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
@@ -625,34 +749,29 @@ fn protected_definition(id: &str) -> TriggerDefinition {
             role: None,
             mode: "static".to_string(),
             flow_name: "ops/run.dot".to_string(),
-            project_path: Some("/spark-contract-fixture/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("test"))]),
             execution_profile_id: None,
         },
-        source: Map::from_iter([
-            ("webhook_key".to_string(), json!("protected-key")),
-            ("secret_hash".to_string(), json!("protected-secret-hash")),
-        ]),
+        source: Map::new(),
         created_at: "2026-06-22T16:16:08Z".to_string(),
         updated_at: "2026-06-22T16:16:08Z".to_string(),
     }
 }
 
 fn write_persisted_trigger_toml(
-    settings: &SparkSettings,
+    project: &str,
     id: &str,
     source_type: &str,
     flow_name: &str,
     source_body: &str,
 ) {
-    let dir = settings.config_dir.join("triggers");
+    let dir = spark_common::project::org_dir(Path::new(project)).join("triggers");
     std::fs::create_dir_all(&dir).expect("trigger config dir");
     std::fs::write(
         dir.join(format!("{id}.toml")),
         format!(
             r#"id = "{id}"
 name = "Malformed"
-enabled = true
 protected = false
 source_type = "{source_type}"
 created_at = "2026-06-22T16:16:08Z"
@@ -667,6 +786,24 @@ flow_name = "{flow_name}"
         ),
     )
     .expect("write malformed trigger definition");
+}
+
+/// A registered project whose org repo has a git identity, since every
+/// definition write commits.
+fn project(settings: &SparkSettings, name: &str) -> String {
+    let project = settings.data_dir.parent().unwrap().join(name);
+    std::fs::create_dir_all(&project).expect("project dir");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
+    for (key, value) in [
+        ("user.name", "Trigger Test"),
+        ("user.email", "trigger@example.com"),
+    ] {
+        run_git(&org, &["config", key, value]).expect("git config");
+    }
+    spark_storage::ProjectRegistry::new(settings.data_dir.clone())
+        .ensure_project_paths(&project.to_string_lossy())
+        .expect("register project")
+        .project_path
 }
 
 fn settings(root: &Path) -> SparkSettings {

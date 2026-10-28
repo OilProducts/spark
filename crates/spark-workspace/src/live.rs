@@ -917,13 +917,7 @@ fn trigger_snapshot_envelope(
     settings: &SparkSettings,
     project_path: Option<&str>,
 ) -> WorkspaceResult<LiveEnvelope> {
-    let mut triggers = WorkspaceTriggerService::new(settings.clone()).list_triggers()?;
-    if let Some(project_path) = project_path {
-        triggers.retain(|trigger| {
-            let value = serde_json::to_value(trigger).unwrap_or_else(|_| json!({}));
-            trigger_project_path(&value).as_deref() == Some(project_path)
-        });
-    }
+    let triggers = WorkspaceTriggerService::new(settings.clone()).list_triggers(project_path)?;
     Ok(LiveEnvelope {
         event_type: "trigger.snapshot".to_string(),
         project_path: project_path.map(str::to_string),
@@ -1118,9 +1112,7 @@ fn run_sort_key(record: &attractor_core::RunRecord) -> String {
 
 fn trigger_project_path(trigger: &Value) -> Option<String> {
     trigger
-        .get("action")
-        .and_then(Value::as_object)
-        .and_then(|action| action.get("project_path"))
+        .get("project_path")
         .and_then(Value::as_str)
         .and_then(|value| normalize_project_path_opt(Some(value)).ok().flatten())
 }

@@ -1,37 +1,77 @@
+use std::path::Path;
+
 use serde_json::{json, Map, Value};
+use spark_common::project::run_git;
 use spark_storage::{
-    delete_trigger_definition, delete_trigger_state, load_trigger_state, read_trigger_definition,
-    save_trigger_state, trigger_definition_path, trigger_state_path, write_trigger_definition,
-    StorageError, TriggerAction, TriggerDefinition, TriggerDefinitionRepository,
-    TriggerRuntimeStateRepository, TriggerState, TriggerStateHistoryEntry,
+    StorageError, TriggerAction, TriggerDefinition, TriggerRepositories, TriggerState,
+    TriggerStateHistoryEntry,
 };
 
+/// Repositories over a temp SPARK_HOME and a project whose org repo has a
+/// git identity, since every definition write commits.
+fn fixture(root: &Path) -> (TriggerRepositories, String) {
+    let home = root.join("spark-home");
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
+    for (key, value) in [
+        ("user.name", "Trigger Test"),
+        ("user.email", "trigger@example.com"),
+    ] {
+        run_git(&org, &["config", key, value]).expect("git config");
+    }
+    (
+        TriggerRepositories::new(home.join("config"), home.clone()),
+        project.to_string_lossy().into_owned(),
+    )
+}
+
+fn org(project: &str) -> std::path::PathBuf {
+    spark_common::project::org_dir(Path::new(project))
+}
+
+fn last_commit(project: &str) -> String {
+    run_git(&org(project), &["log", "-1", "--format=%s"]).expect("git log")
+}
+
 #[test]
-fn trigger_definition_toml_round_trips_webhook_without_losing_secret_hash() {
+fn webhook_definitions_keep_credentials_out_of_the_org_file() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let config_dir = temp.path().join("spark-home/config");
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
     let definition = webhook_definition("trigger-storage");
 
-    let path = write_trigger_definition(&config_dir, &definition).expect("write definition");
+    repository.put(&definition, None).expect("write definition");
+    let path = repository.definition_path(&definition.id).expect("path");
     let text = std::fs::read_to_string(&path).expect("definition toml");
     assert!(text.contains("[action]"));
     assert!(text.contains(r#"static_context_json = "{\"origin\": \"compat\"}""#));
-    assert!(text.contains("secret_hash"));
+    for absent in ["webhook_key", "secret_hash", "enabled", "project_path"] {
+        assert!(!text.contains(absent), "{absent} stays out of the org file");
+    }
 
-    let loaded = read_trigger_definition(&config_dir, "trigger-storage")
+    let loaded = repository
+        .get("trigger-storage")
         .expect("read definition")
         .expect("definition");
     assert!(!loaded.revision.is_empty());
+    assert_eq!(loaded.project_path, repository.project_path());
+    assert!(loaded.source.is_empty());
     assert_eq!(
-        serde_json::to_value(loaded).unwrap(),
-        serde_json::to_value(definition).unwrap()
+        serde_json::to_value(TriggerDefinition {
+            source: Map::new(),
+            ..definition
+        })
+        .unwrap(),
+        serde_json::to_value(loaded).unwrap()
     );
 }
 
 #[test]
 fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let config_dir = temp.path().join("spark-home/config");
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
     for mut definition in [
         definition_with_source(
             "trigger-schedule",
@@ -63,13 +103,11 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
             ]),
         ),
     ] {
-        write_trigger_definition(&config_dir, &definition).expect("write definition");
-        definition.revision = read_trigger_definition(&config_dir, &definition.id)
-            .unwrap()
-            .unwrap()
-            .revision;
+        definition.revision = repository.put(&definition, None).expect("write definition");
+        definition.project_path = repository.project_path().to_string();
         assert_eq!(
-            read_trigger_definition(&config_dir, &definition.id)
+            repository
+                .get(&definition.id)
                 .expect("read")
                 .expect("definition"),
             definition
@@ -78,114 +116,185 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
 }
 
 #[test]
-fn trigger_definition_and_route_state_delete_only_their_canonical_files() {
+fn definitions_live_in_the_org_repo_and_every_write_commits_only_its_file() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let data_dir = temp.path().join("spark-home");
-    let config_dir = data_dir.join("config");
-    let definition = webhook_definition("trigger-delete");
-    write_trigger_definition(&config_dir, &definition).expect("write definition");
-    save_trigger_state(&data_dir, &definition.id, &TriggerState::default()).expect("write state");
-    let definition_path = trigger_definition_path(&config_dir, &definition.id).expect("def path");
-    let state_path = trigger_state_path(&data_dir, &definition.id).expect("state path");
-    assert!(definition_path.exists());
-    assert!(state_path.exists());
-
-    delete_trigger_definition(
-        &config_dir,
-        &definition.id,
-        &read_trigger_definition(&config_dir, &definition.id)
-            .unwrap()
-            .unwrap()
-            .revision,
-    )
-    .expect("delete definition");
-    assert!(!definition_path.exists());
-    assert!(state_path.exists());
-
-    delete_trigger_state(&data_dir, &definition.id).expect("delete state");
-    assert!(!state_path.exists());
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
+    let org = org(&project);
+    assert_eq!(repository.root_dir(), org.join("triggers"));
     assert_eq!(
-        load_trigger_state(&data_dir, &definition.id).expect("missing state"),
-        TriggerState::default()
+        repository.definition_path("trigger-a").expect("path"),
+        org.join("triggers/trigger-a.toml")
+    );
+    assert!(repository.definition_path("../bad").is_err());
+    // An unrelated change in the org repo stays out of trigger commits.
+    std::fs::write(org.join("notes.md"), "draft").expect("notes");
+
+    let mut first = webhook_definition("trigger-a");
+    first.revision = repository.put(&first, None).expect("create");
+    assert_eq!(last_commit(&project), "Create trigger Storage trigger");
+    first.name = "Renamed".into();
+    first.revision = repository
+        .put(&first, Some("Rename for the nightly report"))
+        .expect("edit");
+    assert_eq!(last_commit(&project), "Rename for the nightly report");
+    first.name = "Again".into();
+    first.revision = repository.put(&first, Some("  ")).expect("edit");
+    assert_eq!(last_commit(&project), "Edit trigger Again");
+
+    // No lock or temp files in the org repo: only the definition, committed.
+    let entries = std::fs::read_dir(org.join("triggers"))
+        .expect("triggers dir")
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec!["trigger-a.toml"]);
+    assert_eq!(
+        run_git(&org, &["status", "--porcelain"]).expect("status"),
+        "?? notes.md"
+    );
+
+    repository
+        .delete("trigger-a", &first.revision, None)
+        .expect("delete");
+    assert_eq!(last_commit(&project), "Delete trigger Again");
+    assert!(repository.get("trigger-a").expect("missing").is_none());
+    let mut second = webhook_definition("trigger-b");
+    second.revision = repository.put(&second, None).expect("create");
+    repository
+        .delete("trigger-b", &second.revision, Some("No longer needed"))
+        .expect("delete");
+    assert_eq!(last_commit(&project), "No longer needed");
+    assert_eq!(
+        run_git(&org, &["status", "--porcelain"]).expect("status"),
+        "?? notes.md"
     );
 }
 
 #[test]
-fn trigger_definition_repository_uses_canonical_paths_and_keeps_list_compatible() {
+fn reads_create_nothing_and_the_first_write_creates_the_org_repo() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let config_dir = temp.path().join("spark-home/config");
-    let repository = TriggerDefinitionRepository::new(config_dir.clone());
-    let mut first = webhook_definition("trigger-a");
-    let second = definition_with_source(
-        "trigger-b",
-        "schedule",
-        Map::from_iter([
-            ("kind".to_string(), json!("once")),
-            ("run_at".to_string(), json!("2026-06-23T10:00:00Z")),
-        ]),
-    );
+    let home = temp.path().join("spark-home");
+    let project = temp.path().join("fresh");
+    std::fs::create_dir_all(&project).expect("project");
+    let repositories = TriggerRepositories::new(home.join("config"), home.clone());
+    let repository = repositories
+        .definitions(&project.to_string_lossy())
+        .expect("repository");
+    assert!(repository.list().expect("list").is_empty());
+    assert!(repository.get("trigger-a").expect("get").is_none());
+    assert!(!project.join(".spark").exists(), "reads create nothing");
 
-    assert_eq!(
-        repository.root_dir().expect("root"),
-        config_dir.join("triggers")
-    );
-    assert_eq!(
-        repository
-            .definition_path("trigger-a")
-            .expect("definition path"),
-        config_dir.join("triggers/trigger-a.toml")
-    );
-    repository.put(&second).expect("write second");
-    first.revision = repository.put(&first).expect("write first");
-    std::fs::write(
-        repository
-            .root_dir()
-            .expect("root")
-            .join("trigger-broken.toml"),
-        "not = [",
-    )
-    .expect("write invalid toml");
+    // The first write creates the org repo, then commits into it.
+    let org = spark_common::project::org_dir(&project);
+    let result = repository.put(&webhook_definition("trigger-a"), None);
+    assert!(org.join(".git").is_dir());
+    if result.is_ok() {
+        assert_eq!(
+            run_git(&org, &["log", "-1", "--format=%s"]).expect("log"),
+            "Create trigger Storage trigger"
+        );
+    }
+}
 
-    let listed = repository
-        .list()
-        .expect("list")
+#[test]
+fn hand_edited_and_committed_definitions_are_read_as_they_are() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
+    let revision = repository
+        .put(&webhook_definition("trigger-a"), None)
+        .expect("create");
+    let path = repository.definition_path("trigger-a").expect("path");
+    let text = std::fs::read_to_string(&path).expect("text");
+    std::fs::write(&path, text.replace("Storage trigger", "Edited by hand")).expect("edit");
+    run_git(&org(&project), &["commit", "-qam", "Edit by hand"]).expect("commit");
+    let loaded = repository
+        .get("trigger-a")
+        .expect("get")
+        .expect("definition");
+    assert_eq!(loaded.name, "Edited by hand");
+    assert_ne!(loaded.revision, revision);
+}
+
+#[test]
+fn the_same_id_in_two_projects_is_two_independent_triggers() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (_, first) = fixture(&temp.path().join("one"));
+    let (_, second) = fixture(&temp.path().join("two"));
+    let repositories = repositories_for(temp.path());
+    for project in [&first, &second] {
+        spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+            .ensure_project_paths(project)
+            .expect("register");
+    }
+    let mut one = webhook_definition("trigger-a");
+    one.name = "One".into();
+    let mut two = webhook_definition("trigger-a");
+    two.name = "Two".into();
+    repositories
+        .definitions(&first)
+        .unwrap()
+        .put(&one, None)
+        .expect("first");
+    repositories
+        .definitions(&second)
+        .unwrap()
+        .put(&two, None)
+        .expect("second");
+    repositories
+        .runtime_state(&first)
+        .unwrap()
+        .update("trigger-a", |state| state.enabled = false)
+        .expect("state");
+
+    let mut all = repositories
+        .list_all()
+        .expect("list all")
         .into_iter()
-        .map(|definition| definition.id)
+        .map(|definition| (definition.project_path, definition.name))
         .collect::<Vec<_>>();
-    assert_eq!(listed, vec!["trigger-a", "trigger-b"]);
-    assert_eq!(
-        repository
-            .get("trigger-a")
-            .expect("get")
-            .expect("definition"),
-        first
+    all.sort();
+    let mut expected = vec![
+        (first.clone(), "One".to_string()),
+        (second.clone(), "Two".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(all, expected);
+    assert!(
+        !repositories
+            .runtime_state(&first)
+            .unwrap()
+            .load("trigger-a")
+            .unwrap()
+            .enabled
     );
+    assert!(
+        repositories
+            .runtime_state(&second)
+            .unwrap()
+            .load("trigger-a")
+            .unwrap()
+            .enabled
+    );
+}
 
-    repository
-        .delete(
-            "trigger-a",
-            &repository.get("trigger-a").unwrap().unwrap().revision,
-        )
-        .expect("delete");
-    assert!(repository.get("trigger-a").expect("missing").is_none());
-    assert!(matches!(
-        repository.definition_path("../bad"),
-        Err(StorageError::InvalidRepositoryPath { .. })
-    ));
+fn repositories_for(root: &Path) -> TriggerRepositories {
+    let home = root.join("spark-home");
+    TriggerRepositories::new(home.join("config"), home)
 }
 
 #[test]
 fn persisted_trigger_definitions_are_validated_and_malformed_files_are_skipped_by_list() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let config_dir = temp.path().join("spark-home/config");
-    let repository = TriggerDefinitionRepository::new(config_dir.clone());
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
     repository
-        .put(&webhook_definition("trigger-valid"))
+        .put(&webhook_definition("trigger-valid"), None)
         .expect("write valid");
 
     let mut draft = webhook_definition("trigger-new-workspace-draft");
     draft.action.mode = "workspace_draft".to_string();
-    match repository.put(&draft) {
+    match repository.put(&draft, None) {
         Err(StorageError::InvalidRepositoryPath { reason, .. }) => {
             assert_eq!(
                 reason,
@@ -235,16 +344,6 @@ run_at = "2026-06-23T10:00:00Z""#,
             "Unsupported trigger source type: unknown",
         ),
         (
-            "trigger-missing-secret",
-            persisted_trigger_toml(
-                "trigger-missing-secret",
-                "webhook",
-                "ops/run.dot",
-                r#"webhook_key = "key""#,
-            ),
-            "Webhook triggers require secret_hash.",
-        ),
-        (
             "trigger-invalid-schedule",
             persisted_trigger_toml(
                 "trigger-invalid-schedule",
@@ -277,21 +376,22 @@ minute = 0"#,
 #[test]
 fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let data_dir = temp.path().join("spark-home");
-    let repository = TriggerRuntimeStateRepository::new(data_dir.clone());
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.runtime_state(&project).expect("repository");
+    let project_root = spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+        .project_paths(&project)
+        .expect("project paths")
+        .root;
 
-    assert_eq!(
-        repository.root_dir().expect("root"),
-        data_dir.join("workspace/trigger-state")
-    );
+    // Beside the project's role records, never in the org repo.
+    assert_eq!(repository.root_dir(), project_root.join("triggers"));
     assert_eq!(
         repository.state_path("trigger-state").expect("state path"),
-        data_dir.join("workspace/trigger-state/trigger-state.json")
+        project_root.join("triggers/trigger-state.json")
     );
-    assert_eq!(
-        repository.load("trigger-state").expect("missing state"),
-        TriggerState::default()
-    );
+    let missing = repository.load("trigger-state").expect("missing state");
+    assert_eq!(missing, TriggerState::default());
+    assert!(missing.enabled, "a trigger is enabled until switched off");
 
     let saved = TriggerState {
         last_result: Some("queued".to_string()),
@@ -324,6 +424,7 @@ fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
     std::fs::write(&partial_path, r#"{"last_result":"completed"}"#).expect("write partial");
     let partial = repository.load("trigger-partial").expect("load partial");
     assert_eq!(partial.last_result.as_deref(), Some("completed"));
+    assert!(partial.enabled);
     assert!(partial.recent_history.is_empty());
 
     assert!(matches!(
@@ -342,6 +443,7 @@ fn webhook_definition(id: &str) -> TriggerDefinition {
         id,
         "webhook",
         Map::from_iter([
+            // Ignored: webhook credentials live in runtime state.
             ("webhook_key".to_string(), json!("webhook-key")),
             ("secret_hash".to_string(), json!("secret-hash")),
         ]),
@@ -355,9 +457,9 @@ fn definition_with_source(
 ) -> TriggerDefinition {
     TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id: id.to_string(),
         name: "Storage trigger".to_string(),
-        enabled: true,
         protected: false,
         source_type: source_type.to_string(),
         action: TriggerAction {
@@ -365,9 +467,6 @@ fn definition_with_source(
             role: None,
             mode: "static".to_string(),
             flow_name: "ops/run.dot".to_string(),
-            // A prefix that exists on no platform: /tmp is a symlink on macOS and
-            // would be rewritten by canonicalization, breaking the round-trip.
-            project_path: Some("/spark-contract-fixture/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
             execution_profile_id: None,
         },
@@ -386,7 +485,6 @@ fn persisted_trigger_toml(
     format!(
         r#"id = "{id}"
 name = "Malformed"
-enabled = true
 protected = false
 source_type = "{source_type}"
 created_at = "2026-06-22T16:16:08Z"

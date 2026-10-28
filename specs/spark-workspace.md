@@ -375,23 +375,26 @@ That provenance model must support:
 
 ## 15. Workspace Trigger Subsystem
 
-Triggers are workspace resources, not project records and not Attractor flow resources.
+A trigger belongs to a project's agent organization: its definition lives in the project's org repo, and Spark keeps only its runtime state. A trigger is identified by its project plus its id; ids are unique within a project.
 
 Each trigger definition includes:
-- stable trigger id
+- trigger id
 - name
-- enabled/disabled state
 - protected/non-protected status
 - source configuration
-- `launch_flow` action configuration
+- action configuration (`static` launches a flow, `mission` and `role` deliver to a mission or standing role)
 
-The action may optionally include a project target. Project context is therefore an execution input, not the owner of trigger identity.
+The definition names no project: a trigger fires in the project whose org holds it. Static triggers launch their flow in that project, mission and role triggers deliver to a mission or role of that project, and `flow_event` triggers fire only for runs in that project.
 
 Persisted definitions live under:
-- `SPARK_HOME/config/triggers/<id>.toml`
+- `<project>/.spark/agent-org/triggers/<id>.toml`
+
+Every create, update and delete through the API commits the trigger's file into the org repo. Definitions edited and committed by hand are picked up on the next tick.
 
 Persisted runtime state lives under:
-- `SPARK_HOME/workspace/trigger-state/<id>.json`
+- `SPARK_HOME/workspace/projects/<project-id>/triggers/<id>.json`
+
+Runtime state holds the last firing, next run and recent history, whether the trigger is enabled, and a webhook trigger's key and secret hash. Webhook credentials are never written to a git repository. Enabling or disabling a trigger writes runtime state only.
 
 V1 source types are:
 - `schedule`
@@ -418,7 +421,7 @@ Spark-owned durable data includes:
 - review decisions
 - run metadata linkage
 - project registry metadata
-- trigger definitions, trigger runtime state, and provenance metadata
+- trigger runtime state and provenance metadata
 
 Project-owned data includes:
 - specifications
@@ -437,15 +440,14 @@ Canonical `SPARK_HOME` layout:
 ```text
 SPARK_HOME/
   config/
-    triggers/
   runtime/
   logs/
   workspace/
-    trigger-state/
     projects/
       <project-id>/
         project.toml
         conversations/
+        triggers/
   attractor/
     runs/
       <project-id>/

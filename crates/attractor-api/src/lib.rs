@@ -30,6 +30,7 @@ use spark_agent_adapter::{
     CodergenChildInterventionRequest, CodergenChildInterventionResult,
     CodergenSessionInterventionBroker,
 };
+use spark_common::project::commit_org_paths;
 use spark_common::settings::SparkSettings;
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
@@ -3367,31 +3368,6 @@ fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), Stri
     }
     texts.into_iter().try_for_each(|(file, text)| {
         fs::write(target.join(file), text).map_err(|error| error.to_string())
-    })
-}
-
-/// Commits the changes under `pathspecs` (relative to the org repo), and
-/// nothing else, under the repo's normal git identity. A failed commit
-/// leaves them unstaged, so a retry records them.
-fn commit_org_paths(
-    org: &Path,
-    pathspecs: &[String],
-    message: &str,
-) -> std::result::Result<(), String> {
-    let run_git = spark_common::project::run_git;
-    let pathspecs = pathspecs.iter().map(String::as_str);
-    let with = |args: &[&'static str]| -> Vec<&str> {
-        args.iter().copied().chain(pathspecs.clone()).collect()
-    };
-    // Nothing to record, e.g. deleting a copy that was never committed.
-    if run_git(org, &with(&["status", "--porcelain", "--"]))?.is_empty() {
-        return Ok(());
-    }
-    run_git(org, &with(&["add", "-A", "--"]))?;
-    let mut commit = vec!["commit", "-q", "-m", message, "--"];
-    commit.extend(pathspecs.clone());
-    run_git(org, &commit).map(|_| ()).inspect_err(|_| {
-        let _ = run_git(org, &with(&["reset", "-q", "--"]));
     })
 }
 

@@ -1641,6 +1641,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     write_flow(&settings, "ops/run");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    trigger_project(&settings, &project_path);
     let app = build_app(settings);
 
     let live = request(
@@ -1676,11 +1677,11 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
         "POST",
         "/workspace/api/triggers",
         Some(json!({
+            "project_path": project_path,
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
                 "flow_name": "ops/run",
-                "project_path": project_path,
                 "static_context": {"origin": "compat"}
             },
             "source": {}
@@ -1706,7 +1707,8 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
         app,
         "DELETE",
         &format!(
-            "/workspace/api/triggers/{trigger_id}?expected_revision={}",
+            "/workspace/api/triggers/{trigger_id}?project_path={}&expected_revision={}",
+            url_encode(&project_path.to_string_lossy()),
             created_body["revision"].as_str().unwrap()
         ),
         None,
@@ -1725,7 +1727,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     );
     assert_eq!(
         delete["payload"]["trigger"],
-        json!({"status": "deleted", "id": trigger_id})
+        json!({"status": "deleted", "id": trigger_id, "project_path": project_path})
     );
 }
 
@@ -1892,6 +1894,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
     write_flow(&settings, "ops/run");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    trigger_project(&settings, &project_path);
     let project_path_text = project_path.to_string_lossy().to_string();
     let app = build_app(settings);
 
@@ -1915,11 +1918,11 @@ async fn live_route_streams_source_activation_trigger_upserts() {
         "POST",
         "/workspace/api/triggers",
         Some(json!({
+            "project_path": project_path_text,
             "name": "Due schedule",
             "source_type": "schedule",
             "action": {
                 "flow_name": "ops/run",
-                "project_path": project_path_text,
                 "static_context": {"origin": "sse"}
             },
             "source": {
@@ -1960,6 +1963,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
     write_flow(&settings, "ops/webhook-live");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    trigger_project(&settings, &project_path);
     let project_path_text = project_path.to_string_lossy().to_string();
     let app = build_app(settings);
 
@@ -1995,11 +1999,11 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
         "POST",
         "/workspace/api/triggers",
         Some(json!({
+            "project_path": project_path_text,
             "name": "Webhook live",
             "source_type": "webhook",
             "action": {
                 "flow_name": "ops/webhook-live",
-                "project_path": project_path_text,
                 "static_context": {"origin": "live-webhook"}
             },
             "source": {}
@@ -2070,6 +2074,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
     write_flow(&settings, "ops/workflow-log");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    trigger_project(&settings, &project_path);
     let project_path_text = project_path.to_string_lossy().to_string();
 
     // Seed one milestone before any stream connects: it must arrive as the
@@ -2129,11 +2134,11 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
         "POST",
         "/workspace/api/triggers",
         Some(json!({
+            "project_path": project_path_text,
             "name": "Workflow log live",
             "source_type": "webhook",
             "action": {
                 "flow_name": "ops/workflow-log",
-                "project_path": project_path_text,
                 "static_context": {"origin": "workflow-log"}
             },
             "source": {}
@@ -2186,15 +2191,17 @@ async fn dropping_app_cancels_trigger_source_loop() {
 
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    trigger_project(&settings, &project_path);
     let service = WorkspaceTriggerService::new(settings);
     let created = service
         .create_trigger(TriggerCreateRequest {
+            project_path: project_path.to_string_lossy().into_owned(),
+            message: None,
             name: "Dropped app schedule".to_string(),
             enabled: true,
             source_type: "schedule".to_string(),
             action: json!({
                 "flow_name": "ops/run",
-                "project_path": project_path,
                 "static_context": {"origin": "drop-test"}
             })
             .as_object()
@@ -2211,7 +2218,9 @@ async fn dropping_app_cancels_trigger_source_loop() {
         .expect("create trigger");
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    let stored = service.get_trigger(&created.id).expect("stored trigger");
+    let stored = service
+        .get_trigger(&created.project_path, &created.id)
+        .expect("stored trigger");
     assert_eq!(stored.state.last_result, None);
     assert!(stored.state.recent_history.is_empty());
 }
@@ -2627,6 +2636,21 @@ fn settings(root: &Path) -> SparkSettings {
         ui_dir: None,
         project_roots: Vec::new(),
     }
+}
+
+/// Registers the project and gives its org repo a git identity, since every
+/// trigger write commits.
+fn trigger_project(settings: &SparkSettings, project: &Path) {
+    let org = spark_common::project::ensure_org_repo(project).expect("org repo");
+    for (key, value) in [
+        ("user.name", "Live Test"),
+        ("user.email", "live@example.com"),
+    ] {
+        spark_common::project::run_git(&org, &["config", key, value]).expect("git config");
+    }
+    spark_storage::ProjectRegistry::new(settings.data_dir.clone())
+        .ensure_project_paths(&project.to_string_lossy())
+        .expect("register project");
 }
 
 fn url_encode(value: &str) -> String {

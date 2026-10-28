@@ -20,7 +20,7 @@ export function useWebhookSecretRegeneration({
         if (isRegenerating || !selectedTrigger || selectedTrigger.source_type !== 'webhook') return
         setIsRegenerating(true)
         try {
-            const updated = await updateTriggerValidated(selectedTrigger.id, {
+            const updated = await updateTriggerValidated(selectedTrigger.project_path, selectedTrigger.id, {
                 regenerate_webhook_secret: true,
                 expected_revision: selectedTrigger.revision,
             })

@@ -5,9 +5,6 @@ import { isUnregisteredTarget, projectLabel } from '@/features/projects/model/pr
 
 export type { TriggerSourceType }
 
-/** A registered project, no project, or another path. */
-export type TriggerTargetMode = 'project' | 'none' | 'custom'
-
 export type TriggerFormState = {
     name: string
     enabled: boolean
@@ -16,7 +13,7 @@ export type TriggerFormState = {
     missionId: string
     roleName: string
     flowName: string
-    targetMode: TriggerTargetMode
+    /** The project whose org holds the trigger; chosen only on create. */
     projectPath: string
     staticContextText: string
     scheduleKind: 'once' | 'interval' | 'weekly'
@@ -34,7 +31,7 @@ export type TriggerFormState = {
     flowEventStatuses: string
 }
 
-const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'targetMode' | 'projectPath'> = {
+const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath'> = {
     name: '',
     enabled: true,
     sourceType: 'schedule',
@@ -60,7 +57,6 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'targetMode' | 'projectPath'> = 
 
 export const createEmptyTriggerForm = (projectPath: string | null): TriggerFormState => ({
     ...BASE_TRIGGER_FORM,
-    targetMode: projectPath ? 'project' : 'none',
     projectPath: projectPath || '',
 })
 
@@ -89,26 +85,12 @@ export function triggerSourceSummary(trigger: TriggerResponse): string {
 
 type Registry = Record<string, RegisteredProject>
 
-/** The project a trigger targets, marking a target that is not a registered project. */
-export function triggerTargetSummary(trigger: TriggerResponse, registry: Registry): string {
-    if (!trigger.action.project_path) {
-        return 'No project'
-    }
-    const label = projectLabel(registry, normalizeProjectPath(trigger.action.project_path))
-    return isUnregisteredTarget(registry, trigger.action.project_path)
+/** The project whose org holds the trigger. */
+export function triggerProjectSummary(trigger: TriggerResponse, registry: Registry): string {
+    const label = projectLabel(registry, normalizeProjectPath(trigger.project_path))
+    return isUnregisteredTarget(registry, trigger.project_path)
         ? `Unregistered project · ${label}`
         : `Project · ${label}`
-}
-
-export function resolveTriggerTargetMode(
-    projectPath: string | null | undefined,
-    registry: Registry,
-): TriggerTargetMode {
-    const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : ''
-    if (!normalizedProjectPath) {
-        return 'none'
-    }
-    return isUnregisteredTarget(registry, normalizedProjectPath) ? 'custom' : 'project'
 }
 
 export function buildTriggerSourcePayload(form: TriggerFormState): Record<string, unknown> {
@@ -151,19 +133,17 @@ export function buildTriggerSourcePayload(form: TriggerFormState): Record<string
 }
 
 export function buildTriggerActionPayload(form: TriggerFormState): Record<string, unknown> {
-    if (form.actionMode === 'mission') return { mode: 'mission', mission_id: form.missionId, project_path: form.targetMode === 'none' ? null : form.projectPath.trim() || null }
-    if (form.actionMode === 'role') return { mode: 'role', role: form.roleName.trim(), project_path: form.targetMode === 'none' ? null : form.projectPath.trim() || null }
+    if (form.actionMode === 'mission') return { mode: 'mission', mission_id: form.missionId }
+    if (form.actionMode === 'role') return { mode: 'role', role: form.roleName.trim() }
 
     return {
         flow_name: form.flowName.trim(),
-        project_path: form.targetMode === 'none' ? null : form.projectPath.trim() || null,
         static_context: JSON.parse(form.staticContextText || '{}') as Record<string, unknown>,
     }
 }
 
-export function triggerToFormState(trigger: TriggerResponse, registry: Registry): TriggerFormState {
+export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
     const source = trigger.source
-    const projectPath = trigger.action.project_path ?? ''
     return {
         name: trigger.name,
         enabled: trigger.enabled,
@@ -172,8 +152,7 @@ export function triggerToFormState(trigger: TriggerResponse, registry: Registry)
         missionId: trigger.action.mission_id ?? '',
         roleName: trigger.action.role ?? '',
         flowName: trigger.action.flow_name,
-        targetMode: resolveTriggerTargetMode(projectPath, registry),
-        projectPath,
+        projectPath: trigger.project_path,
         staticContextText: JSON.stringify(trigger.action.static_context ?? {}, null, 2),
         scheduleKind: (typeof source.kind === 'string' ? source.kind : 'interval') as 'once' | 'interval' | 'weekly',
         scheduleRunAt: typeof source.run_at === 'string' ? source.run_at : '',

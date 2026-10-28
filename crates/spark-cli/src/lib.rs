@@ -687,6 +687,20 @@ fn project_query(options: &ParsedOptions) -> String {
         .unwrap_or_default()
 }
 
+/// `body` with the trigger's project and, when given, the org repo commit
+/// message.
+fn trigger_write_body(mut body: Value, project: Option<String>, options: &ParsedOptions) -> Value {
+    if let Some(object) = body.as_object_mut() {
+        if let Some(project) = project {
+            object.insert("project_path".to_string(), Value::String(project));
+        }
+        if let Some(message) = trimmed_option(options, "--message") {
+            object.insert("message".to_string(), Value::String(message));
+        }
+    }
+    body
+}
+
 fn build_trigger_plan(
     args: &[String],
     env: &impl Environment,
@@ -699,7 +713,7 @@ fn build_trigger_plan(
         "list" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--base-url"],
+                &["--project", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
@@ -707,7 +721,7 @@ fn build_trigger_plan(
             Ok(ApiRequestPlan {
                 method: HttpMethod::Get,
                 base_url,
-                path: "/workspace/api/triggers".to_string(),
+                path: format!("/workspace/api/triggers{}", project_query(&options)),
                 body: None,
                 text: options.bool("--text"),
             })
@@ -715,19 +729,20 @@ fn build_trigger_plan(
         "describe" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--id", "--base-url"],
+                &["--project", "--id", "--base-url"],
                 &["--text"],
                 PositionalMode::None,
             )?;
-            require_values(&options, &["--id"])?;
+            require_values(&options, &["--project", "--id"])?;
             let base_url = resolve_base_url(&options, "spark trigger describe", env)?;
             let trigger_id = non_empty_value(&options, "--id", "Missing required --id.")?;
             Ok(ApiRequestPlan {
                 method: HttpMethod::Get,
                 base_url,
                 path: format!(
-                    "/workspace/api/triggers/{}",
-                    percent_encode_component(&trigger_id)
+                    "/workspace/api/triggers/{}{}",
+                    percent_encode_component(&trigger_id),
+                    project_query(&options)
                 ),
                 body: None,
                 text: options.bool("--text"),
@@ -736,12 +751,13 @@ fn build_trigger_plan(
         "create" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--json", "--base-url"],
+                &["--project", "--json", "--message", "--base-url"],
                 &[],
                 PositionalMode::None,
             )?;
-            require_values(&options, &["--json"])?;
+            require_values(&options, &["--project", "--json"])?;
             let base_url = resolve_base_url(&options, "spark trigger create", env)?;
+            let project = non_empty_value(&options, "--project", "Missing required --project.")?;
             let body = read_required_json_object(
                 options.value("--json").unwrap_or_default(),
                 "Trigger payload",
@@ -752,18 +768,18 @@ fn build_trigger_plan(
                 method: HttpMethod::Post,
                 base_url,
                 path: "/workspace/api/triggers".to_string(),
-                body: Some(body),
+                body: Some(trigger_write_body(body, Some(project), &options)),
                 text: false,
             })
         }
         "update" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--id", "--json", "--base-url"],
+                &["--project", "--id", "--json", "--message", "--base-url"],
                 &[],
                 PositionalMode::None,
             )?;
-            require_values(&options, &["--id", "--json"])?;
+            require_values(&options, &["--project", "--id", "--json"])?;
             let base_url = resolve_base_url(&options, "spark trigger update", env)?;
             let trigger_id = non_empty_value(&options, "--id", "Missing required --id.")?;
             let body = read_required_json_object(
@@ -776,29 +792,40 @@ fn build_trigger_plan(
                 method: HttpMethod::Patch,
                 base_url,
                 path: format!(
-                    "/workspace/api/triggers/{}",
-                    percent_encode_component(&trigger_id)
+                    "/workspace/api/triggers/{}{}",
+                    percent_encode_component(&trigger_id),
+                    project_query(&options)
                 ),
-                body: Some(body),
+                body: Some(trigger_write_body(body, None, &options)),
                 text: false,
             })
         }
         "delete" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--id", "--expected-revision", "--base-url"],
+                &[
+                    "--project",
+                    "--id",
+                    "--expected-revision",
+                    "--message",
+                    "--base-url",
+                ],
                 &[],
                 PositionalMode::None,
             )?;
-            require_values(&options, &["--id", "--expected-revision"])?;
+            require_values(&options, &["--project", "--id", "--expected-revision"])?;
             let base_url = resolve_base_url(&options, "spark trigger delete", env)?;
             let trigger_id = non_empty_value(&options, "--id", "Missing required --id.")?;
+            let message = trimmed_option(&options, "--message")
+                .map(|message| format!("&message={}", percent_encode_component(&message)))
+                .unwrap_or_default();
             Ok(ApiRequestPlan {
                 method: HttpMethod::Delete,
                 base_url,
                 path: format!(
-                    "/workspace/api/triggers/{}?expected_revision={}",
+                    "/workspace/api/triggers/{}{}&expected_revision={}{message}",
                     percent_encode_component(&trigger_id),
+                    project_query(&options),
                     percent_encode_component(
                         options.value("--expected-revision").unwrap_or_default()
                     )
@@ -1281,11 +1308,11 @@ fn is_flow_validate_path(path: &str) -> bool {
 }
 
 fn is_trigger_list_path(path: &str) -> bool {
-    path == "/workspace/api/triggers"
+    without_query(path) == "/workspace/api/triggers"
 }
 
 fn is_trigger_describe_path(path: &str) -> bool {
-    path.starts_with("/workspace/api/triggers/") && !path.contains('?')
+    without_query(path).starts_with("/workspace/api/triggers/")
 }
 
 fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput> {
@@ -2131,6 +2158,10 @@ fn trigger_list_text(payload: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
+        let project_path = row
+            .get("project_path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         writeln!(
             &mut text,
             "{trigger_id}: {name} [{source_type}] -> {flow_name}"
@@ -2138,7 +2169,7 @@ fn trigger_list_text(payload: &Value) -> String {
         .expect("writing to String cannot fail");
         writeln!(
             &mut text,
-            "  enabled={} protected={}",
+            "  project={project_path} enabled={} protected={}",
             python_bool(enabled),
             python_bool(protected)
         )
@@ -2163,11 +2194,10 @@ fn describe_trigger_text(payload: &Value) -> String {
         .get("protected")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let project_path = action
-        .and_then(|action| action.get("project_path"))
+    let project_path = object
+        .get("project_path")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("(none)");
+        .unwrap_or_default();
     let last_fired_at = state
         .and_then(|state| state.get("last_fired_at"))
         .and_then(Value::as_str)
@@ -2200,6 +2230,7 @@ fn describe_trigger_text(payload: &Value) -> String {
             .unwrap_or_default()
     )
     .expect("writing to String cannot fail");
+    writeln!(&mut text, "Project: {project_path}").expect("writing to String cannot fail");
     writeln!(
         &mut text,
         "Source Type: {}",
@@ -2227,7 +2258,6 @@ fn describe_trigger_text(payload: &Value) -> String {
             .unwrap_or_default()
     )
     .expect("writing to String cannot fail");
-    writeln!(&mut text, "Project Target: {project_path}").expect("writing to String cannot fail");
     writeln!(&mut text, "Last Fired: {last_fired_at}").expect("writing to String cannot fail");
     writeln!(&mut text, "Last Result: {last_result}").expect("writing to String cannot fail");
     writeln!(&mut text, "Next Run: {next_run_at}").expect("writing to String cannot fail");

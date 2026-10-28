@@ -3203,14 +3203,9 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<String> {
         let trigger_id = request.trigger_id.clone();
         let flow_name = request.action.flow_name.clone();
-        // A trigger with no project uses bundled flows only.
-        let project_path = request.action.project_path.clone();
-        ensure_flow_exists(&self.settings, project_path.as_deref(), &flow_name)?;
-        let working_directory = request
-            .action
-            .project_path
-            .clone()
-            .unwrap_or_else(|| self.settings.data_dir.to_string_lossy().into_owned());
+        // The run's project and working directory are the trigger's project.
+        let working_directory = request.project_path.clone();
+        ensure_flow_exists(&self.settings, Some(&working_directory), &flow_name)?;
         let launch_context = Value::Object(Map::from_iter([
             (
                 "context.trigger_static".to_string(),
@@ -3238,7 +3233,7 @@ impl WorkspaceConversationService {
         });
         let response = self.start_workspace_flow_route_response(
             &working_directory,
-            project_path.as_deref(),
+            Some(&working_directory),
             &flow_name,
             &artifact,
         );

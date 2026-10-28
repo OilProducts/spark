@@ -304,15 +304,16 @@ const buildRunRecord = ({
 const buildTriggerRecord = ({
   id,
   name,
-  projectPath = null,
+  projectPath = '/tmp/project',
   protectedTrigger = false,
 }: {
   id: string
   name: string
-  projectPath?: string | null
+  projectPath?: string
   protectedTrigger?: boolean
 }) => ({
   id,
+  project_path: projectPath,
   name,
   enabled: true,
   protected: protectedTrigger,
@@ -322,7 +323,6 @@ const buildTriggerRecord = ({
   updated_at: '2026-03-22T00:00:00Z',
   action: {
     flow_name: 'test-planning.dot',
-    project_path: projectPath,
     static_context: {},
   },
   source: { kind: 'interval', interval_seconds: 300 },

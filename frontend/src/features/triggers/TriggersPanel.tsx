@@ -6,7 +6,7 @@ import {
   createEmptyTriggerForm,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
-  triggerTargetSummary,
+  triggerProjectSummary,
   triggerSourceSummary,
 } from "./model/triggerForm"
 import { useTriggersList } from "./hooks/useTriggersList"
@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
+  const activeProjectPath = useStore((state) => state.activeProjectPath)
   const triggersSession = useStore((state) => state.triggersSession)
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
   const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
@@ -93,9 +94,9 @@ export function TriggersPanel() {
 
   const createFormOpen = triggersSession.createFormOpen
   const openCreateForm = () => {
-    // An untouched draft starts in the last-used project.
+    // An untouched draft starts in the active project, else the last-used one.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
-      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry)) })
+      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry, activeProjectPath)) })
     }
     updateTriggersSession({ createFormOpen: true })
   }
@@ -116,7 +117,7 @@ export function TriggersPanel() {
             <p data-testid={group.loadingTestId} className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
           {group.triggers.map((trigger) => {
-            const unregistered = isUnregisteredTarget(projectRegistry, trigger.action.project_path)
+            const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
             return (
               <SidePanelRow
                 key={trigger.id}
@@ -130,11 +131,11 @@ export function TriggersPanel() {
                 meta={(
                   <>
                     <span
-                      data-testid="trigger-row-target"
-                      title={trigger.action.project_path ?? undefined}
+                      data-testid="trigger-row-project"
+                      title={trigger.project_path}
                       className={unregistered ? 'text-warning' : undefined}
                     >
-                      {triggerTargetSummary(trigger, projectRegistry)}
+                      {triggerProjectSummary(trigger, projectRegistry)}
                     </span>
                     {' · '}{triggerSourceSummary(trigger)}
                     {trigger.enabled ? null : ' · Disabled'}
@@ -209,7 +210,7 @@ export function TriggersPanel() {
                   <Button
                     type="button"
                     data-testid="trigger-create-button"
-                    disabled={pending || isRegenerating}
+                    disabled={pending || isRegenerating || !newTriggerForm.projectPath}
                     onClick={() => void onCreateTrigger()}
                   >
                     Create trigger
@@ -273,7 +274,7 @@ export function TriggersPanel() {
                 <div className="mt-4 grid gap-3 lg:grid-cols-2">
                   <Well className="text-sm">
                     <SectionHeading as="h4">Runtime</SectionHeading>
-                    <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, projectRegistry)}</div>
+                    <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>

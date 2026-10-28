@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use spark_agent_adapter::AgentTurnBackend;
 use spark_common::settings::SparkSettings;
-use spark_storage::{read_trigger_definition, DeletedProjectRecord, ProjectRecord};
+use spark_storage::{DeletedProjectRecord, ProjectRecord};
 use spark_workspace::conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
@@ -1009,11 +1009,23 @@ async fn project_chat_models(
     Ok(Json(models))
 }
 
+#[derive(Deserialize)]
+struct TriggerListQuery {
+    project_path: Option<String>,
+}
+
 async fn list_triggers(
     State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<TriggerListQuery>, QueryRejection>,
 ) -> ApiResult<Vec<SerializedTrigger>> {
+    let query = query_payload(payload)?;
     WorkspaceTriggerService::new((*settings).clone())
-        .list_triggers()
+        .list_triggers(
+            query
+                .project_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty()),
+        )
         .map(Json)
         .map_err(Into::into)
 }
@@ -1032,12 +1044,20 @@ async fn create_trigger(
     Ok(Json(trigger))
 }
 
+/// A trigger is identified by its project plus its id.
+#[derive(Deserialize)]
+struct TriggerQuery {
+    project_path: String,
+}
+
 async fn get_trigger(
     State(settings): State<Arc<SparkSettings>>,
     AxumPath(trigger_id): AxumPath<String>,
+    payload: Result<Query<TriggerQuery>, QueryRejection>,
 ) -> ApiResult<SerializedTrigger> {
+    let query = query_payload(payload)?;
     WorkspaceTriggerService::new((*settings).clone())
-        .get_trigger(&trigger_id)
+        .get_trigger(&query.project_path, &trigger_id)
         .map(Json)
         .map_err(Into::into)
 }
@@ -1046,11 +1066,16 @@ async fn update_trigger(
     State(settings): State<Arc<SparkSettings>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(trigger_id): AxumPath<String>,
+    query: Result<Query<TriggerQuery>, QueryRejection>,
     payload: Result<Json<TriggerUpdateRequest>, JsonRejection>,
 ) -> ApiResult<SerializedTrigger> {
+    let query = query_payload(query)?;
     let request = json_payload(payload)?;
-    let trigger =
-        WorkspaceTriggerService::new((*settings).clone()).update_trigger(&trigger_id, request)?;
+    let trigger = WorkspaceTriggerService::new((*settings).clone()).update_trigger(
+        &query.project_path,
+        &trigger_id,
+        request,
+    )?;
     if let Ok(value) = serde_json::to_value(&trigger) {
         live_hub.publish(trigger_upsert_envelope(&value));
     }
@@ -1060,7 +1085,9 @@ async fn update_trigger(
 
 #[derive(Deserialize)]
 struct TriggerDeleteQuery {
+    project_path: String,
     expected_revision: String,
+    message: Option<String>,
 }
 
 async fn delete_trigger(
@@ -1070,13 +1097,17 @@ async fn delete_trigger(
     payload: Result<Query<TriggerDeleteQuery>, QueryRejection>,
 ) -> ApiResult<TriggerDeleteResponse> {
     let query = query_payload(payload)?;
-    let service = WorkspaceTriggerService::new((*settings).clone());
-    let project_path = read_trigger_definition(&settings.config_dir, &trigger_id)
-        .map_err(WorkspaceError::from)?
-        .and_then(|definition| definition.action.project_path);
-    let deleted = service.delete_trigger(&trigger_id, &query.expected_revision)?;
+    let deleted = WorkspaceTriggerService::new((*settings).clone()).delete_trigger(
+        &query.project_path,
+        &trigger_id,
+        &query.expected_revision,
+        query.message.as_deref(),
+    )?;
     if let Ok(value) = serde_json::to_value(&deleted) {
-        live_hub.publish(trigger_delete_envelope(&value, project_path));
+        live_hub.publish(trigger_delete_envelope(
+            &value,
+            Some(deleted.project_path.clone()),
+        ));
     }
     live_hub.publish_settings_change("workspace", "triggers", None, Value::Null);
     Ok(Json(deleted))

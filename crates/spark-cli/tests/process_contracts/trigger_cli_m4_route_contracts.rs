@@ -3,11 +3,10 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::{json, Map, Value};
+use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_http::build_app;
-use spark_storage::{
-    read_trigger_definition, write_trigger_definition, TriggerAction, TriggerDefinition,
-};
+use spark_storage::{TriggerAction, TriggerDefinition, TriggerRepositories};
 use tokio::task::JoinHandle;
 
 fn spark_bin() -> &'static str {
@@ -19,8 +18,10 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "ops/run");
-    let project_dir = temp.path().join("project");
-    fs::create_dir_all(&project_dir).expect("project dir");
+    let project_dir = registered_project(&settings, &temp.path().join("project"));
+    let project = project_dir.as_str();
+    let org = spark_common::project::org_dir(Path::new(project));
+    let subject = || run_git(&org, &["log", "-1", "--format=%s"]).unwrap();
     let server = spawn_server(settings.clone()).await;
 
     let create_payload = temp.path().join("trigger-create.json");
@@ -31,7 +32,6 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             "source_type": "webhook",
             "action": {
                 "flow_name": "ops/run",
-                "project_path": project_dir,
                 "static_context": {"origin": "compat"}
             },
             "source": {}
@@ -44,8 +44,12 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "create",
+            "--project",
+            project,
             "--json",
             create_payload.to_str().expect("create path"),
+            "--message",
+            "Watch CI for the release",
             "--base-url",
             server.base_url.as_str(),
         ],
@@ -62,26 +66,43 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             .len()
             == 32
     );
+    assert_eq!(created_payload["project_path"], project);
     let trigger_id = created_payload["id"]
         .as_str()
         .expect("trigger id")
         .to_string();
-    assert!(settings
-        .config_dir
-        .join("triggers")
-        .join(format!("{trigger_id}.toml"))
+    assert_eq!(subject(), "Watch CI for the release");
+    let repositories = TriggerRepositories::from_settings(&settings);
+    assert!(org.join(format!("triggers/{trigger_id}.toml")).exists());
+    assert!(repositories
+        .runtime_state(project)
+        .unwrap()
+        .state_path(&trigger_id)
+        .unwrap()
         .exists());
-    assert!(settings
-        .workspace_dir
-        .join("trigger-state")
-        .join(format!("{trigger_id}.json"))
-        .exists());
+
+    let listed = run_spark(
+        temp.path(),
+        [
+            "trigger",
+            "list",
+            "--project",
+            project,
+            "--text",
+            "--base-url",
+            server.base_url.as_str(),
+        ],
+    );
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+    assert!(stdout(&listed).contains(&format!("  project={project} enabled=True")));
 
     let described = run_spark(
         temp.path(),
         [
             "trigger",
             "describe",
+            "--project",
+            project,
             "--id",
             trigger_id.as_str(),
             "--text",
@@ -93,7 +114,8 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let described_stdout = stdout(&described);
     assert!(described_stdout.contains(&format!("ID: {trigger_id}\n")));
     assert!(described_stdout.contains("Source Type: webhook\n"));
-    assert!(described_stdout.contains("Project Target: "));
+    assert!(described_stdout.contains(&format!("Project: {project}\n")));
+    assert!(!described_stdout.contains("Project Target"));
     assert!(described_stdout.contains("Last Fired: (never)\n"));
     assert!(!described_stdout.contains("Webhook Secret:"));
 
@@ -108,6 +130,8 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "update",
+            "--project",
+            project,
             "--id",
             trigger_id.as_str(),
             "--json",
@@ -126,16 +150,21 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             .len()
             == 32
     );
+    assert_eq!(subject(), "Edit trigger Compat webhook updated");
 
     let deleted = run_spark(
         temp.path(),
         [
             "trigger",
             "delete",
+            "--project",
+            project,
             "--expected-revision",
             updated_payload["revision"].as_str().unwrap(),
             "--id",
             trigger_id.as_str(),
+            "--message",
+            "No longer needed & retired",
             "--base-url",
             server.base_url.as_str(),
         ],
@@ -144,14 +173,15 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let deleted_payload: Value = serde_json::from_slice(&deleted.stdout).expect("deleted json");
     assert_eq!(
         deleted_payload,
-        json!({"id": trigger_id, "status": "deleted"})
+        json!({"id": trigger_id, "status": "deleted", "project_path": project})
     );
-    assert!(read_trigger_definition(
-        &settings.config_dir,
-        deleted_payload["id"].as_str().unwrap()
-    )
-    .expect("read deleted trigger")
-    .is_none());
+    assert_eq!(subject(), "No longer needed & retired");
+    assert!(repositories
+        .definitions(project)
+        .unwrap()
+        .get(&trigger_id)
+        .expect("read deleted trigger")
+        .is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -159,11 +189,14 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "ops/run");
-    write_trigger_definition(
-        &settings.config_dir,
-        &protected_definition("trigger-protected"),
-    )
-    .expect("protected definition");
+    let project_dir = registered_project(&settings, &temp.path().join("project"));
+    let project = project_dir.as_str();
+    let definitions = TriggerRepositories::from_settings(&settings)
+        .definitions(project)
+        .unwrap();
+    definitions
+        .put(&protected_definition("trigger-protected"), None)
+        .expect("protected definition");
     let server = spawn_server(settings.clone()).await;
 
     let protected_delete = run_spark(
@@ -171,6 +204,8 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "delete",
+            "--project",
+            project,
             "--expected-revision",
             "protected",
             "--id",
@@ -189,7 +224,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     let protected_update_payload = temp.path().join("protected-update.json");
     fs::write(
         &protected_update_payload,
-        json!({"expected_revision": read_trigger_definition(&settings.config_dir, "trigger-protected").unwrap().unwrap().revision, "action": {"static_context": {"changed": true}}}).to_string(),
+        json!({"expected_revision": definitions.get("trigger-protected").unwrap().unwrap().revision, "action": {"static_context": {"changed": true}}}).to_string(),
     )
     .expect("write protected update payload");
     let protected_update = run_spark(
@@ -197,6 +232,8 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "update",
+            "--project",
+            project,
             "--id",
             "trigger-protected",
             "--json",
@@ -230,6 +267,8 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "create",
+            "--project",
+            project,
             "--json",
             unknown_flow_payload.to_str().expect("unknown flow path"),
             "--base-url",
@@ -241,11 +280,23 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         stderr(&unknown_flow),
         "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
     );
-    assert!(
-        read_trigger_definition(&settings.config_dir, "trigger-protected")
-            .expect("read protected trigger")
-            .is_some()
+    assert!(definitions
+        .get("trigger-protected")
+        .expect("read protected trigger")
+        .is_some());
+
+    let missing_project = run_spark(
+        temp.path(),
+        [
+            "trigger",
+            "describe",
+            "--id",
+            "trigger-protected",
+            "--base-url",
+            server.base_url.as_str(),
+        ],
     );
+    assert_ne!(missing_project.status.code(), Some(0));
 }
 
 struct TestServer {
@@ -295,9 +346,9 @@ fn stderr(output: &Output) -> String {
 fn protected_definition(id: &str) -> TriggerDefinition {
     TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id: id.to_string(),
         name: "Protected".to_string(),
-        enabled: true,
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
@@ -305,17 +356,27 @@ fn protected_definition(id: &str) -> TriggerDefinition {
             role: None,
             mode: "static".to_string(),
             flow_name: "ops/run".to_string(),
-            project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
             execution_profile_id: None,
         },
-        source: Map::from_iter([
-            ("webhook_key".to_string(), json!("protected-key")),
-            ("secret_hash".to_string(), json!("protected-secret-hash")),
-        ]),
+        source: Map::new(),
         created_at: "2026-06-22T16:16:08Z".to_string(),
         updated_at: "2026-06-22T16:16:08Z".to_string(),
     }
+}
+
+/// Registers the project and gives its org repo a git identity, since every
+/// trigger write commits. Returns the registered project path.
+fn registered_project(settings: &SparkSettings, project: &Path) -> String {
+    fs::create_dir_all(project).expect("project dir");
+    let org = spark_common::project::ensure_org_repo(project).expect("org repo");
+    for (key, value) in [("user.name", "CLI Test"), ("user.email", "cli@example.com")] {
+        run_git(&org, &["config", key, value]).expect("git config");
+    }
+    spark_storage::ProjectRegistry::new(settings.data_dir.clone())
+        .ensure_project_paths(&project.to_string_lossy())
+        .expect("register project")
+        .project_path
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
@@ -521,7 +582,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     assert!(started["started_at"].is_string());
     let waiting = mission_cli(&["wait", "--reason", "Review pending"]);
     assert_eq!(waiting["wait_reason"], "Review pending");
-    let mission_action = serde_json::json!({"name":"Review watcher", "source_type":"schedule", "action":{"mode":"mission","mission_id":id,"project_path":project},"source":{"kind":"interval","interval_seconds":300}}).to_string();
+    registered_project(&settings, Path::new(project));
+    let mission_action = serde_json::json!({"name":"Review watcher", "source_type":"schedule", "action":{"mode":"mission","mission_id":id},"source":{"kind":"interval","interval_seconds":300}}).to_string();
     let action_file = temp.path().join("mission-trigger.json");
     fs::write(&action_file, mission_action).unwrap();
     let output = run_spark(
@@ -529,6 +591,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         vec![
             "trigger",
             "create",
+            "--project",
+            project,
             "--json",
             action_file.to_str().unwrap(),
             "--base-url",
@@ -538,12 +602,14 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let trigger: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(trigger["action"]["mission_id"], id);
-    fs::write(&action_file, serde_json::json!({"expected_revision":trigger["revision"], "name":"Updated watcher", "action":{"mode":"mission", "mission_id":id, "project_path":project}}).to_string()).unwrap();
+    fs::write(&action_file, serde_json::json!({"expected_revision":trigger["revision"], "name":"Updated watcher", "action":{"mode":"mission", "mission_id":id}}).to_string()).unwrap();
     let updated = run_spark(
         temp.path(),
         vec![
             "trigger",
             "update",
+            "--project",
+            project,
             "--id",
             trigger["id"].as_str().unwrap(),
             "--json",
@@ -959,11 +1025,12 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
     assert_eq!(stopped["state"], "stopped");
 
+    registered_project(&settings, Path::new(project));
     let payload = temp.path().join("role-trigger.json");
     fs::write(
         &payload,
         json!({"name": "Failures", "source_type": "flow_event",
-            "action": {"mode": "role", "role": "chief-of-staff", "project_path": project},
+            "action": {"mode": "role", "role": "chief-of-staff"},
             "source": {"statuses": ["failed", "validation_error"]}})
         .to_string(),
     )
@@ -973,6 +1040,8 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         [
             "trigger",
             "create",
+            "--project",
+            project,
             "--json",
             payload.to_str().unwrap(),
             "--base-url",

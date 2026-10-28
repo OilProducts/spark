@@ -3,6 +3,7 @@ use std::path::Path;
 
 use attractor_runtime::RunStore;
 use serde_json::{json, Map, Value};
+use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_triggers::{state, TriggerCreateRequest, TriggerService, WebhookHandleRequest};
 use spark_workspace::WorkspaceTriggerService;
@@ -12,17 +13,16 @@ use time::OffsetDateTime;
 async fn workspace_source_activation_records_missing_flow_failures_without_launching_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let project = project(&settings, "project");
     let created = TriggerService::new(settings.clone())
         .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
             name: "Missing target".to_string(),
             enabled: true,
             source_type: "schedule".to_string(),
             action: Map::from_iter([
                 ("flow_name".to_string(), json!("ops/missing")),
-                (
-                    "project_path".to_string(),
-                    json!(temp.path().join("project")),
-                ),
                 ("static_context".to_string(), json!({"origin": "workspace"})),
             ]),
             source: Map::from_iter([
@@ -42,8 +42,7 @@ async fn workspace_source_activation_records_missing_flow_failures_without_launc
     assert_eq!(outcomes[0].status, "failed");
     assert_eq!(outcomes[0].message, "Unknown flow: ops/missing");
     assert!(outcomes[0].run_id.is_none());
-    let state = spark_storage::load_trigger_state(&settings.data_dir, &created.id)
-        .expect("load trigger state");
+    let state = load_state(&settings, &project, &created.id);
     assert_eq!(state.last_result.as_deref(), Some("failed"));
     assert_eq!(
         state.last_error.as_deref(),
@@ -59,16 +58,16 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
     write_flow(&settings, "ops/run");
-    let project_path = root.join("project");
-    fs::create_dir_all(&project_path).expect("project");
+    let project = project(&settings, "project");
     let created = TriggerService::new(settings.clone())
         .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
             name: "Existing target".to_string(),
             enabled: true,
             source_type: "schedule".to_string(),
             action: Map::from_iter([
                 ("flow_name".to_string(), json!("ops/run")),
-                ("project_path".to_string(), json!(project_path)),
                 ("static_context".to_string(), json!({"origin": "workspace"})),
             ]),
             source: Map::from_iter([
@@ -92,8 +91,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
         Map::from_iter([("origin".to_string(), json!("workspace"))])
     );
     assert_eq!(
-        spark_storage::load_trigger_state(&settings.data_dir, &created.id)
-            .expect("load trigger state")
+        load_state(&settings, &project, &created.id)
             .last_result
             .as_deref(),
         Some("success")
@@ -103,8 +101,10 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
         .expect("read trigger run")
         .expect("trigger run");
     let record = run.record.expect("run record");
+    // A static trigger launches in its own project.
     assert_eq!(record.flow_name, "ops/run");
-    assert_eq!(record.project_path, project_path.to_string_lossy());
+    assert_eq!(record.project_path, project);
+    assert_eq!(record.working_directory, project);
     let context = run.checkpoint.expect("checkpoint").context;
     assert_eq!(
         context["context.trigger_static"],
@@ -129,17 +129,17 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "ops/webhook");
-    let project_path = temp.path().join("project");
-    fs::create_dir_all(&project_path).expect("project");
+    let project = project(&settings, "project");
     let service = WorkspaceTriggerService::new(settings.clone());
     let created = service
         .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
             name: "Webhook launch".to_string(),
             enabled: true,
             source_type: "webhook".to_string(),
             action: Map::from_iter([
                 ("flow_name".to_string(), json!("ops/webhook")),
-                ("project_path".to_string(), json!(project_path)),
                 ("static_context".to_string(), json!({"origin": "webhook"})),
             ]),
             source: Map::new(),
@@ -175,8 +175,7 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
     let second_run_id = second.activation.run_id.as_deref().expect("second run id");
     assert_ne!(first_run_id, second_run_id);
 
-    let state = spark_storage::load_trigger_state(&settings.data_dir, &created.id)
-        .expect("load trigger state");
+    let state = load_state(&settings, &project, &created.id);
     assert_eq!(state.last_result.as_deref(), Some("success"));
     assert_eq!(state.recent_history.len(), 2);
     assert_eq!(
@@ -212,48 +211,16 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
 }
 
 #[test]
-fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_state_only() {
+fn workspace_webhook_launch_failures_are_state_only() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/no-project");
     write_flow(&settings, "ops/invalid");
+    let project = project(&settings, "project");
     let service = WorkspaceTriggerService::new(settings.clone());
-    let no_project = service
-        .create_trigger(TriggerCreateRequest {
-            name: "No project".to_string(),
-            enabled: true,
-            source_type: "webhook".to_string(),
-            action: Map::from_iter([
-                ("flow_name".to_string(), json!("ops/no-project")),
-                ("static_context".to_string(), json!({"origin": "fallback"})),
-            ]),
-            source: Map::new(),
-        })
-        .expect("create no-project webhook");
-    let no_project_key = no_project.source["webhook_key"]
-        .as_str()
-        .expect("webhook key")
-        .to_string();
-    let no_project_secret = no_project.webhook_secret.expect("webhook secret");
-    let accepted = service
-        .dispatch_webhook(webhook_request(
-            &no_project_key,
-            &no_project_secret,
-            None,
-            json!({"payload": "fallback"}),
-        ))
-        .expect("dispatch no-project webhook");
-    let run_id = accepted.activation.run_id.as_deref().expect("run id");
-    let record = RunStore::for_settings(&settings)
-        .read_run_bundle(run_id)
-        .expect("read fallback run")
-        .expect("fallback run")
-        .record
-        .expect("record");
-    assert_eq!(record.project_path, settings.data_dir.to_string_lossy());
-
     let failing = service
         .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
             name: "Invalid flow".to_string(),
             enabled: true,
             source_type: "webhook".to_string(),
@@ -278,8 +245,7 @@ fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_sta
     assert!(failed.response.ok);
     assert_eq!(failed.activation.status, "failed");
     assert!(failed.activation.run_id.is_none());
-    let state = spark_storage::load_trigger_state(&settings.data_dir, &failing.id)
-        .expect("load failed trigger state");
+    let state = load_state(&settings, &project, &failing.id);
     assert_eq!(state.last_result.as_deref(), Some("failed"));
     assert_eq!(
         state.last_error.as_deref(),
@@ -289,21 +255,45 @@ fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_sta
 }
 
 #[test]
+fn triggers_are_created_only_in_registered_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/run");
+    let unregistered = temp.path().join("unregistered");
+    fs::create_dir_all(&unregistered).expect("project");
+    let error = WorkspaceTriggerService::new(settings)
+        .create_trigger(TriggerCreateRequest {
+            project_path: unregistered.to_string_lossy().into_owned(),
+            message: None,
+            name: "Nowhere".to_string(),
+            enabled: true,
+            source_type: "webhook".to_string(),
+            action: Map::from_iter([("flow_name".to_string(), json!("ops/run"))]),
+            source: Map::new(),
+        })
+        .expect_err("unregistered project");
+    assert_eq!(
+        error.detail(),
+        "Triggers are created in a registered project."
+    );
+    assert!(!unregistered.join(".spark").exists());
+}
+
+#[test]
 fn flow_event_trigger_keeps_static_context_nested() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
     write_flow(&settings, "ops/run");
-    let project_path = root.join("project");
-    fs::create_dir_all(&project_path).expect("project");
+    let project_path = project(&settings, "project");
     let trigger = flow_event_definition(
         "flow-event",
-        &project_path,
         Map::from_iter([("context.request.problem".to_string(), json!("static P"))]),
     );
     spark_storage::TriggerRepositories::from_settings(&settings)
-        .definitions
-        .put(&trigger)
+        .definitions(&project_path)
+        .unwrap()
+        .put(&trigger, None)
         .expect("put trigger");
 
     let outcomes = WorkspaceTriggerService::new(settings.clone())
@@ -327,21 +317,21 @@ fn flow_event_trigger_keeps_static_context_nested() {
 }
 
 #[test]
-fn role_triggers_skip_the_roles_own_runs_and_other_projects_runs() {
+fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_roles_own_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    let project_path = root.join("project");
-    fs::create_dir_all(&project_path).expect("project");
-    let project = project_path.to_string_lossy().into_owned();
-    let mut trigger = flow_event_definition("role-event", &project_path, Map::new());
+    let other = project(&settings, "other");
+    let project = project(&settings, "project");
+    let mut trigger = flow_event_definition("role-event", Map::new());
     trigger.action.mode = "role".into();
     trigger.action.role = Some("coordinator".into());
     trigger.action.flow_name = String::new();
     trigger.source = Map::from_iter([("statuses".to_string(), json!(["failed"]))]);
     spark_storage::TriggerRepositories::from_settings(&settings)
-        .definitions
-        .put(&trigger)
+        .definitions(&project)
+        .unwrap()
+        .put(&trigger, None)
         .expect("put trigger");
     let mut own = attractor_core::RunRecord::new("run-own", &project);
     own.launch_context = Some(
@@ -366,18 +356,53 @@ fn role_triggers_skip_the_roles_own_runs_and_other_projects_runs() {
                 ("project_path".to_string(), json!(project)),
                 ("status".to_string(), json!("failed")),
             ]))
-            .expect("emit event")[0]
-            .message
-            .clone()
+            .expect("emit event")
+            .into_iter()
+            .map(|outcome| outcome.message)
+            .collect::<Vec<_>>()
     };
-    let other = root.join("other").to_string_lossy().into_owned();
-    assert!(emit("run-elsewhere", &other).contains("another project"));
-    assert!(emit("run-own", &project).contains("launched by this role"));
-    assert_eq!(emit("run-other", &project), "Trigger delivered to role.");
+    // A matching run in another registered project does not fire it at all.
+    assert!(emit("run-elsewhere", &other).is_empty());
+    assert!(emit("run-own", &project)[0].contains("launched by this role"));
+    assert_eq!(
+        emit("run-other", &project),
+        vec!["Trigger delivered to role."]
+    );
     let role = spark_workspace::roles::WorkspaceRoleService::new(settings.clone())
         .get(&project, "coordinator")
         .expect("role");
     assert_eq!(role.inbox.event_seq, 1);
+}
+
+#[test]
+fn hand_deleted_definitions_stop_firing_without_a_restart() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    write_flow(&settings, "ops/run");
+    let project = project(&settings, "project");
+    let definitions = spark_storage::TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap();
+    definitions
+        .put(&flow_event_definition("flow-event", Map::new()), None)
+        .expect("put trigger");
+    let service = WorkspaceTriggerService::new(settings.clone());
+    let emit = || {
+        service
+            .emit_flow_event(Map::from_iter([
+                ("flow_name".to_string(), json!("ops/run")),
+                ("project_path".to_string(), json!(project)),
+                ("status".to_string(), json!("completed")),
+            ]))
+            .expect("emit event")
+            .len()
+    };
+    assert_eq!(emit(), 1);
+    let org = spark_common::project::org_dir(Path::new(&project));
+    run_git(&org, &["rm", "-q", "triggers/flow-event.toml"]).expect("git rm");
+    run_git(&org, &["commit", "-qm", "Remove the trigger"]).expect("commit");
+    assert_eq!(emit(), 0);
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
@@ -395,14 +420,13 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 
 fn flow_event_definition(
     id: &str,
-    project_path: &Path,
     static_context: Map<String, Value>,
 ) -> spark_storage::TriggerDefinition {
     spark_storage::TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id: id.to_string(),
         name: id.to_string(),
-        enabled: true,
         protected: false,
         source_type: "flow_event".to_string(),
         action: spark_storage::TriggerAction {
@@ -410,7 +434,6 @@ fn flow_event_definition(
             role: None,
             mode: "static".to_string(),
             flow_name: "ops/run".to_string(),
-            project_path: Some(project_path.to_string_lossy().into_owned()),
             static_context,
             execution_profile_id: None,
         },
@@ -449,6 +472,32 @@ fn webhook_request(
 
 fn at(value: &str) -> OffsetDateTime {
     state::parse_iso_datetime(Some(value)).expect("timestamp")
+}
+
+fn load_state(settings: &SparkSettings, project: &str, id: &str) -> spark_storage::TriggerState {
+    spark_storage::TriggerRepositories::from_settings(settings)
+        .runtime_state(project)
+        .unwrap()
+        .load(id)
+        .expect("load trigger state")
+}
+
+/// A registered project whose org repo has a git identity, since every
+/// definition write commits.
+fn project(settings: &SparkSettings, name: &str) -> String {
+    let project = settings.data_dir.parent().unwrap().join(name);
+    fs::create_dir_all(&project).expect("project dir");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
+    for (key, value) in [
+        ("user.name", "Trigger Test"),
+        ("user.email", "trigger@example.com"),
+    ] {
+        run_git(&org, &["config", key, value]).expect("git config");
+    }
+    spark_storage::ProjectRegistry::new(settings.data_dir.clone())
+        .ensure_project_paths(&project.to_string_lossy())
+        .expect("register project")
+        .project_path
 }
 
 fn settings(root: &Path) -> SparkSettings {

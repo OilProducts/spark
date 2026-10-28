@@ -48,7 +48,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [triggerError, setTriggerError] = useState('')
     useEffect(() => {
         let disposed = false
-        const load = () => { void fetchTriggerListValidated().then(items => { if (!disposed) { setTriggers(items.filter(t => t.action.mode === 'mission' && t.action.mission_id === mission.id && t.action.project_path === project)); setTriggerError('') } }).catch(error => { if (!disposed) setTriggerError(error.message) }) }
+        const load = () => { void fetchTriggerListValidated(project).then(items => { if (!disposed) { setTriggers(items.filter(t => t.action.mode === 'mission' && t.action.mission_id === mission.id && t.project_path === project)); setTriggerError('') } }).catch(error => { if (!disposed) setTriggerError(error.message) }) }
         load()
         window.addEventListener('spark:trigger-live-event', load)
         return () => { disposed = true; window.removeEventListener('spark:trigger-live-event', load) }

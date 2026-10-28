@@ -373,46 +373,48 @@ answered gate overwrites `human.gate.note` (empty when no note was given).
 
 ## Manage Triggers
 
-List triggers:
+A trigger belongs to a project: its definition is `triggers/<id>.toml` in the project's org repo (`<project>/.spark/agent-org`), and a trigger is identified by its project plus its id.
+
+List triggers, across registered projects or in one:
 
 ```bash
-spark trigger list --text
+spark trigger list [--project /absolute/path/to/project] --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/triggers
+curl 'http://127.0.0.1:8000/workspace/api/triggers?project_path=/absolute/path/to/project'
 ```
 
 Describe one trigger:
 
 ```bash
-spark trigger describe --id <trigger_id> --text
+spark trigger describe --project /absolute/path/to/project --id <trigger_id> --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>
+curl 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project'
 ```
 
-Create a trigger from JSON:
+Create a trigger from JSON in a registered project:
 
 ```bash
-spark trigger create --json /absolute/path/to/trigger.json
+spark trigger create --project /absolute/path/to/project --json /absolute/path/to/trigger.json [--message <reason>]
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:8000/workspace/api/triggers \
   -H 'Content-Type: application/json' \
-  -d @/absolute/path/to/trigger.json
+  -d @/absolute/path/to/trigger.json   # includes "project_path" and optional "message"
 ```
 
 Patch a trigger:
 
 ```bash
-spark trigger update --id <trigger_id> --json /absolute/path/to/trigger-patch.json
+spark trigger update --project /absolute/path/to/project --id <trigger_id> --json /absolute/path/to/trigger-patch.json [--message <reason>]
 ```
 
 ```bash
-curl -X PATCH http://127.0.0.1:8000/workspace/api/triggers/<trigger_id> \
+curl -X PATCH 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project' \
   -H 'Content-Type: application/json' \
   -d @/absolute/path/to/trigger-patch.json
 ```
@@ -420,19 +422,20 @@ curl -X PATCH http://127.0.0.1:8000/workspace/api/triggers/<trigger_id> \
 Delete a trigger:
 
 ```bash
-spark trigger delete --id <trigger_id>
+spark trigger delete --project /absolute/path/to/project --id <trigger_id> --expected-revision <revision> [--message <reason>]
 ```
 
 ```bash
-curl -X DELETE http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>
+curl -X DELETE 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project&expected_revision=<revision>'
 ```
 
 Trigger operation notes:
 
-- Trigger definitions are project-scoped and persisted through the Workspace trigger API.
+- Every create, update and delete commits the trigger's file into the org repo, with the given message or "Create/Edit/Delete trigger <name>". A definition edited and committed by hand is picked up on the next tick.
+- `enabled` is runtime state kept by Spark: switching it writes no definition and makes no commit.
 - Protected triggers reject edits and deletes through the same CLI and HTTP surfaces.
-- Webhook triggers use the shared Workspace webhook ingress route and validate their configured secret before dispatch.
-- An action's `mode` is `static` (launch `flow_name`, the default), `mission` (deliver to `mission_id` in `project_path`), or `role` (deliver to the standing role `role` in `project_path`).
+- Webhook triggers use the shared Workspace webhook ingress route and validate their secret before dispatch. Their key and secret hash live only in Spark's runtime state, never in the org repo; a webhook definition copied from another project has no key until its secret is regenerated.
+- An action's `mode` is `static` (launch `flow_name` in the trigger's project, the default), `mission` (deliver to `mission_id` in the trigger's project), or `role` (deliver to the standing role `role` in the trigger's project). `flow_event` triggers fire only for runs in their own project.
 - Production trigger runtime state, dispatch provenance, and live trigger events are emitted by the Rust trigger runtime. The browser/operator stream observes trigger changes through `/workspace/api/live/events` with `triggers_project_path`.
 - Trigger-launched repository mutation policy is compatibility behavior, not a new safety policy defined by this guide.
 

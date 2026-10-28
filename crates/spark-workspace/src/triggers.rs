@@ -35,24 +35,42 @@ impl WorkspaceTriggerService {
         self
     }
 
-    pub fn list_triggers(&self) -> WorkspaceResult<Vec<SerializedTrigger>> {
+    /// The triggers of `project_path`, or of every registered project.
+    pub fn list_triggers(
+        &self,
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<Vec<SerializedTrigger>> {
         TriggerService::new(self.settings.clone())
-            .list_triggers()
+            .list_triggers(project_path)
             .map_err(Into::into)
     }
 
-    pub fn get_trigger(&self, trigger_id: &str) -> WorkspaceResult<SerializedTrigger> {
+    pub fn get_trigger(
+        &self,
+        project_path: &str,
+        trigger_id: &str,
+    ) -> WorkspaceResult<SerializedTrigger> {
         TriggerService::new(self.settings.clone())
-            .get_trigger(trigger_id)?
+            .get_trigger(project_path, trigger_id)?
             .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".to_string()))
     }
 
+    /// Creates the trigger in a registered project's org repo.
     pub fn create_trigger(
         &self,
         request: TriggerCreateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
+        if spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
+            .read_project_record(&request.project_path)?
+            .is_none()
+        {
+            return Err(WorkspaceError::Validation(
+                "Triggers are created in a registered project.".into(),
+            ));
+        }
         let action = spark_storage::normalize_trigger_action_payload(&request.action)?;
-        self.with_validated_action(&action, || {
+        let project_path = request.project_path.clone();
+        self.with_validated_action(&project_path, &action, || {
             TriggerService::new(self.settings.clone())
                 .create_trigger(request)
                 .map_err(Into::into)
@@ -61,11 +79,12 @@ impl WorkspaceTriggerService {
 
     pub fn update_trigger(
         &self,
+        project_path: &str,
         trigger_id: &str,
         request: TriggerUpdateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
         let existing = TriggerRepositories::from_settings(&self.settings)
-            .definitions
+            .definitions(project_path)?
             .get(trigger_id)?
             .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".into()))?;
         let mut action = serde_json::to_value(&existing.action)
@@ -84,23 +103,25 @@ impl WorkspaceTriggerService {
                 .is_none_or(|a| !a.contains_key("flow_name"))
         {
             return TriggerService::new(self.settings.clone())
-                .update_trigger(trigger_id, request)
+                .update_trigger(project_path, trigger_id, request)
                 .map_err(Into::into);
         }
-        self.with_validated_action(&action, || {
+        self.with_validated_action(project_path, &action, || {
             TriggerService::new(self.settings.clone())
-                .update_trigger(trigger_id, request)
+                .update_trigger(project_path, trigger_id, request)
                 .map_err(Into::into)
         })
     }
 
     pub fn delete_trigger(
         &self,
+        project_path: &str,
         trigger_id: &str,
         expected_revision: &str,
+        message: Option<&str>,
     ) -> WorkspaceResult<TriggerDeleteResponse> {
         TriggerService::new(self.settings.clone())
-            .delete_trigger(trigger_id, expected_revision)
+            .delete_trigger(project_path, trigger_id, expected_revision, message)
             .map_err(Into::into)
     }
 
@@ -196,45 +217,48 @@ impl WorkspaceTriggerService {
         ]))
     }
 
+    /// Validates the action's target in the trigger's project.
     fn with_validated_action<T>(
         &self,
+        project_path: &str,
         action: &spark_storage::TriggerAction,
         work: impl FnOnce() -> WorkspaceResult<T>,
     ) -> WorkspaceResult<T> {
         if action.mode == "mission" {
             // Serialize target validation and persistence with mission closure.
             let scope = spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
-                .ensure_project_paths(action.project_path.as_deref().unwrap())?;
+                .ensure_project_paths(project_path)?;
             spark_storage::workspace_records::RecordRepository::missions(&scope.root)
                 .locked::<_, WorkspaceError>(|_| {
-                    self.validate_action(action)?;
+                    self.validate_action(project_path, action)?;
                     work()
                 })
         } else {
-            self.validate_action(action)?;
+            self.validate_action(project_path, action)?;
             work()
         }
     }
 
-    fn validate_action(&self, action: &spark_storage::TriggerAction) -> WorkspaceResult<()> {
+    fn validate_action(
+        &self,
+        project_path: &str,
+        action: &spark_storage::TriggerAction,
+    ) -> WorkspaceResult<()> {
         if action.mode == "mission" {
             let mission = crate::missions::WorkspaceMissionService::new(self.settings.clone())
-                .get(
-                    action.project_path.as_deref().unwrap(),
-                    action.mission_id.as_deref().unwrap(),
-                )?;
+                .get(project_path, action.mission_id.as_deref().unwrap())?;
             if mission.closed.is_some() {
                 return Err(WorkspaceError::Validation("Mission is closed".into()));
             }
         } else if action.mode == "role" {
             crate::roles::role_file(
                 &self.settings,
-                action.project_path.as_deref().unwrap(),
+                project_path,
                 action.role.as_deref().unwrap(),
             )?;
         } else if action.mode == "static" {
             WorkspaceFlowService::new(self.settings.clone())
-                .ensure_flow_exists(&action.flow_name, action.project_path.as_deref())?;
+                .ensure_flow_exists(&action.flow_name, Some(project_path))?;
         }
         Ok(())
     }
