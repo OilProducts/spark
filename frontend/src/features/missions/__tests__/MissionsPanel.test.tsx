@@ -38,8 +38,8 @@ beforeEach(() => {
             return { ok: true, json: async () => task }
         }
         if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
-        if (url === '/workspace/api/playbooks/bug-report') return { ok: true, json: async () => ({ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the draft first.' }) }
-        if (url === '/workspace/api/playbooks') return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }
+        if (url === `/workspace/api/playbooks/bug-report?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => ({ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the draft first.' }) }
+        if (url === `/workspace/api/playbooks?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }
         return { ok: true, json: async () => ({ missions: [task] }) }
     }))
 })

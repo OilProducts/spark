@@ -12,6 +12,8 @@ import type { Mission, Fields, Playbook } from './MissionsPanel'
 type Props = {
     editing: Mission | null; draft: Fields; latest?: Mission
     busy: boolean; conflict: boolean; error: string; unsaved: boolean; focusRequest: number
+    /** The mission's project; its playbooks are offered. */
+    project: string
     /** The project a new mission is drafted in. */
     projectName?: string
     setDraft: (fields: Fields) => void
@@ -23,7 +25,7 @@ function display(value: Fields[Core] | undefined) {
     if (typeof value === 'boolean') return value ? 'Yes' : 'No'
     return value || 'Empty'
 }
-export function MissionEditor({ editing, draft, latest, busy, conflict, error, unsaved, focusRequest, projectName, setDraft, save, archive, close, discard, reconcile }: Props) {
+export function MissionEditor({ editing, draft, latest, busy, conflict, error, unsaved, focusRequest, project, projectName, setDraft, save, archive, close, discard, reconcile }: Props) {
     const heading = useRef<HTMLHeadingElement>(null)
     const title = useRef<HTMLInputElement>(null)
     useEffect(() => { title.current?.focus({ preventScroll: true }) }, [focusRequest])
@@ -33,9 +35,9 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
     useEffect(() => {
         if (started) return
         let disposed = false
-        void fetch('/workspace/api/playbooks').then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
+        void fetch(`/workspace/api/playbooks?project_path=${encodeURIComponent(project)}`).then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
         return () => { disposed = true }
-    }, [started])
+    }, [started, project])
     return <section aria-label="Mission details" className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={e => {
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy) { e.stopPropagation(); close() }
     }}>

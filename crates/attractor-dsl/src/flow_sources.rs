@@ -85,10 +85,11 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
     Ok(parts.join("/"))
 }
 
-/// The ordered roots flows and roles resolve through: the project's org repo
-/// (`<project>/.spark/agent-org`), then the bundled library. Each root holds
-/// `flows/` and `roles/`; a project file replaces a bundled one of the same
-/// name. Reads never create anything, and a missing org means bundled only.
+/// The ordered roots flows, roles and playbooks resolve through: the
+/// project's org repo (`<project>/.spark/agent-org`), then the bundled
+/// library. Each root holds `flows/`, `roles/` and `playbooks/`; a project
+/// file replaces a bundled one of the same name. Reads never create
+/// anything, and a missing org means bundled only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowRoots {
     pub org: Option<PathBuf>,
@@ -197,23 +198,50 @@ impl FlowRoots {
     /// The first role file named `name`: its manifest key and text. A role
     /// file that resolves outside its root (a symlink out) is not read.
     pub fn role_text(&self, name: &str) -> Result<(String, String), String> {
-        let file = format!("{name}.md");
-        let unknown =
-            || format!("unknown role '{name}' (no roles/{file} in the project or bundled library)");
-        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-            return Err(unknown());
-        }
+        self.markdown_text("roles", name).ok_or_else(|| {
+            format!("unknown role '{name}' (no roles/{name}.md in the project or bundled library)")
+        })
+    }
+
+    /// The first playbook file named `name`, as [`Self::role_text`] reads roles.
+    pub fn playbook_text(&self, name: &str) -> Option<(String, String)> {
+        self.markdown_text("playbooks", name)
+    }
+
+    /// Names of every playbook in any root, each once, sorted.
+    pub fn list_playbook_names(&self) -> BTreeSet<String> {
         self.layers()
-            .find_map(|(layer, root)| {
-                let real = root.join("roles").join(&file).canonicalize().ok()?;
-                if !real.starts_with(root.canonicalize().ok()?) {
-                    return None;
-                }
-                fs::read_to_string(real)
-                    .ok()
-                    .map(|text| (format!("{layer}/roles/{file}"), text))
+            .filter_map(|(_, root)| fs::read_dir(root.join("playbooks")).ok())
+            .flatten()
+            .filter_map(|entry| {
+                Some(
+                    entry
+                        .ok()?
+                        .file_name()
+                        .to_str()?
+                        .strip_suffix(".md")?
+                        .to_string(),
+                )
             })
-            .ok_or_else(unknown)
+            .collect()
+    }
+
+    /// The first `<dir>/<name>.md` in any root: its manifest key and text.
+    /// A file that resolves outside its root (a symlink out) is not read.
+    fn markdown_text(&self, dir: &str, name: &str) -> Option<(String, String)> {
+        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+            return None;
+        }
+        let file = format!("{name}.md");
+        self.layers().find_map(|(layer, root)| {
+            let real = root.join(dir).join(&file).canonicalize().ok()?;
+            if !real.starts_with(root.canonicalize().ok()?) {
+                return None;
+            }
+            fs::read_to_string(real)
+                .ok()
+                .map(|text| (format!("{layer}/{dir}/{file}"), text))
+        })
     }
 
     /// The org repo's HEAD and whether it has uncommitted changes; None when

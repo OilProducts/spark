@@ -79,9 +79,9 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         setLoadedPlaybook(null)
         if (!draftPlaybook) return
         let disposed = false
-        void fetch(`/workspace/api/playbooks/${encodeURIComponent(draftPlaybook)}`).then(response => response.ok ? response.json() : null).then(value => { if (!disposed) setLoadedPlaybook(value) }).catch(() => {})
+        void fetch(`/workspace/api/playbooks/${encodeURIComponent(draftPlaybook)}?project_path=${encodeURIComponent(project)}`).then(response => response.ok ? response.json() : null).then(value => { if (!disposed) setLoadedPlaybook(value) }).catch(() => {})
         return () => { disposed = true }
-    }, [draftPlaybook])
+    }, [draftPlaybook, project])
     const playbook = mission.playbook ?? (loadedPlaybook?.name === draftPlaybook ? loadedPlaybook : null)
     const conversation = useMissionConversation(mission, project)
     const { conversationId } = conversation

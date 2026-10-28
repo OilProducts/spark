@@ -35,7 +35,7 @@ pub struct MissionFields {
     pub description: String,
     pub archived: bool,
     pub budget: Budget,
-    /// Name of an installed playbook the mission follows.
+    /// Name of a playbook the mission follows, resolved through its project.
     pub playbook: Option<String>,
 }
 
@@ -411,7 +411,7 @@ impl WorkspaceMissionService {
             fields.playbook = fields.playbook.filter(|name| !name.trim().is_empty());
             if fields.playbook != mission.fields.playbook {
                 if mission.started_at.is_some() { return Err(invalid("A started mission keeps its playbook")); }
-                if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, name).map_err(|e| invalid(e.to_string()))?; }
+                if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, Some(&scope.project_path), name).map_err(|e| invalid(e.to_string()))?; }
             }
             // A running agent's pinned instructions do not follow later edits (Codex
             // keeps a thread's first instructions), so the user's edits reach it as a turn.
@@ -565,7 +565,7 @@ impl WorkspaceMissionService {
             }
             mission.playbook = match &mission.fields.playbook {
                 Some(name) => Some(
-                    crate::playbooks::get(&self.settings, name)
+                    crate::playbooks::get(&self.settings, Some(&mission.project_path), name)
                         .map_err(|e| invalid(e.to_string()))?,
                 ),
                 None => None,

@@ -8,11 +8,12 @@ YAML flow files are not loaded.
 
 ## Where Flows Live
 
-Flows and roles resolve through two roots, in order:
+Flows, roles and playbooks resolve through two roots, in order:
 
-1. The project's org repo, `<project>/.spark/agent-org/` (`flows/` and
-   `roles/`). It is a git repository; its history is the audit trail.
-2. The bundled library, `$SPARK_HOME/bundled/` (`flows/` and `roles/`). Spark
+1. The project's org repo, `<project>/.spark/agent-org/` (`flows/`, `roles/`
+   and `playbooks/`). It is a git repository; its history is the audit trail.
+2. The bundled library, `$SPARK_HOME/bundled/` (`flows/`, `roles/` and
+   `playbooks/`). Spark
    rewrites it from its packaged assets on every start, so never edit it.
 
 A project file with the same name as a bundled one replaces it. A launch with
@@ -161,6 +162,11 @@ without role text); runs execute and snapshot the resolved form.
 A role may set `isolated: true`. Its nodes always run in a fresh session: a
 node using an isolated role may not set `runtime.session`. Reviewers and
 verifiers use isolated roles so they never inherit the author's reasoning.
+
+A role that may run as a project's standing role sets `standing: true`, and
+may set its launch limits under `budget` (`concurrent_runs`, default 4;
+`runs_per_day`, default 20). `budget` without `standing: true` fails
+validation. See the operations guide's standing roles section.
 
 ## Sessions
 

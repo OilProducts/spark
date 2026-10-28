@@ -725,11 +725,19 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
+    let org_playbooks = spark_common::project::org_dir(&project).join("playbooks");
     let project = project.to_str().unwrap();
-    fs::create_dir_all(settings.data_dir.join("playbooks")).unwrap();
+    let bundled_playbooks = settings.bundled_dir().join("playbooks");
+    fs::create_dir_all(&bundled_playbooks).unwrap();
     fs::write(
-        settings.data_dir.join("playbooks/bug-report.md"),
+        bundled_playbooks.join("bug-report.md"),
         "---\ntitle: Bug report\ndescription: Fix a bug.\n---\n\nReproduce, then fix.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(&org_playbooks).unwrap();
+    fs::write(
+        org_playbooks.join("bug-report.md"),
+        "---\ntitle: Org bug report\ndescription: Fix it here.\n---\n\nOrg steps.\n",
     )
     .unwrap();
     let server = serve(spark_http::build_app_with_agent_turn_backend(
@@ -753,6 +761,24 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Reproduce, then fix.");
+    // `--project` resolves through the project's org repo first.
+    let output = spark(&["playbook", "list", "--project", project]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!([{"name":"bug-report","title":"Org bug report","description":"Fix it here."}])
+    );
+    let output = spark(&[
+        "playbook",
+        "get",
+        "--project",
+        project,
+        "--name",
+        "bug-report",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(playbook["text"], "Org steps.");
 
     let payload_file = temp.path().join("mission.json");
     fs::write(

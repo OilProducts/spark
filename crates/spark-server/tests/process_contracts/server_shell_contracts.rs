@@ -6,7 +6,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use spark_assets::ResourceSource;
 use spark_common::debug::ENV_SPARK_DEBUG_CODEX_JSONRPC;
 use spark_common::settings::SettingsOverrides;
@@ -204,6 +203,10 @@ fn init_creates_runtime_layout_and_bundled_library() {
         starter_flow_files()
     );
     assert!(bundled.join("roles/adversarial-reviewer.md").is_file());
+    assert!(fs::read_to_string(bundled.join("playbooks/bug-report.md"))
+        .expect("bundled playbook")
+        .starts_with("---\ntitle: Bug report\n"));
+    assert!(!data_dir.join("playbooks").exists());
     assert!(!data_dir.join("flows").exists());
     assert!(!data_dir.join("config/flow-catalog.toml").exists());
     // Execution locks travel in the bundled flows' frontmatter.
@@ -235,65 +238,6 @@ fn init_creates_runtime_layout_and_bundled_library() {
 }
 
 #[test]
-fn init_seeds_playbooks_updating_unmodified_copies_and_keeping_edits() {
-    let env = BTreeMap::new();
-    let temp = tempfile::tempdir().expect("tempdir");
-    let data_dir = temp.path().join("spark-home");
-    let init = || {
-        let output = run_with_args_and_env(
-            [
-                "spark-server",
-                "init",
-                "--data-dir",
-                data_dir.to_str().expect("utf-8 data dir"),
-            ],
-            &env,
-        );
-        assert_eq!(output.exit_code, 0, "{}", output.stderr);
-    };
-    init();
-    let playbooks = data_dir.join("playbooks");
-    let bug_report = playbooks.join("bug-report.md");
-    let packaged = fs::read_to_string(&bug_report).expect("seeded bug report playbook");
-    assert!(packaged.starts_with("---\ntitle: Bug report\n"));
-
-    // An unmodified copy of an older packaged version is updated.
-    let old_packaged = "---\ntitle: Old\n---\nOld.\n";
-    fs::write(&bug_report, old_packaged).expect("old packaged playbook");
-    let manifest_path = playbooks.join(".packaged-playbook-hashes.json");
-    let mut manifest: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("playbook manifest"))
-            .expect("manifest json");
-    manifest.insert(
-        "bug-report.md".into(),
-        format!("{:x}", Sha256::digest(old_packaged)),
-    );
-    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).expect("manifest");
-    init();
-    assert_eq!(fs::read_to_string(&bug_report).unwrap(), packaged);
-
-    // An edited copy is kept.
-    fs::write(&bug_report, "edited\n").expect("user edit");
-    init();
-    assert_eq!(fs::read_to_string(&bug_report).unwrap(), "edited\n");
-
-    // A packaged copy whose manifest entry fell behind converges instead of
-    // reading as an edit that would block every later update.
-    fs::write(&bug_report, &packaged).expect("packaged copy");
-    let mut manifest: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest.insert("bug-report.md".into(), "stale".into());
-    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).expect("manifest");
-    init();
-    let manifest: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    assert_eq!(
-        manifest["bug-report.md"],
-        format!("{:x}", Sha256::digest(packaged.as_bytes()))
-    );
-}
-
-#[test]
 fn bundled_library_is_rewritten_on_every_start_including_serve() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -313,6 +257,10 @@ fn bundled_library_is_rewritten_on_every_start_including_serve() {
     let role = bundled.join("roles/adversarial-reviewer.md");
     fs::write(&role, "edited role\n").expect("edit role");
     fs::write(bundled.join("roles/stray.md"), "x").expect("stray role");
+    let playbook = bundled.join("playbooks/bug-report.md");
+    let packaged_playbook = fs::read_to_string(&playbook).expect("bundled playbook");
+    fs::write(&playbook, "edited playbook\n").expect("edit playbook");
+    fs::write(bundled.join("playbooks/stray.md"), "x").expect("stray playbook");
 
     let serve = run_with_args_and_env(
         [
@@ -335,6 +283,9 @@ fn bundled_library_is_rewritten_on_every_start_including_serve() {
     );
     assert_ne!(fs::read_to_string(&role).expect("role"), "edited role\n");
     assert!(!bundled.join("roles/stray.md").exists());
+    assert_eq!(fs::read_to_string(&playbook).unwrap(), packaged_playbook);
+    assert!(!bundled.join("playbooks/stray.md").exists());
+    assert!(!data_dir.join("playbooks").exists());
 }
 
 #[test]

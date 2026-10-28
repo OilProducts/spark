@@ -500,7 +500,8 @@ pub struct SparkSettings {
 }
 
 impl SparkSettings {
-    /// The bundled flow and role library (`flows/`, `roles/`), rewritten
+    /// The bundled flow, role and playbook library (`flows/`, `roles/`,
+    /// `playbooks/`), rewritten
     /// from the packaged assets on every start.
     pub fn bundled_dir(&self) -> PathBuf {
         self.data_dir.join("bundled")

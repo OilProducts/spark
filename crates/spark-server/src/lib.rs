@@ -80,7 +80,6 @@ impl CommandOutput {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct InitArgs {
     data_dir: Option<PathBuf>,
-    force: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -114,7 +113,6 @@ pub struct ServeConfiguration {
 pub struct RuntimeInitializationOptions {
     pub data_dir: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
-    pub force: bool,
 }
 
 /// Runs the `spark-server` command and writes process output.
@@ -340,7 +338,6 @@ fn initialize_runtime(
         &RuntimeInitializationOptions {
             data_dir: args.data_dir.clone(),
             ui_dir: None,
-            force: args.force,
         },
         env,
     )
@@ -355,7 +352,6 @@ fn initialize_runtime_with_ui(
         &RuntimeInitializationOptions {
             data_dir: args.data_dir.clone(),
             ui_dir,
-            force: args.force,
         },
         env,
     )
@@ -377,27 +373,6 @@ pub fn initialize_runtime_with_options(
     validate_settings(&settings).map_err(|error| error.to_string())?;
 
     write_bundled_library(&settings)?;
-    // Playbooks keep their own manifest.
-    let playbooks_dir = settings.data_dir.join("playbooks");
-    let manifest_path = playbooks_dir.join(".packaged-playbook-hashes.json");
-    let mut hashes = fs::read_to_string(&manifest_path)
-        .ok()
-        .and_then(|text| {
-            serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text).ok()
-        })
-        .unwrap_or_default();
-    let installed = seed_packaged_files(
-        &playbooks_dir,
-        spark_assets::playbooks::assets(),
-        &hashes,
-        options.force,
-    )?;
-    hashes.extend(installed);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&hashes).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("Unable to write packaged hash manifest: {e}"))?;
     Ok(settings)
 }
 
@@ -408,7 +383,6 @@ fn run_service_install(args: &ServiceInstallArgs, env: &impl Environment) -> Com
     };
     let init_args = InitArgs {
         data_dir: args.data_dir.clone(),
-        force: false,
     };
     let settings = match initialize_runtime_with_ui(&init_args, args.ui_dir.clone(), env) {
         Ok(result) => result,
@@ -854,7 +828,7 @@ fn run_serve_process(
     })
 }
 
-/// Wipes and rewrites `$SPARK_HOME/bundled/{flows,roles}` from the packaged
+/// Wipes and rewrites `$SPARK_HOME/bundled/{flows,roles,playbooks}` from the packaged
 /// assets. The bundled library is read-only: projects override it in their
 /// org repos.
 fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), String> {
@@ -866,6 +840,7 @@ fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), St
     for (dir, assets) in [
         (bundled.join("flows"), flows.collect::<Vec<_>>()),
         (bundled.join("roles"), spark_assets::roles::assets()),
+        (bundled.join("playbooks"), spark_assets::playbooks::assets()),
     ] {
         match fs::remove_dir_all(&dir) {
             Ok(()) => {}
@@ -884,72 +859,6 @@ fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), St
         }
     }
     Ok(())
-}
-
-/// Writes packaged `(relative name, content)` files into `dir`: creates
-/// missing ones, updates unmodified installed copies, and keeps local edits.
-/// `installed` maps each name to the hash Spark last installed there. Returns
-/// the `(name, hash)` pairs now installed: files it wrote, and files already
-/// byte-identical to the packaged version.
-fn seed_packaged_files(
-    dir: &Path,
-    assets: Vec<(String, String)>,
-    installed: &std::collections::BTreeMap<String, String>,
-    force: bool,
-) -> std::result::Result<Vec<(String, String)>, String> {
-    fs::create_dir_all(dir)
-        .map_err(|source| format!("Unable to create directory {}: {source}", dir.display()))?;
-
-    use sha2::{Digest, Sha256};
-    let mut now_installed = Vec::new();
-    for (relative_name, content) in assets {
-        let target_path = dir.join(&relative_name);
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent).map_err(|source| {
-                format!(
-                    "Unable to create parent directory {}: {source}",
-                    parent.display()
-                )
-            })?;
-        }
-
-        let packaged_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-        if target_path.exists() && !force {
-            let current_hash = fs::read(&target_path)
-                .map(|content| format!("{:x}", Sha256::digest(content)))
-                .map_err(|source| {
-                    format!(
-                        "Unable to read installed file {}: {source}",
-                        target_path.display()
-                    )
-                })?;
-            if current_hash == packaged_hash {
-                // Already the packaged version: record it, so a missing record
-                // converges instead of reading as a local edit.
-                if installed.get(&relative_name) != Some(&packaged_hash) {
-                    now_installed.push((relative_name.clone(), packaged_hash));
-                }
-                continue;
-            }
-            if installed.get(&relative_name) != Some(&current_hash) {
-                // Edited locally, or present before Spark recorded installs.
-                tracing::warn!(
-                    file = %relative_name,
-                    "keeping a locally edited packaged file; the bundled version differs"
-                );
-                continue;
-            }
-        }
-
-        fs::write(&target_path, content).map_err(|source| {
-            format!(
-                "Unable to write packaged file {}: {source}",
-                target_path.display()
-            )
-        })?;
-        now_installed.push((relative_name, packaged_hash));
-    }
-    Ok(now_installed)
 }
 
 fn enforce_runtime_home_guard(
@@ -978,10 +887,6 @@ fn parse_init_args(args: &[String]) -> std::result::Result<InitArgs, String> {
         match args[index].as_str() {
             "--data-dir" => {
                 parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?);
-            }
-            "--force" => {
-                parsed.force = true;
-                index += 1;
             }
             value if is_help_arg(value) => return Ok(parsed),
             unknown => return Err(format!("unrecognized arguments: {unknown}")),
