@@ -293,6 +293,11 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
     let author = attractor_dsl::parse_role("author", &role("author.md")).expect("author");
     assert!(!author.isolated);
     assert!(author.persona.contains("context.review.contested"));
+    let assistant =
+        attractor_dsl::parse_role("assistant", &role("assistant.md")).expect("assistant");
+    assert!(assistant
+        .persona
+        .starts_with("You are the Spark workspace assistant."));
 
     // Reviewer and author nodes leave the generic rules to their roles.
     for name in flows::starter_flow_names().expect("names") {

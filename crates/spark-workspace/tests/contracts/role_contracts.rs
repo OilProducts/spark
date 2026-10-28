@@ -14,6 +14,7 @@ use spark_workspace::{
 use std::sync::Arc;
 
 const COORDINATOR_FILE: &str = include_str!("../../../spark-assets/assets/roles/coordinator.md");
+const ASSISTANT_FILE: &str = include_str!("../../../spark-assets/assets/roles/assistant.md");
 const CHIEF_OF_STAFF_FILE: &str =
     include_str!("../../../spark-assets/assets/roles/chief-of-staff.md");
 
@@ -22,6 +23,7 @@ pub(crate) fn seed_bundled_roles(settings: &SparkSettings) {
     let roles = settings.bundled_dir().join("roles");
     std::fs::create_dir_all(&roles).unwrap();
     std::fs::write(roles.join("coordinator.md"), COORDINATOR_FILE).unwrap();
+    std::fs::write(roles.join("assistant.md"), ASSISTANT_FILE).unwrap();
     std::fs::write(roles.join("chief-of-staff.md"), CHIEF_OF_STAFF_FILE).unwrap();
 }
 
@@ -168,7 +170,9 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     let role = frame(&harness.user_turn(&coordinator));
     assert!(role.contains("Org changes"), "{role}");
     for rule in [
-        "goes through the `software-development/design-change` flow",
+        NEVER_CHANGE,
+        "`software-development/design-change` when the approach needs deciding",
+        "`software-development/implement-change` when it's clear",
         "check its design against what the user asked for",
         "tell the user exactly where it diverges and ask before implementing",
     ] {
@@ -181,7 +185,12 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     assert!(role.contains("memory/coordinator"));
     assert!(role.contains("Only the Chief of Staff role changes files in the org repo"));
     let chat = frame(&harness.user_turn("chat-1"));
+    assert!(
+        chat.starts_with("You are the Spark workspace assistant."),
+        "{chat}"
+    );
     assert!(chat.contains("Org changes"), "{chat}");
+    assert!(!chat.contains(NEVER_CHANGE), "{chat}");
     assert!(!chat.contains("standing Coordinator ("), "{chat}");
     assert!(chat.contains("memory/coordinator"));
     assert!(chat.contains("never edit it"));
@@ -196,7 +205,25 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     let mission_frame = frame(&harness.request(0));
     assert!(mission_frame.contains(&format!("Mission ID: {}", mission.id)));
     assert!(!mission_frame.contains("Org changes"));
+    assert!(!mission_frame.contains(NEVER_CHANGE));
     harness.agent.release(1);
+}
+
+const NEVER_CHANGE: &str = "Never edit, create, delete or commit project files yourself";
+
+#[test]
+fn an_org_assistant_role_replaces_the_bundled_one_for_ordinary_chats() {
+    let harness = Harness::new();
+    harness.org_role(
+        spark_workspace::roles::ASSISTANT,
+        "---\ntype: Role\ntitle: Assistant\n---\n\nYou are this org's assistant.\n",
+    );
+    let chat = frame(&harness.user_turn("chat-1"));
+    assert!(chat.starts_with("You are this org's assistant."), "{chat}");
+    assert!(
+        !chat.contains("You are the Spark workspace assistant."),
+        "{chat}"
+    );
 }
 
 #[test]

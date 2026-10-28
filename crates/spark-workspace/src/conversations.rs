@@ -4405,8 +4405,8 @@ fn active_assistant_turn_id(snapshot: &Value) -> Option<String> {
 }
 
 /// The fixed instruction frame for ordinary chats, pinned as system
-/// instructions on every turn: the Coordinator's persona, though an ordinary
-/// chat is not the standing Coordinator. Without it the agent is a bare coding
+/// instructions on every turn: the assistant persona, which unlike the
+/// standing Coordinator's may change the project directly. Without it the agent is a bare coding
 /// session that knows nothing about Spark's control surface and will improvise
 /// one from whatever it finds on disk.
 fn workspace_assistant_frame(
@@ -4414,9 +4414,9 @@ fn workspace_assistant_frame(
     project_path: &str,
     conversation_handle: &str,
 ) -> String {
-    let persona = crate::roles::role_file(settings, project_path, crate::roles::COORDINATOR)
+    let persona = crate::roles::role_file(settings, project_path, crate::roles::ASSISTANT)
         .map(|role| role.persona)
-        .unwrap_or_else(|error| format!("You are the Spark workspace assistant. (The coordinator role file could not be read: {error})"));
+        .unwrap_or_else(|error| format!("You are the Spark workspace assistant. (The assistant role file could not be read: {error})"));
     format!(
         "{persona}\n\n\
         This project's standing Coordinator keeps its memory in {memory}. Read it when it bears on the work, but never edit it.\n\n\

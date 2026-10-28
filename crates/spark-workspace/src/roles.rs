@@ -12,6 +12,8 @@ use spark_storage::{workspace_records::RecordRepository, ProjectPaths, ProjectRe
 use std::path::Path;
 
 pub const COORDINATOR: &str = "coordinator";
+/// The persona of ordinary chats; not a standing role.
+pub const ASSISTANT: &str = "assistant";
 pub const CHIEF_OF_STAFF: &str = "chief-of-staff";
 const DAY_SECONDS: i64 = 86_400;
 const FINISHED_RUNS_KEPT: usize = 50;
