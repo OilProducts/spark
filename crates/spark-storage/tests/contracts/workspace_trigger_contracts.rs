@@ -170,6 +170,124 @@ fn definitions_live_in_the_org_repo_and_every_write_commits_only_its_file() {
     );
 }
 
+/// Makes every commit in the project's org repo fail, as a rejecting
+/// pre-commit hook does; returns the hook so a test can remove it.
+fn reject_commits(project: &str) -> std::path::PathBuf {
+    let hook = org(project).join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    hook
+}
+
+#[test]
+fn a_rejected_commit_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
+    let mut saved = webhook_definition("trigger-a");
+    saved.revision = repository.put(&saved, None).expect("create");
+    let head = run_git(&org(&project), &["rev-parse", "HEAD"]).unwrap();
+    let hook = reject_commits(&project);
+
+    // A failed create leaves no definition behind.
+    assert!(repository
+        .put(&webhook_definition("trigger-b"), None)
+        .is_err());
+    assert!(repository.get("trigger-b").unwrap().is_none());
+
+    // A failed edit leaves the old definition and revision.
+    let mut edited = saved.clone();
+    edited.name = "Edited".into();
+    assert!(repository.put(&edited, None).is_err());
+    let current = repository.get("trigger-a").unwrap().unwrap();
+    assert_eq!(
+        (current.name.as_str(), &current.revision),
+        ("Storage trigger", &saved.revision)
+    );
+
+    // A failed delete keeps the definition.
+    assert!(repository
+        .delete("trigger-a", &saved.revision, None)
+        .is_err());
+    assert_eq!(
+        repository.get("trigger-a").unwrap().unwrap().revision,
+        saved.revision
+    );
+    assert_eq!(
+        run_git(&org(&project), &["rev-parse", "HEAD"]).unwrap(),
+        head
+    );
+    assert_eq!(
+        run_git(&org(&project), &["status", "--porcelain"]).unwrap(),
+        ""
+    );
+
+    // Once commits work again, retrying with the original revision succeeds.
+    std::fs::remove_file(hook).unwrap();
+    repository.put(&edited, None).expect("retry edit");
+    assert_eq!(last_commit(&project), "Edit trigger Edited");
+}
+
+#[test]
+fn runtime_state_updates_serialize_under_a_lock_in_the_data_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (repositories, project) = fixture(temp.path());
+    let states = repositories.runtime_state(&project).expect("states");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let states = states.clone();
+        std::thread::spawn(move || {
+            states
+                .update("trigger-a", |state| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    state.enabled = false;
+                    state.secret_hash = Some("rotated".into());
+                })
+                .unwrap();
+        })
+    };
+    started_rx.recv().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let refresher = {
+        let states = states.clone();
+        std::thread::spawn(move || {
+            let state = states
+                .update("trigger-a", |state| state.next_run_at = Some("next".into()))
+                .unwrap();
+            done_tx.send(state).unwrap();
+        })
+    };
+    // The second writer waits for the first instead of saving a stale copy.
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_millis(200))
+        .is_err());
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    let refreshed = done_rx.recv().unwrap();
+    refresher.join().unwrap();
+    assert!(!refreshed.enabled);
+    assert_eq!(refreshed.secret_hash.as_deref(), Some("rotated"));
+    let stored = states.load("trigger-a").unwrap();
+    assert_eq!(
+        (
+            stored.enabled,
+            stored.secret_hash.as_deref(),
+            stored.next_run_at.as_deref()
+        ),
+        (false, Some("rotated"), Some("next"))
+    );
+    // The lock lives beside the state, never in the org repo.
+    assert!(states.root_dir().join("trigger-a.json.lock").exists());
+    assert!(!org(&project).join("triggers").exists());
+}
+
 #[test]
 fn reads_create_nothing_and_the_first_write_creates_the_org_repo() {
     let temp = tempfile::tempdir().expect("tempdir");

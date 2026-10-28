@@ -120,13 +120,14 @@ impl TriggerSourceRuntime {
             return Ok(Vec::new());
         }
         let states = self.repositories.runtime_state(&definition.project_path)?;
-        let mut trigger_state = states.load(&definition.id)?;
-        if !trigger_state.enabled {
-            return Ok(Vec::new());
-        }
-        let due_at = state::schedule_due_at(definition, &trigger_state, now);
-        trigger_state.next_run_at = state::compute_next_run_at_at(definition, &trigger_state, now);
-        states.save(&definition.id, &trigger_state)?;
+        let mut due_at = None;
+        states.update(&definition.id, |trigger_state| {
+            if trigger_state.enabled {
+                due_at = state::schedule_due_at(definition, trigger_state, now);
+                trigger_state.next_run_at =
+                    state::compute_next_run_at_at(definition, trigger_state, now);
+            }
+        })?;
         let Some(due_at) = due_at else {
             return Ok(Vec::new());
         };
@@ -147,26 +148,26 @@ impl TriggerSourceRuntime {
         if definition.source_type != SOURCE_POLL {
             return Ok(Vec::new());
         }
-        let states = self.repositories.runtime_state(&definition.project_path)?;
-        let mut trigger_state = states.load(&definition.id)?;
-        if !trigger_state.enabled {
-            return Ok(Vec::new());
-        }
-        if state::parse_iso_datetime(trigger_state.next_run_at.as_deref())
-            .is_some_and(|next_run_at| now < next_run_at)
-        {
-            return Ok(Vec::new());
-        }
-
         let interval_seconds = definition
             .source
             .get("interval_seconds")
             .and_then(Value::as_i64)
             .ok_or_else(|| TriggerError::Validation("Poll interval is missing.".to_string()))?;
-        trigger_state.next_run_at = Some(state::datetime_to_iso(
-            now + Duration::seconds(interval_seconds),
-        ));
-        states.save(&definition.id, &trigger_state)?;
+        let states = self.repositories.runtime_state(&definition.project_path)?;
+        let mut due = false;
+        states.update(&definition.id, |trigger_state| {
+            due = trigger_state.enabled
+                && !state::parse_iso_datetime(trigger_state.next_run_at.as_deref())
+                    .is_some_and(|next_run_at| now < next_run_at);
+            if due {
+                trigger_state.next_run_at = Some(state::datetime_to_iso(
+                    now + Duration::seconds(interval_seconds),
+                ));
+            }
+        })?;
+        if !due {
+            return Ok(Vec::new());
+        }
 
         let payload = match self.fetch_poll_payload(definition).await {
             Ok(payload) => payload,
@@ -330,30 +331,32 @@ impl TriggerSourceRuntime {
             delivery_id,
         });
         let states = self.repositories.runtime_state(&definition.project_path)?;
-        let mut trigger_state = states.load(&definition.id)?;
         match sink_result {
             Ok(sink_outcome) => {
                 let message = sink_outcome
                     .message
                     .clone()
                     .unwrap_or_else(|| "Trigger fired successfully.".to_string());
-                if sink_outcome.no_op {
-                    state::record_activation_no_op(
-                        definition,
-                        &mut trigger_state,
-                        timestamp,
-                        message.clone(),
-                    );
-                } else {
-                    state::record_activation_success(
-                        definition,
-                        &mut trigger_state,
-                        timestamp,
-                        message.clone(),
-                        sink_outcome.run_id.clone(),
-                    );
-                }
-                states.save(&definition.id, &trigger_state)?;
+                // Recorded on the latest state, under its lock: a switch-off or
+                // secret rotation during the activation survives.
+                let trigger_state = states.update(&definition.id, |trigger_state| {
+                    if sink_outcome.no_op {
+                        state::record_activation_no_op(
+                            definition,
+                            trigger_state,
+                            timestamp,
+                            message.clone(),
+                        );
+                    } else {
+                        state::record_activation_success(
+                            definition,
+                            trigger_state,
+                            timestamp,
+                            message.clone(),
+                            sink_outcome.run_id.clone(),
+                        );
+                    }
+                })?;
                 Ok(TriggerActivationOutcome {
                     trigger_id: definition.id.clone(),
                     source_type: definition.source_type.clone(),
@@ -378,10 +381,12 @@ impl TriggerSourceRuntime {
         source_payload: Value,
     ) -> TriggerResult<TriggerActivationOutcome> {
         let message = message.into();
-        let states = self.repositories.runtime_state(&definition.project_path)?;
-        let mut trigger_state = states.load(&definition.id)?;
-        state::record_activation_failure(definition, &mut trigger_state, timestamp, &message);
-        states.save(&definition.id, &trigger_state)?;
+        let trigger_state = self
+            .repositories
+            .runtime_state(&definition.project_path)?
+            .update(&definition.id, |trigger_state| {
+                state::record_activation_failure(definition, trigger_state, timestamp, &message);
+            })?;
         Ok(TriggerActivationOutcome {
             trigger_id: definition.id.clone(),
             source_type: definition.source_type.clone(),

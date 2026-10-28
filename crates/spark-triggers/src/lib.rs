@@ -99,16 +99,25 @@ impl TriggerService {
         let message = request.message.clone();
         let mut definition = normalize_trigger_create(request)?;
         definition.project_path = repository.project_path().to_string();
-        definition.revision = repository.put(&definition, message.as_deref())?;
-        let webhook = definition.source_type == SOURCE_WEBHOOK;
+        // State first, so the source loop never sees the new definition with
+        // default state (enabled, no credentials); dropped again if the
+        // definition's commit fails.
+        let states = self.repositories.runtime_state(&definition.project_path)?;
         let mut webhook_secret = None;
-        let mut trigger = self.serialize_with_refreshed_state(definition, |state| {
-            *state = TriggerState::default();
-            state.enabled = enabled;
-            if webhook {
-                webhook_secret = Some(set_webhook_credentials(state));
-            }
-        })?;
+        let mut initial = TriggerState {
+            enabled,
+            ..TriggerState::default()
+        };
+        if definition.source_type == SOURCE_WEBHOOK {
+            webhook_secret = Some(set_webhook_credentials(&mut initial));
+        }
+        states.save(&definition.id, &initial)?;
+        definition.revision = repository
+            .put(&definition, message.as_deref())
+            .inspect_err(|_| {
+                let _ = states.delete(&definition.id);
+            })?;
+        let mut trigger = self.serialize_with_refreshed_state(definition, |_| {})?;
         trigger.webhook_secret = webhook_secret;
         Ok(trigger)
     }

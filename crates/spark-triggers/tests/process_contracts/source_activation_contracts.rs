@@ -483,6 +483,91 @@ run_at = "2026-06-24T09:30:00Z"
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn activation_recording_keeps_a_switch_off_and_secret_rotation_made_during_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings.clone());
+    let created = service
+        .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
+            name: "Webhook".to_string(),
+            enabled: true,
+            source_type: "webhook".to_string(),
+            action: action(),
+            source: Map::new(),
+        })
+        .expect("create webhook");
+    let runtime = TriggerSourceRuntime::with_sink(
+        TriggerRepositories::from_settings(&settings),
+        SwitchOffSink {
+            service: service.clone(),
+            project: project.clone(),
+            revision: created.revision.clone(),
+        },
+    );
+    let outcome = runtime
+        .process_webhook(webhook_request(
+            created.source["webhook_key"].as_str().unwrap(),
+            created.webhook_secret.as_deref().unwrap(),
+            None,
+            json!({}),
+        ))
+        .expect("webhook");
+    assert_eq!(outcome.activation.status, "success");
+    let state = load_state(&settings, &project, &created.id);
+    assert!(
+        !state.enabled,
+        "the switch-off survives recording the activation"
+    );
+    let rotated = state.secret_hash.clone();
+    assert_ne!(rotated, None);
+    assert_eq!(state.recent_history.len(), 1);
+    // The secret issued at creation no longer works: the rotation survived too.
+    assert!(matches!(
+        runtime.process_webhook(webhook_request(
+            created.source["webhook_key"].as_str().unwrap(),
+            created.webhook_secret.as_deref().unwrap(),
+            None,
+            json!({}),
+        )),
+        Err(TriggerError::Validation(_))
+    ));
+}
+
+/// Switches its trigger off and rotates its secret while activating, as a
+/// user would during a slow launch.
+struct SwitchOffSink {
+    service: TriggerService,
+    project: String,
+    revision: String,
+}
+
+impl TriggerActivationSink for SwitchOffSink {
+    fn activate(
+        &self,
+        request: TriggerActivationRequest,
+    ) -> spark_triggers::TriggerResult<TriggerActivationSinkOutcome> {
+        self.service.update_trigger(
+            &self.project,
+            &request.trigger_id,
+            spark_triggers::TriggerUpdateRequest {
+                expected_revision: self.revision.clone(),
+                enabled: Some(false),
+                regenerate_webhook_secret: true,
+                ..Default::default()
+            },
+        )?;
+        Ok(TriggerActivationSinkOutcome {
+            run_id: Some("run-1".into()),
+            message: None,
+            no_op: false,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CountingSink {
     launches: Arc<AtomicUsize>,

@@ -202,6 +202,7 @@ impl TriggerDefinitionRepository {
         let path = self.definition_path(&definition.id)?;
         let _lock = self.lock(&definition.id)?;
         let current = crate::settings::read_settings_document(&path)?;
+        let previous = read_optional_bytes(&path)?;
         let expected = if definition.revision.is_empty() {
             "absent"
         } else {
@@ -231,7 +232,8 @@ impl TriggerDefinitionRepository {
             &definition.id,
             message,
             &format!("{verb} trigger {}", definition.name),
-        )?;
+        )
+        .inspect_err(|_| restore(&path, previous.as_deref()))?;
         Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
@@ -250,6 +252,7 @@ impl TriggerDefinitionRepository {
             return Err(StorageError::SettingsConflict { path });
         }
         let name = toml_scalar_to_string(current.values.get("name"));
+        let previous = read_optional_bytes(&path)?;
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -262,6 +265,7 @@ impl TriggerDefinitionRepository {
             message,
             &format!("Delete trigger {}", name.trim()),
         )
+        .inspect_err(|_| restore(&path, previous.as_deref()))
     }
 
     fn lock(&self, trigger_id: &str) -> Result<fs::File> {
@@ -310,24 +314,32 @@ impl TriggerRuntimeStateRepository {
         serde_json::from_str(&text).or_else(|_| Ok(TriggerState::default()))
     }
 
+    /// Replaces the whole state. Writers that change part of it use
+    /// [`Self::update`], so they never save a stale snapshot.
     pub fn save(&self, trigger_id: &str, state: &TriggerState) -> Result<PathBuf> {
         let path = self.state_path(trigger_id)?;
+        let _lock = crate::settings::lock_document(&path)?;
         write_json_atomic(&path, state, JsonWriteOptions::default())?;
         Ok(path)
     }
 
+    /// Reads, changes and writes the state under its lock (beside the state
+    /// file, in Spark's data directory), so concurrent writers serialize.
     pub fn update<F>(&self, trigger_id: &str, update: F) -> Result<TriggerState>
     where
         F: FnOnce(&mut TriggerState),
     {
+        let path = self.state_path(trigger_id)?;
+        let _lock = crate::settings::lock_document(&path)?;
         let mut state = self.load(trigger_id)?;
         update(&mut state);
-        self.save(trigger_id, &state)?;
+        write_json_atomic(&path, &state, JsonWriteOptions::default())?;
         Ok(state)
     }
 
     pub fn delete(&self, trigger_id: &str) -> Result<()> {
         let path = self.state_path(trigger_id)?;
+        let _lock = crate::settings::lock_document(&path)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1017,4 +1029,21 @@ fn git_error(path: &Path, error: String) -> StorageError {
         path,
         std::io::Error::other(error),
     )
+}
+
+fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(StorageError::io("read trigger definition", path, source)),
+    }
+}
+
+/// Puts the definition back as it was before a write whose commit failed,
+/// so the failed change never takes effect and a retry sees the old revision.
+fn restore(path: &Path, previous: Option<&[u8]>) {
+    let _ = match previous {
+        Some(bytes) => fs::write(path, bytes),
+        None => fs::remove_file(path),
+    };
 }

@@ -188,6 +188,134 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
 }
 
 #[test]
+fn a_rejected_commit_creates_nothing_and_keeps_edits_and_deletes_undone() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings.clone());
+    let created = service
+        .create_trigger(webhook_create_request(&project))
+        .expect("create");
+    let org = spark_common::project::org_dir(Path::new(&project));
+    let hook = org.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert!(service
+        .create_trigger(TriggerCreateRequest {
+            enabled: false,
+            name: "Never created".into(),
+            ..webhook_create_request(&project)
+        })
+        .is_err());
+    let listed = service.list_triggers(Some(&project)).unwrap();
+    assert_eq!(listed.len(), 1, "the failed create is not discoverable");
+    let states = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_dir(states.root_dir())
+            .unwrap()
+            .filter(|entry| entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json"))
+            .count(),
+        1,
+        "no state is left for the failed create"
+    );
+
+    let edit = TriggerUpdateRequest {
+        expected_revision: created.revision.clone(),
+        name: Some("Renamed".into()),
+        enabled: Some(false),
+        ..TriggerUpdateRequest::default()
+    };
+    assert!(service
+        .update_trigger(&project, &created.id, edit.clone())
+        .is_err());
+    let current = service.get_trigger(&project, &created.id).unwrap().unwrap();
+    assert_eq!((current.name.as_str(), current.enabled), ("Webhook", true));
+    assert_eq!(current.revision, created.revision);
+    assert!(service
+        .delete_trigger(&project, &created.id, &created.revision, None)
+        .is_err());
+    assert!(service
+        .get_trigger(&project, &created.id)
+        .unwrap()
+        .is_some());
+
+    std::fs::remove_file(&hook).unwrap();
+    let retried = service
+        .update_trigger(&project, &created.id, edit)
+        .expect("retry with the original revision");
+    assert_eq!((retried.name.as_str(), retried.enabled), ("Renamed", false));
+}
+
+#[test]
+fn a_refresh_overlapping_a_switch_off_and_rotation_cannot_undo_them() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings.clone());
+    let created = service
+        .create_trigger(webhook_create_request(&project))
+        .expect("create");
+    let states = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap();
+    let old_hash = states.load(&created.id).unwrap().secret_hash;
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let writer = {
+        let states = states.clone();
+        let id = created.id.clone();
+        std::thread::spawn(move || {
+            states
+                .update(&id, |state| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    state.enabled = false;
+                    state.secret_hash = Some("rotated".into());
+                })
+                .unwrap();
+        })
+    };
+    started_rx.recv().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let reader = {
+        let service = service.clone();
+        let (project, id) = (project.clone(), created.id.clone());
+        std::thread::spawn(move || {
+            done_tx
+                .send(service.get_trigger(&project, &id).unwrap().unwrap())
+                .unwrap();
+        })
+    };
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "the refresh waits for the writer"
+    );
+    release_tx.send(()).unwrap();
+    writer.join().unwrap();
+    assert!(!done_rx.recv().unwrap().enabled);
+    reader.join().unwrap();
+    let stored = states.load(&created.id).unwrap();
+    assert!(!stored.enabled);
+    assert_eq!(stored.secret_hash.as_deref(), Some("rotated"));
+    assert_ne!(stored.secret_hash, old_hash);
+}
+
+#[test]
 fn the_same_id_in_two_projects_gives_two_independent_triggers() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
