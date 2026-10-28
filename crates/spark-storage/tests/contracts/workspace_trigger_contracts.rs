@@ -233,6 +233,104 @@ fn a_rejected_commit_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
     assert_eq!(last_commit(&project), "Edit trigger Edited");
 }
 
+/// A definition too large to write under the child's file-size limit.
+fn oversized_definition(id: &str) -> TriggerDefinition {
+    let mut definition = webhook_definition(id);
+    definition
+        .action
+        .static_context
+        .insert("padding".into(), json!("x".repeat(8192)));
+    definition
+}
+
+/// Run in a child process under `ulimit -f`: writes an oversized definition
+/// and exits 0 only if the write was refused.
+#[test]
+fn oversized_trigger_write_child() {
+    let (Ok(root), Ok(mode)) = (
+        std::env::var("SPARK_TEST_TRIGGER_ROOT"),
+        std::env::var("SPARK_TEST_TRIGGER_MODE"),
+    ) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let home = root.join("spark-home");
+    let repository = TriggerRepositories::new(home.join("config"), home.clone())
+        .definitions(&root.join("project").to_string_lossy())
+        .unwrap();
+    let mut definition = oversized_definition(if mode == "edit" {
+        "trigger-a"
+    } else {
+        "trigger-b"
+    });
+    if mode == "edit" {
+        definition.revision = repository.get("trigger-a").unwrap().unwrap().revision;
+    }
+    std::process::exit(if repository.put(&definition, None).is_err() {
+        0
+    } else {
+        1
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_or_partial_write_leaves_the_original_definition_and_nothing_malformed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (repositories, project) = fixture(temp.path());
+    let repository = repositories.definitions(&project).expect("repository");
+    let saved = repository
+        .put(&webhook_definition("trigger-a"), None)
+        .expect("create");
+    let path = repository.definition_path("trigger-a").unwrap();
+    let original = std::fs::read(&path).unwrap();
+    for mode in ["edit", "create"] {
+        // File writes past one block fail with EFBIG instead of a signal.
+        // Its output goes to pipes: the limit would also refuse writes to a
+        // redirected log file.
+        let output = std::process::Command::new("sh")
+            .args(["-c", "trap '' XFSZ; ulimit -f 1; exec \"$0\" \"$@\""])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "workspace_trigger_contracts::oversized_trigger_write_child",
+            ])
+            .env("SPARK_TEST_TRIGGER_ROOT", temp.path())
+            .env("SPARK_TEST_TRIGGER_MODE", mode)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{mode}: the oversized write is refused: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original, "{mode}");
+        assert_eq!(
+            repository.get("trigger-a").unwrap().unwrap().revision,
+            saved
+        );
+        assert!(repository.get("trigger-b").unwrap().is_none(), "{mode}");
+        let entries = std::fs::read_dir(repository.root_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["trigger-a.toml"], "{mode}");
+        // No staged leftovers beside the org repo, and nothing new in it.
+        assert!(std::fs::read_dir(Path::new(&project).join(".spark"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".spark-trigger-")));
+        assert_eq!(
+            run_git(&org(&project), &["status", "--porcelain"]).unwrap(),
+            ""
+        );
+    }
+}
+
 #[test]
 fn runtime_state_updates_serialize_under_a_lock_in_the_data_dir() {
     let temp = tempfile::tempdir().expect("tempdir");

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -220,9 +221,7 @@ impl TriggerDefinitionRepository {
         ensure_org_repo(Path::new(&self.project_path)).map_err(|error| git_error(&path, error))?;
         fs::create_dir_all(self.root_dir())
             .map_err(|source| StorageError::io("create trigger directory", &path, source))?;
-        // A plain write: an atomic one would put a temp file in the org repo.
-        fs::write(&path, &text)
-            .map_err(|source| StorageError::io("write trigger definition", &path, source))?;
+        self.replace(&path, text.as_bytes())?;
         let verb = if current.revision == "absent" {
             "Create"
         } else {
@@ -233,7 +232,7 @@ impl TriggerDefinitionRepository {
             message,
             &format!("{verb} trigger {}", definition.name),
         )
-        .inspect_err(|_| restore(&path, previous.as_deref()))?;
+        .inspect_err(|_| self.restore(&path, previous.as_deref()))?;
         Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
@@ -265,7 +264,37 @@ impl TriggerDefinitionRepository {
             message,
             &format!("Delete trigger {}", name.trim()),
         )
-        .inspect_err(|_| restore(&path, previous.as_deref()))
+        .inspect_err(|_| self.restore(&path, previous.as_deref()))
+    }
+
+    /// Replaces `path` atomically: the new bytes are staged in
+    /// `<project>/.spark` (outside the org repo, on its filesystem, and
+    /// gitignored), then renamed over the definition. A failed or partial
+    /// write leaves the original untouched and no file in the org repo.
+    fn replace(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let staging = Path::new(&self.project_path).join(".spark");
+        let mut temp = tempfile::Builder::new()
+            .prefix(".spark-trigger-")
+            .tempfile_in(&staging)
+            .map_err(|source| StorageError::io("stage trigger definition", &staging, source))?;
+        temp.write_all(bytes)
+            .and_then(|()| temp.as_file().sync_all())
+            .map_err(|source| StorageError::io("write trigger definition", path, source))?;
+        temp.persist(path)
+            .map_err(|error| StorageError::io("replace trigger definition", path, error.error))?;
+        Ok(())
+    }
+
+    /// Puts the definition back as it was before a write whose commit
+    /// failed, so the change never takes effect and a retry sees the old
+    /// revision.
+    fn restore(&self, path: &Path, previous: Option<&[u8]>) {
+        let _ = match previous {
+            Some(bytes) => self.replace(path, bytes),
+            None => {
+                fs::remove_file(path).map_err(|source| StorageError::io("remove", path, source))
+            }
+        };
     }
 
     fn lock(&self, trigger_id: &str) -> Result<fs::File> {
@@ -1037,13 +1066,4 @@ fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(StorageError::io("read trigger definition", path, source)),
     }
-}
-
-/// Puts the definition back as it was before a write whose commit failed,
-/// so the failed change never takes effect and a retry sees the old revision.
-fn restore(path: &Path, previous: Option<&[u8]>) {
-    let _ = match previous {
-        Some(bytes) => fs::write(path, bytes),
-        None => fs::remove_file(path),
-    };
 }
