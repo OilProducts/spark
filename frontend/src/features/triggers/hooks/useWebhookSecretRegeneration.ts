@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { updateTriggerValidated, type TriggerResponse } from '@/lib/workspaceClient'
+import { triggerKey, updateTriggerValidated, type TriggerResponse } from '@/lib/workspaceClient'
 
 type UseWebhookSecretRegenerationArgs = {
     refreshTriggers: () => Promise<void>
@@ -20,12 +20,12 @@ export function useWebhookSecretRegeneration({
         if (isRegenerating || !selectedTrigger || selectedTrigger.source_type !== 'webhook') return
         setIsRegenerating(true)
         try {
-            const updated = await updateTriggerValidated(selectedTrigger.id, {
+            const updated = await updateTriggerValidated(selectedTrigger.project_path, selectedTrigger.id, {
                 regenerate_webhook_secret: true,
                 expected_revision: selectedTrigger.revision,
             })
             if (updated.webhook_secret) {
-                revealWebhookSecret(selectedTrigger.id, updated.webhook_secret)
+                revealWebhookSecret(triggerKey(selectedTrigger), updated.webhook_secret)
             }
             await refreshTriggers()
         } catch (nextError) {

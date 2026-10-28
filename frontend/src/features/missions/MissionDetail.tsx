@@ -1,5 +1,5 @@
 import { useStore } from '@/store'
-import { fetchTriggerListValidated, type TriggerResponse } from '@/lib/api/triggersApi'
+import { fetchTriggerListValidated, triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DropdownMenu } from 'radix-ui'
@@ -48,7 +48,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [triggerError, setTriggerError] = useState('')
     useEffect(() => {
         let disposed = false
-        const load = () => { void fetchTriggerListValidated().then(items => { if (!disposed) { setTriggers(items.filter(t => t.action.mode === 'mission' && t.action.mission_id === mission.id && t.action.project_path === project)); setTriggerError('') } }).catch(error => { if (!disposed) setTriggerError(error.message) }) }
+        const load = () => { void fetchTriggerListValidated(project).then(items => { if (!disposed) { setTriggers(items.filter(t => t.action.mode === 'mission' && t.action.mission_id === mission.id && t.project_path === project)); setTriggerError('') } }).catch(error => { if (!disposed) setTriggerError(error.message) }) }
         load()
         window.addEventListener('spark:trigger-live-event', load)
         return () => { disposed = true; window.removeEventListener('spark:trigger-live-event', load) }
@@ -260,7 +260,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                     </RailSection>
                     {tokens !== null && <RailSection label="Spent"><p className="text-xs">{formatCompactCount(tokens)} tokens across runs</p></RailSection>}
                     {triggerError && <InlineError>{triggerError}</InlineError>}
-                    {triggers.length > 0 && <RailSection label="Triggers"><ul aria-label="Targeting triggers">{triggers.map(trigger => <li key={trigger.id}><button type="button" className="text-left text-xs text-primary hover:underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: trigger.id }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></RailSection>}
+                    {triggers.length > 0 && <RailSection label="Triggers"><ul aria-label="Targeting triggers">{triggers.map(trigger => <li key={triggerKey(trigger)}><button type="button" className="text-left text-xs text-primary hover:underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey(trigger) }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></RailSection>}
                 </Well>
             </aside>
         </div>

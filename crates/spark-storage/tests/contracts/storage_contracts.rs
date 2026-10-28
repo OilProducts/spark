@@ -309,13 +309,6 @@ fn m0_filesystem_fixture_samples_load_as_generic_values_and_rewrite_through_code
     let loaded_requests: Vec<serde_json::Value> =
         read_jsonl(&journal_path, JsonLinesOptions::strict()).expect("read request state");
     assert_eq!(loaded_requests, vec![request_state]);
-
-    let trigger: serde_json::Value =
-        read_json(fixture_dir.join("trigger-create-state.json")).expect("trigger fixture");
-    assert_eq!(
-        trigger["durable_state"]["after"]["trigger_definition"]["format"],
-        "toml"
-    );
 }
 
 fn repo_root() -> PathBuf {

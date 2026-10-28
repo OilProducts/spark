@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { request, type Board, type Mission } from '@/features/missions/MissionsPanel'
-import { defaultProjectChoice, isUnregisteredTarget, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
+import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { useStore } from '@/store'
 
 import { Well } from '@/components/app/well'
@@ -14,7 +14,6 @@ import {
     SHARED_WEBHOOK_ENDPOINT,
     type TriggerFormState,
     type TriggerSourceType,
-    type TriggerTargetMode,
 } from '../model/triggerForm'
 
 function TriggerField({
@@ -53,41 +52,14 @@ export function TriggerEditor({
     useEffect(() => {
         let disposed = false
         setMissions([]); setMissionError('')
-        if (form.actionMode === 'mission' && form.projectPath && form.targetMode !== 'none') {
+        if (form.actionMode === 'mission' && form.projectPath) {
             void request<Board>(form.projectPath).then(board => { if (!disposed) setMissions(board.missions.filter(m => !m.closed)) }).catch(error => { if (!disposed) setMissionError(error.message) })
         }
         return () => { disposed = true }
-    }, [form.actionMode, form.projectPath, form.targetMode])
+    }, [form.actionMode, form.projectPath])
     const sourceTypeDisabled = protectedTrigger || mode === 'edit'
-    const executionTargetDisabled = protectedTrigger
     const sourceConfigurationDisabled = protectedTrigger
     const fieldId = (suffix: string) => `${mode}-trigger-${suffix}`
-
-    const onTargetModeChange = (nextTargetMode: TriggerTargetMode) => {
-        if (nextTargetMode === 'project') {
-            onChange({
-                ...form,
-                targetMode: 'project',
-                projectPath: form.projectPath && projectRegistry[form.projectPath]
-                    ? form.projectPath
-                    : defaultProjectChoice(projectRegistry) ?? '',
-            })
-            return
-        }
-        if (nextTargetMode === 'none') {
-            onChange({
-                ...form,
-                targetMode: 'none',
-                projectPath: '',
-            })
-            return
-        }
-        onChange({
-            ...form,
-            targetMode: 'custom',
-            projectPath: form.targetMode === 'custom' ? form.projectPath : '',
-        })
-    }
 
     return (
         <div className="mt-4 space-y-3">
@@ -145,17 +117,23 @@ export function TriggerEditor({
                         <option value="flow_event">Flow Event</option>
                     </NativeSelect>
                 </TriggerField>
-                <TriggerField label="Execution target" htmlFor={fieldId('execution-target')} className="text-sm">
+                {/* A trigger lives in its project's org: chosen on create, fixed after. */}
+                <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
                     <NativeSelect
-                        id={fieldId('execution-target')}
-                        value={form.targetMode}
-                        onChange={(event) => onTargetModeChange(event.target.value as TriggerTargetMode)}
-                        disabled={executionTargetDisabled}
+                        id={fieldId('project-choice')}
+                        value={form.projectPath}
+                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
+                        disabled={mode === 'edit'}
                         className="text-sm"
                     >
-                        <option value="project">Project</option>
-                        <option value="none">No project</option>
-                        <option value="custom">Other path</option>
+                        {mode === 'edit' && !projectRegistry[form.projectPath] ? (
+                            <option value={form.projectPath}>{form.projectPath}</option>
+                        ) : null}
+                        {orderProjects(projectRegistry).map((project) => (
+                            <option key={project.directoryPath} value={project.directoryPath}>
+                                {projectLabel(projectRegistry, project.directoryPath)}
+                            </option>
+                        ))}
                     </NativeSelect>
                 </TriggerField>
                 <Label htmlFor={fieldId('enabled')} className="flex items-end gap-2 text-sm">
@@ -167,39 +145,6 @@ export function TriggerEditor({
                     <span className="text-sm font-medium text-foreground">Enabled</span>
                 </Label>
             </div>
-
-            {form.targetMode === 'project' ? (
-                <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
-                    <NativeSelect
-                        id={fieldId('project-choice')}
-                        value={form.projectPath}
-                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
-                        disabled={protectedTrigger}
-                        className="text-sm"
-                    >
-                        {orderProjects(projectRegistry).map((project) => (
-                            <option key={project.directoryPath} value={project.directoryPath}>
-                                {projectLabel(projectRegistry, project.directoryPath)}
-                            </option>
-                        ))}
-                    </NativeSelect>
-                </TriggerField>
-            ) : null}
-
-            {form.targetMode === 'custom' ? (
-                <TriggerField label="Project path" htmlFor={fieldId('project-target')} className="text-sm">
-                    {form.projectPath.trim() && isUnregisteredTarget(projectRegistry, form.projectPath) ? (
-                        <p data-testid="trigger-target-unregistered" className="text-xs text-warning">Not a registered project</p>
-                    ) : null}
-                    <Input
-                        id={fieldId('project-target')}
-                        value={form.projectPath}
-                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
-                        disabled={protectedTrigger}
-                        className="text-sm"
-                    />
-                </TriggerField>
-            ) : null}
 
             {form.sourceType === 'schedule' ? (
                 <div className="grid gap-3 lg:grid-cols-2">

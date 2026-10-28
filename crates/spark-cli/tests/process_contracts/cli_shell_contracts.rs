@@ -936,6 +936,8 @@ fn trigger_json_payload_can_come_from_injected_stdin() {
             "spark",
             "trigger",
             "create",
+            "--project",
+            "/repo",
             "--json",
             "-",
             "--base-url",
@@ -950,7 +952,7 @@ fn trigger_json_payload_can_come_from_injected_stdin() {
     assert_eq!(plan.path, "/workspace/api/triggers");
     assert_eq!(
         plan.body.expect("body"),
-        serde_json::json!({"enabled": true, "id": "nightly"})
+        serde_json::json!({"enabled": true, "id": "nightly", "project_path": "/repo"})
     );
 }
 
@@ -963,6 +965,8 @@ fn trigger_json_payload_rejects_non_object_stdin_before_dispatch() {
             "spark",
             "trigger",
             "create",
+            "--project",
+            "/repo",
             "--json",
             "-",
             "--base-url",
@@ -985,13 +989,15 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     let env = BTreeMap::new();
     let (list_base_url, list_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
     let list_output = run_with_args_and_env(
         [
             "spark",
             "trigger",
             "list",
+            "--project",
+            "/repo",
             "--base-url",
             list_base_url.as_str(),
         ],
@@ -1005,12 +1011,15 @@ fn trigger_commands_execute_http_requests_and_render_text() {
         .recv_timeout(Duration::from_secs(2))
         .expect("list request");
     assert_eq!(list_request.method, "GET");
-    assert_eq!(list_request.path, "/workspace/api/triggers");
+    assert_eq!(
+        list_request.path,
+        "/workspace/api/triggers?project_path=%2Frepo"
+    );
     assert_eq!(list_request.body, "");
 
     let (list_text_base_url, _list_text_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
     let list_text_output = run_with_args_and_env(
         [
@@ -1026,18 +1035,20 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     assert_eq!(list_text_output.exit_code, 0);
     assert_eq!(
         list_text_output.stdout,
-        "trigger-123: Nightly [webhook] -> ops/run\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=True protected=False\n"
     );
 
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
-        r#"{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run","project_path":"/repo"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
+        r#"{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
     ));
     let describe_output = run_with_args_and_env(
         [
             "spark",
             "trigger",
             "describe",
+            "--project",
+            "/repo",
             "--id",
             "trigger-123",
             "--text",
@@ -1051,11 +1062,11 @@ fn trigger_commands_execute_http_requests_and_render_text() {
         describe_output.stdout,
         "ID: trigger-123\n\
 Name: Nightly\n\
+Project: /repo\n\
 Source Type: webhook\n\
 Enabled: True\n\
 Protected: False\n\
 Flow Target: ops/run\n\
-Project Target: /repo\n\
 Last Fired: (never)\n\
 Last Result: (none)\n\
 Next Run: (n/a)\n\
@@ -1066,7 +1077,7 @@ Webhook Secret: secret-123\n"
             .recv_timeout(Duration::from_secs(2))
             .expect("describe request")
             .path,
-        "/workspace/api/triggers/trigger-123"
+        "/workspace/api/triggers/trigger-123?project_path=%2Frepo"
     );
 }
 
@@ -1090,8 +1101,12 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "create",
+            "--project",
+            "/repo",
             "--json",
             payload_path.to_str().expect("payload path"),
+            "--message",
+            "Nightly digest",
             "--base-url",
             create_base_url.as_str(),
         ],
@@ -1107,6 +1122,8 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     assert_eq!(
         serde_json::from_str::<Value>(&create_request.body).expect("create body"),
         serde_json::json!({
+            "project_path": "/repo",
+            "message": "Nightly digest",
             "name": "Nightly",
             "source_type": "webhook",
             "action": {"flow_name": "ops/run"},
@@ -1129,6 +1146,8 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "update",
+            "--project",
+            "/repo",
             "--id",
             "trigger/custom",
             "--json",
@@ -1145,7 +1164,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     assert_eq!(update_request.method, "PATCH");
     assert_eq!(
         update_request.path,
-        "/workspace/api/triggers/trigger%2Fcustom"
+        "/workspace/api/triggers/trigger%2Fcustom?project_path=%2Frepo"
     );
     assert_eq!(
         serde_json::from_str::<Value>(&update_request.body).expect("update body"),
@@ -1161,10 +1180,14 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "delete",
+            "--project",
+            "/repo",
             "--expected-revision",
             "revision-1",
             "--id",
             "trigger/custom",
+            "--message",
+            "Retire it",
             "--base-url",
             delete_base_url.as_str(),
         ],
@@ -1177,7 +1200,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     assert_eq!(delete_request.method, "DELETE");
     assert_eq!(
         delete_request.path,
-        "/workspace/api/triggers/trigger%2Fcustom?expected_revision=revision-1"
+        "/workspace/api/triggers/trigger%2Fcustom?project_path=%2Frepo&expected_revision=revision-1&message=Retire%20it"
     );
 
     let _ = fs::remove_dir_all(temp_dir);
@@ -1195,6 +1218,8 @@ fn trigger_http_errors_preserve_cli_stderr_envelope() {
             "spark",
             "trigger",
             "delete",
+            "--project",
+            "/repo",
             "--expected-revision",
             "revision-1",
             "--id",

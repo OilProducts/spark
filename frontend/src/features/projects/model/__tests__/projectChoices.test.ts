@@ -80,7 +80,7 @@ describe('project choices', () => {
         expect(isFolderMissing(undefined)).toBe(false)
     })
 
-    it('marks a trigger target that is not a registered project', () => {
+    it('marks a trigger project that is not a registered project', () => {
         expect(isUnregisteredTarget(registry, '/work/new')).toBe(false)
         expect(isUnregisteredTarget(registry, '/work/new/')).toBe(false)
         expect(isUnregisteredTarget(registry, '/somewhere/else')).toBe(true)

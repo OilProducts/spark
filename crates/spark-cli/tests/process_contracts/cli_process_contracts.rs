@@ -298,6 +298,8 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
         .args([
             "trigger",
             "create",
+            "--project",
+            "/repo",
             "--json",
             "-",
             "--base-url",
@@ -329,7 +331,7 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
 fn process_trigger_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -341,7 +343,7 @@ fn process_trigger_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "trigger-123: Nightly [webhook] -> ops/run\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=True protected=False\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let request = requests
@@ -362,6 +364,8 @@ fn process_trigger_http_error_maps_to_stderr_json() {
         .args([
             "trigger",
             "delete",
+            "--project",
+            "/repo",
             "--expected-revision",
             "revision-1",
             "--id",

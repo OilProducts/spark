@@ -1,6 +1,7 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { triggerKey } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -62,6 +63,7 @@ const getCreateTriggerScope = () => {
 
 const makeTrigger = (overrides: Partial<Record<string, unknown>> = {}) => ({
   id: String(overrides.id ?? 'trigger-default'),
+  project_path: String(overrides.project_path ?? '/project'),
   name: String(overrides.name ?? 'Trigger'),
   enabled: overrides.enabled === false ? false : true,
   protected: overrides.protected === true,
@@ -71,9 +73,6 @@ const makeTrigger = (overrides: Partial<Record<string, unknown>> = {}) => ({
   updated_at: '2026-03-22T00:00:00Z',
   action: {
     flow_name: String(overrides.flow_name ?? TEST_TRIGGER_FLOW),
-    project_path: Object.prototype.hasOwnProperty.call(overrides, 'project_path')
-      ? overrides.project_path
-      : null,
     static_context: {},
   },
   source: overrides.source ?? { kind: 'interval', interval_seconds: 300 },
@@ -101,10 +100,10 @@ describe('TriggersPanel', () => {
   it('keeps a restored selection while the list loads and falls back once a missing one is known', async () => {
     let respond: (triggers: unknown[]) => void = () => undefined
     vi.mocked(fetch).mockImplementation(() => new Promise((resolve) => { respond = (triggers) => resolve(jsonResponse(triggers)) }))
-    act(() => useStore.getState().updateTriggersSession({ selectedTriggerId: 'second' }))
+    act(() => useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey({ project_path: '/project', id: 'second' }) }))
     renderTriggersPanel()
     await waitFor(() => expect(fetch).toHaveBeenCalled())
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('second')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/project', id: 'second' }))
     await act(async () => respond([makeTrigger({ id: 'first', name: 'First' }), makeTrigger({ id: 'second', name: 'Second' })]))
     expect(await screen.findByTestId('trigger-row-second')).toHaveAttribute('aria-current', 'true')
 
@@ -133,8 +132,9 @@ describe('TriggersPanel', () => {
     expect(form.queryByLabelText('Target flow')).not.toBeInTheDocument()
     await user.selectOptions(form.getByLabelText('Mission'), 'open')
     await user.click(screen.getByTestId('trigger-create-button'))
-    await waitFor(() => expect(saved).toMatchObject({ action: { mode: 'mission', mission_id: 'open', project_path: '/project' } }))
+    await waitFor(() => expect(saved).toMatchObject({ project_path: '/project', action: { mode: 'mission', mission_id: 'open' } }))
     expect((saved as unknown as { action: object }).action).not.toHaveProperty('flow_name')
+    expect((saved as unknown as { action: object }).action).not.toHaveProperty('project_path')
   })
 
   it('creates a schedule trigger and refreshes the list', async () => {
@@ -149,6 +149,7 @@ describe('TriggersPanel', () => {
           ? [
             {
               id: 'trigger-created',
+              project_path: '/project',
               name: 'Created schedule',
               enabled: true,
               protected: false,
@@ -156,7 +157,7 @@ describe('TriggersPanel', () => {
               source_type: 'schedule',
               created_at: '2026-03-22T00:00:00Z',
               updated_at: '2026-03-22T00:00:00Z',
-              action: { flow_name: TEST_TRIGGER_FLOW, project_path: null, static_context: {} },
+              action: { flow_name: TEST_TRIGGER_FLOW, static_context: {} },
               source: { kind: 'interval', interval_seconds: 300 },
               state: { last_fired_at: null, last_result: null, last_error: null, next_run_at: '2026-03-22T00:05:00Z', recent_history: [] },
             },
@@ -167,6 +168,7 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers') && method === 'POST') {
         return jsonResponse({
           id: 'trigger-created',
+          project_path: '/project',
           name: 'Created schedule',
           enabled: true,
           protected: false,
@@ -174,7 +176,7 @@ describe('TriggersPanel', () => {
           source_type: 'schedule',
           created_at: '2026-03-22T00:00:00Z',
           updated_at: '2026-03-22T00:00:00Z',
-          action: { flow_name: TEST_TRIGGER_FLOW, project_path: null, static_context: {} },
+          action: { flow_name: TEST_TRIGGER_FLOW, static_context: {} },
           source: { kind: 'interval', interval_seconds: 300 },
           state: { last_fired_at: null, last_result: null, last_error: null, next_run_at: '2026-03-22T00:05:00Z', recent_history: [] },
         })
@@ -182,6 +184,7 @@ describe('TriggersPanel', () => {
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
     const user = userEvent.setup()
     renderTriggersPanel()
 
@@ -208,6 +211,7 @@ describe('TriggersPanel', () => {
         return jsonResponse([
           {
             id: 'trigger-webhook',
+            project_path: '/project',
             name: 'Webhook trigger',
             enabled: true,
             protected: false,
@@ -215,15 +219,16 @@ describe('TriggersPanel', () => {
             source_type: 'webhook',
             created_at: '2026-03-22T00:00:00Z',
             updated_at: '2026-03-22T00:00:00Z',
-            action: { flow_name: 'webhook.dot', project_path: null, static_context: {} },
+            action: { flow_name: 'webhook.dot', static_context: {} },
             source: { webhook_key: 'webhook-key-1' },
             state: { last_fired_at: null, last_result: null, last_error: null, next_run_at: null, recent_history: [] },
           },
         ])
       }
-      if (url.endsWith('/workspace/api/triggers/trigger-webhook') && method === 'PATCH') {
+      if (url.endsWith('/workspace/api/triggers/trigger-webhook?project_path=%2Fproject') && method === 'PATCH') {
         return jsonResponse({
           id: 'trigger-webhook',
+          project_path: '/project',
           name: 'Webhook trigger',
           enabled: true,
           protected: false,
@@ -231,7 +236,7 @@ describe('TriggersPanel', () => {
           source_type: 'webhook',
           created_at: '2026-03-22T00:00:00Z',
           updated_at: '2026-03-22T00:01:00Z',
-          action: { flow_name: 'webhook.dot', project_path: null, static_context: {} },
+          action: { flow_name: 'webhook.dot', static_context: {} },
           source: { webhook_key: 'webhook-key-1' },
           state: { last_fired_at: null, last_result: null, last_error: null, next_run_at: null, recent_history: [] },
           webhook_secret: 'new-webhook-secret',
@@ -254,7 +259,7 @@ describe('TriggersPanel', () => {
     })
   })
 
-  it('serializes project, no-project, and custom execution targets when creating triggers', async () => {
+  it('creates triggers in a registered project, defaulting to the active project', async () => {
     const postPayloads: Array<Record<string, unknown>> = []
     const createdTriggers: Array<ReturnType<typeof makeTrigger>> = []
     const fetchMock = vi.mocked(global.fetch)
@@ -273,7 +278,7 @@ describe('TriggersPanel', () => {
           revision: 'revision-1',
           source_type: payload.source_type,
           flow_name: (payload.action as Record<string, unknown>).flow_name,
-          project_path: (payload.action as Record<string, unknown>).project_path ?? null,
+          project_path: payload.project_path,
           source: payload.source as Record<string, unknown>,
         })
         createdTriggers.splice(0, createdTriggers.length, createdTrigger)
@@ -282,72 +287,49 @@ describe('TriggersPanel', () => {
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
-    useStore.setState({ projectRegistry: {
-      '/tmp/last-used-project': { directoryPath: '/tmp/last-used-project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' },
-      '/tmp/retargeted-project': { directoryPath: '/tmp/retargeted-project', isFavorite: false, lastAccessedAt: '2026-03-01T00:00:00Z' },
-    } })
+    useStore.setState({
+      activeProjectPath: '/tmp/active-project',
+      projectRegistry: {
+        '/tmp/last-used-project': { directoryPath: '/tmp/last-used-project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' },
+        '/tmp/active-project': { directoryPath: '/tmp/active-project', isFavorite: false, lastAccessedAt: '2026-03-01T00:00:00Z' },
+        '/tmp/other-project': { directoryPath: '/tmp/other-project', isFavorite: false, lastAccessedAt: '2026-02-01T00:00:00Z' },
+      },
+    })
 
     const user = userEvent.setup()
     renderTriggersPanel()
 
     let createScope = await openCreateTriggerForm(user)
-    let nameInput = createScope.getByLabelText('Name')
-    let targetFlowInput = createScope.getByLabelText('Target flow')
-    let executionTargetSelect = createScope.getByLabelText('Execution target')
-    const reopenCreateTriggerForm = async () => {
-      await waitFor(() => {
-        expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
-      })
-      createScope = await openCreateTriggerForm(user)
-      nameInput = createScope.getByLabelText('Name')
-      targetFlowInput = createScope.getByLabelText('Target flow')
-      executionTargetSelect = createScope.getByLabelText('Execution target')
-    }
-
-    // A new trigger starts in the last-used project, and any registered project can be chosen.
-    expect(executionTargetSelect).toHaveValue('project')
-    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/last-used-project')
-    await user.selectOptions(createScope.getByLabelText('Project'), '/tmp/retargeted-project')
-
-    await user.type(nameInput, 'Project target trigger')
-    await user.clear(targetFlowInput)
-    await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
+    // No execution target or free-form path: only a registered project.
+    expect(createScope.queryByLabelText('Execution target')).not.toBeInTheDocument()
+    expect(createScope.queryByLabelText('Project path')).not.toBeInTheDocument()
+    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/active-project')
+    await user.type(createScope.getByLabelText('Name'), 'Active project trigger')
+    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
     await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(postPayloads).toHaveLength(1))
+    expect(postPayloads[0]).toMatchObject({ project_path: '/tmp/active-project' })
+    expect(postPayloads[0]?.action).not.toHaveProperty('project_path')
 
-    await waitFor(() => {
-      expect(postPayloads).toHaveLength(1)
-    })
-    expect(postPayloads[0]?.action).toMatchObject({ project_path: '/tmp/retargeted-project' })
-
-    await reopenCreateTriggerForm()
-    await user.type(nameInput, 'No project trigger')
-    await user.clear(targetFlowInput)
-    await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
-    await user.selectOptions(executionTargetSelect, 'none')
-    expect(screen.queryByLabelText('Project path')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument())
+    createScope = await openCreateTriggerForm(user)
+    await user.selectOptions(createScope.getByLabelText('Project'), '/tmp/other-project')
+    await user.type(createScope.getByLabelText('Name'), 'Other project trigger')
+    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
     await user.click(screen.getByTestId('trigger-create-button'))
-
-    await waitFor(() => {
-      expect(postPayloads).toHaveLength(2)
-    })
-    expect(postPayloads[1]?.action).toMatchObject({ project_path: null })
-
-    await reopenCreateTriggerForm()
-    await user.type(nameInput, 'Custom target trigger')
-    await user.clear(targetFlowInput)
-    await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
-    await user.selectOptions(executionTargetSelect, 'custom')
-    await user.type(createScope.getByLabelText('Project path'), '/tmp/custom-project')
-    expect(createScope.getByTestId('trigger-target-unregistered')).toHaveTextContent('Not a registered project')
-    await user.click(screen.getByTestId('trigger-create-button'))
-
-    await waitFor(() => {
-      expect(postPayloads).toHaveLength(3)
-    })
-    expect(postPayloads[2]?.action).toMatchObject({ project_path: '/tmp/custom-project' })
+    await waitFor(() => expect(postPayloads).toHaveLength(2))
+    expect(postPayloads[1]).toMatchObject({ project_path: '/tmp/other-project' })
   })
 
-  it('hydrates existing target modes and marks targets that are not registered projects', async () => {
+  it('cannot create a trigger without a registered project', async () => {
+    vi.mocked(global.fetch).mockImplementation(async () => jsonResponse([]))
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    await openCreateTriggerForm(user)
+    expect(screen.getByTestId('trigger-create-button')).toBeDisabled()
+  })
+
+  it('shows each trigger project and keeps it fixed when editing', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
@@ -360,9 +342,9 @@ describe('TriggersPanel', () => {
             project_path: '/tmp/registered-project',
           }),
           makeTrigger({
-            id: 'trigger-custom-project',
-            name: 'Custom project trigger',
-            project_path: '/tmp/custom-project',
+            id: 'trigger-other-project',
+            name: 'Other project trigger',
+            project_path: '/tmp/other-project',
             enabled: false,
           }),
         ])
@@ -381,28 +363,19 @@ describe('TriggersPanel', () => {
     expect(registeredRow).toHaveTextContent('Project · registered-project')
     expect(registeredRow).not.toHaveTextContent('Disabled')
     expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
-    const customRow = screen.getByTestId('trigger-row-trigger-custom-project')
+    const otherRow = screen.getByTestId('trigger-row-trigger-other-project')
     // Only the disabled row carries the word; its dot is hollow.
-    expect(customRow).toHaveTextContent('Unregistered project · custom-project · Schedule · interval · Disabled')
-    expect(customRow.querySelector('[data-slot="status-dot"]')).toHaveClass('border')
-    expect(customRow).toHaveAttribute('data-unregistered-target', 'true')
-
-    await user.click(customRow)
-    let selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
-    await waitFor(() => {
-      expect(selectedTriggerScope.getByDisplayValue('Other path')).toBeVisible()
-    })
-    expect(selectedTriggerScope.getByDisplayValue('/tmp/custom-project')).toBeVisible()
-    expect(selectedTriggerScope.getByTestId('trigger-target-unregistered')).toBeVisible()
-    expect(selectedTriggerScope.getByText('Target: Unregistered project · custom-project')).toBeVisible()
+    expect(otherRow).toHaveTextContent('Unregistered project · other-project · Schedule · interval · Disabled')
+    expect(otherRow.querySelector('[data-slot="status-dot"]')).toHaveClass('border')
+    expect(otherRow).toHaveAttribute('data-unregistered-target', 'true')
 
     await user.click(registeredRow)
-    selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
+    const selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
     await waitFor(() => {
-      expect(selectedTriggerScope.getByLabelText('Execution target')).toHaveValue('project')
+      expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
     })
-    expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
-    expect(selectedTriggerScope.getByText('Target: Project · registered-project')).toBeVisible()
+    expect(selectedTriggerScope.getByLabelText('Project')).toBeDisabled()
+    expect(selectedTriggerScope.getByText('Project · registered-project')).toBeVisible()
   })
 
   it('keeps protected trigger target and source settings locked while saving only allowed edits', async () => {
@@ -424,7 +397,7 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers') && method === 'GET') {
         return jsonResponse([protectedTrigger])
       }
-      if (url.endsWith('/workspace/api/triggers/trigger-protected') && method === 'PATCH') {
+      if (url.endsWith('/workspace/api/triggers/trigger-protected?project_path=%2Ftmp%2Fprotected-project') && method === 'PATCH') {
         const payload = JSON.parse(String(init?.body)) as Record<string, unknown>
         patchPayloads.push(payload)
         const actionPayload = (payload.action as Record<string, unknown> | undefined) ?? {}
@@ -453,8 +426,7 @@ describe('TriggersPanel', () => {
 
     expect(selectedTriggerScope.getByLabelText('Source type')).toBeDisabled()
     expect(within(selectedTriggerScope.getByLabelText('Source type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
-    expect(selectedTriggerScope.getByLabelText('Execution target')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Project path')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Project')).toBeDisabled()
     expect(selectedTriggerScope.getByLabelText('Schedule kind')).toBeDisabled()
     expect(selectedTriggerScope.getByLabelText('Interval seconds')).toBeDisabled()
     expect(selectedTriggerScope.getByLabelText('Static context JSON')).toBeDisabled()
@@ -482,7 +454,7 @@ describe('TriggersPanel', () => {
     expect(actionPayload.static_context).toBeUndefined()
 
     await waitFor(() => {
-      expect(selectedTriggerScope.getByText('Target: Unregistered project · protected-project')).toBeVisible()
+      expect(selectedTriggerScope.getByText('Unregistered project · protected-project')).toBeVisible()
     })
   })
   it('retains the draft revision after a live edit and conflict, blocks duplicate saves, and discards explicitly', async () => {
@@ -520,10 +492,10 @@ describe('TriggersPanel', () => {
     })
     expect(screen.getByDisplayValue('My draft')).toBeVisible()
     expect(save).toBeEnabled()
-    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default'].expectedRevision).toBe('revision-1')
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId[triggerKey(trigger)].expectedRevision).toBe('revision-1')
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     expect(await screen.findByDisplayValue('External')).toBeVisible()
-    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default']).toBeUndefined()
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId[triggerKey(trigger)]).toBeUndefined()
   })
 
   it('hides the create form until New trigger and restores the selected trigger on cancel', async () => {
@@ -543,10 +515,104 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
     expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Existing')).toBeVisible()
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('trigger-default')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/project', id: 'trigger-default' }))
 
     await openCreateTriggerForm(user)
     expect(screen.getByDisplayValue('Draft')).toBeVisible()
   })
 
+
+  describe('the same id in two projects', () => {
+    const projectA = '/tmp/project-a'
+    const projectB = '/tmp/project-b'
+    const rowFor = (name: string) => screen.getByRole('button', { name: new RegExp(name) })
+    const editorScope = () => within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
+    const twins = () => [
+      makeTrigger({ id: 'daily', name: 'Daily A', project_path: projectA, source_type: 'webhook', source: { webhook_key: 'key-a' } }),
+      makeTrigger({ id: 'daily', name: 'Daily B', project_path: projectB, source_type: 'webhook', source: { webhook_key: 'key-b' } }),
+    ]
+
+    it('selects, edits and deletes each one independently, scoped to its project', async () => {
+      let triggers = twins()
+      const requests: Array<{ method: string; url: string; body?: Record<string, unknown> }> = []
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = resolveRequestUrl(input as RequestInfo | URL)
+        const method = init?.method ?? 'GET'
+        if (method === 'GET') return jsonResponse(triggers)
+        const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
+        requests.push({ method, url, body })
+        const project = new URL(url, 'http://local').searchParams.get('project_path')
+        const target = triggers.find((trigger) => trigger.project_path === project)!
+        if (method === 'DELETE') {
+          triggers = triggers.filter((trigger) => trigger !== target)
+          return jsonResponse({ status: 'deleted', id: 'daily', project_path: project })
+        }
+        const updated = { ...target, name: String(body?.name ?? target.name), revision: 'revision-2' }
+        triggers = triggers.map((trigger) => trigger === target ? updated : trigger)
+        return jsonResponse(updated)
+      })
+      const user = userEvent.setup()
+      renderTriggersPanel()
+
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(2))
+      await user.click(rowFor('Daily B'))
+      expect(rowFor('Daily B')).toHaveAttribute('aria-current', 'true')
+      expect(rowFor('Daily A')).not.toHaveAttribute('aria-current', 'true')
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily B')
+
+      await user.clear(editorScope().getByLabelText('Name'))
+      await user.type(editorScope().getByLabelText('Name'), 'Daily B renamed')
+      await user.click(screen.getByTestId('trigger-save-button'))
+      await waitFor(() => expect(requests).toHaveLength(1))
+      expect(requests[0]).toMatchObject({ method: 'PATCH', body: { name: 'Daily B renamed' } })
+      expect(requests[0].url).toContain(`project_path=${encodeURIComponent(projectB)}`)
+      await waitFor(() => expect(rowFor('Daily B renamed')).toBeVisible())
+      expect(rowFor('Daily A')).toBeVisible()
+
+      await user.click(rowFor('Daily A'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A')
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      await user.click(screen.getByTestId('trigger-delete-button'))
+      await waitFor(() => expect(requests.map((request) => request.method)).toEqual(['PATCH', 'DELETE']))
+      expect(requests[1].url).toContain(`project_path=${encodeURIComponent(projectA)}`)
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(1))
+      expect(rowFor('Daily B renamed')).toBeVisible()
+    })
+
+    it('keeps separate drafts and secrets, and applies one project\'s live events without touching the other', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => jsonResponse(twins()))
+      const user = userEvent.setup()
+      renderTriggersPanel()
+      await waitFor(() => expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(2))
+      const [a, b] = twins()
+      act(() => useStore.getState().updateTriggersSession({
+        revealedWebhookSecrets: { [triggerKey(a)]: 'secret-a', [triggerKey(b)]: 'secret-b' },
+      }))
+
+      await user.click(rowFor('Daily A'))
+      await user.type(editorScope().getByLabelText('Name'), ' draft')
+      await user.click(rowFor('Daily B'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily B')
+      expect(screen.getByText(/secret-b/)).toBeVisible()
+      expect(screen.queryByText(/secret-a/)).not.toBeInTheDocument()
+      await user.click(rowFor('Daily A'))
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A draft')
+      expect(screen.getByText(/secret-a/)).toBeVisible()
+      const drafts = useStore.getState().triggersSession.editTriggerDraftsByTriggerId
+      expect(Object.keys(drafts)).toEqual([triggerKey(a)])
+
+      const live = (type: string, trigger: unknown) => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:trigger-live-event', { detail: { type, payload: { trigger } } }))
+      })
+      live('trigger.upsert', { ...b, name: 'Daily B live', revision: 'revision-2' })
+      expect(rowFor('Daily B live')).toBeVisible()
+      expect(useStore.getState().triggersSession.triggers.find((trigger) => trigger.project_path === projectA)).toMatchObject({ name: 'Daily A', revision: 'revision-1' })
+      expect(rowFor('Daily A')).toHaveAttribute('aria-current', 'true')
+
+      live('trigger.delete', { status: 'deleted', id: 'daily', project_path: projectB })
+      expect(screen.getAllByTestId('trigger-row-daily')).toHaveLength(1)
+      expect(rowFor('Daily A')).toHaveAttribute('aria-current', 'true')
+      expect(editorScope().getByLabelText('Name')).toHaveValue('Daily A draft')
+    })
+  })
 })

@@ -6,42 +6,35 @@ use spark_storage::{
 };
 use time::OffsetDateTime;
 
-use crate::credentials::generate_webhook_credentials;
 use crate::error::{TriggerError, TriggerResult};
 use crate::models::{
     TriggerCreateRequest, TriggerUpdateRequest, SOURCE_FLOW_EVENT, SOURCE_POLL, SOURCE_SCHEDULE,
     SOURCE_WEBHOOK,
 };
 
-pub fn normalize_trigger_create(
-    request: TriggerCreateRequest,
-) -> TriggerResult<(TriggerDefinition, Option<String>)> {
-    let mut source = request.source;
-    let mut webhook_secret = None;
-    if request.source_type.trim() == SOURCE_WEBHOOK {
-        let (webhook_key, secret, secret_hash) = generate_webhook_credentials(None);
-        source.insert("webhook_key".to_string(), Value::String(webhook_key));
-        source.insert("secret_hash".to_string(), Value::String(secret_hash));
-        webhook_secret = Some(secret);
-    }
-    let definition = validate_trigger_definition_payload(
+/// The definition a create request describes; the caller places it in
+/// `request.project_path` and writes `enabled` and webhook credentials to
+/// runtime state.
+pub fn normalize_trigger_create(request: TriggerCreateRequest) -> TriggerResult<TriggerDefinition> {
+    validate_trigger_definition_payload(
         None,
         request.name,
-        request.enabled,
         false,
         request.source_type,
         request.action,
-        source,
+        request.source,
         None,
         None,
-    )?;
-    Ok((definition, webhook_secret))
+    )
 }
 
+/// The definition an update request makes of `existing`, keeping its
+/// project and revision. `enabled` and webhook secrets are runtime state,
+/// left to the caller.
 pub fn normalize_trigger_update(
     existing: TriggerDefinition,
     request: TriggerUpdateRequest,
-) -> TriggerResult<(TriggerDefinition, Option<String>)> {
+) -> TriggerResult<TriggerDefinition> {
     if existing.protected {
         if request.source.is_some() {
             return Err(validation(
@@ -65,11 +58,6 @@ pub fn normalize_trigger_update(
                     "Protected triggers do not allow role target changes.",
                 ));
             }
-            if next_action.project_path != existing.action.project_path {
-                return Err(validation(
-                    "Protected triggers do not allow project target changes.",
-                ));
-            }
             if next_action.static_context != existing.action.static_context {
                 return Err(validation(
                     "Protected triggers do not allow static context changes.",
@@ -88,46 +76,24 @@ pub fn normalize_trigger_update(
         }
     }
 
-    let mut next_source = existing.source.clone();
-    if let Some(source) = request.source {
-        next_source = normalize_source(
-            &existing.source_type,
-            &source,
-            existing.source.get("secret_hash"),
-        )?;
+    if request.regenerate_webhook_secret && existing.source_type != SOURCE_WEBHOOK {
+        return Err(validation(
+            "Only webhook triggers can regenerate webhook secrets.",
+        ));
     }
-
-    let mut webhook_secret = None;
-    if request.regenerate_webhook_secret {
-        if existing.source_type != SOURCE_WEBHOOK {
-            return Err(validation(
-                "Only webhook triggers can regenerate webhook secrets.",
-            ));
-        }
-        let webhook_key = next_source
-            .get("webhook_key")
-            .or_else(|| existing.source.get("webhook_key"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if webhook_key.is_empty() {
-            return Err(validation("Webhook trigger is missing a routing key."));
-        }
-        let (_, secret, secret_hash) = generate_webhook_credentials(Some(&webhook_key));
-        next_source.insert("secret_hash".to_string(), Value::String(secret_hash));
-        webhook_secret = Some(secret);
-    }
+    let next_source = match request.source {
+        Some(source) => normalize_source(&existing.source_type, &source)?,
+        None => existing.source.clone(),
+    };
 
     let next_action = if let Some(action_update) = request.action {
         merge_action(&existing.action, &action_update)?
     } else {
         action_to_map(&existing.action)
     };
-    let definition = validate_trigger_definition_payload(
+    let mut definition = validate_trigger_definition_payload(
         Some(existing.id),
         request.name.unwrap_or(existing.name),
-        request.enabled.unwrap_or(existing.enabled),
         existing.protected,
         existing.source_type,
         next_action,
@@ -135,13 +101,14 @@ pub fn normalize_trigger_update(
         Some(existing.created_at),
         Some(iso_now()),
     )?;
-    Ok((definition, webhook_secret))
+    definition.revision = existing.revision;
+    definition.project_path = existing.project_path;
+    Ok(definition)
 }
 
 fn validate_trigger_definition_payload(
     trigger_id: Option<String>,
     name: String,
-    enabled: bool,
     protected: bool,
     source_type: String,
     action: Map<String, Value>,
@@ -169,13 +136,13 @@ fn validate_trigger_definition_payload(
         )));
     }
     let action = normalize_action(action)?;
-    let source = normalize_source(&source_type, &source, None)?;
+    let source = normalize_source(&source_type, &source)?;
     let now = iso_now();
     Ok(TriggerDefinition {
         revision: String::new(),
+        project_path: String::new(),
         id,
         name,
-        enabled,
         protected,
         source_type,
         action,
@@ -192,9 +159,8 @@ fn normalize_action(payload: Map<String, Value>) -> TriggerResult<TriggerAction>
 fn normalize_source(
     source_type: &str,
     payload: &Map<String, Value>,
-    preserve_secret_hash: Option<&Value>,
 ) -> TriggerResult<Map<String, Value>> {
-    normalize_trigger_source_payload(source_type, payload, preserve_secret_hash).map_err(Into::into)
+    normalize_trigger_source_payload(source_type, payload).map_err(Into::into)
 }
 
 fn merge_action(
@@ -216,14 +182,6 @@ fn action_to_map(action: &TriggerAction) -> Map<String, Value> {
     payload.insert(
         "flow_name".to_string(),
         Value::String(action.flow_name.clone()),
-    );
-    payload.insert(
-        "project_path".to_string(),
-        action
-            .project_path
-            .clone()
-            .map(Value::String)
-            .unwrap_or(Value::Null),
     );
     payload.insert(
         "static_context".to_string(),

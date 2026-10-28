@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 const baseTriggerResponse = {
   id: 'trigger-1',
+  project_path: '/project',
   name: 'Example trigger',
   enabled: true,
   protected: false,
@@ -12,7 +13,6 @@ const baseTriggerResponse = {
   updated_at: '2026-03-22T00:00:00Z',
   action: {
     flow_name: 'example.dot',
-    project_path: null,
     static_context: {},
   },
   source: {
@@ -31,23 +31,29 @@ const baseTriggerResponse = {
 describe('parseTriggerResponse', () => {
   it('accepts supported trigger source types', () => {
     expect(parseTriggerResponse(baseTriggerResponse).source_type).toBe('schedule')
+    expect(parseTriggerResponse(baseTriggerResponse).project_path).toBe('/project')
     expect(parseTriggerResponse({ ...baseTriggerResponse, source_type: 'poll', source: { url: 'https://example.com' } }).source_type).toBe('poll')
     expect(parseTriggerResponse({ ...baseTriggerResponse, source_type: 'webhook', source: { webhook_key: 'secret-key' } }).source_type).toBe('webhook')
     expect(parseTriggerResponse({ ...baseTriggerResponse, source_type: 'flow_event', source: { flow_name: 'observed.dot', statuses: ['completed'] } }).source_type).toBe('flow_event')
   })
 
   it('accepts mission actions that do not name a flow', () => {
-    const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode: 'mission', mission_id: 'mission-1', project_path: '/project' } })
+    const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode: 'mission', mission_id: 'mission-1' } })
     expect(trigger.action.mode).toBe('mission')
     expect(trigger.action.flow_name).toBe('')
   })
 
   it('accepts role actions that name a role and no flow', () => {
-    const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode: 'role', role: 'chief-of-staff', project_path: '/project' } })
+    const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode: 'role', role: 'chief-of-staff' } })
     expect(trigger.action.mode).toBe('role')
     expect(trigger.action.role).toBe('chief-of-staff')
     expect(trigger.action.flow_name).toBe('')
-    expect(() => parseTriggerResponse({ ...baseTriggerResponse, action: { project_path: '/project' } })).toThrow(ApiSchemaError)
+    expect(() => parseTriggerResponse({ ...baseTriggerResponse, action: {} })).toThrow(ApiSchemaError)
+  })
+
+  it('requires the project whose org holds the trigger', () => {
+    const { project_path: _projectPath, ...withoutProject } = baseTriggerResponse
+    expect(() => parseTriggerResponse(withoutProject)).toThrow(ApiSchemaError)
   })
 
   it('rejects unsupported trigger source types', () => {

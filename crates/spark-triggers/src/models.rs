@@ -19,12 +19,17 @@ pub use spark_storage::{TriggerAction, TriggerDefinition, TriggerState, TriggerS
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerCreateRequest {
+    /// The project whose org repo will hold the trigger.
+    pub project_path: String,
     pub name: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub source_type: String,
     pub action: Map<String, Value>,
     pub source: Map<String, Value>,
+    /// The org repo commit message; defaults to "Create trigger <name>".
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -41,12 +46,17 @@ pub struct TriggerUpdateRequest {
     pub source: Option<Map<String, Value>>,
     #[serde(default)]
     pub regenerate_webhook_secret: bool,
+    /// The org repo commit message; defaults to "Edit trigger <name>".
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SerializedTrigger {
     pub revision: String,
     pub id: String,
+    /// The project whose org repo holds the trigger.
+    pub project_path: String,
     pub name: String,
     pub enabled: bool,
     pub protected: bool,
@@ -63,6 +73,8 @@ pub struct SerializedTrigger {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerActivationRequest {
     pub trigger_id: String,
+    /// The trigger's project, where it fires.
+    pub project_path: String,
     pub trigger_name: String,
     pub source_type: String,
     pub action: TriggerAction,
@@ -101,6 +113,7 @@ pub struct WebhookDispatchOutcome {
 pub struct TriggerDeleteResponse {
     pub status: String,
     pub id: String,
+    pub project_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

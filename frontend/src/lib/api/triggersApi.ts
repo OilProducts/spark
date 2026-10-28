@@ -14,7 +14,6 @@ export interface TriggerActionResponse {
     mission_id?: string | null
     role?: string | null
     flow_name: string
-    project_path?: string | null
     static_context?: Record<string, unknown>
 }
 
@@ -34,6 +33,8 @@ export interface TriggerStateResponse {
 export interface TriggerResponse {
     revision: string
     id: string
+    /** The project whose org repo holds the trigger; with `id`, its identity. */
+    project_path: string
     name: string
     enabled: boolean
     protected: boolean
@@ -84,6 +85,7 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
     return {
         revision: expectString(record.revision, endpoint, 'revision'),
         id: expectString(record.id, endpoint, 'id'),
+        project_path: expectString(record.project_path, endpoint, 'project_path'),
         name: expectString(record.name, endpoint, 'name'),
         enabled: record.enabled === true,
         protected: record.protected === true,
@@ -96,7 +98,6 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
             role: asOptionalNullableString(actionRecord.role),
             // Only a static action launches a flow, so only it must name one.
             flow_name: (actionRecord.mode ?? 'static') === 'static' ? expectString(actionRecord.flow_name, endpoint, 'action.flow_name') : asOptionalNullableString(actionRecord.flow_name) ?? '',
-            project_path: asOptionalNullableString(actionRecord.project_path),
             static_context: asUnknownRecord(actionRecord.static_context) ?? {},
         },
         source: asUnknownRecord(record.source) ?? {},
@@ -112,13 +113,25 @@ export function parseTriggerListResponse(payload: unknown, endpoint = '/workspac
     return payload.map((entry) => parseTriggerResponse(entry, endpoint))
 }
 
-export async function fetchTriggerListValidated(): Promise<TriggerResponse[]> {
-    return fetchWorkspaceJsonValidated('/triggers', undefined, '/workspace/api/triggers', parseTriggerListResponse)
+/**
+ * A trigger's identity: its project plus its id, since ids are unique only
+ * within a project. Selection, drafts and revealed secrets are keyed by it.
+ */
+export const triggerKey = (trigger: { project_path: string; id: string }) =>
+    JSON.stringify([trigger.project_path, trigger.id])
+
+const triggerPath = (projectPath: string, triggerId: string) =>
+    `/triggers/${encodeURIComponent(triggerId)}?project_path=${encodeURIComponent(projectPath)}`
+
+/** Every registered project's triggers, or only `projectPath`'s. */
+export async function fetchTriggerListValidated(projectPath?: string): Promise<TriggerResponse[]> {
+    const query = projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''
+    return fetchWorkspaceJsonValidated(`/triggers${query}`, undefined, '/workspace/api/triggers', parseTriggerListResponse)
 }
 
-export async function fetchTriggerValidated(triggerId: string): Promise<TriggerResponse> {
+export async function fetchTriggerValidated(projectPath: string, triggerId: string): Promise<TriggerResponse> {
     return fetchWorkspaceJsonValidated(
-        `/triggers/${encodeURIComponent(triggerId)}`,
+        triggerPath(projectPath, triggerId),
         undefined,
         '/workspace/api/triggers/{id}',
         parseTriggerResponse,
@@ -126,6 +139,7 @@ export async function fetchTriggerValidated(triggerId: string): Promise<TriggerR
 }
 
 export async function createTriggerValidated(payload: {
+    project_path: string
     name: string
     enabled: boolean
     source_type: TriggerSourceType
@@ -145,6 +159,7 @@ export async function createTriggerValidated(payload: {
 }
 
 export async function updateTriggerValidated(
+    projectPath: string,
     triggerId: string,
     payload: {
         expected_revision: string
@@ -156,7 +171,7 @@ export async function updateTriggerValidated(
     },
 ): Promise<TriggerResponse> {
     return fetchWorkspaceJsonValidated(
-        `/triggers/${encodeURIComponent(triggerId)}`,
+        triggerPath(projectPath, triggerId),
         {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -167,9 +182,13 @@ export async function updateTriggerValidated(
     )
 }
 
-export async function deleteTriggerValidated(triggerId: string, expectedRevision: string): Promise<{ status: 'deleted'; id: string }> {
+export async function deleteTriggerValidated(
+    projectPath: string,
+    triggerId: string,
+    expectedRevision: string,
+): Promise<{ status: 'deleted'; id: string }> {
     return fetchWorkspaceJsonValidated(
-        `/triggers/${encodeURIComponent(triggerId)}?expected_revision=${encodeURIComponent(expectedRevision)}`,
+        `${triggerPath(projectPath, triggerId)}&expected_revision=${encodeURIComponent(expectedRevision)}`,
         {
             method: 'DELETE',
         },

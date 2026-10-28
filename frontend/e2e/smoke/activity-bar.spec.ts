@@ -44,19 +44,18 @@ test('every activity-bar view opens its panel with items from more than one proj
     await createChat(page, alpha, `conversation-alpha-${stamp}`)
     await createMission(page, alpha, `Alpha mission ${stamp}`)
     await createMission(page, beta, `Beta mission ${stamp}`)
-    // Triggers in other projects use a bundled flow, which every project sees.
-    const trigger = await page.request.post('/workspace/api/triggers', { data: {
-        name: `Unregistered target ${stamp}`, enabled: false, source_type: 'schedule',
-        action: { flow_name: 'examples/simple-linear', project_path: '/tmp/not-a-registered-project', static_context: {} },
-        source: { kind: 'interval', interval_seconds: 3600 },
-    } })
-    expect(trigger.ok(), await trigger.text()).toBeTruthy()
-    const alphaTrigger = await page.request.post('/workspace/api/triggers', { data: {
-        name: `Alpha target ${stamp}`, enabled: false, source_type: 'schedule',
-        action: { flow_name: 'examples/simple-linear', project_path: alpha, static_context: {} },
-        source: { kind: 'interval', interval_seconds: 3600 },
-    } })
-    expect(alphaTrigger.ok(), await alphaTrigger.text()).toBeTruthy()
+    // Each trigger lives in its project's org; a bundled flow is one every project sees.
+    const createTrigger = async (projectPath: string, name: string) => {
+        const response = await page.request.post('/workspace/api/triggers', { data: {
+            project_path: projectPath, name, enabled: false, source_type: 'schedule',
+            action: { flow_name: 'examples/simple-linear', static_context: {} },
+            source: { kind: 'interval', interval_seconds: 3600 },
+        } })
+        expect(response.ok(), await response.text()).toBeTruthy()
+        return response
+    }
+    const alphaTrigger = await createTrigger(alpha, `Alpha target ${stamp}`)
+    const betaTrigger = await createTrigger(beta, `Beta target ${stamp}`)
     await page.route('**/attractor/runs', (route) => route.fulfill({ json: { runs: [
         run(`run-alpha-${stamp}`, alpha, 'Alpha run'),
         run(`run-beta-${stamp}`, beta, 'Beta run'),
@@ -95,16 +94,15 @@ test('every activity-bar view opens its panel with items from more than one proj
         await expect(runs.locator(`[data-run-id="run-beta-${stamp}"]`)).toBeVisible()
         await page.getByTestId('runs-project-filter').selectOption('')
 
-        // Triggers: each names the project it targets; an unregistered target is marked.
+        // Triggers: every project's triggers, each naming the project that holds it.
         await page.getByTestId('activity-triggers').click()
         const triggers = page.getByTestId('triggers-view').getByTestId('side-panel')
-        await expect(triggers.getByRole('button', { name: new RegExp(`Alpha target ${stamp}`) })).toContainText('Project · alpha-project')
-        const unregistered = triggers.getByRole('button', { name: new RegExp(`Unregistered target ${stamp}`) })
-        await expect(unregistered).toHaveAttribute('data-unregistered-target', 'true')
-        await expect(unregistered).toContainText('Unregistered project · not-a-registered-project')
-        // The selected trigger survives a reload, whichever row it is.
         const alphaRow = triggers.getByRole('button', { name: new RegExp(`Alpha target ${stamp}`) })
-        for (const row of [unregistered, alphaRow]) {
+        const betaRow = triggers.getByRole('button', { name: new RegExp(`Beta target ${stamp}`) })
+        await expect(alphaRow).toContainText('Project · alpha-project')
+        await expect(betaRow).toContainText('Project · beta-project')
+        // The selected trigger survives a reload, whichever row it is.
+        for (const row of [betaRow, alphaRow]) {
             await row.click()
             await expect(row).toHaveAttribute('aria-current', 'true')
             await page.reload()
@@ -119,9 +117,9 @@ test('every activity-bar view opens its panel with items from more than one proj
         await page.screenshot({ path: screenshotPath('20b-activity-flows.png'), fullPage: true })
     } finally {
         await deleteFlowAfterSmoke(page, flowName)
-        for (const created of [trigger, alphaTrigger]) {
-            const { id, revision } = await created.json()
-            await page.request.delete(`/workspace/api/triggers/${id}?expected_revision=${encodeURIComponent(revision)}`).catch(() => undefined)
+        for (const created of [alphaTrigger, betaTrigger]) {
+            const { id, revision, project_path: projectPath } = await created.json()
+            await page.request.delete(`/workspace/api/triggers/${id}?project_path=${encodeURIComponent(projectPath)}&expected_revision=${encodeURIComponent(revision)}`).catch(() => undefined)
         }
     }
 })

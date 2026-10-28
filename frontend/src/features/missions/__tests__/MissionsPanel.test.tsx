@@ -23,7 +23,7 @@ beforeEach(() => {
         '/other': { directoryPath: '/other', isFavorite: false, lastAccessedAt: null },
     } })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-        if (url === '/workspace/api/triggers') return { ok: true, json: async () => [] }
+        if (url.startsWith('/workspace/api/triggers')) return { ok: true, json: async () => [] }
         if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
         if (url.endsWith('/projects/state')) {
             const body = JSON.parse(String(init!.body)); projectUses.push(body)
@@ -607,7 +607,7 @@ it('shows waiting in Running and links targeting triggers from mission detail', 
     task = { ...task, status: 'running', waiting: true, wait_reason: 'Review pending' }
     const original = vi.mocked(fetch).getMockImplementation()!
     vi.mocked(fetch).mockImplementation(async (url, init) => {
-        if (String(url) === '/workspace/api/triggers') return { ok: true, json: async () => [{ id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'webhook', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: {}, state: {} }] } as Response
+        if (String(url).startsWith('/workspace/api/triggers')) return { ok: true, json: async () => [{ id: 'watcher', project_path: '/project', revision: '1', name: 'Review watcher', source_type: 'webhook', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id }, source: {}, state: {} }] } as Response
         return original(url, init)
     })
     render(<MissionsPanel active />)
@@ -617,13 +617,13 @@ it('shows waiting in Running and links targeting triggers from mission detail', 
     fireEvent.click(screen.getByRole('button', { name: task.fields.title }))
     fireEvent.click(await screen.findByRole('button', { name: 'Review watcher · webhook · Enabled' }))
     expect(useStore.getState().viewMode).toBe('triggers')
-    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('watcher')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe(JSON.stringify(['/project', 'watcher']))
 })
 
 
 it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission detail and the cached Triggers view from live events', async (action) => {
     task = mission({ status: 'needs_you', started_at: 't' })
-    let trigger = { id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'schedule', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: { kind: 'interval', interval_seconds: 60 }, state: { recent_history: [], next_run_at: null } }
+    let trigger = { id: 'watcher', project_path: '/project', revision: '1', name: 'Review watcher', source_type: 'schedule', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id }, source: { kind: 'interval', interval_seconds: 60 }, state: { recent_history: [], next_run_at: null } }
     useStore.setState({ viewMode: 'triggers', triggersSession: {
         status: 'idle', error: null, triggers: [], selectedTriggerId: null, revealedWebhookSecrets: {}, createFormOpen: false,
         newTriggerDraft: { form: createEmptyTriggerForm(null) }, editTriggerDraftsByTriggerId: {},
@@ -631,12 +631,13 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     const original = vi.mocked(fetch).getMockImplementation()!
     const close = () => {
         task = mission({ status: 'closed', closed: { status: action === 'Cancel mission' ? 'canceled' : 'done', actor: action === 'agent close' ? 'assistant' : 'human', reason: 'Finished', at: 't' } })
-        trigger = { ...trigger, enabled: false, revision: '2' }
+        // Closing disables through runtime state: the definition keeps its revision.
+        trigger = { ...trigger, enabled: false }
         window.dispatchEvent(new CustomEvent('spark:trigger-live-event', { detail: { type: 'trigger.upsert', payload: { type: 'trigger_upsert', trigger } } }))
         window.dispatchEvent(new CustomEvent('spark:mission-live-event', { detail: { projectPath: '/project', mission: task } }))
     }
     vi.mocked(fetch).mockImplementation(async (url, init) => {
-        if (String(url) === '/workspace/api/triggers') return { ok: true, json: async () => [trigger] } as Response
+        if (String(url).startsWith('/workspace/api/triggers')) return { ok: true, json: async () => [trigger] } as Response
         if (init?.method === 'POST' && /\/(close|cancel)\?/.test(String(url))) {
             close()
             return { ok: true, json: async () => task } as Response
@@ -660,7 +661,7 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     else fireEvent.click(detail().getByRole('button', { name: action }))
     const link = await detail().findByRole('button', { name: 'Review watcher · schedule · Disabled' })
     expect(detail().getByRole('heading', { level: 2 })).toBe(heading)
-    expect(useStore.getState().triggersSession.triggers[0]).toMatchObject({ enabled: false, revision: '2' })
+    expect(useStore.getState().triggersSession.triggers[0]).toMatchObject({ enabled: false, revision: '1' })
     fireEvent.click(link)
     expect(screen.getByTestId('trigger-row-watcher')).toBe(row)
     expect(row).toHaveTextContent('Disabled')

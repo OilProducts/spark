@@ -61,8 +61,8 @@ pub fn run_git(directory: &Path, args: &[&str]) -> std::result::Result<String, S
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// A project's agent organization: its own flows (`flows/`) and roles
-/// (`roles/`), in a git repository whose history is the audit trail.
+/// A project's agent organization: its own flows (`flows/`), roles
+/// (`roles/`) and triggers (`triggers/`), in a git repository whose history is the audit trail.
 pub fn org_dir(project: &Path) -> PathBuf {
     project.join(".spark").join("agent-org")
 }
@@ -82,6 +82,30 @@ pub fn ensure_org_repo(project: &Path) -> std::result::Result<PathBuf, String> {
             .map_err(|error| format!("Unable to write {}: {error}", ignore.display()))?;
     }
     Ok(org)
+}
+
+/// Commits the changes under `pathspecs` (relative to the org repo), and
+/// nothing else, under the repo's normal git identity. A failed commit
+/// leaves them unstaged, so a retry records them.
+pub fn commit_org_paths(
+    org: &Path,
+    pathspecs: &[String],
+    message: &str,
+) -> std::result::Result<(), String> {
+    let pathspecs = pathspecs.iter().map(String::as_str);
+    let with = |args: &[&'static str]| -> Vec<&str> {
+        args.iter().copied().chain(pathspecs.clone()).collect()
+    };
+    // Nothing to record, e.g. deleting a copy that was never committed.
+    if run_git(org, &with(&["status", "--porcelain", "--"]))?.is_empty() {
+        return Ok(());
+    }
+    run_git(org, &with(&["add", "-A", "--"]))?;
+    let mut commit = vec!["commit", "-q", "-m", message, "--"];
+    commit.extend(pathspecs.clone());
+    run_git(org, &commit).map(|_| ()).inspect_err(|_| {
+        let _ = run_git(org, &with(&["reset", "-q", "--"]));
+    })
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

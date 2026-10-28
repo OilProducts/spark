@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { fetchTriggerListValidated } from '@/lib/workspaceClient'
+import { fetchTriggerListValidated, triggerKey } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 
 export function useTriggersList({ manageSync = true }: { manageSync?: boolean } = {}) {
@@ -17,7 +17,7 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
         || hasDraftedTriggerSession
 
     const selectedTrigger = useMemo(
-        () => triggersSession.triggers.find((trigger) => trigger.id === triggersSession.selectedTriggerId) ?? null,
+        () => triggersSession.triggers.find((trigger) => triggerKey(trigger) === triggersSession.selectedTriggerId) ?? null,
         [triggersSession.selectedTriggerId, triggersSession.triggers],
     )
     const systemTriggers = useMemo(
@@ -36,13 +36,13 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
         try {
             const payload = await fetchTriggerListValidated()
             const currentSelectedTriggerId = useStore.getState().triggersSession.selectedTriggerId
-            const nextTriggerIds = new Set(payload.map((trigger) => trigger.id))
+            const nextTriggerIds = new Set(payload.map(triggerKey))
             const currentSession = useStore.getState().triggersSession
             updateTriggersSession({
                 triggers: payload,
                 selectedTriggerId: currentSelectedTriggerId && nextTriggerIds.has(currentSelectedTriggerId)
                     ? currentSelectedTriggerId
-                    : payload[0]?.id ?? null,
+                    : payload[0] ? triggerKey(payload[0]) : null,
                 revealedWebhookSecrets: Object.fromEntries(
                     Object.entries(currentSession.revealedWebhookSecrets).filter(([triggerId]) => nextTriggerIds.has(triggerId)),
                 ),
@@ -85,7 +85,7 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
             if (detail?.type === 'trigger.upsert' && payload?.trigger) {
                 const trigger = payload.trigger
                 const current = useStore.getState().triggersSession.triggers
-                const existingIndex = current.findIndex((entry) => entry.id === trigger.id)
+                const existingIndex = current.findIndex((entry) => triggerKey(entry) === triggerKey(trigger))
                 const nextTriggers = existingIndex === -1
                     ? [...current, trigger]
                     : current.map((entry, index) => index === existingIndex ? trigger : entry)
@@ -97,12 +97,12 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
                 return
             }
             if (detail?.type === 'trigger.delete' && payload?.trigger?.id) {
-                const triggerId = payload.trigger.id
-                const nextTriggers = useStore.getState().triggersSession.triggers.filter((entry) => entry.id !== triggerId)
+                const key = triggerKey(payload.trigger)
+                const nextTriggers = useStore.getState().triggersSession.triggers.filter((entry) => triggerKey(entry) !== key)
                 updateTriggersSession({
                     triggers: nextTriggers,
-                    selectedTriggerId: useStore.getState().triggersSession.selectedTriggerId === triggerId
-                        ? nextTriggers[0]?.id ?? null
+                    selectedTriggerId: useStore.getState().triggersSession.selectedTriggerId === key
+                        ? (nextTriggers[0] ? triggerKey(nextTriggers[0]) : null)
                         : useStore.getState().triggersSession.selectedTriggerId,
                     error: null,
                     status: 'ready',

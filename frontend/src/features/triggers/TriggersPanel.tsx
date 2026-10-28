@@ -6,13 +6,14 @@ import {
   createEmptyTriggerForm,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
-  triggerTargetSummary,
+  triggerProjectSummary,
   triggerSourceSummary,
 } from "./model/triggerForm"
 import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
+import { triggerKey } from "@/lib/workspaceClient"
 import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
 import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
+  const activeProjectPath = useStore((state) => state.activeProjectPath)
   const triggersSession = useStore((state) => state.triggersSession)
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
   const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
@@ -39,11 +41,11 @@ export function TriggersPanel() {
     setSelectedTriggerId,
     systemTriggers,
   } = useTriggersList({ manageSync: false })
-  const revealWebhookSecret = (triggerId: string, secret: string) => {
+  const revealWebhookSecret = (key: string, secret: string) => {
     updateTriggersSession({
       revealedWebhookSecrets: {
         ...revealedWebhookSecrets,
-        [triggerId]: secret,
+        [key]: secret,
       },
     })
   }
@@ -82,10 +84,10 @@ export function TriggersPanel() {
     if (status !== 'ready') {
       return
     }
-    if (selectedTriggerId && visibleTriggers.some((trigger) => trigger.id === selectedTriggerId)) {
+    if (selectedTriggerId && visibleTriggers.some((trigger) => triggerKey(trigger) === selectedTriggerId)) {
       return
     }
-    const firstVisibleTriggerId = visibleTriggers[0]?.id ?? null
+    const firstVisibleTriggerId = visibleTriggers[0] ? triggerKey(visibleTriggers[0]) : null
     if (firstVisibleTriggerId !== selectedTriggerId) {
       setSelectedTriggerId(firstVisibleTriggerId)
     }
@@ -93,9 +95,9 @@ export function TriggersPanel() {
 
   const createFormOpen = triggersSession.createFormOpen
   const openCreateForm = () => {
-    // An untouched draft starts in the last-used project.
+    // An untouched draft starts in the active project, else the last-used one.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
-      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry)) })
+      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry, activeProjectPath)) })
     }
     updateTriggersSession({ createFormOpen: true })
   }
@@ -116,13 +118,13 @@ export function TriggersPanel() {
             <p data-testid={group.loadingTestId} className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
           {group.triggers.map((trigger) => {
-            const unregistered = isUnregisteredTarget(projectRegistry, trigger.action.project_path)
+            const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
             return (
               <SidePanelRow
-                key={trigger.id}
+                key={triggerKey(trigger)}
                 data-testid={`trigger-row-${trigger.id}`}
                 data-unregistered-target={unregistered ? 'true' : undefined}
-                selected={selectedTriggerId === trigger.id && !createFormOpen}
+                selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
                 tone="neutral"
                 hollow={!trigger.enabled}
@@ -130,18 +132,18 @@ export function TriggersPanel() {
                 meta={(
                   <>
                     <span
-                      data-testid="trigger-row-target"
-                      title={trigger.action.project_path ?? undefined}
+                      data-testid="trigger-row-project"
+                      title={trigger.project_path}
                       className={unregistered ? 'text-warning' : undefined}
                     >
-                      {triggerTargetSummary(trigger, projectRegistry)}
+                      {triggerProjectSummary(trigger, projectRegistry)}
                     </span>
                     {' · '}{triggerSourceSummary(trigger)}
                     {trigger.enabled ? null : ' · Disabled'}
                   </>
                 )}
                 onClick={() => {
-                  setSelectedTriggerId(trigger.id)
+                  setSelectedTriggerId(triggerKey(trigger))
                   updateTriggersSession({ createFormOpen: false })
                 }}
               />
@@ -209,7 +211,7 @@ export function TriggersPanel() {
                   <Button
                     type="button"
                     data-testid="trigger-create-button"
-                    disabled={pending || isRegenerating}
+                    disabled={pending || isRegenerating || !newTriggerForm.projectPath}
                     onClick={() => void onCreateTrigger()}
                   >
                     Create trigger
@@ -256,7 +258,7 @@ export function TriggersPanel() {
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
                     </div>
                     <div className="font-mono text-xs text-foreground">
-                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[selectedTrigger.id] ?? 'Hidden after creation'}
+                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[triggerKey(selectedTrigger)] ?? 'Hidden after creation'}
                     </div>
                     <Button
                       type="button"
@@ -273,7 +275,7 @@ export function TriggersPanel() {
                 <div className="mt-4 grid gap-3 lg:grid-cols-2">
                   <Well className="text-sm">
                     <SectionHeading as="h4">Runtime</SectionHeading>
-                    <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, projectRegistry)}</div>
+                    <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>
