@@ -188,14 +188,17 @@ export function OrgPanel() {
             <ul className="flex flex-col gap-0.5">{grouped.map((entry) => <li key={entry.name} className="flex items-start gap-1">
                 <SidePanelRow title={entry.title ?? entry.name} data-testid="org-item" data-name={entry.name}
                     selected={item === entry}
-                    meta={entry.standing
-                        ? <><span className="block truncate">{entry.standing.state} · {budgetLine(entry.standing)}</span>
-                            <span className="block truncate">{entry.standing.recent_events.length
-                                ? `Last wake ${entry.standing.recent_events[0].kind} · ${entry.standing.recent_events[0].at}`
-                                : 'No wakes yet'}</span></>
-                        : <>{entry.description && <span className="block truncate">{entry.description}</span>}
-                            <span className="block truncate">{usageSummary(entry.usage ?? [])}</span></>}
-                    trailing={<OrgBadges item={entry} />}
+                    meta={<>
+                        {entry.standing
+                            ? <><span className="block truncate">{entry.standing.state} · {budgetLine(entry.standing)}</span>
+                                <span className="block truncate">{entry.standing.recent_events.length
+                                    ? `Last wake ${entry.standing.recent_events[0].kind} · ${entry.standing.recent_events[0].at}`
+                                    : 'No wakes yet'}</span></>
+                            : <>{entry.description && <span className="block truncate">{entry.description}</span>}
+                                <span className="block truncate">{usageSummary(entry.usage ?? [])}</span></>}
+                        {/* Badges sit below the text so the title and meta keep the row's width. */}
+                        {orgBadges(entry).length > 0 && <span className="flex flex-wrap gap-1 pt-1"><OrgBadges item={entry} /></span>}
+                    </>}
                     onClick={() => setSelected(entry.name)} />
                 {entry.standing && <Button type="button" variant="ghost" size="icon-sm" className="mt-1.5" aria-label={`Open conversation with ${entry.title ?? entry.name}`}
                     onClick={() => entry.standing && openChat(project!, entry.standing.conversation_id)}>

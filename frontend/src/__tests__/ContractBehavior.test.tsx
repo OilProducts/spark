@@ -48,6 +48,9 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// The Flows panel asks the org list for its badges.
+const EMPTY_ORG_LIST = { org_path: '', bundled_path: '', org_exists: false, items: [] }
+
 const DEFAULT_WORKING_DIRECTORY = './test-app'
 
 const jsonResponse = (payload: unknown, init?: ResponseInit) =>
@@ -359,6 +362,9 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
+        if (String(url).includes('/workspace/api/org?')) {
+          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.split('?')[0].endsWith('/attractor/api/flows')) {
           return new Response(JSON.stringify(['contract-behavior.yaml']), {
             status: 200,
@@ -582,6 +588,9 @@ describe('Frontend contract behavior', () => {
             parent_path: '/tmp',
             entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
           })
+        }
+        if (String(url).includes('/workspace/api/org?')) {
+          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url === '/attractor/api/flows?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse(['alpha.yaml'])
@@ -2113,6 +2122,9 @@ useStore.getState().setRunsSelectedRunId(runId);
       }
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
+      }
+      if (String(url).includes('/workspace/api/org?')) {
+        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])

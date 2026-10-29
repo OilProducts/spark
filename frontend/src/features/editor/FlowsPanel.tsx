@@ -8,7 +8,7 @@ import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
 import { FlowTree } from '@/components/app/flow-tree'
 import { OrgBadges } from '@/features/org/OrgPanel'
-import { orgRequest, type OrgItem, type OrgList } from '@/features/org/orgModel'
+import { orgBadges, orgRequest, type OrgItem, type OrgList } from '@/features/org/orgModel'
 
 import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
 
@@ -184,7 +184,8 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
-                renderFlowIndicator={(flow) => catalog.orgFlows[flow] && <OrgBadges item={catalog.orgFlows[flow]} />}
+                renderFlowIndicator={(flow) => catalog.orgFlows[flow] && orgBadges(catalog.orgFlows[flow]).length > 0
+                    && <span className="flex flex-wrap gap-1"><OrgBadges item={catalog.orgFlows[flow]} /></span>}
             />
         </div>
     )
