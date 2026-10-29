@@ -45,6 +45,13 @@ pub struct OrgItem {
     pub path: String,
     /// Some file differs from the org repo's HEAD or is untracked.
     pub uncommitted: bool,
+    /// For a committed project copy: whether bundled differs from the copy's first commit.
+    pub bundled_changed: Option<bool>,
+    /// A role file's frontmatter `title` and `description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Vec<RoleUsage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,8 +73,6 @@ pub struct OrgItemDetail {
     pub files: Vec<OrgFile>,
     /// For a project copy: `git diff` from today's bundled version to the copy.
     pub bundled_diff: Option<String>,
-    /// For a committed project copy: whether bundled differs from the copy's first commit.
-    pub bundled_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,6 +135,14 @@ impl WorkspaceOrgService {
         let standing = self.standing_roles(project)?;
         for name in role_names(&roots) {
             let mut role = item(&roots, &changed, "role", name)?;
+            // A role file that does not parse has no title or description.
+            if let Ok(file) = roots
+                .role_text(&role.name)
+                .and_then(|(_, text)| attractor_dsl::parse_role(&role.name, &text))
+            {
+                role.title = file.title;
+                role.description = file.description;
+            }
             role.usage = Some(usage.remove(&role.name).unwrap_or_default());
             role.standing = standing.get(&role.name).cloned();
             items.push(role);
@@ -197,27 +210,20 @@ impl WorkspaceOrgService {
                 }
             })
             .collect();
-        let (bundled_diff, bundled_changed) = if item.layer == "project_copy" {
+        let bundled_diff = if item.layer == "project_copy" {
             // Read (and so contain) the bundled files before diffing them.
-            let bundled = item_files(&roots.bundled, &item.path, kind)?;
-            (
-                Some(diff_no_index(
-                    &roots.bundled.join(&item.path),
-                    &org.join(&item.path),
-                )?),
-                match first_commit_texts(&org, &item.path, kind).transpose()? {
-                    Some(copied) => Some(copied != bundled),
-                    None => None,
-                },
-            )
+            item_files(&roots.bundled, &item.path, kind)?;
+            Some(diff_no_index(
+                &roots.bundled.join(&item.path),
+                &org.join(&item.path),
+            )?)
         } else {
-            (None, None)
+            None
         };
         Ok(OrgItemDetail {
             item,
             files,
             bundled_diff,
-            bundled_changed,
         })
     }
 
@@ -367,12 +373,24 @@ fn item(
             "flow" => file.starts_with(&format!("{path}/")),
             _ => *file == path,
         });
+    // Read (and so contain) the bundled files before comparing them; files
+    // that lead outside their root, or git failing, leave it unknown.
+    let bundled_changed = (layer == "project_copy")
+        .then(|| {
+            let bundled = item_files(&roots.bundled, &path, kind).ok()?;
+            let copied = first_commit_texts(roots.org.as_deref()?, &path, kind)?.ok()?;
+            Some(copied != bundled)
+        })
+        .flatten();
     Ok(OrgItem {
         kind,
         name,
         layer,
         path,
         uncommitted,
+        bundled_changed,
+        title: None,
+        description: None,
         usage: None,
         standing: None,
     })

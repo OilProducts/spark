@@ -86,17 +86,20 @@ function FlowTreeNodeRow({
                 title={node.path}
                 onClick={() => onSelectFlow(node.path)}
                 variant="ghost"
-                className={`h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
+                className={`h-auto min-h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
                     selectedFlow === node.path
                         ? 'font-medium rounded-none text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]'
                         : 'text-muted-foreground hover:text-primary'
                 }`}
                 style={{ paddingLeft: `${indent}px` }}
             >
-                <span className="flex min-w-0 items-center gap-2">
-                    <FileText className="h-3.5 w-3.5 shrink-0" />
-                    {renderFlowIndicator?.(node.path)}
-                    <span className="min-w-0 truncate">{node.name}</span>
+                <span className="flex min-w-0 items-start gap-2">
+                    <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {/* The indicator sits below the name so the name keeps the row's width. */}
+                    <span className="flex min-w-0 flex-col items-start gap-1">
+                        <span className="min-w-0 max-w-full truncate">{node.name}</span>
+                        {renderFlowIndicator?.(node.path)}
+                    </span>
                 </span>
             </Button>
             {onDeleteFlow ? (

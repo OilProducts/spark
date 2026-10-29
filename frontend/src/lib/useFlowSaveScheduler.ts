@@ -31,6 +31,13 @@ export function useFlowSaveScheduler<T = void>({
     }, [])
 
     const executeSaveRequest = useCallback((request: PendingFlowSaveRequest) => {
+        // Files mode is the only writer. The switch into it saves the current
+        // structured state, so a structured save that lands later (one queued
+        // before the switch, or one from canvas changes) is stale and would
+        // overwrite file text.
+        if (useStore.getState().editorMode === 'files') {
+            return Promise.resolve(false)
+        }
         return saveFlowContent(request.flowName, request.content, request.projectPath)
     }, [])
 

@@ -17,16 +17,18 @@ export type OrgItem = {
     layer: OrgLayer
     path: string
     uncommitted: boolean
+    bundled_changed?: boolean | null
+    title?: string
+    description?: string
     usage?: { flow: string; node: string }[]
     standing?: StandingRole | null
 }
 export type OrgList = { org_path: string; bundled_path: string; org_exists: boolean; items: OrgItem[] }
 export type OrgFile = { name: string; content: string; status: 'modified' | 'untracked' | null }
-export type OrgItemDetail = OrgItem & { files: OrgFile[]; bundled_diff: string | null; bundled_changed: boolean | null }
+export type OrgItemDetail = OrgItem & { files: OrgFile[]; bundled_diff: string | null }
 export type OrgCommit = { commit: string; author: string; date: string; message: string; diff: string }
 
 export const LAYER_LABELS: Record<OrgLayer, string> = { project: 'project', project_copy: 'project copy', bundled: 'bundled' }
-export const LAYER_GROUPS: [OrgLayer, string][] = [['project', 'Project'], ['project_copy', 'Project copies'], ['bundled', 'Bundled']]
 // The inbox's terminal run statuses (TERMINAL_RUN_STATUSES in spark-workspace).
 const TERMINAL = new Set(['completed', 'failed', 'validation_error', 'canceled'])
 
@@ -46,8 +48,58 @@ export function askCoordinatorDraft(item: Pick<OrgItem, 'kind' | 'name' | 'layer
 
 /** Flow and role files are markdown under YAML frontmatter; show the frontmatter as a YAML block. */
 export function renderableMarkdown(text: string): string {
+    const { yaml, body } = splitFrontmatter(text)
+    return yaml === null ? text : `\`\`\`yaml\n${yaml}\n\`\`\`\n\n${body}`
+}
+
+function splitFrontmatter(text: string): { yaml: string | null; body: string } {
     const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
-    return match ? `\`\`\`yaml\n${match[1]}\n\`\`\`\n\n${text.slice(match[0].length)}` : text
+    return match ? { yaml: match[1], body: text.slice(match[0].length) } : { yaml: null, body: text }
+}
+
+/** A file's top-level frontmatter keys and their values, and the markdown body. */
+export function frontmatterFields(text: string): { fields: [string, string][]; body: string } {
+    const { yaml, body } = splitFrontmatter(text)
+    const fields: [string, string][] = []
+    // ponytail: top-level `key: value` lines; a nested value (budget, execution) is kept as its indented text.
+    for (const line of (yaml ?? '').split(/\r?\n/)) {
+        const field = /^([\w-]+):\s*(.*)$/.exec(line)
+        if (field) fields.push([field[1], field[2]])
+        else if (fields.length && line.trim()) fields[fields.length - 1][1] += `${fields[fields.length - 1][1] ? '\n' : ''}${line.trim()}`
+    }
+    return { fields, body }
+}
+
+/** The badges an item earns by differing from the bundled default; a plain bundled item has none. */
+export function orgBadges(item: Pick<OrgItem, 'layer' | 'uncommitted' | 'bundled_changed'>): string[] {
+    return [
+        ...(item.layer === 'project' ? ['customized'] : []),
+        ...(item.layer === 'project_copy' && item.bundled_changed ? ['project copy'] : []),
+        ...(item.uncommitted ? ['uncommitted'] : []),
+    ]
+}
+
+/** The roles' standing against the bundled defaults, from whether the org repo exists. */
+export function orgStatus(list: OrgList): string {
+    if (!list.org_exists) return 'No org repo: all roles are bundled defaults.'
+    const roles = list.items.filter((item) => item.kind === 'role')
+    const customized = roles.filter((item) => item.layer !== 'bundled').length
+    const uncommitted = roles.filter((item) => item.uncommitted).length
+    return `${customized} customized ${customized === 1 ? 'role' : 'roles'} · ${uncommitted} uncommitted`
+}
+
+/** A role's flow nodes, grouped by flow in first-seen order. */
+export function usageByFlow(usage: { flow: string; node: string }[]): [string, string[]][] {
+    const flows = new Map<string, string[]>()
+    for (const use of usage) flows.set(use.flow, [...(flows.get(use.flow) ?? []), use.node])
+    return [...flows]
+}
+
+/** "used in 3 steps across 2 flows". */
+export function usageSummary(usage: { flow: string; node: string }[]): string {
+    if (!usage.length) return 'not used in any flow'
+    const flows = usageByFlow(usage).length
+    return `used in ${usage.length} ${usage.length === 1 ? 'step' : 'steps'} across ${flows} ${flows === 1 ? 'flow' : 'flows'}`
 }
 
 /** "2/4 concurrent · 3/20 today": current usage against the role's limits. */

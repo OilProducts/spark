@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
@@ -45,7 +45,7 @@ describe('useFlowSaveScheduler', () => {
   })
 
   it('supports scheduling a save from inside a state updater without crashing', async () => {
-    useStore.setState({ activeProjectPath: '/tmp/project-a' })
+    useStore.setState({ activeProjectPath: '/tmp/project-a', editorMode: 'structured' })
     render(<SchedulerHarness />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Count 0' }))
@@ -63,5 +63,20 @@ describe('useFlowSaveScheduler', () => {
       { flow: { id: 'demo.yaml', value: 1 } },
       '/tmp/project-a',
     )
+  })
+
+  it('drops a structured save that lands after the switch to Files mode, by timer or unmount', () => {
+    useStore.setState({ activeProjectPath: '/tmp/project-a', editorMode: 'structured' })
+    const first = render(<SchedulerHarness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Count 0' }))
+    useStore.setState({ editorMode: 'files' })
+    vi.advanceTimersByTime(25)
+    first.unmount()
+
+    render(<SchedulerHarness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Count 0' }))
+    cleanup()
+
+    expect(saveFlowContent).not.toHaveBeenCalled()
   })
 })

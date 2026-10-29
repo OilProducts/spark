@@ -13,6 +13,9 @@ fn fixture(root: &Path) -> (TriggerRepositories, String) {
     let home = root.join("spark-home");
     let project = root.join("project");
     std::fs::create_dir_all(&project).expect("project");
+    // Trigger repositories record canonical project paths; a temp dir may sit
+    // behind a symlink (macOS /var -> /private/var).
+    let project = project.canonicalize().expect("canonical project");
     let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
     for (key, value) in [
         ("user.name", "Trigger Test"),

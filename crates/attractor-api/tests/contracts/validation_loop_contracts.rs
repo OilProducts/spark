@@ -122,14 +122,14 @@ fn final_checkpoint(settings: &SparkSettings, run_id: &str) -> attractor_core::C
         .expect("checkpoint exists")
 }
 
-const GATE_LOG: &str = "echo \"gate red after $(wc -l < attempts.txt) attempts\"";
+const GATE_LOG: &str = "echo \"gate red after $(($(wc -l < attempts.txt))) attempts\"";
 
 #[test]
 fn validate_failure_routes_through_diagnosis_back_to_implement() {
     // The gate fails until the implementer has run twice.
     let (body, settings) = run_fix_loop_flow(
         fix_loop_flow(&format!(
-            "{GATE_LOG}\ntest \"$(wc -l < attempts.txt)\" -ge 2"
+            "{GATE_LOG}\ntest \"$(($(wc -l < attempts.txt)))\" -ge 2"
         )),
         "run-validate-fix-loop",
     );
@@ -334,7 +334,7 @@ fn contest_reaches_evaluate_through_output_map_and_visit_limit_ends_the_loop() {
                     "kind": "tool",
                     "config": {
                         "kind": "tool",
-                        "command": "echo attempt >> \"$SPARK_PROJECT/attempts.txt\"\nprintf '{\"contested\":\"finding 1: see src/lib.rs:%s\"}' \"$(wc -l < \"$SPARK_PROJECT/attempts.txt\")\"",
+                        "command": "echo attempt >> \"$SPARK_PROJECT/attempts.txt\"\nprintf '{\"contested\":\"finding 1: see src/lib.rs:%s\"}' \"$(($(wc -l < \"$SPARK_PROJECT/attempts.txt\")))\"",
                         "env_map": {"SPARK_PROJECT": "context.project"},
                         "output_map": {"context.review.contested": "contested"}
                     },
@@ -372,7 +372,7 @@ fn contest_reaches_evaluate_through_output_map_and_visit_limit_ends_the_loop() {
                     "kind": "tool",
                     "config": {
                         "kind": "tool",
-                        "command": "echo \"$SPARK_CONTESTED\" >> \"$SPARK_PROJECT/evaluate.txt\"\nprintf '{\"required_changes\":\"uphold finding 1 (review %s)\"}' \"$(wc -l < \"$SPARK_PROJECT/evaluate.txt\")\"",
+                        "command": "echo \"$SPARK_CONTESTED\" >> \"$SPARK_PROJECT/evaluate.txt\"\nprintf '{\"required_changes\":\"uphold finding 1 (review %s)\"}' \"$(($(wc -l < \"$SPARK_PROJECT/evaluate.txt\")))\"",
                         "env_map": {
                             "SPARK_CONTESTED": "context.review.contested",
                             "SPARK_PROJECT": "context.project"

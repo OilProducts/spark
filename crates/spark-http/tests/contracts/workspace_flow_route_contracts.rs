@@ -309,7 +309,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     git(&["commit", "-q", "-m", "Add local"]);
     write_flow(&settings, "shared", simple_flow("shared", "Shared v2"));
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
-    std::fs::write(org.join("roles/helper.md"), role).expect("untracked role");
+    let helper_role = "---\ntype: Role\ntitle: Helper\ndescription: Helps out.\n---\n\nYou help.\n";
+    std::fs::write(org.join("roles/helper.md"), helper_role).expect("untracked role");
     let memory = org.join("memory/coordinator");
     std::fs::create_dir_all(memory.join("notes")).expect("memory");
     std::fs::write(memory.join("index.md"), "# Known\n").expect("index");
@@ -335,6 +336,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     };
     assert_eq!(find("flow", "shared")["layer"], "project_copy");
     assert_eq!(find("flow", "shared")["path"], "flows/shared");
+    assert_eq!(find("flow", "shared")["bundled_changed"], true);
+    assert_eq!(find("flow", "local")["bundled_changed"], Value::Null);
     assert_eq!(find("flow", "plain")["layer"], "bundled");
     assert_eq!(find("flow", "local")["layer"], "project");
     assert_eq!(find("flow", "local")["uncommitted"], false);
@@ -342,6 +345,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     assert_eq!(helper["layer"], "project");
     assert_eq!(helper["uncommitted"], true);
     assert_eq!(helper["standing"], Value::Null);
+    assert_eq!(helper["title"], "Helper");
+    assert_eq!(helper["description"], "Helps out.");
     let reviewer = find("role", "reviewer");
     assert_eq!(reviewer["layer"], "bundled");
     assert_eq!(
@@ -393,7 +398,7 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     .await;
     assert_eq!(
         helper["files"],
-        json!([{"name": "helper.md", "content": role, "status": "untracked"}])
+        json!([{"name": "helper.md", "content": helper_role, "status": "untracked"}])
     );
     // Copying shared again makes bundled match the first commit.
     write_flow(&settings, "shared", simple_flow("shared", "shared"));
