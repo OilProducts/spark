@@ -4920,8 +4920,21 @@ impl LiveConversationTurnState {
             }
             _ => self.emit_materialized_segment(&event, &provenance, &mut emitted_payloads),
         }
-        self.pending_payloads
-            .extend(emitted_payloads.iter().cloned());
+        // Only each turn's and segment's latest upsert is committed, and a
+        // streaming tool emits one per output delta, so keep one per key.
+        for payload in &emitted_payloads {
+            let Some(key) = upsert_payload_key(payload) else {
+                continue;
+            };
+            match self
+                .pending_payloads
+                .iter_mut()
+                .find(|pending| upsert_payload_key(pending) == Some(key))
+            {
+                Some(pending) => pending.clone_from(payload),
+                None => self.pending_payloads.push(payload.clone()),
+            }
+        }
         // The running turn is its conversation's only writer, so it commits
         // each finished segment itself: a client opening the conversation
         // mid-turn sees everything done so far, and a crash loses at most the
@@ -6198,22 +6211,14 @@ fn mutations_from_emitted_payloads(
     let mut order: Vec<(&str, String)> = Vec::new();
     let mut latest: BTreeMap<(&str, String), &Value> = BTreeMap::new();
     for payload in payloads {
-        let (kind, inner_key) = match payload.get("type").and_then(Value::as_str) {
-            Some("turn_upsert") => ("turn", "turn"),
-            Some("segment_upsert") => ("segment", "segment"),
-            _ => continue,
-        };
-        let Some(inner) = payload.get(inner_key) else {
-            continue;
-        };
-        let Some(id) = inner.get("id").and_then(Value::as_str) else {
+        let Some((kind, id)) = upsert_payload_key(payload) else {
             continue;
         };
         let key = (kind, id.to_string());
         if !latest.contains_key(&key) {
             order.push(key.clone());
         }
-        latest.insert(key, inner);
+        latest.insert(key, &payload[kind]);
     }
     order
         .into_iter()
@@ -6225,6 +6230,17 @@ fn mutations_from_emitted_payloads(
             }
         })
         .collect()
+}
+
+/// The turn or segment a `turn_upsert`/`segment_upsert` payload replaces, as
+/// ("turn" | "segment", id); the kind is also the payload's key for the record.
+fn upsert_payload_key(payload: &Value) -> Option<(&'static str, &str)> {
+    let kind = match payload.get("type").and_then(Value::as_str) {
+        Some("turn_upsert") => "turn",
+        Some("segment_upsert") => "segment",
+        _ => return None,
+    };
+    Some((kind, payload.get(kind)?.get("id")?.as_str()?))
 }
 
 /// Workflow events appended to the working view since `len_before` become

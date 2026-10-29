@@ -656,6 +656,14 @@ pub fn finalize_turn_segments(
     changed
 }
 
+/// Streamed output kept on a running tool segment, the size of the durable
+/// transcript's inline preview. Each delta republishes its whole segment, so
+/// an unbounded copy makes large outputs cost quadratic memory; the
+/// completion event carries the full output.
+// ponytail: a command yielded at a turn boundary keeps only this prefix in the
+// transcript; the provider event log still holds every delta.
+const LIVE_TOOL_OUTPUT_LIMIT_BYTES: usize = 8 * 1024;
+
 fn append_tool_call_output(segment: &mut Value, delta: &str) {
     let Some(tool_call) = segment
         .as_object_mut()
@@ -664,12 +672,16 @@ fn append_tool_call_output(segment: &mut Value, delta: &str) {
     else {
         return;
     };
-    let mut output = tool_call
+    let output = tool_call
         .get("output")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    output.push_str(delta);
+        .unwrap_or("");
+    // A capped prefix ends within one UTF-8 character (4 bytes) of the limit;
+    // appending past that would splice a later delta onto a cut one.
+    if output.len() + 4 > LIVE_TOOL_OUTPUT_LIMIT_BYTES {
+        return;
+    }
+    let (output, _) = truncate_utf8(&format!("{output}{delta}"), LIVE_TOOL_OUTPUT_LIMIT_BYTES);
     tool_call.insert("output".to_string(), json!(output));
 }
 
@@ -1612,6 +1624,43 @@ mod tests {
         let segments = container["segments"].as_array().expect("segments");
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0]["tool_call"]["output"], "running output\n");
+    }
+
+    #[test]
+    fn command_output_deltas_stop_growing_the_segment_at_the_preview_limit() {
+        let mut container = serde_json::json!({});
+        materialize_segment_for_event(
+            &mut container,
+            "turn-1",
+            &command_started("cmd-1"),
+            "2026-07-08T10:00:00Z",
+            None,
+        );
+        // 3-byte characters, so the limit falls inside one.
+        let chunk = "€".repeat(1000);
+        for _ in 0..10 {
+            materialize_segment_for_event(
+                &mut container,
+                "turn-1",
+                &command_output_delta("cmd-1", &chunk),
+                "2026-07-08T10:00:01Z",
+                None,
+            );
+        }
+        materialize_segment_for_event(
+            &mut container,
+            "turn-1",
+            &command_output_delta("cmd-1", "x"),
+            "2026-07-08T10:00:02Z",
+            None,
+        );
+
+        let output = container["segments"][0]["tool_call"]["output"]
+            .as_str()
+            .expect("output");
+        assert!(output.len() <= LIVE_TOOL_OUTPUT_LIMIT_BYTES);
+        assert!(output.len() + 4 > LIVE_TOOL_OUTPUT_LIMIT_BYTES);
+        assert!(chunk.repeat(10).starts_with(output));
     }
 
     #[test]
