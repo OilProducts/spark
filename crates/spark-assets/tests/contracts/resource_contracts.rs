@@ -16,6 +16,7 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "math-research/explore-conjecture",
     "math-research/formalize-result",
     "math-research/prove-refute",
+    "organization/review-change",
     "software-development/audit-codebase",
     "software-development/design-change",
     "software-development/implement-change",

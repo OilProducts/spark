@@ -16,11 +16,11 @@ seed's public interface is its core spec and profiles:
 
 - Core spec (`spec/`, version 0.1.0), split by area:
   - boundaries (ORG-001 to ORG-006);
-  - roles and authority, with a RACI table (ORG-010 to ORG-016);
-  - records and evidence (ORG-020 to ORG-025);
+  - roles and authority, with a RACI table (ORG-010 to ORG-017);
+  - records and evidence (ORG-020 to ORG-026);
   - organization changes (ORG-030 to ORG-035);
   - evolution (ORG-040, ORG-041);
-  - actions and effect classes (ORG-050 to ORG-054).
+  - actions and effect classes (ORG-050 to ORG-055).
 - Capability profiles:
   - `software` (SW-001 to SW-006);
   - `operations` (OPS-001 to OPS-006);
@@ -42,5 +42,7 @@ seed's public interface is its core spec and profiles:
   - ADR-0006 core plus capability profiles;
   - ADR-0007 authority by effect class;
   - ADR-0008 Spark is the first organization;
-  - ADR-0009 the whole definition lives in the org repo.
+  - ADR-0009 the whole definition lives in the org repo;
+  - ADR-0010 organization changes are reviewed, and only the operator grants
+    authority.
 - Templates for an organization's operator brief and decision records.

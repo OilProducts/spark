@@ -41,19 +41,23 @@ action on the project above the Observe class (ORG-050).
 
 ## ORG-012: The Chief of Staff owns organization changes
 
-The Chief of Staff SHALL make and approve every change an agent makes to the org
-repo, and no other agent SHALL change it. The operator MAY change the org repo
-directly, for example through Spark's flow editor. Otherwise the operator's role
-is visibility, not approval.
+The Chief of Staff SHALL make every change an agent makes to the org repo, and
+no other agent SHALL change it. The operator MAY change the org repo directly,
+for example through Spark's flow editor. Apart from authority (ORG-055), the
+operator's role is visibility, not approval.
 
-- Rationale: whoever writes the organization is in a position to judge changes
-  to it, and an extra approval step adds process without information.
+- Rationale: one owner keeps the organization coherent. ORG-017's independent
+  review checks the owner's changes; an operator approval step on top would add
+  process without information.
 - Source: operator, 2026-10-24: "I think the CoS approves changes, I just want
   visibility.  And since the CoS also writes it, an approval gate is redundant.
   We should *not* have more unnecessary process surrounding it." Limited to
   agents, proposed because the flow editor commits the operator's own edits to
   the org repo. Accepted by the operator, 2026-10-28: "I also agree with your
-  stop switches recommendation, your ORG-012 recommendation".
+  stop switches recommendation, your ORG-012 recommendation". "And approve"
+  dropped for ORG-017's review, and the operator's role qualified by ORG-055,
+  accepted by the operator, 2026-10-28: "I also agree with the entirety of what
+  you said for #1 and #2." (ADR-0010).
 - Verification: Analysis (org repo history).
 
 ## ORG-013: Operator requests for organization changes
@@ -109,6 +113,29 @@ record, before reporting it as done.
 - Source: accepted with CR-2026-0167, whose plan the operator approved on
   2026-10-27.
 - Verification: Demonstration.
+
+## ORG-017: Organization changes are reviewed before they take effect
+
+Before a change an agent made to the organization's spec, roles, flows,
+playbooks or triggers takes effect, a reviewer independent of its author
+(ORG-015) SHALL confirm that it is needed, that nothing existing already covers
+it, and that it is as general and small as it can be.
+
+- Rationale: the Chief of Staff sees failures one at a time, and the easiest fix
+  for each is a new rule or step. Left alone, the organization piles up process
+  for edge cases. A reviewer that defaults to folding a change into what exists,
+  or not making it, pushes back.
+- Source: operator, 2026-10-28: "The organizational work needs a reviewer too,
+  we should probably have a workflow specifically for evaluating these. Without
+  a strong review biased towards generalization and simplicity I can easily see
+  the CoS ruining the org with neverending processes and rules for edge cases."
+  Wording proposed; accepted by the operator, 2026-10-28: "I also agree with the
+  entirety of what you said for #1 and #2." (ADR-0010).
+- Verification: Demonstration.
+
+### Scenario: A rule for one failure
+- **WHEN** the Chief of Staff proposes a new rule after a single failed run
+- **THEN** the review sends it back to fix the node or prompt that failed instead
 
 ## Responsibilities
 

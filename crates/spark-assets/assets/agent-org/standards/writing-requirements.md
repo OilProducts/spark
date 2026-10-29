@@ -97,8 +97,8 @@ from the requirements derived from them.
 
 - The **operator brief** records the operator's own words, quoted and dated.
 - The **spec** holds derived requirements, and each one cites its source.
-- Anything an agent infers or proposes is labelled as a proposal until the
-  operator confirms it.
+- Anything an agent infers or proposes names the role that proposed it, and is
+  never attributed to the operator.
 
 ## Decisions
 

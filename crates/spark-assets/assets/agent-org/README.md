@@ -69,6 +69,10 @@ Spark's own development will be the first organization (ADR-0008).
     seed's roles.
   - ADR-0009: move triggers, playbooks and standing-role
     settings into the org repo.
+  - ADR-0010: have the Chief of Staff prepare organization changes on a branch
+    in a separate worktree and merge them after `organization/review-change`
+    approves; `spark trigger create`, `update` and `delete` commit straight to
+    the org repo's checked-out branch today, which skips the review.
 - Wire the seed into Spark: embed it, add `spark org init`, and replace
   `playbooks/agent-org-setup.md` with this playbook.
 - Add a check that every requirement ID cited in the playbook, profiles and roles

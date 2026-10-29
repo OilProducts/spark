@@ -30,8 +30,9 @@ the [playbook](../playbook.md). Requirements follow
 
 - **Operator**: the human the organization works for.
 - **Organization**: the organization's own definition and records (spec, roles,
-  flows, playbooks, triggers, decisions, operator brief, memory), kept in the
-  project's org repo, `<project>/.spark/agent-org/` (ORG-025).
+  flows, playbooks, triggers, decisions, operator brief), kept in the project's
+  org repo, `<project>/.spark/agent-org/` (ORG-025), with its standing roles'
+  memory (ORG-026).
 - **Project**: whatever the organization manages outside its org repo. That may
   be a codebase, a dataset, an ongoing process, accounts or devices, together
   with the actions taken on them. This is the same "project" Spark registers: a
@@ -49,11 +50,11 @@ the [playbook](../playbook.md). Requirements follow
 | File | Requirements | Covers |
 |---|---|---|
 | [boundaries.md](boundaries.md) | ORG-001 to ORG-006 | Organization, project and cross-boundary work |
-| [roles.md](roles.md) | ORG-010 to ORG-016 | Standing roles, authority, review, responsibilities (RACI) |
-| [records.md](records.md) | ORG-020 to ORG-025 | Operator brief, decisions, requirement format, evidence, credentials, working data |
+| [roles.md](roles.md) | ORG-010 to ORG-017 | Standing roles, authority, review of work and of organization changes, responsibilities (RACI) |
+| [records.md](records.md) | ORG-020 to ORG-026 | Operator brief, decisions, requirement format, evidence, credentials, working data, role memory |
 | [changes.md](changes.md) | ORG-030 to ORG-035 | README, changelog, visibility of organization changes, seed version |
 | [evolution.md](evolution.md) | ORG-040 to ORG-041 | How the organization changes its own spec and profiles |
-| [actions.md](actions.md) | ORG-050 to ORG-054 | Effect classes and the authority each needs |
+| [actions.md](actions.md) | ORG-050 to ORG-055 | Effect classes, the authority each needs, and who grants it |
 
 ## Profiles
 

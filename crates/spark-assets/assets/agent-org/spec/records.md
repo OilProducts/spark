@@ -15,12 +15,19 @@ and only when, they appear in all capitals, as shown here.
 
 The organization SHALL keep an operator brief that records the operator's
 decisions in their own words, with dates. Every requirement and decision SHALL
-cite its source, and anything an agent proposed SHALL be labelled as a proposal
-until the operator confirms it.
+cite its source. Anything an agent wrote SHALL name the role that proposed it,
+and SHALL NOT be attributed to the operator.
 
 - Rationale: agent proposals have twice been recorded as operator decisions.
+  Who proposed a change is a separate question from whether it is in force: a
+  change that passes review (ORG-017) is in force under its proposer's name, the
+  operator can overrule it at any time, and only the operator grants authority
+  (ORG-055).
 - Source: proposed, after factoryctl's operator brief. Accepted by the operator,
-  2026-10-28: "Approved".
+  2026-10-28: "Approved". The last sentence replaced "anything an agent proposed
+  SHALL be labelled as a proposal until the operator confirms it", which made
+  the operator approve every change; accepted by the operator, 2026-10-28: "I
+  also agree with the entirety of what you said for #1 and #2." (ADR-0010).
 - Verification: Inspection.
 
 ## ORG-021: Decision records
@@ -87,7 +94,8 @@ instead resolve from Spark's bundled library (ADR-0003).
 The org repo SHALL NOT hold working data, such as observations, datasets,
 inventories and histories; that SHALL live in the project. Runtime state, such
 as a trigger's last firing, a role's inbox, and whether a trigger or role is
-currently stopped, SHALL stay with Spark.
+currently stopped, SHALL stay with Spark. Standing roles' memory also lives in
+the org repo, outside the definition (ORG-026).
 
 - Rationale: the org repo's history is the record of how the agents work
   (ORG-031). Anything that changes how they work but lives elsewhere, such as a
@@ -99,5 +107,25 @@ currently stopped, SHALL stay with Spark.
   operator's direction, 2026-10-28: "We should fix this so that triggers are
   part of the org, just like flows, mission playbooks, standing roles, etc."
   (ADR-0009). Keeping the stopped state with Spark was proposed. Accepted by the
-  operator, 2026-10-28: "ORG-025 and ADR-0009 are approved."
+  operator, 2026-10-28: "ORG-025 and ADR-0009 are approved." The pointer to
+  ORG-026 was added with ORG-026.
 - Verification: Inspection.
+
+## ORG-026: Role memory
+
+Each standing role MAY keep its own memory in `memory/<role>/` in the org repo,
+and SHALL be the only one that writes it; ORG-012, ORG-017 and ORG-031's
+changelog entry do not apply to memory. A rule about how the organization works SHALL NOT live
+only in memory: it goes into the definition through the Chief of Staff, or, if
+it is the operator's decision, into the operator brief.
+
+- Rationale: each standing role writes notes about what it has observed, often.
+  Treating every note as an organization change would make each one need the
+  Chief of Staff and a changelog entry, which is process without information.
+  But a rule kept only in memory changes how the agents work with no owner and
+  no record, so rules leave memory for the definition or the brief.
+- Source: proposed, after a consistency review found that memory in the org repo
+  conflicted with ORG-012, ORG-025 and ORG-031. Accepted by the operator,
+  2026-10-28: "I like that ORG-026 that you propose."
+- Verification: Inspection (memory commits touch only their own role's
+  directory, and memory holds no rule missing from the definition or the brief).

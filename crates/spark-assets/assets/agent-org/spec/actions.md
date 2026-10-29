@@ -82,3 +82,20 @@ it cannot be.
   "this cannot be undone" makes the operator's authorization informed.
 - Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
 - Verification: Inspection (run records).
+
+## ORG-055: Only the operator grants authority
+
+A change to the organization SHALL NOT widen what it may do without asking,
+loosen a limit or safety constraint, or weaken a requirement that protects them,
+unless the operator brief records the operator's approval of that change.
+
+- Rationale: authority already comes only from the operator brief (ORG-051),
+  which holds only the operator's words. Without this rule the organization
+  could widen its authority another way, for example by deleting a safety
+  requirement, and ORG-017's review, which favors removing process, could accept
+  that as a simplification.
+- Source: proposed, after a consistency review found that ORG-020 made the
+  operator approve every agent proposal while ORG-012 made the operator's role
+  visibility. Accepted by the operator, 2026-10-28: "I also agree with the
+  entirety of what you said for #1 and #2." (ADR-0010).
+- Verification: Inspection (org repo history against the operator brief).
