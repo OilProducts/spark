@@ -7,7 +7,7 @@ import { usePersistProjectState } from '@/features/projects/hooks/usePersistProj
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
 import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { useProjectGitMetadata } from '@/features/projects/hooks/useProjectGitMetadata'
-import { extractApiErrorMessage } from '@/features/projects/model/projectsHomeState'
+import { extractApiErrorMessage, setProjectConversationSummaryList } from '@/features/projects/model/projectsHomeState'
 import { useRunDetailResources } from '@/features/runs/hooks/useRunDetailResources'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
@@ -19,6 +19,7 @@ import type {
     ConversationSummaryResponse,
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
+import { fetchProjectConversationListValidated } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { parseConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
@@ -256,6 +257,7 @@ export function TriggersSessionController() {
 }
 
 export function WorkspaceLiveEventsController() {
+    const summaryUpsertsRef = useRef<Record<string, number>>({})
     const reconnectSignal = useRunsTransportReconnectSignal(true)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
@@ -428,6 +430,7 @@ export function WorkspaceLiveEventsController() {
                 if (envelope.type === 'conversation.summary_upsert' && envelope.resource?.kind === 'conversation_summary') {
                     const summary = parseConversationSummaryResponse(payload.conversation)
                     if (summary) {
+                        summaryUpsertsRef.current[summary.project_path] = (summaryUpsertsRef.current[summary.project_path] ?? 0) + 1
                         useStore.getState().upsertHomeConversationSummary(summary)
                     }
                     return
@@ -505,6 +508,33 @@ export function WorkspaceLiveEventsController() {
             }
         }
 
+        // A summary published while no stream was open (as when opening a chat
+        // reconnects it) never arrives, so each open refetches the summaries
+        // this client holds. A response from a superseded stream is dropped,
+        // and one that an upsert overtook is fetched again.
+        const resyncConversationSummaries = (source: EventSource) => {
+            const resync = async (projectPath: string, attempts: number): Promise<void> => {
+                const upserts = summaryUpsertsRef.current[projectPath] ?? 0
+                let summaries: ConversationSummaryResponse[]
+                try {
+                    summaries = await fetchProjectConversationListValidated(projectPath)
+                } catch {
+                    return
+                }
+                if (!isCurrent(source)) return
+                if ((summaryUpsertsRef.current[projectPath] ?? 0) !== upserts) {
+                    if (attempts > 1) await resync(projectPath, attempts - 1)
+                    return
+                }
+                const state = useStore.getState()
+                if (!state.homeConversationCache.summariesByProjectPath[projectPath]) return
+                state.commitHomeConversationCache(setProjectConversationSummaryList(state.homeConversationCache, projectPath, summaries))
+            }
+            for (const projectPath of Object.keys(useStore.getState().homeConversationCache.summariesByProjectPath)) {
+                void resync(projectPath, 3)
+            }
+        }
+
         const open = () => {
             if (closed) {
                 return
@@ -513,7 +543,9 @@ export function WorkspaceLiveEventsController() {
             const source = new EventSource(buildUrlWithCursors())
             eventSource = source
             source.onopen = () => {
-                if (isCurrent(source)) window.dispatchEvent(new Event('spark:settings-live-event'))
+                if (!isCurrent(source)) return
+                window.dispatchEvent(new Event('spark:settings-live-event'))
+                resyncConversationSummaries(source)
             }
             source.onmessage = (event) => handleMessage(event, source)
             source.onerror = () => {
