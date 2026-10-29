@@ -20,7 +20,9 @@ function useFlowCatalogPanel() {
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const uiDefaults = useStore((state) => state.uiDefaults)
     const [flows, setFlows] = useState<string[]>([])
-    const [orgFlows, setOrgFlows] = useState<Record<string, OrgItem>>({})
+    // Badge metadata and the project it describes; another project's never shows.
+    const [org, setOrg] = useState<{ project: string | null; flows: Record<string, OrgItem> }>({ project: null, flows: {} })
+    const orgFlows = org.project === activeProjectPath ? org.flows : {}
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
@@ -34,15 +36,16 @@ function useFlowCatalogPanel() {
             setIsRefreshingFlows(true)
         }
 
-        // Badges are a hint: a project without an org list just shows none.
+        // Badges are a hint: a project whose org list fails shows none.
         if (activeProjectPath) {
-            orgRequest<OrgList>('', activeProjectPath).then((list) => {
-                if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
-                    setOrgFlows(Object.fromEntries(list.items.filter((item) => item.kind === 'flow').map((item) => [item.name, item])))
-                }
-            }, () => {})
-        } else {
-            setOrgFlows({})
+            const project = activeProjectPath
+            const settle = (flows: Record<string, OrgItem>) => {
+                if (isMountedRef.current && requestId === refreshRequestIdRef.current) setOrg({ project, flows })
+            }
+            orgRequest<OrgList>('', project).then(
+                (list) => settle(Object.fromEntries(list.items.filter((item) => item.kind === 'flow').map((item) => [item.name, item]))),
+                (error) => { console.error(error); settle({}) },
+            )
         }
 
         try {

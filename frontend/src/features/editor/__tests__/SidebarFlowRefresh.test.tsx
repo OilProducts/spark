@@ -113,11 +113,13 @@ describe('Editor sidebar manual refresh', () => {
         saveFlowContentMock.mockReset()
         saveFlowContentMock.mockResolvedValue(true)
         resetSidebarState()
+        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ org_path: '', bundled_path: '', org_exists: false, items: [] }) })))
     })
 
     afterEach(() => {
         cleanup()
         vi.restoreAllMocks()
+        vi.unstubAllGlobals()
     })
 
     it('refreshes the saved flow catalog manually while preserving and clearing selection as appropriate', async () => {
@@ -265,5 +267,36 @@ describe('Flows panel org badges', () => {
         await waitFor(async () => expect(await badges('local')).toEqual(['customized', 'uncommitted']))
         expect(await badges('shared')).toEqual(['project copy'])
         expect(await badges('plain')).toEqual([])
+    })
+})
+
+describe('Flows panel org badges across projects', () => {
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('never shows one project\'s badges on another project\'s flow of the same name', async () => {
+        resetSidebarState()
+        fetchFlowListMock.mockReset()
+        fetchFlowListMock.mockResolvedValue(['shared'])
+        const pendingB = createDeferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('project_path=%2Ftmp%2Fproject-b')
+            ? pendingB.promise
+            : ({ ok: true, json: async () => ({ org_path: '/a', bundled_path: '/b', org_exists: true, items: [
+                { kind: 'flow', name: 'shared', layer: 'project', path: 'flows/shared', uncommitted: true },
+            ] }) })))
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        useStore.setState({ activeProjectPath: '/tmp/project-a' })
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
+        await waitFor(() => expect(badges()).toEqual(['customized', 'uncommitted']))
+
+        // B's org request is pending: A's badges must not carry over.
+        useStore.setState({ activeProjectPath: '/tmp/project-b' })
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(2))
+        expect(badges()).toEqual([])
+
+        // B's org request fails: still none.
+        pendingB.reject(new Error('org unavailable'))
+        await waitFor(() => expect(console.error).toHaveBeenCalled())
+        expect(badges()).toEqual([])
     })
 })
