@@ -32,8 +32,8 @@ These qualities follow ISO/IEC/IEEE 29148 ("Systems and software engineering —
 Life cycle processes — Requirements engineering"). A requirement is:
 
 - **Necessary**: removing it would leave a real need unmet.
-- **Singular**: it states one thing. Three "and also" clauses are three
-  requirements.
+- **Singular**: it states one need. Three unrelated needs joined by "and also"
+  are three requirements.
 - **Unambiguous**: it has one reasonable reading.
 - **Feasible**: it can be met with the means available.
 - **Verifiable**: someone who did not write it can tell whether it holds.
@@ -45,7 +45,7 @@ Each requirement has:
 | Field | Content |
 |---|---|
 | ID | Stable, never reused or renumbered, for example `ORG-012`. A withdrawn requirement keeps its ID and is marked withdrawn. |
-| Statement | One sentence with one BCP 14 keyword. |
+| Statement | The requirement, usually one sentence. It states one need: its conditions, exceptions (a MAY) and the prohibition that mirrors it belong with it, and a separate need is a separate requirement. |
 | Rationale | Why it exists. |
 | Source | Where it came from: an operator quote (with date), a decision record, or "proposed" with its author. A requirement an agent proposed is never attributed to the operator. |
 | Verification | One of the four methods below. |
@@ -79,8 +79,8 @@ Requirements Syntax", 2009) where they fit:
 Scenarios use WHEN/THEN:
 
 ```markdown
-#### Scenario: Ambiguous target
-- **WHEN** the user asks to "improve our testing"
+### Scenario: Ambiguous target
+- **WHEN** the operator asks to "improve our testing"
 - **THEN** the Coordinator asks whether that means the project's tests, the agents' testing procedures, or both, before starting any work
 ```
 

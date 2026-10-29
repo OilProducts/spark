@@ -23,10 +23,12 @@ per action and per period for spending, permitted devices and operations for
 devices, and permitted recipients for messages; these examples are not a
 complete list.
 
-- Source: proposed. Amended at the operator's request, 2026-10-28: "I dont want
-  to limit the limitations to only those categories, but yes." Approved as
-  written by the operator, 2026-10-28: "EXT-001 and EXT-003 are now approved as
-  written.  As is EXT-005".
+- Rationale: an authorization without a limit has no bound, and the limit is
+  what EXT-002's check enforces.
+- Source: proposed by the agent drafting the seed. Amended at the operator's
+  request, 2026-10-28: "I dont want to limit the limitations to only those
+  categories, but yes." Approved as written by the operator, 2026-10-28:
+  "EXT-001 and EXT-003 are now approved as written.  As is EXT-005".
 - Verification: Inspection.
 
 ## EXT-002: Checked before taken
@@ -36,7 +38,8 @@ check or reviewer separate from the agent proposing the action.
 
 - Rationale: the maker/checker separation (ORG-015) applied to actions rather
   than to work products.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Test.
 
 ### Scenario: Over the limit
@@ -51,8 +54,13 @@ an action that would violate one, whatever its authorization.
 
 - Rationale: some limits are not trade-offs, for example a minimum temperature,
   or never unlocking a door remotely.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Test.
+
+### Scenario: An authorized action that breaks a constraint
+- **WHEN** an agent authorized to adjust the thermostat is asked to set it below the minimum temperature the operator brief lists
+- **THEN** it does not change the setting, and tells the operator which constraint stopped it
 
 ## EXT-005: Preview first
 
@@ -64,8 +72,8 @@ SHOULD use it before the first action of a new kind.
   payment API's sandbox, an order-validation call, a message sent to oneself
   first. It is SHOULD because many systems have no preview, and it applies to the
   first action of each kind so that routine actions are not slowed.
-- Source: proposed. Approved by the operator, 2026-10-28: "EXT-001 and EXT-003
-  are now approved as written.  As is EXT-005".
+- Source: proposed by the agent drafting the seed. Approved by the operator,
+  2026-10-28: "EXT-001 and EXT-003 are now approved as written.  As is EXT-005".
 - Verification: Inspection (run records).
 
 ## EXT-006: One way to stop everything
@@ -75,10 +83,14 @@ repo's README SHALL say how.
 
 - Rationale: when something goes wrong in the world, stopping comes before
   diagnosing.
-- Source: proposed. In Spark today this means stopping the responsible standing
-  roles and disabling their triggers. Accepted by the operator, 2026-10-28:
-  "Approved".
+- Source: proposed by the agent drafting the seed. In Spark today this means
+  stopping the responsible standing roles and disabling their triggers. Accepted
+  by the operator, 2026-10-28: "Approved".
 - Verification: Demonstration.
+
+### Scenario: Stopping everything
+- **WHEN** the operator follows the README's instructions to stop all External actions
+- **THEN** no External action is taken afterwards until the operator restarts work
 
 EXT-003 (credentials) moved to the core as ORG-024 before the seed was first
 released. It is not reused.

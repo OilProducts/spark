@@ -32,10 +32,10 @@ agent does it. The test is what the request would change if it were done:
 - Rationale: if the two are confused, maintaining the organization can silently
   alter the project, and project work can silently rewrite how the agents
   operate.
-- Source: proposed, adapted from the seed installation prompt (Parts 1-2).
-  Examples revised after the operator, 2026-10-28: "I want more clear examples.
-  The Scenarios do not immediately make sense to me." Awaiting the operator's
-  review of this wording.
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (Parts 1-2). Examples revised after the operator,
+  2026-10-28: "I want more clear examples. The Scenarios do not immediately make
+  sense to me." Awaiting the operator's review of this wording.
 - Verification: Demonstration.
 
 ### Scenario: A change to how the agents work
@@ -56,8 +56,8 @@ WHEN a request's target is ambiguous, the Coordinator SHALL ask the operator
 which is meant before any work starts.
 
 - Rationale: the broadest reading is rarely the intended one.
-- Source: proposed, adapted from the seed installation prompt (2.2). Accepted by
-  the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (2.2). Accepted by the operator, 2026-10-28: "Approved".
 - Verification: Demonstration.
 
 ### Scenario: Ambiguous request
@@ -71,8 +71,9 @@ treated as authorization to change the other.
 
 - Rationale: discovery is not authorization, and a recommendation is not
   permission.
-- Source: proposed, adapted from the seed installation prompt (2.3, 2.4, 22).
-  Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (2.3, 2.4, 22). Accepted by the operator, 2026-10-28:
+  "Approved".
 - Verification: Test.
 
 ### Scenario: Project work finds an organization weakness
@@ -86,9 +87,13 @@ that change, record what is needed and why, and raise it with the Coordinator
 instead of making it.
 
 - Rationale: a silent cross-boundary change is what ORG-003 exists to prevent.
-- Source: proposed, adapted from the seed installation prompt (2.6). Accepted by
-  the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (2.6). Accepted by the operator, 2026-10-28: "Approved".
 - Verification: Demonstration.
+
+### Scenario: Project work needs an organization change
+- **WHEN** an agent adding a new kind of device to the inventory finds that the nightly check flow has no step for that kind
+- **THEN** it adds the device without changing the flow, and records for the Coordinator which step the flow needs and why
 
 ## ORG-005: Split cross-boundary work
 
@@ -98,8 +103,9 @@ parts are.
 
 - Rationale: success on the project side does not show that the organization
   change works, and the reverse.
-- Source: proposed, adapted from the seed installation prompt (2.5, 2.7).
-  Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (2.5, 2.7). Accepted by the operator, 2026-10-28:
+  "Approved".
 - Verification: Inspection.
 
 ## ORG-006: State the target
@@ -108,5 +114,6 @@ Every mission objective and flow-run objective SHALL state whether its target is
 the organization, the project, or both.
 
 - Rationale: Spark has no field for the target, so the objective carries it.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Inspection.

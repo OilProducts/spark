@@ -23,11 +23,12 @@ and SHALL NOT be attributed to the operator.
   change that passes review (ORG-017) is in force under its proposer's name, the
   operator can overrule it at any time, and only the operator grants authority
   (ORG-055).
-- Source: proposed, after factoryctl's operator brief. Accepted by the operator,
-  2026-10-28: "Approved". The last sentence replaced "anything an agent proposed
-  SHALL be labelled as a proposal until the operator confirms it", which made
-  the operator approve every change; accepted by the operator, 2026-10-28: "I
-  also agree with the entirety of what you said for #1 and #2." (ADR-0010).
+- Source: proposed by the agent drafting the seed, after factoryctl's operator
+  brief. Accepted by the operator, 2026-10-28: "Approved". The last sentence
+  replaced "anything an agent proposed SHALL be labelled as a proposal until the
+  operator confirms it", which made the operator approve every change; accepted
+  by the operator, 2026-10-28: "I also agree with the entirety of what you said
+  for #1 and #2." (ADR-0010).
 - Verification: Inspection.
 
 ## ORG-021: Decision records
@@ -35,7 +36,10 @@ and SHALL NOT be attributed to the operator.
 The organization's decisions SHALL be recorded as numbered decision records in
 the format of [writing-requirements.md](../standards/writing-requirements.md).
 
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Rationale: a decision kept with its context and consequences can be revisited
+  without rediscovering why it was made, and a number lets requirements cite it.
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Inspection.
 
 ## ORG-022: Requirement format
@@ -44,6 +48,8 @@ Requirements the organization writes SHALL follow
 [writing-requirements.md](../standards/writing-requirements.md), including BCP 14
 keywords where a requirement level is meant.
 
+- Rationale: requirements written one way read the same way to every agent, and
+  BCP 14 keywords make each requirement's strength unambiguous.
 - Source: operator, 2026-10-28: "I'd like to stick to well tested standards when
   reasonable, that means 2119 compliant where appropriate".
 - Verification: Inspection.
@@ -55,8 +61,9 @@ as taken, or a run as done unless it can point to the evidence: the run record,
 the command and its output, a file and line, or the external system's response.
 
 - Rationale: a documented capability is not an operational one.
-- Source: proposed, adapted from the seed installation prompt (4.1, 18).
-  Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (4.1, 18). Accepted by the operator, 2026-10-28:
+  "Approved".
 - Verification: Analysis.
 
 ## ORG-024: Credentials
@@ -76,13 +83,13 @@ a file path, and SHALL NOT read its value into their conversation.
   in `$SPARK_HOME/config/provider.env` with mode 0600, outside any repository.
   Almost every organization holds some credential, such as a CI token, an API
   key or a device hub login, so the rule belongs in the core.
-- Source: proposed, adapted from the seed installation prompt (17). Replaced by
-  the text of EXT-003, which the operator approved on 2026-10-28, after the
-  operator asked, 2026-10-28: "Does this still match with what we decided about
-  them being in version control?" "Records and flows" is widened to
-  "Organization files". Accepted by the operator, 2026-10-28: "Approved".
-- Verification: Inspection (tracked files and file modes) and Analysis
-  (conversation records).
+- Source: proposed by the agent drafting the seed, adapted from the seed
+  installation prompt (17). Replaced by the text of EXT-003, which the operator
+  approved on 2026-10-28, after the operator asked, 2026-10-28: "Does this still
+  match with what we decided about them being in version control?" "Records and
+  flows" is widened to "Organization files". Accepted by the operator,
+  2026-10-28: "Approved".
+- Verification: Inspection (tracked files, file modes and conversation records).
 
 ## ORG-025: The org repo holds the whole definition
 
@@ -103,12 +110,12 @@ the org repo, outside the definition (ORG-026).
   Working data in the repo would bury organization changes in data churn.
   Stopping stays outside so that the operator can stop work at once without an
   organization change (EXT-006).
-- Source: proposed. Triggers, playbooks and standing roles added at the
-  operator's direction, 2026-10-28: "We should fix this so that triggers are
-  part of the org, just like flows, mission playbooks, standing roles, etc."
-  (ADR-0009). Keeping the stopped state with Spark was proposed. Accepted by the
-  operator, 2026-10-28: "ORG-025 and ADR-0009 are approved." The pointer to
-  ORG-026 was added with ORG-026.
+- Source: proposed by the agent drafting the seed. Triggers, playbooks and
+  standing roles added at the operator's direction, 2026-10-28: "We should fix
+  this so that triggers are part of the org, just like flows, mission playbooks,
+  standing roles, etc." (ADR-0009). Keeping the stopped state with Spark was
+  proposed. Accepted by the operator, 2026-10-28: "ORG-025 and ADR-0009 are
+  approved." The pointer to ORG-026 was added with ORG-026.
 - Verification: Inspection.
 
 ## ORG-026: Role memory
@@ -124,8 +131,9 @@ it is the operator's decision, into the operator brief.
   Chief of Staff and a changelog entry, which is process without information.
   But a rule kept only in memory changes how the agents work with no owner and
   no record, so rules leave memory for the definition or the brief.
-- Source: proposed, after a consistency review found that memory in the org repo
-  conflicted with ORG-012, ORG-025 and ORG-031. Accepted by the operator,
-  2026-10-28: "I like that ORG-026 that you propose."
+- Source: proposed by the agent reviewing the seed, after a consistency review
+  found that memory in the org repo conflicted with ORG-012, ORG-025 and
+  ORG-031. Accepted by the operator, 2026-10-28: "I like that ORG-026 that you
+  propose."
 - Verification: Inspection (memory commits touch only their own role's
   directory, and memory holds no rule missing from the definition or the brief).

@@ -23,7 +23,8 @@ SHALL NOT keep time by waiting or polling in its own conversation.
 
 - Rationale: triggers persist across restarts and are visible; an agent's
   conversation is neither a clock nor a scheduler.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Inspection.
 
 ## OPS-002: Recurring activities are described where they run
@@ -48,11 +49,11 @@ judgment about what to do. Its description SHALL live where it runs:
   checks without a model, and its graph can put a separate check before an
   External action (EXT-002). A role or mission suits work whose next step has to
   be decided each time.
-- Source: proposed, revised after the operator asked, 2026-10-28: "What is a
-  runbook? Do we already have that concept in spark?", "does all of that belong
-  in the flow.md? or in the nodes that comprise the flow?" and "Why specifically
-  a flow and not a mission from a playbook?" Approved by the operator,
-  2026-10-28: "Ok I approve that version."
+- Source: proposed by the agent drafting the seed, revised after the operator
+  asked, 2026-10-28: "What is a runbook? Do we already have that concept in
+  spark?", "does all of that belong in the flow.md? or in the nodes that
+  comprise the flow?" and "Why specifically a flow and not a mission from a
+  playbook?" Approved by the operator, 2026-10-28: "Ok I approve that version."
 - Verification: Inspection.
 
 ## OPS-003: Working data has a home and a lifetime
@@ -62,7 +63,8 @@ and a stated retention period.
 
 - Rationale: data that accumulates without a stated lifetime grows without
   bound and goes stale unnoticed.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Inspection.
 
 ## OPS-004: Repeat-safe activities
@@ -72,7 +74,8 @@ duplicated trigger) SHALL NOT repeat its effects.
 
 - Rationale: triggers and retries can deliver an event twice; a second bid or a
   second notification is a real cost.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Test.
 
 ### Scenario: Duplicate event
@@ -85,8 +88,15 @@ WHEN an activity detects a condition that the operator brief marks as an alert,
 the organization SHALL notify the operator through the Coordinator within the
 time the brief states.
 
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Rationale: an alert is worth sending only while the operator can still act on
+  it.
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Demonstration.
+
+### Scenario: A price drops below the alert threshold
+- **WHEN** the nightly price check finds a watched item below the price the operator brief marks as an alert
+- **THEN** the operator hears about it from the Coordinator within the time the brief states
 
 ## OPS-006: A stopped activity is noticed
 
@@ -94,7 +104,12 @@ IF a recurring activity fails or stops running, THEN the organization SHALL
 notice and tell the operator.
 
 - Rationale: in an ongoing process, silence looks like "nothing happened".
-- Source: proposed. The Chief of Staff's failed-run trigger covers failures;
-  noticing an activity that stopped running entirely needs its own check.
-  Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. The Chief of Staff's
+  failed-run trigger covers failures; noticing an activity that stopped running
+  entirely needs its own check. Accepted by the operator, 2026-10-28:
+  "Approved".
 - Verification: Test.
+
+### Scenario: A check that silently stops
+- **WHEN** the nightly price check's trigger is disabled by mistake and the check does not run
+- **THEN** the organization notices the missed run and tells the operator

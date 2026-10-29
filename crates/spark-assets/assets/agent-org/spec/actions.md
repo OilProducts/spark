@@ -47,8 +47,8 @@ recorded:
 - Rationale: autonomy differs by organization and by kind of action, so it
   belongs to the operator, and the safe default is to ask before anything
   external.
-- Source: proposed, implementing ADR-0007. Accepted by the operator, 2026-10-28:
-  "Approved".
+- Source: proposed by the agent drafting the seed, implementing ADR-0007.
+  Accepted by the operator, 2026-10-28: "Approved".
 - Verification: Demonstration.
 
 ### Scenario: Unrecorded external action
@@ -61,7 +61,8 @@ IF an action's effect class is uncertain, THEN the organization SHALL treat it a
 the higher class.
 
 - Rationale: a mistaken Observe that turns out External is the costly error.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Analysis.
 
 ## ORG-053: External actions are traceable
@@ -70,7 +71,8 @@ Every External action SHALL be traceable to the run or conversation that took it
 the authorization it relied on, and its result.
 
 - Rationale: external effects are the ones that need an audit trail.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Analysis (run records).
 
 ## ORG-054: State the way back
@@ -80,7 +82,8 @@ it cannot be.
 
 - Rationale: a backout plan is standard change-management practice, and saying
   "this cannot be undone" makes the operator's authorization informed.
-- Source: proposed. Accepted by the operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Accepted by the operator,
+  2026-10-28: "Approved".
 - Verification: Inspection (run records).
 
 ## ORG-055: Only the operator grants authority
@@ -94,8 +97,9 @@ unless the operator brief records the operator's approval of that change.
   could widen its authority another way, for example by deleting a safety
   requirement, and ORG-017's review, which favors removing process, could accept
   that as a simplification.
-- Source: proposed, after a consistency review found that ORG-020 made the
-  operator approve every agent proposal while ORG-012 made the operator's role
-  visibility. Accepted by the operator, 2026-10-28: "I also agree with the
-  entirety of what you said for #1 and #2." (ADR-0010).
+- Source: proposed by the agent reviewing the seed, after a consistency review
+  found that ORG-020 made the operator approve every agent proposal while
+  ORG-012 made the operator's role visibility. Accepted by the operator,
+  2026-10-28: "I also agree with the entirety of what you said for #1 and #2."
+  (ADR-0010).
 - Verification: Inspection (org repo history against the operator brief).

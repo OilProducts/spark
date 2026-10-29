@@ -70,6 +70,10 @@ to the Chief of Staff.
   can talk to the coordinator who will handle it with the CoS."
 - Verification: Demonstration.
 
+### Scenario: The operator asks for a new role
+- **WHEN** the operator asks the Coordinator to add a standing role for release management
+- **THEN** the Coordinator sends the request to the Chief of Staff, tells the operator it did, and changes nothing in the org repo itself
+
 ## ORG-014: Roster and responsibilities
 
 Every role that `spark role list` reports SHALL appear in the responsibilities
@@ -85,9 +89,9 @@ role SHALL update the table in the same commit.
   automatically yet: until Spark has an organization check (see the seed's
   roadmap), the Chief of Staff checks it whenever it changes roles, and
   validation checks it by inspection.
-- Source: proposed. Reworded after the operator asked, 2026-10-28: "How does
-  this keep the spec and roles from drifting apart?" Accepted by the operator,
-  2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed. Reworded after the operator
+  asked, 2026-10-28: "How does this keep the spec and roles from drifting
+  apart?" Accepted by the operator, 2026-10-28: "Approved".
 - Verification: Inspection (the table against `spark role list` and the role
   files).
 
@@ -98,8 +102,9 @@ its author's session.
 
 - Rationale: an agent reviewing its own work in its own context tends to confirm
   its own mistakes.
-- Source: proposed, after google/elephant-goldfish-model. Accepted by the
-  operator, 2026-10-28: "Approved".
+- Source: proposed by the agent drafting the seed, after
+  google/elephant-goldfish-model. Accepted by the operator, 2026-10-28:
+  "Approved".
 - Verification: Inspection (flow definitions).
 
 ## ORG-016: Check results against intent
@@ -110,9 +115,13 @@ record, before reporting it as done.
 
 - Rationale: completion by a worker is not acceptance. Reviewers verify against
   the spec; this step validates against the operator's intent.
-- Source: accepted with CR-2026-0167, whose plan the operator approved on
-  2026-10-27.
+- Source: accepted with Spark's change request CR-2026-0167 (Spark commit
+  b42218c3), whose plan the operator approved on 2026-10-27.
 - Verification: Demonstration.
+
+### Scenario: A run that did only part of the request
+- **WHEN** a run the Coordinator launched reports success, but its record shows it did only part of what the operator asked for
+- **THEN** the Coordinator tells the operator what is missing instead of reporting the request as done
 
 ## ORG-017: Organization changes are reviewed before they take effect
 
