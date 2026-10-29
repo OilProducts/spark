@@ -95,8 +95,8 @@ function FlowTreeNodeRow({
             >
                 <span className="flex min-w-0 items-center gap-2">
                     <FileText className="h-3.5 w-3.5 shrink-0" />
-                    {renderFlowIndicator?.(node.path)}
                     <span className="min-w-0 truncate">{node.name}</span>
+                    {renderFlowIndicator?.(node.path)}
                 </span>
             </Button>
             {onDeleteFlow ? (

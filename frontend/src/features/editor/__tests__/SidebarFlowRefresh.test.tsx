@@ -247,3 +247,23 @@ describe('Editor sidebar manual refresh', () => {
         })
     })
 })
+
+describe('Flows panel org badges', () => {
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('marks only flows that differ from bundled', async () => {
+        resetSidebarState()
+        fetchFlowListMock.mockReset()
+        fetchFlowListMock.mockResolvedValue(['plain', 'local', 'shared'])
+        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ org_path: '/o', bundled_path: '/b', org_exists: true, items: [
+            { kind: 'flow', name: 'plain', layer: 'bundled', path: 'flows/plain', uncommitted: false },
+            { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local', uncommitted: true },
+            { kind: 'flow', name: 'shared', layer: 'project_copy', path: 'flows/shared', uncommitted: false, bundled_changed: true },
+        ] }) })))
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
+        await waitFor(async () => expect(await badges('local')).toEqual(['customized', 'uncommitted']))
+        expect(await badges('shared')).toEqual(['project copy'])
+        expect(await badges('plain')).toEqual([])
+    })
+})

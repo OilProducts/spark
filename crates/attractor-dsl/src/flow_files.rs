@@ -107,6 +107,8 @@ struct RoleFile {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     execution: Option<ExecutionConfig>,
     #[serde(default)]
     isolated: bool,
@@ -139,6 +141,7 @@ impl Default for RoleBudget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Role {
     pub title: Option<String>,
+    pub description: Option<String>,
     pub persona: String,
     pub execution: Option<ExecutionConfig>,
     pub isolated: bool,
@@ -465,6 +468,7 @@ pub fn parse_role(name: &str, text: &str) -> Result<Role, String> {
     }
     Ok(Role {
         title: role.title,
+        description: role.description,
         persona: body.trim().to_string(),
         execution: role.execution,
         isolated: role.isolated,

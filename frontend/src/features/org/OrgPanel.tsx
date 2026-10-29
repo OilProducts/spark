@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { MessageSquare, PenLine, RefreshCw } from 'lucide-react'
+import { MessageSquare, RefreshCw } from 'lucide-react'
 import { useStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,12 +13,13 @@ import { defaultProjectChoice, projectLabel } from '@/features/projects/model/pr
 import { openChat } from '@/app/useAttention'
 import { cn } from '@/lib/utils'
 import {
-    askCoordinatorDraft, budgetLine, LAYER_GROUPS, LAYER_LABELS, orgRequest, renderableMarkdown,
-    type OrgCommit, type OrgItem, type OrgItemDetail, type OrgLayer, type OrgList, type StandingRole,
+    askCoordinatorDraft, budgetLine, frontmatterFields, orgBadges, orgRequest, orgStatus, renderableMarkdown, usageByFlow, usageSummary,
+    type OrgCommit, type OrgItem, type OrgItemDetail, type OrgList, type StandingRole,
 } from './orgModel'
 
-export function LayerBadge({ layer }: { layer: OrgLayer }) {
-    return <Badge data-testid="org-layer-badge" variant={layer === 'bundled' ? 'secondary' : 'default'}>{LAYER_LABELS[layer]}</Badge>
+/** Only what differs from the bundled default: customized, a drifted project copy, uncommitted. */
+export function OrgBadges({ item }: { item: Pick<OrgItem, 'layer' | 'uncommitted' | 'bundled_changed'> }) {
+    return <>{orgBadges(item).map((badge) => <Badge key={badge} data-testid="org-badge" variant={badge === 'uncommitted' ? 'destructive' : 'default'}>{badge}</Badge>)}</>
 }
 
 /** A unified diff with added and removed lines marked. */
@@ -56,14 +57,27 @@ export function OrgHistory({ commits }: { commits: OrgCommit[] | null }) {
     </li>)}</ul>
 }
 
-/** Where a role is used and whether it is standing here. */
+/** The flow nodes that use a role, each flow's nodes together. */
 export function RoleUsage({ item }: { item: OrgItem }) {
-    const usage = item.usage ?? []
-    return <div className="flex flex-col gap-1 text-sm">
-        {usage.length
-            ? <ul data-testid="org-role-usage" className="flex flex-col gap-0.5">{usage.map((use) => <li key={`${use.flow}:${use.node}`}>{use.flow} · <span className="text-muted-foreground">node</span> {use.node}</li>)}</ul>
-            : <p className="text-muted-foreground">No flow node uses this role.</p>}
-        <p data-testid="org-role-standing">{item.standing ? `Standing in this project (${item.standing.state}).` : 'Not standing in this project.'}</p>
+    const flows = usageByFlow(item.usage ?? [])
+    return flows.length
+        ? <ul data-testid="org-role-usage" className="flex flex-col gap-0.5 text-sm">{flows.map(([flow, nodes]) => <li key={flow}>
+            {flow} <span className="text-muted-foreground">· {nodes.join(', ')}</span>
+        </li>)}</ul>
+        : <p className="text-sm text-muted-foreground">No flow node uses this role.</p>
+}
+
+/** A role file: its frontmatter as key/value pairs above the rendered prompt. */
+function RolePrompt({ content }: { content: string }) {
+    const { fields, body } = frontmatterFields(content)
+    return <div className="flex flex-col gap-3">
+        {fields.length > 0 && <dl data-testid="org-frontmatter" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            {fields.map(([key, value]) => <div key={key} className="contents">
+                <dt className="text-muted-foreground">{key}</dt>
+                <dd className="whitespace-pre-wrap">{value}</dd>
+            </div>)}
+        </dl>}
+        <ProjectConversationMarkdown content={body} />
     </div>
 }
 
@@ -88,7 +102,7 @@ function MemoryBrowser({ project, role }: { project: string; role: string }) {
 }
 
 function StandingDetails({ project, role }: { project: string; role: StandingRole }) {
-    return <div className="flex flex-col gap-2 text-sm">
+    return <div data-testid="org-live-status" className="flex flex-col gap-2 text-sm">
         <p><span className="text-muted-foreground">State</span> {role.state} · <span className="text-muted-foreground">Budget</span> {budgetLine(role)}</p>
         <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => openChat(project, role.conversation_id)}>
             <MessageSquare aria-hidden="true" />Open conversation
@@ -102,7 +116,7 @@ function StandingDetails({ project, role }: { project: string; role: StandingRol
     </div>
 }
 
-function ItemDetail({ project, item, coordinator }: { project: string; item: OrgItem; coordinator: StandingRole | null }) {
+function RoleDetail({ project, item, coordinator }: { project: string; item: OrgItem; coordinator: StandingRole | null }) {
     const [detail, setDetail] = useState<OrgItemDetail | null>(null)
     const [commits, setCommits] = useState<OrgCommit[] | null>(null)
     const [error, setError] = useState('')
@@ -110,52 +124,49 @@ function ItemDetail({ project, item, coordinator }: { project: string; item: Org
         orgRequest<OrgItemDetail>('/item', project, { kind: item.kind, name: item.name }).then(setDetail, (e: Error) => setError(e.message))
         orgRequest<{ commits: OrgCommit[] }>('/history', project, { path: item.path }).then((value) => setCommits(value.commits), (e: Error) => setError(e.message))
     }, [project, item.kind, item.name, item.path])
-    const openInEditor = () => {
-        useStore.getState().setActiveProjectPath(project)
-        useStore.getState().setActiveFlow(item.name)
-        useStore.getState().setViewMode('editor')
-    }
-    return <section aria-label="Org item" className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
+    return <section aria-label="Org role" className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
         <header className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">{item.name}</h2>
-            <span className="text-xs text-muted-foreground">{item.kind}</span>
-            <LayerBadge layer={item.layer} />
-            {item.uncommitted && <Badge variant="destructive">uncommitted</Badge>}
+            <h2 className="text-base font-semibold">{item.title ?? item.name}</h2>
+            {item.title && item.title !== item.name && <span className="text-xs text-muted-foreground">{item.name}</span>}
+            <OrgBadges item={item} />
             <span className="flex-1" />
-            {item.kind === 'flow' && <Button type="button" size="sm" variant="ghost" onClick={openInEditor}><PenLine aria-hidden="true" />Open in editor</Button>}
-            <Button type="button" size="sm" variant="outline" disabled={!coordinator}
+            {item.name !== 'coordinator' && <Button type="button" size="sm" variant="outline" disabled={!coordinator}
                 onClick={() => coordinator && openChat(project, coordinator.conversation_id, askCoordinatorDraft(item))}>
                 <MessageSquare aria-hidden="true" />Ask the Coordinator
-            </Button>
+            </Button>}
         </header>
+        {item.description && <p className="text-sm">{item.description}</p>}
         <p className="text-xs text-muted-foreground">{item.path}</p>
         {error && <InlineError dense>{error}</InlineError>}
-        {item.kind === 'role' && <Section title="Usage"><RoleUsage item={item} /></Section>}
-        {item.standing && <Section title="Standing role"><StandingDetails project={project} role={item.standing} /></Section>}
-        {detail?.layer === 'project_copy' && <Section title="Copy of bundled">
-            <p data-testid="org-bundled-changed" className="text-sm">{detail.bundled_changed === null
-                ? 'The copy is not committed yet, so its bundled origin is unknown.'
-                : detail.bundled_changed ? 'Bundled has changed since this copy was made.' : 'Bundled is unchanged since this copy was made.'}</p>
-            <p className="text-xs text-muted-foreground">Diff from today's bundled version to the copy:</p>
-            <DiffBlock diff={detail.bundled_diff ?? ''} />
-        </Section>}
-        <Section title="Content">
+        {item.standing && <Section title="Live status"><StandingDetails project={project} role={item.standing} /></Section>}
+        <Section title="Used in"><RoleUsage item={item} /></Section>
+        <Section title="Prompt">
             {detail ? detail.files.map((file) => <div key={file.name} data-testid="org-file" className="rounded-md border p-3">
-                <div className="mb-2 flex items-center gap-2 text-xs font-medium">{file.name}{file.status && <Badge variant="destructive">{file.status}</Badge>}</div>
-                <ProjectConversationMarkdown content={renderableMarkdown(file.content)} />
+                {file.status && <div className="mb-2"><Badge variant="destructive">{file.status}</Badge></div>}
+                <RolePrompt content={file.content} />
             </div>) : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
         </Section>
-        <Section title="History"><OrgHistory commits={commits} /></Section>
+        {item.layer === 'project_copy' && <Section title="Diff from bundled">
+            <p data-testid="org-bundled-changed" className="text-sm">{item.bundled_changed == null
+                ? 'The copy is not committed yet, so its bundled origin is unknown.'
+                : item.bundled_changed ? 'Bundled has changed since this copy was made.' : 'Bundled is unchanged since this copy was made.'}</p>
+            <p className="text-xs text-muted-foreground">Diff from today's bundled version to the copy:</p>
+            {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
+        </Section>}
+        <details aria-label="History" className="flex flex-col gap-2">
+            <summary className="cursor-pointer text-sm font-semibold">History</summary>
+            <div className="mt-2"><OrgHistory commits={commits} /></div>
+        </details>
     </section>
 }
 
-/** A read-only view of a project's flows and roles by layer; changes go through the Coordinator. */
+/** A read-only view of a project's roles, standing ones first; changes go through the Coordinator. */
 export function OrgPanel() {
     const registry = useStore((state) => state.projectRegistry)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const [project, setProject] = useState(() => activeProjectPath ?? defaultProjectChoice(registry))
     const [list, setList] = useState<OrgList | null>(null)
-    const [selected, setSelected] = useState<{ kind: string; name: string } | null>(null)
+    const [selected, setSelected] = useState<string | null>(null)
     const [error, setError] = useState('')
     const [refreshes, setRefreshes] = useState(0)
     useEffect(() => {
@@ -165,37 +176,46 @@ export function OrgPanel() {
         orgRequest<OrgList>('', project).then((value) => current && setList(value), (e: Error) => current && setError(e.message))
         return () => { current = false }
     }, [project, refreshes])
-    const items = list?.items ?? []
-    const item = items.find((entry) => entry.kind === selected?.kind && entry.name === selected?.name) ?? null
-    const coordinator = items.find((entry) => entry.kind === 'role' && entry.name === 'coordinator')?.standing ?? null
+    const roles = (list?.items ?? []).filter((entry) => entry.kind === 'role')
+    const item = roles.find((entry) => entry.name === selected) ?? null
+    const coordinator = roles.find((entry) => entry.name === 'coordinator')?.standing ?? null
+    const groups: [string, OrgItem[]][] = [['Standing', roles.filter((entry) => entry.standing)], ['Roles', roles.filter((entry) => !entry.standing)]]
     const panel = <div className="flex flex-col gap-3">
-        <p className="px-3 text-xs text-muted-foreground" title={project ?? undefined}>{projectLabel(registry, project)}</p>
+        {list && <p data-testid="org-status" className="px-3 text-xs text-muted-foreground" title={list.org_path}>{orgStatus(list)}</p>}
         {error && <InlineError>{error}</InlineError>}
-        {LAYER_GROUPS.map(([layer, label]) => {
-            const grouped = items.filter((entry) => entry.layer === layer)
-            if (!grouped.length) return null
-            return <section key={layer} aria-label={label} className="flex flex-col gap-0.5">
-                <ListGroupLabel><h3>{label}</h3></ListGroupLabel>
-                <ul className="flex flex-col gap-0.5">{grouped.map((entry) => <li key={`${entry.kind}:${entry.name}`}>
-                    <SidePanelRow title={entry.name} data-testid="org-item" data-kind={entry.kind}
-                        selected={item === entry}
-                        meta={<>{entry.kind}{entry.uncommitted ? ' · uncommitted' : ''}{entry.standing ? ' · standing' : ''}</>}
-                        trailing={<LayerBadge layer={entry.layer} />}
-                        onClick={() => setSelected({ kind: entry.kind, name: entry.name })} />
-                </li>)}</ul>
-            </section>
-        })}
+        {groups.map(([label, grouped]) => grouped.length > 0 && <section key={label} aria-label={label} className="flex flex-col gap-0.5">
+            <ListGroupLabel><h3>{label}</h3></ListGroupLabel>
+            <ul className="flex flex-col gap-0.5">{grouped.map((entry) => <li key={entry.name} className="flex items-start gap-1">
+                <SidePanelRow title={entry.title ?? entry.name} data-testid="org-item" data-name={entry.name}
+                    selected={item === entry}
+                    meta={entry.standing
+                        ? <><span className="block truncate">{entry.standing.state} · {budgetLine(entry.standing)}</span>
+                            <span className="block truncate">{entry.standing.recent_events.length
+                                ? `Last wake ${entry.standing.recent_events[0].kind} · ${entry.standing.recent_events[0].at}`
+                                : 'No wakes yet'}</span></>
+                        : <>{entry.description && <span className="block truncate">{entry.description}</span>}
+                            <span className="block truncate">{usageSummary(entry.usage ?? [])}</span></>}
+                    trailing={<OrgBadges item={entry} />}
+                    onClick={() => setSelected(entry.name)} />
+                {entry.standing && <Button type="button" variant="ghost" size="icon-sm" className="mt-1.5" aria-label={`Open conversation with ${entry.title ?? entry.name}`}
+                    onClick={() => entry.standing && openChat(project!, entry.standing.conversation_id)}>
+                    <MessageSquare aria-hidden="true" className="size-4" />
+                </Button>}
+            </li>)}</ul>
+        </section>)}
         {!project && <Empty className="text-xs"><EmptyDescription>Choose a project</EmptyDescription></Empty>}
         {project && !list && !error && <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>}
     </div>
     return <ViewLayout view="org" title="Org" panel={panel} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" className="size-4" /></Button>
         <ProjectPicker heading="Show the org of" testId="org-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelected(null); setList(null) }}>
-            <Button type="button" variant="outline" size="sm">Project</Button>
+            <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span></Button>
         </ProjectPicker>
     </>}>
         {project && item
-            ? <ItemDetail key={`${project}:${item.kind}:${item.name}:${refreshes}`} project={project} item={item} coordinator={coordinator} />
-            : <Empty><EmptyDescription>Select a flow or role to see its content and history. This view is read-only; ask the Coordinator for changes.</EmptyDescription></Empty>}
+            ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} project={project} item={item} coordinator={coordinator} />
+            : <div data-testid="org-empty-state" className="flex h-full items-center justify-center p-6">
+                <Empty className="max-w-md items-center text-center"><EmptyDescription>Select a role to see its prompt, where it is used and its history. This view is read-only; ask the Coordinator for changes.</EmptyDescription></Empty>
+            </div>}
     </ViewLayout>
 }

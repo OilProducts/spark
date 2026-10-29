@@ -7,6 +7,8 @@ import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
 import { FlowTree } from '@/components/app/flow-tree'
+import { OrgBadges } from '@/features/org/OrgPanel'
+import { orgRequest, type OrgItem, type OrgList } from '@/features/org/orgModel'
 
 import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
 
@@ -18,6 +20,7 @@ function useFlowCatalogPanel() {
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const uiDefaults = useStore((state) => state.uiDefaults)
     const [flows, setFlows] = useState<string[]>([])
+    const [orgFlows, setOrgFlows] = useState<Record<string, OrgItem>>({})
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
@@ -29,6 +32,17 @@ function useFlowCatalogPanel() {
         refreshRequestIdRef.current = requestId
         if (isMountedRef.current) {
             setIsRefreshingFlows(true)
+        }
+
+        // Badges are a hint: a project without an org list just shows none.
+        if (activeProjectPath) {
+            orgRequest<OrgList>('', activeProjectPath).then((list) => {
+                if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                    setOrgFlows(Object.fromEntries(list.items.filter((item) => item.kind === 'flow').map((item) => [item.name, item])))
+                }
+            }, () => {})
+        } else {
+            setOrgFlows({})
         }
 
         try {
@@ -127,7 +141,7 @@ function useFlowCatalogPanel() {
         await refreshFlows();
     };
 
-    return { activeFlow, setActiveFlow, flows, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
+    return { activeFlow, setActiveFlow, flows, orgFlows, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
 }
 
 export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
@@ -170,6 +184,7 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
+                renderFlowIndicator={(flow) => catalog.orgFlows[flow] && <OrgBadges item={catalog.orgFlows[flow]} />}
             />
         </div>
     )
