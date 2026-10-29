@@ -53,10 +53,13 @@ requirement qualities, EARS, decision records and RACI. See
 
 Not wired in yet. The intended flow (ADR-0004):
 
-1. `spark org init --project <path> --profile <name>...` copies the core and the
-   chosen profiles into `<project>/.spark/agent-org/`.
-2. A mission runs [playbook.md](playbook.md) to shape the organization with the
-   operator.
+1. The operator asks the Coordinator to set up the organization, and the
+   Coordinator hands it to the Chief of Staff (ORG-013).
+2. The Chief of Staff runs [playbook.md](playbook.md) as a mission. Once the
+   operator confirms the profiles, it runs
+   `spark org init --project <path> --profile <name>...`, which adds every seed
+   and bundled file missing from `<project>/.spark/agent-org/` (ADR-0003), and
+   then shapes the organization with the operator.
 
 Spark's own development will be the first organization (ADR-0008).
 
@@ -66,9 +69,9 @@ Spark's own development will be the first organization (ADR-0008).
   - ADR-0003: copy the organization-owned files at installation;
   - ADR-0004: `spark org init`;
   - ADR-0005: move semantic rules out of `spark_control_surface` into the
-    seed's roles.
-  - ADR-0009: move triggers, playbooks and standing-role
-    settings into the org repo.
+    bundled standing roles;
+  - ADR-0009: move playbooks and standing-role settings into the org repo
+    (triggers moved in Spark commit 99c9d051);
   - ADR-0010: have the Chief of Staff prepare organization changes on a branch
     in a separate worktree and merge them after `organization/review-change`
     approves; `spark trigger create`, `update` and `delete` commit straight to

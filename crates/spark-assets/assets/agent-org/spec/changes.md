@@ -49,14 +49,20 @@ tell the operator, through the Coordinator, what changed and why.
 - **WHEN** the Chief of Staff merges a change to one of the organization's requirements
 - **THEN** the operator hears from the Coordinator what changed and why, with the commit
 
-## ORG-035: Seed version
+## ORG-035: Where the organization's files came from
 
-The organization SHALL record, in its changelog's first entry, the seed version
-and the profiles it was installed with.
+Each time the organization copies files from Spark, at initialization, when it
+adds a profile, on adoption and in each update, its changelog SHALL record the
+Spark and seed versions they came from and the profiles it then has.
 
-- Rationale: lets the Chief of Staff review what changed in the seed since then.
+- Rationale: when the operator asks for an update, the Chief of Staff compares
+  Spark's seed and bundled library against these versions to see what changed
+  (ADR-0003).
 - Source: proposed by the agent drafting the seed. Accepted by the operator,
-  2026-10-28: "Approved".
+  2026-10-28: "Approved". Widened from installation to every copy after the
+  operator's direction, 2026-10-29: "updates from spark to an already
+  initialized org are explicit, managed by the CoS and initialized by request
+  of the user."
 - Verification: Inspection.
 
 ORG-033 and ORG-034 moved to the software profile as SW-001 and SW-002 before

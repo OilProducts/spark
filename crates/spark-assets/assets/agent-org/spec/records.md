@@ -95,8 +95,8 @@ a file path, and SHALL NOT read its value into their conversation.
 
 The org repo SHALL hold the organization's whole definition: its spec and
 records, its roles and which of them are standing, its flows, its playbooks and
-its triggers. Flows, roles and playbooks the organization has not copied MAY
-instead resolve from Spark's bundled library (ADR-0003).
+its triggers. It runs only the flows, roles and playbooks it holds: before using
+one from Spark's bundled library, it copies it in (ADR-0003, ADR-0009).
 
 The org repo SHALL NOT hold working data, such as observations, datasets,
 inventories and histories; that SHALL live in the project. Runtime state, such
@@ -115,7 +115,10 @@ the org repo, outside the definition (ORG-026).
   this so that triggers are part of the org, just like flows, mission playbooks,
   standing roles, etc." (ADR-0009). Keeping the stopped state with Spark was
   proposed. Accepted by the operator, 2026-10-28: "ORG-025 and ADR-0009 are
-  approved." The pointer to ORG-026 was added with ORG-026.
+  approved." The pointer to ORG-026 was added with ORG-026. Running only what it
+  holds replaced resolving uncopied files from the bundled library at the
+  operator's direction, 2026-10-29: "#8. remaining gap, I choose A."
+  (ADR-0003).
 - Verification: Inspection.
 
 ## ORG-026: Role memory

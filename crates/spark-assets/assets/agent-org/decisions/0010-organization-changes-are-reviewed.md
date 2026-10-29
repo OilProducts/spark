@@ -29,8 +29,9 @@ said the operator's role is visibility, not approval.
 
 - The Chief of Staff prepares each organization change on a branch of the org
   repo, in a separate worktree, because Spark loads flows, roles and triggers
-  from the org repo's checkout. It runs the bundled `organization/review-change`
-  flow on the branch and merges only when the review approves (ORG-017). This
+  from the org repo's checkout. It runs the `organization/review-change` flow,
+  which initialization copies from Spark's bundled library (ADR-0003), on the
+  branch and merges only when the review approves (ORG-017). This
   replaces ADR-0002's statement that the Chief of Staff changes the org repo
   directly: GitHub flow now applies to the org repo too.
 - The review is isolated and leans toward fewer, more general rules. It asks, in

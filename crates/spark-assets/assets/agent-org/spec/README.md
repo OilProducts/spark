@@ -52,7 +52,7 @@ the [playbook](../playbook.md). Requirements follow
 | [boundaries.md](boundaries.md) | ORG-001 to ORG-006 | Organization, project and cross-boundary work |
 | [roles.md](roles.md) | ORG-010 to ORG-017 | Standing roles, authority, review of work and of organization changes, responsibilities (RACI) |
 | [records.md](records.md) | ORG-020 to ORG-026 | Operator brief, decisions, requirement format, evidence, credentials, working data, role memory |
-| [changes.md](changes.md) | ORG-030 to ORG-035 | README, changelog, visibility of organization changes, seed version |
+| [changes.md](changes.md) | ORG-030 to ORG-035 | README, changelog, visibility of organization changes, where the organization's files came from |
 | [evolution.md](evolution.md) | ORG-040 to ORG-041 | How the organization changes its own spec and profiles |
 | [actions.md](actions.md) | ORG-050 to ORG-055 | Effect classes, the authority each needs, and who grants it |
 

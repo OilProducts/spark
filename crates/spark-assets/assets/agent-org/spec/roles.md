@@ -60,14 +60,18 @@ operator's role is visibility, not approval.
   you said for #1 and #2." (ADR-0010).
 - Verification: Analysis (org repo history).
 
-## ORG-013: Operator requests for organization changes
+## ORG-013: Requests for organization changes
 
-WHEN the operator asks for an organization change, the Coordinator SHALL hand it
-to the Chief of Staff.
+WHEN the operator asks for an organization change, or an agent's result records
+one it needs (ORG-004), the Coordinator SHALL hand it to the Chief of Staff.
 
-- Rationale: keeps ORG-012's single owner.
+- Rationale: keeps ORG-012's single owner. An agent's request reaches the Chief
+  of Staff the same way as the operator's, and ORG-017's review decides whether
+  it is needed.
 - Source: operator, 2026-10-24: "if I want to change a role, add or remove, I
-  can talk to the coordinator who will handle it with the CoS."
+  can talk to the coordinator who will handle it with the CoS." Widened to
+  requests recorded by agents, accepted by the operator, 2026-10-29: "#7.
+  Agreed."
 - Verification: Demonstration.
 
 ### Scenario: The operator asks for a new role
@@ -77,9 +81,9 @@ to the Chief of Staff.
 ## ORG-014: Roster and responsibilities
 
 Every role that `spark role list` reports SHALL appear in the responsibilities
-table below, and every standing role the table names SHALL have a role file,
-in the org repo or bundled with Spark. A change that adds or retires a standing
-role SHALL update the table in the same commit.
+table below, and every standing role the table names SHALL have a role file in
+the org repo. A change that adds or retires a standing role SHALL update the
+table in the same commit.
 
 - Rationale: the table is the spec's account of who is accountable for what. If
   it misses a running role, or names one that cannot run, accountability is
@@ -91,7 +95,9 @@ role SHALL update the table in the same commit.
   validation checks it by inspection.
 - Source: proposed by the agent drafting the seed. Reworded after the operator
   asked, 2026-10-28: "How does this keep the spec and roles from drifting
-  apart?" Accepted by the operator, 2026-10-28: "Approved".
+  apart?" Accepted by the operator, 2026-10-28: "Approved". "Or bundled with
+  Spark" dropped when initialization started copying the standing roles into
+  the org repo (ADR-0003).
 - Verification: Inspection (the table against `spark role list` and the role
   files).
 
@@ -128,7 +134,9 @@ record, before reporting it as done.
 Before a change an agent made to the organization's spec, roles, flows,
 playbooks or triggers takes effect, a reviewer independent of its author
 (ORG-015) SHALL confirm that it is needed, that nothing existing already covers
-it, and that it is as general and small as it can be.
+it, and that it is as general and small as it can be. Copying Spark's files
+unchanged, at initialization, on adoption or in an update the operator asked
+for, is not such a change; editing them afterwards is.
 
 - Rationale: the Chief of Staff sees failures one at a time, and the easiest fix
   for each is a new rule or step. Left alone, the organization piles up process
@@ -157,6 +165,7 @@ row), C = consulted, I = informed.
 | Classify and route requests | C | A, R | | |
 | Change or act on the project | I | A | | R |
 | Change the organization | I | C | A, R | |
+| Keep the organization healthy, and adopt Spark updates when the operator asks | C | I | A, R | |
 | Review work | | I | | A, R (isolated reviewers) |
 | Check results against intent | C | A, R | | |
 | Report organization changes | I | R | A | |

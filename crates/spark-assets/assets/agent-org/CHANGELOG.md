@@ -25,7 +25,8 @@ seed's public interface is its core spec and profiles:
   - `software` (SW-001 to SW-006);
   - `operations` (OPS-001 to OPS-006);
   - `external-effects` (EXT-001, EXT-002, EXT-004 to EXT-006).
-- Setup playbook (`playbook.md`): method only; the interview chooses profiles.
+- Setup playbook (`playbook.md`): method only; the operator confirms the
+  profiles before `spark org init` runs.
 - Vendored standards:
   - RFC 2119 and RFC 8174, in full;
   - Semantic Versioning 2.0.0, in full;

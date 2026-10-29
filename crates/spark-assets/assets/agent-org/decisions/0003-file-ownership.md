@@ -34,26 +34,46 @@ Every file has exactly one owner.
 
 - **Spark owns** the runtime and its fixed instructions. Spark updates them
   freely, and orgs never edit them.
-- **The organization owns** its spec (the core plus its chosen profiles), its
-  standing roles (Coordinator and Chief of Staff), its records, its README and
-  its changelog. They are copied from the seed at
-  installation, and Spark never changes them afterwards.
-- **Layered**: generic flows and worker roles resolve from Spark's bundled
-  library until the org copies one to own it.
+- **The organization owns** everything that defines how it works: its spec (the
+  core plus its chosen profiles), its records, its README and changelog, its
+  standing roles, and the flows, roles and playbooks it runs. Initialization
+  (ADR-0004) copies the spec from the seed, and copies from Spark's bundled
+  library the standing roles, the `organization/` flows and each chosen
+  profile's flows, with the roles those flows use. The `software` profile brings
+  `software-development/`; the other profiles bring no flows yet. Spark never
+  changes the organization's files afterwards.
+- **Spark's bundled library is a source, not a fallback.** An organization runs
+  only what it holds (ORG-025). To use another bundled flow, role or playbook,
+  the Chief of Staff copies it in first.
+- **Before initialization** a project has no organization, and its standing
+  roles run from Spark's bundled copies.
 
-Seed improvements reach an org only when its Chief of Staff reviews what changed
-in the seed since the version it recorded (ORG-035) and adopts what fits.
+The Chief of Staff owns the standing roles and is responsible for the
+organization's health. Updates from Spark reach an organization only when the
+operator asks for them: the Chief of Staff compares Spark's seed and bundled
+library against the versions the organization recorded (ORG-035), and adopts
+what fits.
 
 ## Consequences
 
-- Orgs are stable: a Spark update cannot change an org's Coordinator or Chief of
-  Staff.
-- Fixes to the seed's roles do not reach existing orgs on their own.
-- Spark needs an installation step that copies the seed (ADR-0004).
+- Orgs are stable: a Spark update cannot change an org's spec, roles or flows.
+- Fixes to Spark's seed, roles and flows do not reach existing orgs until the
+  operator asks for them.
+- Initialization copies more files, and using a bundled flow the org has not
+  copied takes a copy first.
+- Spark needs an installation step that copies the seed and the bundled files
+  (ADR-0004).
 
 ## Source
 
 Proposed by the agent drafting the seed, 2026-10-28, building on the operator's
 2026-10-28 description of independent evolution (quoted under ORG-040).
 Accepted by the operator, 2026-10-28: "I approve ADR-0003, ADR-0004, and
-ADR-0005 as written."
+ADR-0005 as written." Revised before release at the operator's direction,
+2026-10-29: "The CoS owns standing roles and is responsible for the health of
+the agent org. Once the org is initialized it is independent from the bundled
+org, but initially thats where they are, bundled. After that, updates from
+spark to an already initialized org are explicit, managed by the CoS and
+initialized by request of the user." Asked whether that independence also
+covers flows and worker roles, the operator chose that it does, 2026-10-29:
+"#8. remaining gap, I choose A."

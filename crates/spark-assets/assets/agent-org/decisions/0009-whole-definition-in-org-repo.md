@@ -34,7 +34,7 @@ The org repo holds the organization's whole definition (ORG-025):
 - triggers, as `triggers/<id>.toml`. A trigger belongs to the organization whose
   repo holds it, so it no longer names a project;
 - playbooks, as `playbooks/<name>.md`, resolved project first, then bundled,
-  like flows;
+  like flows; an initialized organization holds the ones it runs (ADR-0003);
 - which roles are standing, and their budgets.
 
 Spark keeps runtime state outside the org repo: a trigger's last firing and next

@@ -78,7 +78,7 @@ treated as authorization to change the other.
 
 ### Scenario: Project work finds an organization weakness
 - **WHEN** an agent working on the project finds a weakness in its own role instructions
-- **THEN** it records a proposal for the Chief of Staff and does not edit the role file
+- **THEN** it does not edit the role file, and records in its result the weakness and the change it needs, for the Coordinator (ORG-004)
 
 ## ORG-004: Stop at the boundary
 

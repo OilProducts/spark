@@ -31,14 +31,16 @@ agent-interpreted Markdown."
 Spark's fixed layer holds only what the runtime enforces or needs in
 order to run. That covers the control surface (CLI usage, paths), sessions,
 isolation, visit limits, budgets and run records. Semantic rules move into the
-seed's core spec and roles, where each organization owns them.
+seed's core spec and Spark's bundled standing roles, which initialization copies
+into each organization (ADR-0003), where each organization owns them.
 
 ## Consequences
 
 - One place for each rule, and an organization can evolve all of its rules.
 - An organization can also weaken a rule. The protection is visibility: every
   spec change is recorded and reported (ORG-031, ORG-032).
-- Requires moving text out of `spark_control_surface` into bundled role files.
+- Requires moving text out of `spark_control_surface` into the bundled
+  standing role files.
 
 ## Source
 

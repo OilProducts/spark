@@ -6,10 +6,11 @@ status: Draft
 
 # Agent organization setup
 
-You are setting up this project's agent organization from the Spark seed. The
-seed's [core spec](spec/README.md) and [profiles](profiles/) say what the
-organization must be. This playbook is only the method. Follow the requirements
-and cite their IDs.
+You are the Chief of Staff, setting up this project's agent organization from
+the Spark seed. The seed's [core spec](spec/README.md) and
+[profiles](profiles/) say what the organization must be. This playbook is only
+the method. Follow the requirements and cite their IDs. Every write to the org
+repo is yours (ORG-012).
 
 ## 1. Discover (read-only)
 
@@ -34,21 +35,22 @@ operator confirm:
 - `external-effects` for actions with financial, physical or other real-world
   consequences.
 
-Record their answer in the operator brief.
+Write nothing yet; step 4 records the answer.
 
-## 3. Install the seed
+## 3. Initialize
 
-If the org repo `<project>/.spark/agent-org/` does not exist, the Chief of Staff
-creates it as a git repository and copies in the core spec, the chosen profiles,
-the standards and the templates. It records the seed version and profiles in a
-new `CHANGELOG.md` (ORG-035) and writes a `README.md` (ORG-030). Every write to
-the org repo goes through the Chief of Staff (ORG-012).
+Run `spark org init --project <path> --profile <name>...` with the confirmed
+profiles. It creates the org repo `<project>/.spark/agent-org/` if it does not
+exist, adds every seed and bundled file that is missing without overwriting any
+(ADR-0003, ADR-0004), writes the README and the changelog's first entry
+(ORG-030, ORG-035), commits, and reports what it created and skipped.
 
 ## 4. Interview the operator
 
 Ask one topic per turn and end your turn after each question. Record the
-operator's answers verbatim and dated in `operator-brief.md` (ORG-020). Don't ask
-anything discovery or the brief already answers.
+operator's answers verbatim and dated in `operator-brief.md` (ORG-020), starting
+with the profile choice from step 2. Don't ask anything discovery or the brief
+already answers.
 
 Cover, in this order:
 
@@ -70,19 +72,22 @@ Cover, in this order:
 
 ## 5. Shape the organization
 
-From the answers, the Chief of Staff adapts the spec, adds standing roles with
-their rows in the responsibilities table (ORG-014), adds the triggers, and the
-flows, roles or missions, for recurring work (OPS-001, OPS-002), and writes
-decision records (ORG-021).
-Each change is committed with its reason and listed in the changelog (ORG-031).
-Spec changes are reported to the operator (ORG-032).
+From the answers, adapt the spec, add standing roles with their rows in the
+responsibilities table (ORG-014), add the triggers, and the flows, roles or
+missions, for recurring work (OPS-001, OPS-002), and write decision records
+(ORG-021). With `external-effects`, say in the README how to stop all External
+actions (EXT-006). Each change passes review before it takes effect (ORG-017),
+is committed with its reason and listed in the changelog (ORG-031). Spec changes
+are reported to the operator (ORG-032).
 
 ## 6. Validate
 
-Carry out every requirement whose verification is Demonstration or Test as a real
-request to the standing Coordinator. Judge what actually happened from the run
-records and the org repo history (ORG-023). Record each result, pass or fail,
-with its evidence.
+Verify every requirement by its own method
+([writing-requirements.md](standards/writing-requirements.md)). Carry out each
+Demonstration or Test requirement as a real request to the standing
+Coordinator, and check each Inspection or Analysis requirement against the org
+repo, its history and the run records. Judge what actually happened from that
+evidence (ORG-023). Record each result, pass or fail, with its evidence.
 
 Never validate an External action by taking it. Use a preview where one exists
 (EXT-005), or ask the operator.
