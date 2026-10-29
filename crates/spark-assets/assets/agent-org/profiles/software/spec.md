@@ -82,10 +82,19 @@ README or the project's agent instructions), as a command that can be run.
 
 Every change to the project SHALL be made on its own branch, reviewed there, and
 merged into `main` only after passing the validation gate (SW-005). Changes SHALL
-NOT be committed directly to `main`.
+NOT be committed directly to `main`. Working data (ORG-025) is not part of the
+project's source: it SHALL live outside the source's version control, and the
+activities that write it are reviewed through their definitions (ORG-017), not
+on each write.
 
-- Rationale: keeps `main` releasable, and every change reviewed.
+- Rationale: keeps `main` releasable, and every change reviewed. Reviewing each
+  observation an activity records would be process without information, and
+  data churn in the source history would bury the changes that matter.
 - Source: [ADR-0002](../../decisions/0002-git-branching-model.md), accepted by
   the operator, 2026-10-28: "I approve ADR-0002 as written." Its rule on release
-  tags moved to SW-001.
+  tags moved to SW-001. The working-data sentence was proposed by the agent
+  reviewing the seed, after a consistency review found that this requirement
+  sent every write of working data through a branch. The operator objected,
+  2026-10-29, only to its first consequence, that unversioned working data
+  would need to be undoable to stay Internal, which ORG-050's redraw removed.
 - Verification: Analysis (repository history).

@@ -22,14 +22,25 @@ Every action the organization takes SHALL be classified by its effect:
 | Class | What it covers | Examples |
 |---|---|---|
 | **Observe** | Reading only; changes nothing | Reading files, querying an API, checking a device's state |
-| **Internal** | Changes inside the org repo or the project that version control or the organization itself can fully undo | Editing project files on a branch, updating working data, committing to the org repo |
-| **External** | Anything that leaves the system or cannot be fully undone from inside it | Sending a message, spending money, placing a bid, actuating a device, deploying, pushing to a shared remote, deleting unversioned data |
+| **Internal** | Changes that stay inside the org repo or the project, whether or not they can be undone | Editing or deleting files, updating or deleting working data, clearing caches and build output, writing logs and records, committing to the org repo |
+| **External** | Anything that reaches people, money, devices or systems outside the org repo and the project | Sending a message, spending money, placing a bid, actuating a device, deploying, pushing to a shared remote |
 
 - Rationale: a single rule for "changes" cannot tell a branch edit from a
-  purchase, and the difference is what matters for authority.
+  purchase, and the difference is what matters for authority. The line is
+  reach, not reversibility: a change that stays inside affects no one outside,
+  and requiring every internal write to be undoable would mean journaling every
+  tool call. Deleting is Internal so that cleanup needs no one's permission and
+  cruft does not accumulate; an organization holding something it must never
+  lose says so in its operator brief (ORG-051).
 - Source: operator, 2026-10-28, choosing to govern actions "by effect class in
-  the core" (ADR-0007). The three classes and their boundaries are proposed.
-  Accepted by the operator, 2026-10-28: "Approved".
+  the core" (ADR-0007). The three classes and their boundaries were proposed by
+  the agent drafting the seed. Accepted by the operator, 2026-10-28: "Approved".
+  Redrawn by reach instead of reversibility at the operator's direction,
+  2026-10-29: "I dont think every tool call you make needs to be recorded in an
+  atomic journal" and, on deletion, "I dont want to be involved. I think this
+  behaviour was trained into the frontier models as a response to a couple high
+  profile tweets about an LLM deleting way too many things and now its far over
+  corrected."
 - Verification: Inspection.
 
 ## ORG-051: Authority per class
