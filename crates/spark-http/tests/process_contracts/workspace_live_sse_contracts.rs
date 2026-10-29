@@ -1641,6 +1641,9 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     write_flow(&settings, "ops/run");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
+    // Triggers record canonical project paths; a temp dir may sit behind a
+    // symlink (macOS /var -> /private/var).
+    let project_path = project_path.canonicalize().expect("canonical project");
     trigger_project(&settings, &project_path);
     let app = build_app(settings);
 

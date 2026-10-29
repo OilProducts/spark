@@ -986,7 +986,10 @@ fn worker_agent_environment(
 fn worker_run_node_gives_agents_the_resolved_spark_home() {
     for provider in ["codex", "claude-code"] {
         let (env, temp) = worker_agent_environment(provider, None);
-        let data_dir = temp.path().join("home").join(".spark");
+        // The worker resolves SPARK_HOME canonically; a temp dir may sit behind
+        // a symlink (macOS /var -> /private/var).
+        let root = temp.path().canonicalize().expect("canonical temp");
+        let data_dir = root.join("home").join(".spark");
         assert_eq!(
             env["SPARK_HOME"],
             json!(data_dir.to_string_lossy()),
@@ -1003,7 +1006,7 @@ fn worker_run_node_gives_agents_the_resolved_spark_home() {
                 json!(data_dir.join("runtime/claude").to_string_lossy())
             );
         }
-        let explicit = temp.path().join("explicit-spark");
+        let explicit = root.join("explicit-spark");
         let (env, _) = worker_agent_environment(provider, Some(&explicit));
         assert_eq!(
             env["SPARK_HOME"],
