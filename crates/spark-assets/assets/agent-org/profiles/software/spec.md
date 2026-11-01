@@ -97,4 +97,5 @@ on each write.
   sent every write of working data through a branch. The operator objected,
   2026-10-29, only to its first consequence, that unversioned working data
   would need to be undoable to stay Internal, which ORG-050's redraw removed.
+  Accepted by the operator, 2026-11-01: "I approve the rephrased SW006".
 - Verification: Analysis (repository history).
