@@ -15,6 +15,7 @@ static FRONTEND_DIST: Dir<'_> = include_dir!("$SPARK_FRONTEND_DIST_DIR");
 static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/flows");
 static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/guides");
 static PLAYBOOKS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/playbooks");
+static AGENT_ORG: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/agent-org");
 static ROLES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/roles");
 static ROOT_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../assets");
 static MODEL_CATALOG_JSON: &str = include_str!(concat!(
@@ -376,9 +377,37 @@ pub mod guides {
 }
 
 /// Bundled mission playbooks: `(file name, Markdown text)`, sorted by name.
+/// The agent organization setup playbook is the seed's `playbook.md`.
 pub mod playbooks {
+    const AGENT_ORG_SETUP_NAME: &str = "agent-org-setup.md";
+
     pub fn assets() -> Vec<(String, String)> {
-        super::markdown_assets(&super::PLAYBOOKS)
+        let mut assets = super::markdown_assets(&super::PLAYBOOKS);
+        if let Some(text) = super::AGENT_ORG
+            .get_file("playbook.md")
+            .and_then(|file| file.contents_utf8())
+        {
+            assets.push((AGENT_ORG_SETUP_NAME.to_string(), text.to_string()));
+        }
+        assets.sort();
+        assets
+    }
+}
+
+/// The agent organization seed (`assets/agent-org`).
+pub mod agent_org {
+    /// Every seed file: `(path relative to the seed root, bytes)`, sorted.
+    pub fn files() -> Vec<(String, &'static [u8])> {
+        let mut names = Vec::new();
+        super::collect_file_names(&super::AGENT_ORG, &mut names);
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let bytes = super::AGENT_ORG.get_file(&name)?.contents();
+                Some((name, bytes))
+            })
+            .collect()
     }
 }
 

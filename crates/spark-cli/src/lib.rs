@@ -36,12 +36,12 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,mission,role,playbook,settings}\n",
+    "  {convo,run,flow,trigger,mission,role,playbook,settings,org}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
@@ -50,6 +50,7 @@ const TOP_LEVEL_HELP: &str = concat!(
     "    role                Standing role management\n",
     "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
+    "    org                 Agent organization initialization\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -106,6 +107,7 @@ enum CommandDomain {
     Role,
     Playbook,
     Settings,
+    Org,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +248,7 @@ fn run_agent_shell(
             Err(output) => output,
         },
         CommandDomain::Flow => run_flow_domain(args, env, stdin),
+        CommandDomain::Org => run_org_init(&args[2..]),
     }
 }
 
@@ -283,6 +286,9 @@ fn build_request_plan(
         CommandDomain::Role => build_role_plan(args, env),
         CommandDomain::Playbook => build_playbook_plan(args, env),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
+        CommandDomain::Org => Err(usage_error(
+            "spark org init is a local command and makes no API request",
+        )),
     }
 }
 
@@ -1335,6 +1341,12 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }),
             _ => Err(usage_error("Unknown command")),
         },
+        "org" => match domain_matches.subcommand_name() {
+            Some("init") => Ok(CommandPath {
+                domain: CommandDomain::Org,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
         "convo" => match domain_matches.subcommand_name() {
             Some("run-request") => Ok(CommandPath {
                 domain: CommandDomain::Convo,
@@ -1393,9 +1405,8 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
     };
     match domain {
-        "convo" | "run" | "flow" | "trigger" | "mission" | "role" | "playbook" | "settings" => {
-            usage_error("Unknown command")
-        }
+        "convo" | "run" | "flow" | "trigger" | "mission" | "role" | "playbook" | "settings"
+        | "org" => usage_error("Unknown command"),
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
     }
 }
@@ -1436,6 +1447,7 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("validate"))
                 .subcommand(clap_command_leaf("set")),
         )
+        .subcommand(Command::new("org").subcommand(clap_command_leaf("init")))
         .subcommand(
             Command::new("mission")
                 .subcommand(clap_command_leaf("list"))
@@ -2736,4 +2748,300 @@ fn build_settings_plan(
         body,
         text: false,
     })
+}
+
+/// `spark org init --project <path> [--profile <name>]...`: adds every
+/// missing seed and bundled file of the chosen profiles to the project's org
+/// repo and commits exactly the files it created.
+fn run_org_init(args: &[String]) -> CommandOutput {
+    let matches = match Command::new("spark org init")
+        .no_binary_name(true)
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("project")
+                .long("project")
+                .num_args(1)
+                .required(true),
+        )
+        .arg(
+            Arg::new("profile")
+                .long("profile")
+                .num_args(1)
+                .action(ArgAction::Append),
+        )
+        .try_get_matches_from(args)
+    {
+        Ok(matches) => matches,
+        Err(error) => {
+            let message = error.to_string();
+            let message = message.lines().next().unwrap_or_default();
+            return usage_error(format!(
+                "spark org init: {}; usage: spark org init --project <path> [--profile <name>]...",
+                message.trim_start_matches("error: ")
+            ));
+        }
+    };
+    let project = matches.get_one::<String>("project").expect("required");
+    let profiles = matches
+        .get_many::<String>("profile")
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    let seed = spark_assets::agent_org::files()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let valid_profiles = seed
+        .keys()
+        .filter_map(|path| path.strip_prefix("profiles/")?.split_once('/'))
+        .map(|(name, _)| name.to_string())
+        .collect::<BTreeSet<_>>();
+    if let Some(unknown) = profiles.iter().find(|name| !valid_profiles.contains(*name)) {
+        return usage_error(format!(
+            "spark org init: unknown profile '{unknown}'; valid profiles: {}",
+            valid_profiles.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let project = match spark_common::project::normalize_project_path(project) {
+        Ok(Some(path)) => path,
+        Ok(None) => return usage_error("spark org init: --project must not be empty"),
+        Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
+    };
+    if !project.is_dir() {
+        return json_error(
+            format!("Project directory not found: {}", project.display()),
+            EXIT_GENERAL_FAILURE,
+        );
+    }
+    let (seed_version, plan) = match org_init_plan(&seed, &profiles) {
+        Ok(plan) => plan,
+        Err(message) => return json_error(message, EXIT_GENERAL_FAILURE),
+    };
+    let profile_list = if profiles.is_empty() {
+        "none".to_string()
+    } else {
+        profiles.iter().cloned().collect::<Vec<_>>().join(", ")
+    };
+
+    let org = match spark_common::project::ensure_org_repo(&project) {
+        Ok(org) => org,
+        Err(message) => return json_error(message, EXIT_GENERAL_FAILURE),
+    };
+    let mut created = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failure = None;
+    for (relative, bytes) in &plan {
+        match write_missing_file(&org.join(relative), bytes) {
+            Ok(true) => created.push(relative.clone()),
+            Ok(false) => skipped.push(relative.clone()),
+            Err(message) => {
+                failure = Some(message);
+                break;
+            }
+        }
+    }
+    if failure.is_none() && !created.is_empty() {
+        let message = format!(
+            "Initialize agent organization from seed {seed_version}; profiles: {profile_list}"
+        );
+        failure = spark_common::project::commit_org_paths(&org, &created, &message).err();
+    }
+    if let Some(message) = failure {
+        let mut text = format!("spark org init: {message}\n");
+        for path in &created {
+            writeln!(&mut text, "uncommitted {path}").expect("writing to String cannot fail");
+        }
+        return CommandOutput::stderr(EXIT_GENERAL_FAILURE, text);
+    }
+
+    let mut text = format!(
+        "Agent organization: {}\nspark {}\nseed {seed_version}\nprofiles: {profile_list}\n",
+        org.display(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    for path in &created {
+        writeln!(&mut text, "created {path}").expect("writing to String cannot fail");
+    }
+    for path in &skipped {
+        writeln!(&mut text, "skipped {path}").expect("writing to String cannot fail");
+    }
+    writeln!(
+        &mut text,
+        "{} created, {} skipped",
+        created.len(),
+        skipped.len()
+    )
+    .expect("writing to String cannot fail");
+    CommandOutput::stdout(0, text)
+}
+
+/// The seed version and every org-relative path `spark org init` installs,
+/// with its bytes. Which flows a profile brings and the README and changelog
+/// text come from the seed; this only copies.
+fn org_init_plan(
+    seed: &BTreeMap<String, &'static [u8]>,
+    profiles: &BTreeSet<String>,
+) -> Result<(String, BTreeMap<String, Vec<u8>>), String> {
+    let core = seed_front_matter(seed, "spec/README.md")?;
+    let seed_version = core
+        .get("version")
+        .and_then(serde_yaml::Value::as_str)
+        .filter(|version| !version.trim().is_empty())
+        .ok_or("Seed spec/README.md declares no version")?
+        .to_string();
+
+    let mut plan = BTreeMap::new();
+    let mut prefixes = vec![
+        "spec/".to_string(),
+        "standards/".to_string(),
+        "templates/".to_string(),
+    ];
+    let mut flow_folders = seed_flow_folders(&core, "spec/README.md")?;
+    for profile in profiles {
+        prefixes.push(format!("profiles/{profile}/"));
+        let spec = format!("profiles/{profile}/spec.md");
+        flow_folders.extend(seed_flow_folders(&seed_front_matter(seed, &spec)?, &spec)?);
+    }
+    for (path, bytes) in seed {
+        if prefixes
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_str()))
+        {
+            plan.insert(path.clone(), bytes.to_vec());
+        }
+    }
+
+    let flow_error = |error| format!("Bundled flows are unavailable: {error:?}");
+    let flow_assets = spark_assets::flows::starter_flow_assets().map_err(flow_error)?;
+    let flow_names = spark_assets::flows::starter_flow_names().map_err(flow_error)?;
+    let mut role_names = BTreeSet::new();
+    for folder in &flow_folders {
+        let prefix = format!("{folder}/");
+        let files = flow_assets
+            .iter()
+            .filter(|asset| asset.name.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        if files.is_empty() {
+            return Err(format!(
+                "Seed declares flow folder '{folder}', which is not a bundled flow folder"
+            ));
+        }
+        for asset in files {
+            plan.insert(
+                format!("flows/{}", asset.name),
+                asset.content.clone().into_bytes(),
+            );
+        }
+        for name in flow_names.iter().filter(|name| name.starts_with(&prefix)) {
+            let flow = spark_assets::flows::starter_flow_files(name)
+                .map_err(flow_error)
+                .and_then(|files| {
+                    attractor_dsl::assemble_flow_files(&files)
+                        .map_err(|error| format!("Bundled flow {name}: {}", error.detail()))
+                })?;
+            role_names.extend(flow.nodes.values().filter_map(|node| node.role.clone()));
+        }
+    }
+
+    let roles = spark_assets::roles::assets()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    for (file, text) in &roles {
+        let name = file.strip_suffix(".md").unwrap_or(file);
+        if attractor_dsl::parse_role(name, text)?.standing {
+            role_names.insert(name.to_string());
+        }
+    }
+    for name in role_names {
+        let file = format!("{name}.md");
+        let text = roles
+            .get(&file)
+            .ok_or_else(|| format!("Bundled role '{name}' is missing"))?;
+        plan.insert(format!("roles/{file}"), text.clone().into_bytes());
+    }
+
+    let profile_text = if profiles.is_empty() {
+        "none (core only)".to_string()
+    } else {
+        profiles.iter().cloned().collect::<Vec<_>>().join(", ")
+    };
+    for record in ["README.md", "CHANGELOG.md"] {
+        let template = format!("templates/{record}");
+        let text = seed
+            .get(&template)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or_else(|| format!("Seed {template} is missing"))?
+            .replace("{{spark_version}}", env!("CARGO_PKG_VERSION"))
+            .replace("{{seed_version}}", &seed_version)
+            .replace("{{profiles}}", &profile_text);
+        plan.insert(record.to_string(), text.into_bytes());
+    }
+
+    for path in plan.keys() {
+        let safe = Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+        if !safe {
+            return Err(format!("Unsafe organization path: {path}"));
+        }
+    }
+    Ok((seed_version, plan))
+}
+
+fn seed_front_matter(
+    seed: &BTreeMap<String, &'static [u8]>,
+    path: &str,
+) -> Result<serde_yaml::Mapping, String> {
+    let invalid = || format!("Seed {path} has no valid front matter");
+    let text = seed
+        .get(path)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or_else(|| format!("Seed {path} is missing"))?;
+    let (front_matter, _) = text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .ok_or_else(invalid)?;
+    serde_yaml::from_str(front_matter).map_err(|_| invalid())
+}
+
+/// The bundled flow folders a seed spec declares in its `flows` front matter.
+fn seed_flow_folders(
+    front_matter: &serde_yaml::Mapping,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    match front_matter.get("flows") {
+        None => Ok(Vec::new()),
+        Some(value) => serde_yaml::from_value(value.clone())
+            .map_err(|_| format!("Seed {path} declares `flows` that is not a list of names")),
+    }
+}
+
+/// Writes `bytes` to `path` only if nothing exists there: true when created,
+/// false when skipped. Never truncates or follows an existing entry.
+fn write_missing_file(path: &Path, bytes: &[u8]) -> Result<bool, String> {
+    use std::io::Write as _;
+
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(format!(
+            "A directory exists where a file belongs: {}",
+            path.display()
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(format!("Unable to create {}: {error}", path.display())),
+    };
+    file.write_all(bytes)
+        .map_err(|error| format!("Unable to write {}: {error}", path.display()))?;
+    Ok(true)
 }

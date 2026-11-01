@@ -21,6 +21,7 @@ fn main() {
         "../../frontend/dist/index.html",
         "../../frontend/index.html",
         "../../frontend/public/assets/spark-app-icon.png",
+        "assets/agent-org",
         "assets/flows",
         "assets/guides",
         "assets/playbooks",

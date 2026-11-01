@@ -25,12 +25,12 @@ fn process_help_matches_top_level_contract() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         concat!(
-            "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings} ...\n",
+            "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
             "\n",
             "Spark agent CLI\n",
             "\n",
             "positional arguments:\n",
-            "  {convo,run,flow,trigger,mission,role,playbook,settings}\n",
+            "  {convo,run,flow,trigger,mission,role,playbook,settings,org}\n",
             "    convo               Conversation-scoped artifact commands\n",
             "    run                 Direct execution commands\n",
             "    flow                Flow discovery and validation\n",
@@ -39,6 +39,7 @@ fn process_help_matches_top_level_contract() {
             "    role                Standing role management\n",
             "    playbook            Mission playbook discovery\n",
             "    settings            Read, validate, and save workspace settings\n",
+            "    org                 Agent organization initialization\n",
             "\n",
             "options:\n",
             "  -h, --help            show this help message and exit\n",
@@ -623,5 +624,381 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     for removed in ["accept", "promote"] {
         let output = spark(&["flow", removed, "flows/team/work/flow.md"]);
         assert_ne!(output.status.code(), Some(0), "{output:?}");
+    }
+}
+
+mod org_init {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+
+    const IDENTITY: &str = "[user]\n\tname = Spark Test\n\temail = spark@example.invalid\n";
+    const NO_IDENTITY: &str = "[user]\n\tuseConfigOnly = true\n";
+
+    struct Env {
+        _temp: tempfile::TempDir,
+        home: PathBuf,
+        project: PathBuf,
+    }
+
+    fn env(gitconfig: &str) -> Env {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&home).expect("home");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(home.join(".gitconfig"), gitconfig).expect("gitconfig");
+        Env {
+            _temp: temp,
+            home,
+            project,
+        }
+    }
+
+    impl Env {
+        fn org(&self) -> PathBuf {
+            self.project.join(".spark/agent-org")
+        }
+
+        fn init(&self, profiles: &[&str]) -> Output {
+            let mut args = vec!["--project", self.project.to_str().unwrap()];
+            for profile in profiles {
+                args.extend(["--profile", profile]);
+            }
+            self.spark(&args)
+        }
+
+        fn spark(&self, args: &[&str]) -> Output {
+            Command::new(super::spark_bin())
+                .args(["org", "init"])
+                .args(args)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", &self.home)
+                .env("SPARK_HOME", self.home.join("spark-home"))
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .expect("run spark")
+        }
+    }
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn stdout(output: &Output) -> String {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    fn stderr(output: &Output) -> String {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    }
+
+    fn lines_with(output: &Output, prefix: &str) -> Vec<String> {
+        stdout(output)
+            .lines()
+            .filter_map(|line| line.strip_prefix(prefix))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn tree(org: &Path) -> BTreeSet<String> {
+        git(org, &["ls-tree", "-r", "--name-only", "HEAD"])
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn assets() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../spark-assets/assets")
+    }
+
+    /// Files below `assets/<dir>`, as `<prefix><relative path>`.
+    fn source_files(dir: &str, prefix: &str) -> BTreeSet<String> {
+        fn collect(root: &Path, dir: &Path, prefix: &str, files: &mut BTreeSet<String>) {
+            for entry in fs::read_dir(dir).expect("dir") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    collect(root, &path, prefix, files);
+                } else {
+                    let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+                    files.insert(format!("{prefix}{relative}"));
+                }
+            }
+        }
+        let root = assets().join(dir);
+        let mut files = BTreeSet::new();
+        collect(&root, &root, prefix, &mut files);
+        files
+    }
+
+    fn source_bytes(installed: &str) -> std::io::Result<Vec<u8>> {
+        let source = match installed.split_once('/') {
+            Some(("flows" | "roles", _)) => assets().join(installed),
+            _ => assets().join("agent-org").join(installed),
+        };
+        fs::read(source)
+    }
+
+    #[test]
+    fn software_initialization_installs_the_seed_subset_in_one_commit() {
+        let env = env(IDENTITY);
+        let output = env.init(&["software"]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+        let mut expected = BTreeSet::new();
+        for dir in ["spec", "standards", "templates", "profiles/software"] {
+            expected.extend(source_files(
+                &format!("agent-org/{dir}"),
+                &format!("{dir}/"),
+            ));
+        }
+        for family in ["organization", "software-development"] {
+            expected.extend(source_files(
+                &format!("flows/{family}"),
+                &format!("flows/{family}/"),
+            ));
+        }
+        for role in [
+            "adversarial-reviewer",
+            "author",
+            "chief-of-staff",
+            "coordinator",
+        ] {
+            expected.insert(format!("roles/{role}.md"));
+        }
+        expected.extend(["README.md".to_string(), "CHANGELOG.md".to_string()]);
+
+        let org = env.org();
+        assert_eq!(tree(&org), expected);
+        assert_eq!(
+            lines_with(&output, "created ")
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(git(&org, &["rev-list", "--count", "HEAD"]), "1");
+        assert_eq!(
+            git(&org, &["log", "-1", "--format=%s"]),
+            "Initialize agent organization from seed 0.1.0; profiles: software"
+        );
+        for path in &expected {
+            let committed = Command::new("git")
+                .arg("-C")
+                .arg(&org)
+                .args(["show", &format!("HEAD:{path}")])
+                .output()
+                .expect("git show")
+                .stdout;
+            if path != "README.md" && path != "CHANGELOG.md" {
+                assert!(committed == source_bytes(path).expect("source"), "{path}");
+            }
+        }
+        let readme = fs::read_to_string(org.join("README.md")).expect("readme");
+        let changelog = fs::read_to_string(org.join("CHANGELOG.md")).expect("changelog");
+        for text in [&readme, &changelog] {
+            assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+            assert!(text.contains("seed 0.1.0"), "{text}");
+            assert!(text.contains("software"), "{text}");
+            assert!(!text.contains("{{"), "{text}");
+        }
+        assert!(stdout(&output).contains("seed 0.1.0\nprofiles: software\n"));
+        assert!(env.project.join(".spark/.gitignore").is_file());
+        for absent in [
+            "playbook.md",
+            "decisions",
+            "flows/examples",
+            "roles/assistant.md",
+        ] {
+            assert!(!org.join(absent).exists(), "{absent}");
+        }
+    }
+
+    #[test]
+    fn existing_repository_keeps_customizations_and_unrelated_changes() {
+        let env = env(NO_IDENTITY);
+        let org = env.org();
+        fs::create_dir_all(org.join("spec")).expect("spec");
+        git(&org, &["init", "-q"]);
+        git(&org, &["config", "user.name", "Repo Local"]);
+        git(&org, &["config", "user.email", "local@example.invalid"]);
+        fs::write(org.join("spec/roles.md"), "customized\n").expect("custom");
+        fs::write(org.join("README.md"), "our readme\n").expect("readme");
+        fs::write(org.join("notes.md"), "notes\n").expect("notes");
+        git(&org, &["add", "-A"]);
+        git(&org, &["commit", "-q", "-m", "Existing"]);
+        fs::write(org.join("staged.md"), "staged\n").expect("staged");
+        git(&org, &["add", "staged.md"]);
+        fs::write(org.join("notes.md"), "edited\n").expect("edit");
+
+        let output = env.init(&[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+        assert_eq!(
+            fs::read_to_string(org.join("spec/roles.md")).unwrap(),
+            "customized\n"
+        );
+        assert_eq!(
+            fs::read_to_string(org.join("README.md")).unwrap(),
+            "our readme\n"
+        );
+        assert_eq!(
+            fs::read_to_string(org.join("notes.md")).unwrap(),
+            "edited\n"
+        );
+        assert_eq!(git(&org, &["diff", "--cached", "--name-only"]), "staged.md");
+        assert_eq!(git(&org, &["diff", "--name-only"]), "notes.md");
+        let skipped = lines_with(&output, "skipped ");
+        assert_eq!(skipped, ["README.md", "spec/roles.md"]);
+        let created = lines_with(&output, "created ");
+        assert!(created.contains(&"CHANGELOG.md".to_string()));
+        assert!(!created.iter().any(|path| skipped.contains(path)));
+        let committed = git(&org, &["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(committed.lines().collect::<Vec<_>>(), created);
+        assert_eq!(git(&org, &["log", "-1", "--format=%an"]), "Repo Local");
+
+        let head = git(&org, &["rev-parse", "HEAD"]);
+        let again = env.init(&[]);
+        assert_eq!(again.status.code(), Some(0), "{again:?}");
+        assert_eq!(git(&org, &["rev-parse", "HEAD"]), head);
+        assert!(lines_with(&again, "created ").is_empty());
+        assert!(stdout(&again).contains(&format!(
+            "0 created, {} skipped",
+            skipped.len() + created.len()
+        )));
+    }
+
+    #[test]
+    fn profiles_select_their_specs_and_declared_flows() {
+        let core = env(IDENTITY);
+        let output = core.init(&[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let paths = tree(&core.org());
+        assert!(paths.contains("flows/organization/review-change/flow.md"));
+        assert!(!paths.iter().any(|path| path.starts_with("profiles/")));
+        assert!(!paths
+            .iter()
+            .any(|path| path.starts_with("flows/software-development/")));
+        assert!(!paths.contains("roles/author.md"));
+        assert!(fs::read_to_string(core.org().join("CHANGELOG.md"))
+            .unwrap()
+            .contains("none (core only)"));
+        assert_eq!(
+            git(&core.org(), &["log", "-1", "--format=%s"]),
+            "Initialize agent organization from seed 0.1.0; profiles: none"
+        );
+
+        let repeated = env(IDENTITY);
+        let output = repeated.init(&["software", "operations", "software"]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(stdout(&output).contains("profiles: operations, software\n"));
+
+        let other = env(IDENTITY);
+        let output = other.init(&["operations", "external-effects"]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let paths = tree(&other.org());
+        assert!(paths.contains("profiles/operations/spec.md"));
+        assert!(paths.contains("profiles/external-effects/spec.md"));
+        assert!(!paths.contains("profiles/software/spec.md"));
+        assert!(!paths
+            .iter()
+            .any(|path| path.starts_with("flows/software-development/")));
+    }
+
+    #[test]
+    fn invalid_invocations_write_nothing() {
+        let env = env(IDENTITY);
+        let project = env.project.to_str().unwrap().to_string();
+        for args in [
+            vec![
+                "--project",
+                &project,
+                "--profile",
+                "software",
+                "--profile",
+                "nope",
+            ],
+            vec!["--profile", "software"],
+            vec!["--project"],
+            vec!["--project", &project, "--profile"],
+            vec!["--project", &project, "--force"],
+            vec!["--project", &project, "extra"],
+        ] {
+            let output = env.spark(&args);
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+            assert!(stderr(&output).starts_with("usage: spark"), "{output:?}");
+            assert!(!env.project.join(".spark").exists(), "{args:?}");
+        }
+        let unknown = env.spark(&["--project", &project, "--profile", "nope"]);
+        assert!(stderr(&unknown).contains("external-effects, operations, software"));
+
+        let missing = env.project.join("missing");
+        let output = env.spark(&["--project", missing.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(!missing.exists());
+
+        let plan = spark_cli::request_plan_with_args_env_and_stdin(
+            ["spark", "org", "init", "--project", project.as_str()],
+            &std::collections::BTreeMap::<String, String>::new(),
+            "",
+        )
+        .expect_err("local command");
+        assert_eq!(plan.exit_code, 2);
+        assert!(plan.stderr.contains("local command"), "{}", plan.stderr);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_symlinks_are_skipped_and_directories_fail() {
+        let env = env(IDENTITY);
+        let org = env.org();
+        fs::create_dir_all(&org).expect("org");
+        let target = env.home.join("target.md");
+        fs::write(&target, "target\n").expect("target");
+        std::os::unix::fs::symlink(&target, org.join("README.md")).expect("symlink");
+        let output = env.init(&[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(lines_with(&output, "skipped ").contains(&"README.md".to_string()));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target\n");
+
+        let env = self::env(IDENTITY);
+        let org = env.org();
+        fs::create_dir_all(org.join("spec/roles.md")).expect("directory");
+        let output = env.init(&[]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(stderr(&output).contains("spec/roles.md"), "{output:?}");
+        assert!(
+            stderr(&output).contains("uncommitted CHANGELOG.md"),
+            "{output:?}"
+        );
+        assert!(org.join("CHANGELOG.md").is_file());
+    }
+
+    #[test]
+    fn commit_failure_reports_created_files_as_uncommitted() {
+        let env = env(NO_IDENTITY);
+        let output = env.init(&[]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(stdout(&output).is_empty(), "{output:?}");
+        let text = stderr(&output);
+        assert!(text.contains("git commit"), "{text}");
+        assert!(text.contains("uncommitted README.md"), "{text}");
+        assert!(env.org().join("README.md").is_file());
+        let head = Command::new("git")
+            .arg("-C")
+            .arg(env.org())
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .expect("git");
+        assert!(!head.status.success());
     }
 }

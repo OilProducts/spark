@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
-use spark_assets::{flows, frontend, guides, icons, models, resources, ResourceSource};
+use spark_assets::{agent_org, flows, frontend, guides, icons, models, resources, ResourceSource};
 use spark_common::settings::SparkSettings;
 
 const STARTER_FLOW_NAMES: &[&str] = &[
@@ -300,6 +300,116 @@ fn role_files_declare_standing_and_its_budget() {
     let error = parse("budget:\n  concurrent_runs: 1\n").unwrap_err();
     assert!(error.contains("budget without standing: true"), "{error}");
     assert!(parse("standing: false\nbudget: {}\n").is_err());
+}
+
+#[test]
+fn agent_org_seed_is_packaged_whole_and_supplies_the_setup_playbook() {
+    fn collect(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+        for entry in fs::read_dir(dir).expect("seed dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                let name = path.strip_prefix(root).unwrap().to_string_lossy().into();
+                files.push((name, fs::read(&path).expect("seed file")));
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/agent-org");
+    let mut source = Vec::new();
+    collect(&root, &root, &mut source);
+    source.sort();
+    let packaged = agent_org::files()
+        .into_iter()
+        .map(|(name, bytes)| (name, bytes.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(packaged, source);
+    assert!(packaged
+        .iter()
+        .any(|(name, _)| name == "standards/rfc2119.txt"));
+
+    let playbooks = spark_assets::playbooks::assets();
+    let setup = playbooks
+        .iter()
+        .filter(|(name, _)| name == "agent-org-setup.md")
+        .collect::<Vec<_>>();
+    assert_eq!(setup.len(), 1);
+    assert_eq!(
+        setup[0].1.as_bytes(),
+        fs::read(root.join("playbook.md")).expect("playbook")
+    );
+    assert_eq!(
+        playbooks
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["agent-org-setup.md", "bug-report.md"]
+    );
+}
+
+#[test]
+fn agent_org_seed_declares_packaged_flows_and_fillable_templates() {
+    let seed = agent_org::files()
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let front_matter = |path: &str| -> serde_yaml::Mapping {
+        let text = std::str::from_utf8(seed[path]).expect("utf-8");
+        let (front, _) = text
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .expect("front matter");
+        serde_yaml::from_str(front).expect("yaml")
+    };
+    assert!(front_matter("spec/README.md")["version"].as_str().is_some());
+
+    let roles = spark_assets::roles::assets()
+        .into_iter()
+        .map(|(file, _)| file)
+        .collect::<Vec<_>>();
+    let names = flows::starter_flow_names().expect("flow names");
+    let mut declared = Vec::new();
+    let specs = seed
+        .keys()
+        .filter(|path| *path == "spec/README.md" || path.ends_with("/spec.md"));
+    for spec in specs {
+        let Some(folders) = front_matter(spec).get("flows").cloned() else {
+            continue;
+        };
+        for folder in serde_yaml::from_value::<Vec<String>>(folders).expect("flow list") {
+            let flows_in = names
+                .iter()
+                .filter(|name| name.starts_with(&format!("{folder}/")))
+                .collect::<Vec<_>>();
+            assert!(!flows_in.is_empty(), "{spec}: {folder}");
+            for name in flows_in {
+                for node in bundled_flow(name).nodes.values() {
+                    if let Some(role) = &node.role {
+                        assert!(roles.contains(&format!("{role}.md")), "{name}: {role}");
+                    }
+                }
+            }
+            declared.push(folder);
+        }
+    }
+    declared.sort();
+    assert_eq!(declared, ["organization", "software-development"]);
+
+    for template in ["templates/README.md", "templates/CHANGELOG.md"] {
+        let text = std::str::from_utf8(seed[template]).expect("utf-8");
+        let mut rest = text;
+        while let Some(start) = rest.find("{{") {
+            let end = rest[start..].find("}}").expect("closed placeholder") + start;
+            assert!(
+                matches!(
+                    &rest[start + 2..end],
+                    "spark_version" | "seed_version" | "profiles"
+                ),
+                "{template}: {}",
+                &rest[start..end + 2]
+            );
+            rest = &rest[end + 2..];
+        }
+    }
 }
 
 #[test]

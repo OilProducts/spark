@@ -8,9 +8,12 @@ copies the seed once and then evolves on its own.
 
 ## Project status
 
-Draft, version 0.1.0. Spark does not use this directory yet. Nothing loads or
-installs it. The operator has accepted every decision record, and every
-requirement except ORG-001.
+Draft, version 0.1.0. Spark embeds the seed and installs it with
+`spark org init`; the bundled `agent-org-setup` playbook is this directory's
+[playbook.md](playbook.md). ADR-0009 is in place: playbooks, standing-role
+settings and triggers (Spark commit 99c9d051) resolve from the org repo. The
+operator has accepted every decision record, and every requirement except
+ORG-001.
 
 ## Description
 
@@ -46,40 +49,52 @@ requirement qualities, EARS, decision records and RACI. See
 | [playbook.md](playbook.md) | How to set an organization up from the seed |
 | [standards/](standards/README.md) | Vendored standards and the requirements-writing guide |
 | [decisions/](decisions/) | Decision records for the seed itself |
-| [templates/](templates/) | Operator brief and decision record templates |
+| [templates/](templates/) | Operator brief, decision record, README and changelog templates |
 | [CHANGELOG.md](CHANGELOG.md) | Changes to the seed |
 
 ## Usage
 
-Not wired in yet. The intended flow (ADR-0004):
+The flow (ADR-0004):
 
 1. The operator asks the Coordinator to set up the organization, and the
    Coordinator hands it to the Chief of Staff (ORG-013).
 2. The Chief of Staff runs [playbook.md](playbook.md) as a mission. Once the
    operator confirms the profiles, it runs
-   `spark org init --project <path> --profile <name>...`, which adds every seed
-   and bundled file missing from `<project>/.spark/agent-org/` (ADR-0003), and
-   then shapes the organization with the operator.
+   `spark org init --project <path> [--profile <name>]...`, and then shapes the
+   organization with the operator. Each later organization change is prepared on
+   a branch in a separate worktree and merged only after
+   `organization/review-change` approves it (ADR-0010).
+
+`spark org init` runs locally and needs no server. Into
+`<project>/.spark/agent-org/` it adds whatever is missing of:
+
+- `spec/`, `standards/`, `templates/` and each chosen profile's directory;
+- the bundled flow folders named in the `flows` front matter of
+  [spec/README.md](spec/README.md) and of each chosen profile's `spec.md`;
+- the bundled standing roles and every role those flows name;
+- a README and changelog filled from [templates/](templates/) with the Spark and
+  seed versions and the profiles (ORG-030, ORG-035).
+
+It never overwrites an existing file, so an existing README or changelog is kept
+as is. It creates the org repo if needed, commits only the files it created, and
+prints each file it created or skipped. The seed's own README, changelog,
+playbook and decisions are not installed.
 
 Spark's own development will be the first organization (ADR-0008).
 
 ## Roadmap
 
-- Implement the accepted decisions in Spark:
-  - ADR-0003: copy the organization-owned files at installation;
-  - ADR-0004: `spark org init`;
+- Finish the accepted decisions in Spark:
+  - ADR-0003: Spark still falls back to bundled flows and roles the org repo
+    does not have; stop using bundled files the organization has not adopted;
   - ADR-0005: move semantic rules out of `spark_control_surface` into the
     bundled standing roles;
-  - ADR-0009: move playbooks and standing-role settings into the org repo
-    (triggers moved in Spark commit 99c9d051);
-  - ADR-0010: have the Chief of Staff prepare organization changes on a branch
-    in a separate worktree and merge them after `organization/review-change`
-    approves; `spark trigger create`, `update` and `delete` commit straight to
-    the org repo's checked-out branch today, which skips the review.
-- Wire the seed into Spark: embed it, add `spark org init`, and replace
-  `playbooks/agent-org-setup.md` with this playbook.
+  - ADR-0010: the Chief of Staff's instructions route its changes through
+    `organization/review-change`, but `spark trigger create`, `update` and
+    `delete` still commit straight to the org repo's checked-out branch, which
+    skips the review.
 - Add a check that every requirement ID cited in the playbook, profiles and roles
-  exists.
+  exists, and validate an installed organization against its spec.
 - Install Spark's own organization from the seed (ADR-0008).
 
 ## Contributing
@@ -97,7 +112,9 @@ Changes follow the seed's own rules:
 Drafted with the operator. It draws on:
 
 - an agent-organization installation prompt shared by a friend of the operator
-  (kept at `crates/spark-assets/assets/playbooks/agent-org-setup.md`);
+  (preserved in Git history at
+  `crates/spark-assets/assets/playbooks/agent-org-setup.md`; the bundled
+  playbook now comes from this seed);
 - google/elephant-goldfish-model (independent review);
 - tclasen/factoryctl (copy at initialization, operator brief, desired versus
   observed state);

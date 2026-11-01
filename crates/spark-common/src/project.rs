@@ -97,7 +97,15 @@ pub fn commit_org_paths(
         args.iter().copied().chain(pathspecs.clone()).collect()
     };
     // Nothing to record, e.g. deleting a copy that was never committed.
-    if run_git(org, &with(&["status", "--porcelain", "--"]))?.is_empty() {
+    // Untracked and ignored paths count, so `git add` reports an ignored one.
+    let status = [
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--ignored",
+        "--",
+    ];
+    if run_git(org, &with(&status))?.is_empty() {
         return Ok(());
     }
     run_git(org, &with(&["add", "-A", "--"]))?;

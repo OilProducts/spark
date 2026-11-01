@@ -47,3 +47,16 @@ seed's public interface is its core spec and profiles:
   - ADR-0010 organization changes are reviewed, and only the operator grants
     authority.
 - Templates for an organization's operator brief and decision records.
+- README and changelog templates (`templates/README.md`,
+  `templates/CHANGELOG.md`) that `spark org init` fills with the Spark and seed
+  versions and the profiles.
+- `flows` front matter naming the bundled flow folders each spec brings:
+  `organization` for the core, `software-development` for `software`.
+
+### Changed
+
+- Spark embeds the seed: `spark org init` installs it, and the bundled
+  `agent-org-setup` playbook is `playbook.md`.
+- The bundled Chief of Staff prepares organization changes on a branch in a
+  separate worktree and merges them after `organization/review-change`
+  approves.
