@@ -4199,6 +4199,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "spark-agent-adapter",
+ "spark-assets",
  "spark-common",
  "spark-storage",
  "spark-triggers",

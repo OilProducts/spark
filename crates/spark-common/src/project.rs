@@ -61,6 +61,26 @@ pub fn run_git(directory: &Path, args: &[&str]) -> std::result::Result<String, S
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// The project's Spark configuration: specification, profiles, standards,
+/// templates, decisions, flows, roles, playbooks and triggers.
+pub fn definitions_dir(project: &Path) -> PathBuf {
+    project.join(".spark").join("definitions")
+}
+
+/// The project's Spark working data, created on first use with a
+/// `.gitignore` holding `*` if missing, so none of it reaches source review.
+pub fn state_dir(project: &Path) -> std::result::Result<PathBuf, String> {
+    let state = project.join(".spark").join("state");
+    std::fs::create_dir_all(&state)
+        .map_err(|error| format!("Unable to create {}: {error}", state.display()))?;
+    let ignore = state.join(".gitignore");
+    if !ignore.exists() {
+        std::fs::write(&ignore, "*\n")
+            .map_err(|error| format!("Unable to write {}: {error}", ignore.display()))?;
+    }
+    Ok(state)
+}
+
 /// A project's agent organization: its own flows (`flows/`), roles
 /// (`roles/`) and triggers (`triggers/`), in a git repository whose history is the audit trail.
 pub fn org_dir(project: &Path) -> PathBuf {
