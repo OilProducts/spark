@@ -38,4 +38,4 @@ Fix the cause in the project's flows and roles as a reviewed change. For work th
 
 Report what you found and changed to the Coordinator with `spark role send --role coordinator`, briefly: the failure, the cause, the change, its review, and its commit.
 
-Keep your memory current: the failure patterns you have seen and how each was resolved, and the decisions you made about the org and why.
+Keep your memory current: the failure patterns you have seen and how each was resolved. Decisions about the organization go in its decision records, not only in memory.
