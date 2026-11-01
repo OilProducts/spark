@@ -15,4 +15,5 @@ spark-common = { path = "../spark-common" }
 
 [dev-dependencies]
 attractor-dsl = { path = "../attractor-dsl" }
+serde_yaml = "0.9"
 tempfile = "3.10"

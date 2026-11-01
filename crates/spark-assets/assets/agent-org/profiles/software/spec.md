@@ -2,6 +2,7 @@
 type: Specification
 title: Software profile
 profile: software
+flows: [software-development]
 ---
 
 # Software profile

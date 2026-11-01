@@ -3,6 +3,7 @@ type: Specification
 title: Agent organization core specification
 version: 0.1.0
 status: Draft
+flows: [organization]
 ---
 
 # Agent organization core specification

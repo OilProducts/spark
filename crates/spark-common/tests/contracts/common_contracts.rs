@@ -447,3 +447,49 @@ fn compaction_segment_says_what_it_freed_when_the_backend_reports_it() {
     );
     assert_eq!(content(None), "Context compacted to continue the turn.");
 }
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn org_repo_with_identity() -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let org = spark_common::project::ensure_org_repo(temp.path()).expect("org repo");
+    git(&org, &["config", "user.name", "Spark Test"]);
+    git(&org, &["config", "user.email", "spark@example.invalid"]);
+    (temp, org)
+}
+
+#[test]
+fn commit_org_paths_commits_new_files_when_untracked_files_are_hidden() {
+    let (_temp, org) = org_repo_with_identity();
+    git(&org, &["config", "status.showUntrackedFiles", "no"]);
+    std::fs::write(org.join("new.md"), "new\n").expect("write");
+
+    spark_common::project::commit_org_paths(&org, &["new.md".to_string()], "Add new")
+        .expect("commit");
+
+    assert_eq!(git(&org, &["ls-tree", "--name-only", "HEAD"]), "new.md");
+}
+
+#[test]
+fn commit_org_paths_reports_an_ignored_requested_path() {
+    let (_temp, org) = org_repo_with_identity();
+    std::fs::write(org.join(".git/info/exclude"), "ignored.md\n").expect("exclude");
+    std::fs::write(org.join("ignored.md"), "ignored\n").expect("write");
+
+    let error =
+        spark_common::project::commit_org_paths(&org, &["ignored.md".to_string()], "Add ignored")
+            .expect_err("ignored path must not report success");
+
+    assert!(error.contains("ignored"), "{error}");
+    assert_eq!(git(&org, &["diff", "--cached", "--name-only"]), "");
+    assert!(git(&org, &["rev-list", "--all"]).is_empty());
+}
