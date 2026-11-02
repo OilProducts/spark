@@ -1575,6 +1575,21 @@ impl AttractorApiService {
                 json!({"detail": format!("{} is a bundled flow; bundled flows cannot be deleted.", resolved.name)}),
             );
         }
+        // Only a real directory inside `<definitions>/flows` is deleted: no
+        // symlinked flow, and no symlinked namespace or flows root leading out.
+        let definitions = roots.org.clone().unwrap_or_default();
+        let contained = resolved.path.parent().is_some_and(|parent| {
+            match (parent.canonicalize(), definitions.canonicalize()) {
+                (Ok(parent), Ok(definitions)) => parent.starts_with(definitions.join("flows")),
+                _ => false,
+            }
+        }) && fs::symlink_metadata(&resolved.path).is_ok_and(|meta| meta.is_dir());
+        if !contained {
+            return RuntimeRouteResponse::json(
+                400,
+                json!({"detail": format!("{} leads outside the project's flows.", resolved.name)}),
+            );
+        }
         let project = Path::new(project_path.unwrap_or_default().trim());
         // Moving the copy into a fresh directory under state deletes it at
         // once; removing it from there may then fail without undoing that.

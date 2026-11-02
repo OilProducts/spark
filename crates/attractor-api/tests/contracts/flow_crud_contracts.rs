@@ -629,6 +629,33 @@ fn saving_a_bundled_flow_creates_a_project_copy_and_deleting_it_reverts() {
 
 #[cfg(unix)]
 #[test]
+fn a_delete_never_follows_a_symlink_out_of_the_project_flows() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let service = AttractorApiService::new(settings(temp.path()));
+    let project_path = project.to_str();
+    let outside = temp.path().join("outside");
+    write_flow_dir(&outside.join("victim"), &valid_flow()).expect("victim");
+    let before = flow_dir_bytes(&outside.join("victim"));
+    fs::create_dir_all(org.join("flows")).expect("flows");
+    // A symlinked namespace, and a directly symlinked flow, lead outside.
+    symlink(&outside, org.join("flows/team")).expect("link");
+    symlink(outside.join("victim"), org.join("flows/linked")).expect("link");
+
+    for name in ["team/victim", "linked"] {
+        let refused = service.delete_flow(name, project_path);
+        assert_eq!(refused.status_code, 400, "{name}: {}", refused.body);
+        assert_eq!(flow_dir_bytes(&outside.join("victim")), before, "{name}");
+    }
+    assert!(org.join("flows/team").is_symlink());
+    assert!(org.join("flows/linked").is_symlink());
+    assert_eq!(staged(&project), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
 fn a_delete_that_cannot_move_the_copy_keeps_it() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().expect("tempdir");
