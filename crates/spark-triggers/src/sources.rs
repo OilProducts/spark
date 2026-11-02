@@ -39,6 +39,17 @@ impl TriggerActivationSink for AcceptAllTriggerActivationSink {
     }
 }
 
+/// Bounds a whole poll request (connect, send and body) so one stalled
+/// endpoint cannot hold up the trigger loop.
+const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn poll_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("build poll client")
+}
+
 #[derive(Clone)]
 pub struct TriggerSourceRuntime {
     repositories: TriggerRepositories,
@@ -58,7 +69,7 @@ impl TriggerSourceRuntime {
         Self {
             repositories,
             sink: Arc::new(sink),
-            poll_client: reqwest::Client::new(),
+            poll_client: poll_client(POLL_TIMEOUT),
         }
     }
 
@@ -69,7 +80,17 @@ impl TriggerSourceRuntime {
         Self {
             repositories,
             sink,
-            poll_client: reqwest::Client::new(),
+            poll_client: poll_client(POLL_TIMEOUT),
+        }
+    }
+
+    /// Replaces the poll request timeout. Only tests use it, to keep a
+    /// stalled poll short; production polls use `POLL_TIMEOUT`.
+    #[doc(hidden)]
+    pub fn with_poll_timeout(self, timeout: std::time::Duration) -> Self {
+        Self {
+            poll_client: poll_client(timeout),
+            ..self
         }
     }
 
@@ -97,6 +118,8 @@ impl TriggerSourceRuntime {
         // ponytail: reads every registered project's org triggers each tick,
         // so hand edits apply without a restart; cache by directory mtime if
         // projects or triggers grow large.
+        // ponytail: polls run one at a time, each bounded by POLL_TIMEOUT;
+        // run them concurrently if there are many.
         for definition in self.repositories.list_all()? {
             match definition.source_type.as_str() {
                 SOURCE_SCHEDULE => {
