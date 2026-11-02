@@ -3,7 +3,6 @@ use std::path::Path;
 
 use attractor_runtime::RunStore;
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_triggers::{state, TriggerCreateRequest, TriggerService, WebhookHandleRequest};
 use spark_workspace::WorkspaceTriggerService;
@@ -399,9 +398,8 @@ fn hand_deleted_definitions_stop_firing_without_a_restart() {
             .len()
     };
     assert_eq!(emit(), 1);
-    let org = spark_common::project::org_dir(Path::new(&project));
-    run_git(&org, &["rm", "-q", "triggers/flow-event.toml"]).expect("git rm");
-    run_git(&org, &["commit", "-qm", "Remove the trigger"]).expect("commit");
+    let org = spark_common::project::definitions_dir(Path::new(&project));
+    fs::remove_file(org.join("triggers/flow-event.toml")).expect("remove by hand");
     assert_eq!(emit(), 0);
 }
 
@@ -482,18 +480,10 @@ fn load_state(settings: &SparkSettings, project: &str, id: &str) -> spark_storag
         .expect("load trigger state")
 }
 
-/// A registered project whose org repo has a git identity, since every
-/// definition write commits.
+/// A registered project.
 fn project(settings: &SparkSettings, name: &str) -> String {
     let project = settings.data_dir.parent().unwrap().join(name);
     fs::create_dir_all(&project).expect("project dir");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project.to_string_lossy())
         .expect("register project")

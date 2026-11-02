@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
-use spark_common::project::{commit_org_paths, ensure_org_repo, org_dir};
+use spark_common::project::{definitions_dir, state_dir};
 use spark_common::settings::SparkSettings;
 use toml::Value as TomlValue;
 
@@ -122,9 +122,9 @@ pub struct TriggerStateHistoryEntry {
     pub run_id: Option<String>,
 }
 
-/// One project's trigger definitions in its org repo. Reads never create
-/// directories there; the first write creates the org repo. Locks live
-/// under Spark's data directory, and every write commits only its file.
+/// One project's trigger definitions, under its `.spark/definitions`.
+/// Reads never create directories there. Locks live under Spark's data
+/// directory.
 #[derive(Debug, Clone)]
 pub struct TriggerDefinitionRepository {
     config_dir: PathBuf,
@@ -138,7 +138,7 @@ impl TriggerDefinitionRepository {
     }
 
     pub fn root_dir(&self) -> PathBuf {
-        org_dir(Path::new(&self.project_path)).join("triggers")
+        definitions_dir(Path::new(&self.project_path)).join("triggers")
     }
 
     pub fn definition_path(&self, trigger_id: &str) -> Result<PathBuf> {
@@ -192,9 +192,9 @@ impl TriggerDefinitionRepository {
         Ok(Some(definition))
     }
 
-    /// Writes the definition and commits it, with `message` or "Create/Edit
-    /// trigger <name>". Returns the new revision.
-    pub fn put(&self, definition: &TriggerDefinition, message: Option<&str>) -> Result<String> {
+    /// Writes the definition and returns its new revision. `_message`
+    /// describes the change; nothing records it.
+    pub fn put(&self, definition: &TriggerDefinition, _message: Option<&str>) -> Result<String> {
         let _references = crate::settings::lock_profile_references(&self.config_dir)?;
         crate::settings::validate_profile_references(
             &self.config_dir,
@@ -203,7 +203,6 @@ impl TriggerDefinitionRepository {
         let path = self.definition_path(&definition.id)?;
         let _lock = self.lock(&definition.id)?;
         let current = crate::settings::read_settings_document(&path)?;
-        let previous = read_optional_bytes(&path)?;
         let expected = if definition.revision.is_empty() {
             "absent"
         } else {
@@ -218,31 +217,19 @@ impl TriggerDefinitionRepository {
         // such as webhook credentials.
         let text =
             trigger_definition_toml(&parse_trigger_definition(&definition.id, &payload, &path)?);
-        ensure_org_repo(Path::new(&self.project_path)).map_err(|error| git_error(&path, error))?;
         fs::create_dir_all(self.root_dir())
             .map_err(|source| StorageError::io("create trigger directory", &path, source))?;
         self.replace(&path, text.as_bytes())?;
-        let verb = if current.revision == "absent" {
-            "Create"
-        } else {
-            "Edit"
-        };
-        self.commit(
-            &definition.id,
-            message,
-            &format!("{verb} trigger {}", definition.name),
-        )
-        .inspect_err(|_| self.restore(&path, previous.as_deref()))?;
         Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
-    /// Deletes the definition and commits the deletion, with `message` or
-    /// "Delete trigger <name>".
+    /// Deletes the definition. `_message` describes the change; nothing
+    /// records it.
     pub fn delete(
         &self,
         trigger_id: &str,
         expected_revision: &str,
-        message: Option<&str>,
+        _message: Option<&str>,
     ) -> Result<()> {
         let path = self.definition_path(trigger_id)?;
         let _lock = self.lock(trigger_id)?;
@@ -250,29 +237,33 @@ impl TriggerDefinitionRepository {
         if current.revision != expected_revision {
             return Err(StorageError::SettingsConflict { path });
         }
-        let name = toml_scalar_to_string(current.values.get("name"));
-        let previous = read_optional_bytes(&path)?;
         match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(source) => {
-                return Err(StorageError::io("delete trigger definition", &path, source))
-            }
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StorageError::io("delete trigger definition", &path, source)),
         }
-        self.commit(
-            trigger_id,
-            message,
-            &format!("Delete trigger {}", name.trim()),
-        )
-        .inspect_err(|_| self.restore(&path, previous.as_deref()))
     }
 
     /// Replaces `path` atomically: the new bytes are staged in
-    /// `<project>/.spark` (outside the org repo, on its filesystem, and
-    /// gitignored), then renamed over the definition. A failed or partial
-    /// write leaves the original untouched and no file in the org repo.
+    /// `<project>/.spark/state/tmp` (on the project's filesystem), then
+    /// renamed over the definition. A failed or partial write leaves the
+    /// original untouched and no file among the definitions.
     fn replace(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        let staging = Path::new(&self.project_path).join(".spark");
+        let project = Path::new(&self.project_path);
+        let staging = state_dir(project)
+            .map(|state| state.join("tmp"))
+            .and_then(|tmp| {
+                fs::create_dir_all(&tmp)
+                    .map(|()| tmp.clone())
+                    .map_err(|error| format!("Unable to create {}: {error}", tmp.display()))
+            })
+            .map_err(|error| {
+                StorageError::io(
+                    "stage trigger definition",
+                    path,
+                    std::io::Error::other(error),
+                )
+            })?;
         let mut temp = tempfile::Builder::new()
             .prefix(".spark-trigger-")
             .tempfile_in(&staging)
@@ -285,32 +276,9 @@ impl TriggerDefinitionRepository {
         Ok(())
     }
 
-    /// Puts the definition back as it was before a write whose commit
-    /// failed, so the change never takes effect and a retry sees the old
-    /// revision.
-    fn restore(&self, path: &Path, previous: Option<&[u8]>) {
-        let _ = match previous {
-            Some(bytes) => self.replace(path, bytes),
-            None => {
-                fs::remove_file(path).map_err(|source| StorageError::io("remove", path, source))
-            }
-        };
-    }
-
     fn lock(&self, trigger_id: &str) -> Result<fs::File> {
         let id = validate_trigger_id(trigger_id)?;
         crate::settings::lock_document(&self.lock_dir.join(format!("{id}.toml")))
-    }
-
-    fn commit(&self, trigger_id: &str, message: Option<&str>, default: &str) -> Result<()> {
-        let path = self.definition_path(trigger_id)?;
-        let message = message
-            .map(str::trim)
-            .filter(|message| !message.is_empty())
-            .unwrap_or(default);
-        let org = org_dir(Path::new(&self.project_path));
-        let pathspec = format!(":(literal)triggers/{}.toml", trigger_id.trim());
-        commit_org_paths(&org, &[pathspec], message).map_err(|error| git_error(&path, error))
     }
 }
 
@@ -377,7 +345,7 @@ impl TriggerRuntimeStateRepository {
     }
 }
 
-/// Triggers across projects: each project's definitions in its org repo and
+/// Triggers across projects: each project's definitions under .spark/definitions and
 /// their runtime state under Spark's data directory.
 #[derive(Debug, Clone)]
 pub struct TriggerRepositories {
@@ -1049,21 +1017,5 @@ fn invalid_trigger(path: &Path, reason: impl Into<String>) -> StorageError {
     StorageError::InvalidRepositoryPath {
         path: path.to_path_buf(),
         reason: reason.into(),
-    }
-}
-
-fn git_error(path: &Path, error: String) -> StorageError {
-    StorageError::io(
-        "commit trigger definition",
-        path,
-        std::io::Error::other(error),
-    )
-}
-
-fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(StorageError::io("read trigger definition", path, source)),
     }
 }

@@ -12,6 +12,13 @@ date: 2026-10-28
 
 Accepted
 
+Partly superseded, 2026-11-01: there is no org repository, branch or worktree.
+The Chief of Staff writes each change as a unified diff under
+`<project>/.spark/state/reviews/`, `organization/review-change` reviews it
+against the live definitions (`context.request.proposal_path`), and the Chief of
+Staff applies it only on approval, preparing a new proposal if it no longer
+applies cleanly.
+
 ## Context
 
 ORG-015 requires every piece of work to be checked by a reviewer that did not

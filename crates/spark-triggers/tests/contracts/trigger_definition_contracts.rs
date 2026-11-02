@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_storage::{TriggerAction, TriggerDefinition, TriggerRepositories, TriggerState};
 use spark_triggers::{
@@ -31,7 +30,7 @@ fn create_list_webhook_generates_credentials_and_hides_secret_hash() {
     assert!(created.source.get("secret_hash").is_none());
     assert!(created.state.secret_hash.is_none());
 
-    // Credentials live in runtime state only, never in the org repo.
+    // Credentials live in runtime state only, never in the definition file.
     let repositories = TriggerRepositories::from_settings(&settings);
     let persisted = repositories
         .definitions(&project)
@@ -100,7 +99,7 @@ fn schedule_create_computes_next_run_at() {
 }
 
 #[test]
-fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
+fn service_crud_writes_definitions_and_keeps_enabled_in_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project = project(&settings, "project");
@@ -108,8 +107,7 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
     let service = TriggerService::with_repositories(repositories.clone());
     let definitions = repositories.definitions(&project).unwrap();
     let states = repositories.runtime_state(&project).unwrap();
-    let org = spark_common::project::org_dir(Path::new(&project));
-    let head = || run_git(&org, &["log", "-1", "--format=%H %s"]).unwrap();
+    let org = spark_common::project::definitions_dir(Path::new(&project));
 
     let created = service
         .create_trigger(TriggerCreateRequest {
@@ -125,7 +123,6 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
             ]),
         })
         .expect("create trigger");
-    assert!(head().ends_with(" Nightly digest for the team"));
     let definition_path = definitions.definition_path(&created.id).unwrap();
     assert_eq!(
         definition_path,
@@ -136,8 +133,8 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
     assert!(!created.enabled);
     assert!(!states.load(&created.id).unwrap().enabled);
 
-    // Switching enabled writes state only: no definition change, no commit.
-    let before = (head(), std::fs::read(&definition_path).unwrap());
+    // Switching enabled writes state only: no definition change.
+    let before = std::fs::read(&definition_path).unwrap();
     let enabled = service
         .update_trigger(
             &project,
@@ -152,7 +149,7 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
     assert!(enabled.enabled);
     assert_eq!(enabled.revision, created.revision);
     assert!(states.load(&created.id).unwrap().enabled);
-    assert_eq!(before, (head(), std::fs::read(&definition_path).unwrap()));
+    assert_eq!(before, std::fs::read(&definition_path).unwrap());
 
     let renamed = service
         .update_trigger(
@@ -165,7 +162,6 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
             },
         )
         .expect("update trigger");
-    assert!(head().ends_with(" Edit trigger Schedule renamed"));
     assert_eq!(
         definitions.get(&created.id).unwrap().unwrap().name,
         "Schedule renamed"
@@ -181,14 +177,13 @@ fn service_crud_commits_definitions_and_keeps_enabled_in_state() {
     service
         .delete_trigger(&project, &created.id, &renamed.revision, None)
         .expect("delete trigger");
-    assert!(head().ends_with(" Delete trigger Schedule renamed"));
     assert!(definitions.get(&created.id).unwrap().is_none());
     assert!(!state_path.exists());
-    assert_eq!(run_git(&org, &["status", "--porcelain"]).unwrap(), "");
+    assert_eq!(std::fs::read_dir(org.join("triggers")).unwrap().count(), 0);
 }
 
 #[test]
-fn a_rejected_commit_creates_nothing_and_keeps_edits_and_deletes_undone() {
+fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project = project(&settings, "project");
@@ -196,15 +191,10 @@ fn a_rejected_commit_creates_nothing_and_keeps_edits_and_deletes_undone() {
     let created = service
         .create_trigger(webhook_create_request(&project))
         .expect("create");
-    let org = spark_common::project::org_dir(Path::new(&project));
-    let hook = org.join(".git/hooks/pre-commit");
-    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // A file where the staging directory belongs makes every write fail.
+    let tmp = Path::new(&project).join(".spark/state/tmp");
+    std::fs::remove_dir_all(&tmp).unwrap();
+    std::fs::write(&tmp, "").unwrap();
 
     assert!(service
         .create_trigger(TriggerCreateRequest {
@@ -244,15 +234,8 @@ fn a_rejected_commit_creates_nothing_and_keeps_edits_and_deletes_undone() {
     let current = service.get_trigger(&project, &created.id).unwrap().unwrap();
     assert_eq!((current.name.as_str(), current.enabled), ("Webhook", true));
     assert_eq!(current.revision, created.revision);
-    assert!(service
-        .delete_trigger(&project, &created.id, &created.revision, None)
-        .is_err());
-    assert!(service
-        .get_trigger(&project, &created.id)
-        .unwrap()
-        .is_some());
 
-    std::fs::remove_file(&hook).unwrap();
+    std::fs::remove_file(&tmp).unwrap();
     let retried = service
         .update_trigger(&project, &created.id, edit)
         .expect("retry with the original revision");
@@ -893,7 +876,7 @@ fn write_persisted_trigger_toml(
     flow_name: &str,
     source_body: &str,
 ) {
-    let dir = spark_common::project::org_dir(Path::new(project)).join("triggers");
+    let dir = spark_common::project::definitions_dir(Path::new(project)).join("triggers");
     std::fs::create_dir_all(&dir).expect("trigger config dir");
     std::fs::write(
         dir.join(format!("{id}.toml")),
@@ -916,18 +899,10 @@ flow_name = "{flow_name}"
     .expect("write malformed trigger definition");
 }
 
-/// A registered project whose org repo has a git identity, since every
-/// definition write commits.
+/// A registered project.
 fn project(settings: &SparkSettings, name: &str) -> String {
     let project = settings.data_dir.parent().unwrap().join(name);
     std::fs::create_dir_all(&project).expect("project dir");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project.to_string_lossy())
         .expect("register project")

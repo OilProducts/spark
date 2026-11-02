@@ -25,8 +25,6 @@ seed's public interface is its core spec and profiles:
   - `software` (SW-001 to SW-006);
   - `operations` (OPS-001 to OPS-006);
   - `external-effects` (EXT-001, EXT-002, EXT-004 to EXT-006).
-- Setup playbook (`playbook.md`): method only; the operator confirms the
-  profiles before `spark org init` runs.
 - Vendored standards:
   - RFC 2119 and RFC 8174, in full;
   - Semantic Versioning 2.0.0, in full;
@@ -48,15 +46,27 @@ seed's public interface is its core spec and profiles:
     authority.
 - Templates for an organization's operator brief and decision records.
 - README and changelog templates (`templates/README.md`,
-  `templates/CHANGELOG.md`) that `spark org init` fills with the Spark and seed
+  `templates/CHANGELOG.md`) that installation fills with the Spark and seed
   versions and the profiles.
 - `flows` front matter naming the bundled flow folders each spec brings:
   `organization` for the core, `software-development` for `software`.
 
 ### Changed
 
-- Spark embeds the seed: `spark org init` installs it, and the bundled
-  `agent-org-setup` playbook is `playbook.md`.
-- The bundled Chief of Staff prepares organization changes on a branch in a
-  separate worktree and merges them after `organization/review-change`
+- Spark embeds the seed and installs it, with every profile and every bundled
+  flow, role and playbook, into `<project>/.spark/definitions/` when a project
+  is registered. Working data lives in `<project>/.spark/state/`. The
+  definitions are no longer a separate Git repository.
+- The bundled Chief of Staff prepares organization changes as a unified diff
+  under `.spark/state/reviews/` and applies it after `organization/review-change`
   approves.
+- ORG-012, ORG-014, ORG-024, ORG-025, ORG-026, ORG-030, ORG-031, ORG-035,
+  ORG-041 and ORG-050 amended for the definitions directory: the changelog,
+  not Git history, records organization changes, and every profile is copied
+  as reference material.
+
+### Removed
+
+- The setup playbook (`playbook.md`) and the setup interview: installation is
+  automatic and asks no questions. Superseding notes added to ADR-0002,
+  ADR-0004, ADR-0008, ADR-0009 and ADR-0010.

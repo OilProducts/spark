@@ -61,59 +61,24 @@ pub fn run_git(directory: &Path, args: &[&str]) -> std::result::Result<String, S
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// A project's agent organization: its own flows (`flows/`), roles
-/// (`roles/`) and triggers (`triggers/`), in a git repository whose history is the audit trail.
-pub fn org_dir(project: &Path) -> PathBuf {
-    project.join(".spark").join("agent-org")
+/// The project's Spark configuration: specification, profiles, standards,
+/// templates, decisions, flows, roles, playbooks and triggers.
+pub fn definitions_dir(project: &Path) -> PathBuf {
+    project.join(".spark").join("definitions")
 }
 
-/// Creates the project's org repository on its first write: the directory,
-/// `git init`, and `<project>/.spark/.gitignore` holding `*` if missing.
-pub fn ensure_org_repo(project: &Path) -> std::result::Result<PathBuf, String> {
-    let org = org_dir(project);
-    std::fs::create_dir_all(&org)
-        .map_err(|error| format!("Unable to create {}: {error}", org.display()))?;
-    if !org.join(".git").exists() {
-        run_git(&org, &["init", "-q"])?;
-    }
-    let ignore = project.join(".spark").join(".gitignore");
+/// The project's Spark working data, created on first use with a
+/// `.gitignore` holding `*` if missing, so none of it reaches source review.
+pub fn state_dir(project: &Path) -> std::result::Result<PathBuf, String> {
+    let state = project.join(".spark").join("state");
+    std::fs::create_dir_all(&state)
+        .map_err(|error| format!("Unable to create {}: {error}", state.display()))?;
+    let ignore = state.join(".gitignore");
     if !ignore.exists() {
         std::fs::write(&ignore, "*\n")
             .map_err(|error| format!("Unable to write {}: {error}", ignore.display()))?;
     }
-    Ok(org)
-}
-
-/// Commits the changes under `pathspecs` (relative to the org repo), and
-/// nothing else, under the repo's normal git identity. A failed commit
-/// leaves them unstaged, so a retry records them.
-pub fn commit_org_paths(
-    org: &Path,
-    pathspecs: &[String],
-    message: &str,
-) -> std::result::Result<(), String> {
-    let pathspecs = pathspecs.iter().map(String::as_str);
-    let with = |args: &[&'static str]| -> Vec<&str> {
-        args.iter().copied().chain(pathspecs.clone()).collect()
-    };
-    // Nothing to record, e.g. deleting a copy that was never committed.
-    // Untracked and ignored paths count, so `git add` reports an ignored one.
-    let status = [
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-        "--ignored",
-        "--",
-    ];
-    if run_git(org, &with(&status))?.is_empty() {
-        return Ok(());
-    }
-    run_git(org, &with(&["add", "-A", "--"]))?;
-    let mut commit = vec!["commit", "-q", "-m", message, "--"];
-    commit.extend(pathspecs.clone());
-    run_git(org, &commit).map(|_| ()).inspect_err(|_| {
-        let _ = run_git(org, &with(&["reset", "-q", "--"]));
-    })
+    Ok(state)
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

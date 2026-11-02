@@ -41,8 +41,9 @@ action on the project above the Observe class (ORG-050).
 
 ## ORG-012: The Chief of Staff owns organization changes
 
-The Chief of Staff SHALL make every change an agent makes to the org repo, and
-no other agent SHALL change it. The operator MAY change the org repo directly,
+The Chief of Staff SHALL make every change an agent makes to the definitions
+directory, and no other agent SHALL change it. The operator MAY change the
+definitions directly,
 for example through Spark's flow editor. Apart from authority (ORG-055), the
 operator's role is visibility, not approval.
 
@@ -52,13 +53,13 @@ operator's role is visibility, not approval.
 - Source: operator, 2026-10-24: "I think the CoS approves changes, I just want
   visibility.  And since the CoS also writes it, an approval gate is redundant.
   We should *not* have more unnecessary process surrounding it." Limited to
-  agents, proposed because the flow editor commits the operator's own edits to
-  the org repo. Accepted by the operator, 2026-10-28: "I also agree with your
+  agents, proposed because the flow editor writes the operator's own edits to
+  the definitions. Accepted by the operator, 2026-10-28: "I also agree with your
   stop switches recommendation, your ORG-012 recommendation". "And approve"
   dropped for ORG-017's review, and the operator's role qualified by ORG-055,
   accepted by the operator, 2026-10-28: "I also agree with the entirety of what
   you said for #1 and #2." (ADR-0010).
-- Verification: Analysis (org repo history).
+- Verification: Analysis (changelog and review proposals).
 
 ## ORG-013: Requests for organization changes
 
@@ -76,14 +77,14 @@ one it needs (ORG-004), the Coordinator SHALL hand it to the Chief of Staff.
 
 ### Scenario: The operator asks for a new role
 - **WHEN** the operator asks the Coordinator to add a standing role for release management
-- **THEN** the Coordinator sends the request to the Chief of Staff, tells the operator it did, and changes nothing in the org repo itself
+- **THEN** the Coordinator sends the request to the Chief of Staff, tells the operator it did, and changes nothing in the definitions itself
 
 ## ORG-014: Roster and responsibilities
 
 Every role that `spark role list` reports SHALL appear in the responsibilities
 table below, and every standing role the table names SHALL have a role file in
-the org repo. A change that adds or retires a standing role SHALL update the
-table in the same commit.
+the definitions directory. A change that adds or retires a standing role SHALL update the
+table in the same change.
 
 - Rationale: the table is the spec's account of who is accountable for what. If
   it misses a running role, or names one that cannot run, accountability is
@@ -97,7 +98,7 @@ table in the same commit.
   asked, 2026-10-28: "How does this keep the spec and roles from drifting
   apart?" Accepted by the operator, 2026-10-28: "Approved". "Or bundled with
   Spark" dropped when initialization started copying the standing roles into
-  the org repo (ADR-0003).
+  the definitions (ADR-0003).
 - Verification: Inspection (the table against `spark role list` and the role
   files).
 

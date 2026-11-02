@@ -258,13 +258,13 @@ describe('Flows panel org badges', () => {
         fetchFlowListMock.mockReset()
         fetchFlowListMock.mockResolvedValue(['plain', 'local', 'shared'])
         vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ org_path: '/o', bundled_path: '/b', org_exists: true, items: [
-            { kind: 'flow', name: 'plain', layer: 'bundled', path: 'flows/plain', uncommitted: false },
-            { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local', uncommitted: true },
-            { kind: 'flow', name: 'shared', layer: 'project_copy', path: 'flows/shared', uncommitted: false, bundled_changed: true },
+            { kind: 'flow', name: 'plain', layer: 'bundled', path: 'flows/plain' },
+            { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local' },
+            { kind: 'flow', name: 'shared', layer: 'project_copy', path: 'flows/shared' },
         ] }) })))
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
-        await waitFor(async () => expect(await badges('local')).toEqual(['customized', 'uncommitted']))
+        await waitFor(async () => expect(await badges('local')).toEqual(['customized']))
         expect(await badges('shared')).toEqual(['project copy'])
         expect(await badges('plain')).toEqual([])
     })
@@ -281,13 +281,13 @@ describe('Flows panel org badges across projects', () => {
         vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('project_path=%2Ftmp%2Fproject-b')
             ? pendingB.promise
             : ({ ok: true, json: async () => ({ org_path: '/a', bundled_path: '/b', org_exists: true, items: [
-                { kind: 'flow', name: 'shared', layer: 'project', path: 'flows/shared', uncommitted: true },
+                { kind: 'flow', name: 'shared', layer: 'project', path: 'flows/shared' },
             ] }) })))
         vi.spyOn(console, 'error').mockImplementation(() => {})
         useStore.setState({ activeProjectPath: '/tmp/project-a' })
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
-        await waitFor(() => expect(badges()).toEqual(['customized', 'uncommitted']))
+        await waitFor(() => expect(badges()).toEqual(['customized']))
 
         // B's org request is pending: A's badges must not carry over.
         useStore.setState({ activeProjectPath: '/tmp/project-b' })

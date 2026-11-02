@@ -375,7 +375,7 @@ That provenance model must support:
 
 ## 15. Workspace Trigger Subsystem
 
-A trigger belongs to a project's agent organization: its definition lives in the project's org repo, and Spark keeps only its runtime state. A trigger is identified by its project plus its id; ids are unique within a project.
+A trigger belongs to a project's agent organization: its definition lives in the project's definitions, and Spark keeps only its runtime state. A trigger is identified by its project plus its id; ids are unique within a project.
 
 Each trigger definition includes:
 - trigger id
@@ -384,12 +384,12 @@ Each trigger definition includes:
 - source configuration
 - action configuration (`static` launches a flow, `mission` and `role` deliver to a mission or standing role)
 
-The definition names no project: a trigger fires in the project whose org holds it. Static triggers launch their flow in that project, mission and role triggers deliver to a mission or role of that project, and `flow_event` triggers fire only for runs in that project.
+The definition names no project: a trigger fires in the project whose definitions hold it. Static triggers launch their flow in that project, mission and role triggers deliver to a mission or role of that project, and `flow_event` triggers fire only for runs in that project.
 
 Persisted definitions live under:
-- `<project>/.spark/agent-org/triggers/<id>.toml`
+- `<project>/.spark/definitions/triggers/<id>.toml`
 
-Every create, update and delete through the API commits the trigger's file into the org repo. Definitions edited and committed by hand are picked up on the next tick.
+Every create, update and delete through the API writes the trigger's file in the project's definitions, without a Git commit. Definitions edited by hand are picked up on the next tick.
 
 Persisted runtime state lives under:
 - `SPARK_HOME/workspace/projects/<project-id>/triggers/<id>.json`

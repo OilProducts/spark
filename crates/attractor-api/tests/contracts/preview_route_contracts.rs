@@ -98,7 +98,7 @@ fn preview_service_expands_subflow_children_by_name_through_the_roots() {
     let mut project_child = child_flow();
     project_child.title = "Project Child".to_string();
     attractor_dsl::write_flow_dir(
-        &spark_common::project::org_dir(&project).join("flows/nested/child"),
+        &spark_common::project::definitions_dir(&project).join("flows/nested/child"),
         &project_child,
     )
     .expect("project child flow");

@@ -19,7 +19,7 @@ pub use spark_storage::{TriggerAction, TriggerDefinition, TriggerState, TriggerS
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerCreateRequest {
-    /// The project whose org repo will hold the trigger.
+    /// The project whose definitions will hold the trigger.
     pub project_path: String,
     pub name: String,
     #[serde(default = "default_enabled")]
@@ -27,7 +27,7 @@ pub struct TriggerCreateRequest {
     pub source_type: String,
     pub action: Map<String, Value>,
     pub source: Map<String, Value>,
-    /// The org repo commit message; defaults to "Create trigger <name>".
+    /// Describes the change; nothing records it.
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -46,7 +46,7 @@ pub struct TriggerUpdateRequest {
     pub source: Option<Map<String, Value>>,
     #[serde(default)]
     pub regenerate_webhook_secret: bool,
-    /// The org repo commit message; defaults to "Edit trigger <name>".
+    /// Describes the change; nothing records it.
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -55,7 +55,7 @@ pub struct TriggerUpdateRequest {
 pub struct SerializedTrigger {
     pub revision: String,
     pub id: String,
-    /// The project whose org repo holds the trigger.
+    /// The project whose definitions hold the trigger.
     pub project_path: String,
     pub name: String,
     pub enabled: bool,

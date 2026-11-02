@@ -12,6 +12,12 @@ date: 2026-10-28
 
 Accepted
 
+Superseded, 2026-11-01: installation is automatic. Registering a project
+copies the whole seed, every profile and every bundled flow, role and playbook
+into `<project>/.spark/definitions/` once, without Git, an interview or a setup
+playbook. `spark org init --project <path>` only finishes an interrupted
+installation and takes no profiles. Updates happen only when the operator asks.
+
 ## Context
 
 Setting up an organization has two different kinds of step:

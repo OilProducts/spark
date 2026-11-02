@@ -12,6 +12,11 @@ date: 2026-10-28
 
 Accepted
 
+Partly superseded, 2026-11-01: the organization's definitions are no longer a
+separate Git repository. They live in `<project>/.spark/definitions/`, Spark
+runs no Git there, and organization changes are reviewed as diffs (ADR-0010,
+ORG-025, ORG-031). This decision still applies to the project.
+
 ## Context
 
 This decision belongs to the `software` profile (ADR-0006). The model has to

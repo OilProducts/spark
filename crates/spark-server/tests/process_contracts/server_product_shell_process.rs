@@ -106,7 +106,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     let ui_dir = temp.path().join("ui");
     let project_dir = temp.path().join("project");
     // Serve rewrites the bundled library, so the flows live in the project's org.
-    let flows_dir = spark_common::project::org_dir(&project_dir).join("flows");
+    let flows_dir = spark_common::project::definitions_dir(&project_dir).join("flows");
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
@@ -340,6 +340,8 @@ impl RunningServer {
         let data_dir_text = data_dir.to_string_lossy().into_owned();
         let ui_dir_text = ui_dir.to_string_lossy().into_owned();
         let mut command = Command::new(env!("CARGO_BIN_EXE_spark-server"));
+        // Home's setup writes under HOME; keep it in the test root.
+        command.env("HOME", root);
         configure(&mut command);
         let mut child = command
             .args([

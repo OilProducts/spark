@@ -55,7 +55,7 @@ impl WorkspaceTriggerService {
             .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".to_string()))
     }
 
-    /// Creates the trigger in a registered project's org repo.
+    /// Creates the trigger in a registered project's definitions.
     pub fn create_trigger(
         &self,
         request: TriggerCreateRequest,

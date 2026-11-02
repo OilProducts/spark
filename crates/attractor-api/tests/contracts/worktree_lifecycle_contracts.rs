@@ -51,7 +51,7 @@ fn parent_flow() -> serde_json::Value {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "set -eu\nrepo_root=$(git rev-parse --show-toplevel)\nbranch=\"spark/lifecycle/${SPARK_RUN_ID}\"\ncheckout_root=\"${repo_root}/.spark/checkouts\"\nworktree=\"${checkout_root}/${SPARK_RUN_ID}\"\nmkdir -p \"$checkout_root\"\nprintf '*\\n' > \"${repo_root}/.spark/.gitignore\"\ngit worktree add -b \"$branch\" \"$worktree\" HEAD >/dev/null\nprintf '{\"path\":\"%s\",\"branch\":\"%s\"}' \"$worktree\" \"$branch\"\n",
+                    "command": "set -eu\nrepo_root=$(git rev-parse --show-toplevel)\nbranch=\"spark/lifecycle/${SPARK_RUN_ID}\"\ncheckout_root=\"${repo_root}/.spark/state/checkouts\"\nworktree=\"${checkout_root}/${SPARK_RUN_ID}\"\nmkdir -p \"$checkout_root\"\n[ -e \"${repo_root}/.spark/state/.gitignore\" ] || printf '*\\n' > \"${repo_root}/.spark/state/.gitignore\"\ngit worktree add -b \"$branch\" \"$worktree\" HEAD >/dev/null\nprintf '{\"path\":\"%s\",\"branch\":\"%s\"}' \"$worktree\" \"$branch\"\n",
                     "env_map": {"SPARK_RUN_ID": "internal.run_id"},
                     "output_map": {
                         "context.workspace.path": "path",
@@ -194,7 +194,7 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
         "the worktree directory must never be committed: {branch_files}"
     );
 
-    let worktree = repo.join(".spark/checkouts/run-lifecycle");
+    let worktree = repo.join(".spark/state/checkouts/run-lifecycle");
     assert!(
         !worktree.exists(),
         "successful runs must remove their worktree"
@@ -208,6 +208,11 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
         !status.contains(".spark"),
         "the .spark directory must be invisible to git status: {status}"
     );
+    assert_eq!(
+        fs::read_to_string(repo.join(".spark/state/.gitignore")).unwrap(),
+        "*\n"
+    );
+    assert!(!repo.join(".spark/.gitignore").exists());
     assert!(
         repo.join("dirty.txt").exists(),
         "the source checkout must be left untouched"

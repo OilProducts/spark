@@ -13,7 +13,7 @@ and only when, they appear in all capitals, as shown here.
 
 ## ORG-030: README and changelog
 
-The org repo SHALL contain a `README.md` using the
+The definitions directory SHALL contain a `README.md` using the
 [Make a README](../standards/make-a-readme.md) sections that apply, and a
 `CHANGELOG.md` following [Keep a Changelog](../standards/keep-a-changelog-1.1.0.md).
 
@@ -26,10 +26,12 @@ The org repo SHALL contain a `README.md` using the
 
 ## ORG-031: Every organization change is visible
 
-Every change to the org repo SHALL be committed with its reason, and listed under
-`Unreleased` in the organization's `CHANGELOG.md`.
+Every change to the definitions directory SHALL be listed with its reason under
+`Unreleased` in the organization's `CHANGELOG.md`. Whether the directory is also
+versioned in Git is the operator's choice; no requirement depends on it.
 
 - Rationale: this is how the operator gets the visibility ORG-012 promises.
+  Spark keeps no history of the definitions, so the changelog is the record.
 - Source: proposed by the agent drafting the seed, serving the operator's
   2026-10-24 requirement for visibility. Accepted by the operator, 2026-10-28:
   "Approved".
@@ -46,14 +48,14 @@ tell the operator, through the Coordinator, what changed and why.
 - Verification: Demonstration.
 
 ### Scenario: A requirement changes
-- **WHEN** the Chief of Staff merges a change to one of the organization's requirements
-- **THEN** the operator hears from the Coordinator what changed and why, with the commit
+- **WHEN** the Chief of Staff applies a change to one of the organization's requirements
+- **THEN** the operator hears from the Coordinator what changed and why, with the changelog entry
 
 ## ORG-035: Where the organization's files came from
 
-Each time the organization copies files from Spark, at initialization, when it
-adds a profile, on adoption and in each update, its changelog SHALL record the
-Spark and seed versions they came from and the profiles it then has.
+Each time the organization copies files from Spark, at initialization, on
+adoption and in each update the operator asks for, its changelog SHALL record
+the Spark and seed versions they came from and the profiles it then has.
 
 - Rationale: when the operator asks for an update, the Chief of Staff compares
   Spark's seed and bundled library against these versions to see what changed

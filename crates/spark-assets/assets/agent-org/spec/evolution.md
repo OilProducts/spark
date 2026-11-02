@@ -23,12 +23,13 @@ ORG-031 and ORG-032.
   evolves independently, and by "evolves" I mean things like the CoS may create a
   new persistent role for something, the orgs records and direction are molded by
   the *kind* of thing that its working on."
-- Verification: Analysis (org repo history).
+- Verification: Analysis (changelog and review proposals).
 
 ## ORG-041: Profiles can be added later
 
-The organization MAY add or remove a profile after installation. Adding or
-removing one SHALL satisfy ORG-031 and ORG-032.
+Every profile is copied at installation as reference material. The organization
+MAY adopt or drop a profile's requirements after installation. Adopting or
+dropping one SHALL satisfy ORG-031 and ORG-032.
 
 - Rationale: an organization's work can grow a new kind of capability, such as
   a software project that starts operating a service.

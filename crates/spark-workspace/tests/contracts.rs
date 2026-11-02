@@ -4,6 +4,8 @@ mod conversation_repository_contracts;
 mod mission_contracts;
 #[path = "contracts/project_registry_contracts.rs"]
 mod project_registry_contracts;
+#[path = "contracts/project_setup_contracts.rs"]
+mod project_setup_contracts;
 #[path = "contracts/review_artifact_contracts.rs"]
 mod review_artifact_contracts;
 #[path = "contracts/role_contracts.rs"]

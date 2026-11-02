@@ -12,6 +12,11 @@ date: 2026-10-28
 
 Accepted
 
+Partly superseded, 2026-11-01: the whole definition lives in
+`<project>/.spark/definitions/`, which is not a separate Git repository; its
+changelog records each change (ORG-025, ORG-031). Working data, including role
+memory, lives in `<project>/.spark/state/`.
+
 ## Context
 
 Only part of an organization's definition is in its org repo today: the

@@ -452,6 +452,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),

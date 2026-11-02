@@ -5,7 +5,7 @@ role: adversarial-reviewer
 contracts:
   reads_context:
   - internal.org_root
-  - context.request.source_ref
+  - context.request.proposal_path
   - context.request.objective
   writes_context:
   - context.review.verdict
@@ -16,7 +16,7 @@ routes:
   condition: outcome=success
 ---
 
-Under review: a change to the organization, on branch context.request.source_ref in the org repo at internal.org_root. Do not modify any files. Take the diff against its merge base with the org repo's checked-out branch (git -C <org repo> merge-base HEAD <ref>), and read the files it touches and the rest of the organization's spec, roles and operator brief, so that you judge the change against the whole organization, not the diff alone. context.request.objective says why the change is needed; it is a claim, so check it against the evidence it cites.
+Under review: a proposed change to the organization, the unified diff at context.request.proposal_path, against the live definitions at internal.org_root. Do not modify any files. Read the diff, the current files it touches, and the rest of the organization's spec, roles and operator brief, so that you judge the change against the whole organization, not the diff alone. Check that the diff applies cleanly to the live definitions (`git apply --check <proposal>` from the project root) and touches nothing outside them; a diff that does not apply or reaches outside the definitions is revise. context.request.objective says why the change is needed; it is a claim, so check it against the evidence it cites.
 
 Lean toward fewer, more general rules. Every rule, step, check and role the organization adds is carried by its agents from then on, and an organization that answers each failure with a new rule accumulates process for edge cases. An addition has to earn its place. Ask these questions in order and stop at the first one the change fails:
 

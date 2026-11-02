@@ -367,7 +367,6 @@ pub fn load_flow(roots: &FlowRoots, flow_name: &str) -> Result<LoadedFlow, FlowS
         manifest: FlowManifest {
             sessions: authored.sessions(),
             files,
-            org: roots.org_state(),
             spark_version: env!("CARGO_PKG_VERSION").to_string(),
         },
     })

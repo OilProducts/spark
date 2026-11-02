@@ -30,7 +30,6 @@ use spark_agent_adapter::{
     CodergenChildInterventionRequest, CodergenChildInterventionResult,
     CodergenSessionInterventionBroker,
 };
-use spark_common::project::commit_org_paths;
 use spark_common::settings::SparkSettings;
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
@@ -327,7 +326,7 @@ pub struct SaveFlowRequest {
     pub flow: Option<FlowDefinition>,
     #[serde(default)]
     pub files: Option<Vec<FlowFileText>>,
-    /// The project whose org repo the save writes into.
+    /// The project whose definitions the save writes into.
     #[serde(default)]
     pub project_path: Option<String>,
 }
@@ -1463,7 +1462,7 @@ impl AttractorApiService {
         }
     }
 
-    /// The roots flows resolve through for `project_path`: its org repo,
+    /// The roots flows resolve through for `project_path`: its definitions,
     /// then the bundled library; none means bundled only.
     pub fn flow_roots(&self, project_path: Option<&str>) -> FlowRoots {
         flow_roots(&self.settings, project_path)
@@ -1522,7 +1521,7 @@ impl AttractorApiService {
         let Some(project_path) = trimmed_option(req.project_path.as_deref()) else {
             return RuntimeRouteResponse::json(
                 400,
-                json!({"detail": "project_path is required: saves write into a project's org repo."}),
+                json!({"detail": "project_path is required: saves write into a project's definitions."}),
             );
         };
         let roots = self.flow_roots(Some(&project_path));
@@ -1556,15 +1555,10 @@ impl AttractorApiService {
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(
-            &roots,
-            Path::new(&project_path),
-            req.name,
-            |dir| match &files {
-                Some(files) => write_flow_files(dir, files),
-                None => write_flow_dir(dir, &flow).map(|_| ()),
-            },
-        )
+        save_flow_request(&roots, req.name, |dir| match &files {
+            Some(files) => write_flow_files(dir, files),
+            None => write_flow_dir(dir, &flow).map(|_| ()),
+        })
     }
 
     /// Deletes a project's copy of a flow, which reverts it to the bundled
@@ -1581,41 +1575,40 @@ impl AttractorApiService {
                 json!({"detail": format!("{} is a bundled flow; bundled flows cannot be deleted.", resolved.name)}),
             );
         }
-        let org = roots.org.clone().unwrap_or_default();
-        // Set the copy aside (inside .git, so git ignores it) until the
-        // deletion commits, and put it back if the commit fails.
-        // Nest it by name, so namespaced flows (`team/flow`) set aside too.
-        let aside = org.join(".git/spark-deleting").join(&resolved.name);
-        let _ = fs::remove_dir_all(&aside);
-        let result = aside
-            .parent()
-            .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| fs::rename(&resolved.path, &aside))
-            .map_err(|error| error.to_string())
-            .and_then(|()| {
-                commit_org_paths(
-                    &org,
-                    &[format!(
-                        ":(literal){}",
-                        resolved
-                            .path
-                            .strip_prefix(&org)
-                            .unwrap_or(&resolved.path)
-                            .to_string_lossy()
-                    )],
-                    &format!("Delete {} in the flow editor", resolved.name),
-                )
-                .inspect_err(|_| {
-                    let _ = fs::rename(&aside, &resolved.path);
-                })
-            })
-            .map(|()| {
-                let _ = fs::remove_dir_all(&aside);
-            });
-        match result {
-            Ok(()) => RuntimeRouteResponse::json(200, json!({"status": "deleted"})),
-            Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error})),
+        // Only a real directory inside `<definitions>/flows` is deleted: no
+        // symlinked flow, and no symlinked namespace or flows root leading out.
+        let definitions = roots.org.clone().unwrap_or_default();
+        let contained = resolved.path.parent().is_some_and(|parent| {
+            match (parent.canonicalize(), definitions.canonicalize()) {
+                (Ok(parent), Ok(definitions)) => parent.starts_with(definitions.join("flows")),
+                _ => false,
+            }
+        }) && fs::symlink_metadata(&resolved.path).is_ok_and(|meta| meta.is_dir());
+        if !contained {
+            return RuntimeRouteResponse::json(
+                400,
+                json!({"detail": format!("{} leads outside the project's flows.", resolved.name)}),
+            );
         }
+        let project = Path::new(project_path.unwrap_or_default().trim());
+        // Moving the copy into a fresh directory under state deletes it at
+        // once; removing it from there may then fail without undoing that.
+        let staging = match stage_for_deletion(project) {
+            Ok(staging) => staging,
+            Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
+        };
+        if let Err(error) = fs::rename(&resolved.path, staging.join("flow")) {
+            let _ = fs::remove_dir(&staging);
+            return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+        }
+        if let Err(error) = fs::remove_dir_all(&staging) {
+            eprintln!(
+                "Deleted flow {} is left at {}: {error}",
+                resolved.name,
+                staging.display()
+            );
+        }
+        RuntimeRouteResponse::json(200, json!({"status": "deleted"}))
     }
 
     pub fn list_llm_profiles(&self) -> RuntimeRouteResponse {
@@ -3217,12 +3210,10 @@ fn dispatch_pipeline_route(
     }
 }
 
-/// Writes the changed files of a flow into the project's org repo and
-/// commits them. Saving a bundled flow first copies it into the org and
-/// commits the copy unmodified.
+/// Writes the changed files of a flow into the project's definitions.
+/// Saving a bundled flow the project lacks first copies it there.
 fn save_flow_request(
     roots: &FlowRoots,
-    project: &Path,
     name: String,
     write: impl FnOnce(&Path) -> std::result::Result<(), FlowSourceError>,
 ) -> RuntimeRouteResponse {
@@ -3230,11 +3221,11 @@ fn save_flow_request(
         Ok(name) => name,
         Err(error) => return flow_source_error_response(error),
     };
-    let org = match spark_common::project::ensure_org_repo(project) {
-        Ok(org) => org,
-        Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
-    };
-    let flows_dir = org.join("flows");
+    let flows_dir = roots
+        .org
+        .as_ref()
+        .expect("roots for a project have an org")
+        .join("flows");
     let flow_path = match roots.org_flow_path(&name) {
         Ok(Some(path)) => path,
         Ok(None) => unreachable!("roots for a project have an org"),
@@ -3255,67 +3246,20 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    // Every flow file the editor owns (the directory's own `.md` files, which
-    // it writes, copies and deletes), so a retry records what a failed commit
-    // left behind; other files, and the reserved ones, are not the editor's.
-    let dir = flow_path
-        .strip_prefix(&org)
-        .unwrap_or(&flow_path)
-        .to_string_lossy()
-        .to_string();
-    let mut escaped = String::new();
-    for c in dir.chars() {
-        if "\\*?[".contains(c) {
-            escaped.push('\\');
-        }
-        escaped.push(c);
-    }
-    let mut pathspecs = vec![format!(":(glob){escaped}/*.md")];
-    pathspecs.extend(
-        attractor_dsl::RESERVED_FILES
-            .iter()
-            .map(|file| format!(":(exclude,literal){dir}/{file}")),
-    );
-    // The first save of a bundled flow commits the unmodified copy first, so
-    // the copy's first commit is exactly the bundled version it came from.
-    // Until HEAD holds the copy (say its commit failed), a save that finds
-    // the bundled files still unmodified on disk recopies them. A project
-    // flow whose files differ is the project's own, never replaced by a copy.
-    let committed = spark_common::project::run_git(
-        &org,
-        &["cat-file", "-e", &format!("HEAD:{dir}/{FLOW_FILE}")],
-    )
-    .is_ok();
-    if !committed {
+    // The first save of a bundled flow edits a copy of it.
+    if !flow_path.join(FLOW_FILE).is_file() {
         let bundled = FlowRoots::new(roots.bundled.clone(), None)
             .find_flow(&name)
             .ok()
-            .flatten()
-            .filter(|bundled| {
-                let Ok(texts) = attractor_dsl::read_flow_dir_texts(&flow_path) else {
-                    return !flow_path.join(FLOW_FILE).is_file();
-                };
-                attractor_dsl::read_flow_dir_texts(&bundled.path).is_ok_and(|bundled| {
-                    bundled
-                        .iter()
-                        .all(|(file, text)| texts.get(file) == Some(text))
-                })
-            });
+            .flatten();
         if let Some(bundled) = bundled {
-            if let Err(error) = copy_flow_files(&bundled.path, &flow_path).and_then(|()| {
-                commit_org_paths(&org, &pathspecs, &format!("Copy {name} from bundled"))
-            }) {
+            if let Err(error) = copy_flow_files(&bundled.path, &flow_path) {
                 return RuntimeRouteResponse::json(500, json!({"detail": error}));
             }
         }
     }
     if let Err(error) = write(&flow_path) {
         return flow_source_error_response(error);
-    }
-    if let Err(error) =
-        commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
-    {
-        return RuntimeRouteResponse::json(500, json!({"detail": error}));
     }
     RuntimeRouteResponse::json(
         200,
@@ -3351,6 +3295,25 @@ fn overlay_flow_files(
 
 /// Makes `target`'s flow files exactly `source`'s: copies each and removes
 /// any other flow file.
+/// A new, empty directory under `<project>/.spark/state/tmp`, kept when
+/// its handle drops.
+fn stage_for_deletion(project: &Path) -> std::result::Result<PathBuf, String> {
+    let reject_symlink = |path: &Path| match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_symlink() => Err(format!("{} is a symlink", path.display())),
+        _ => Ok(()),
+    };
+    reject_symlink(&project.join(".spark/state"))?;
+    let tmp = spark_common::project::state_dir(project)?.join("tmp");
+    reject_symlink(&tmp)?;
+    fs::create_dir_all(&tmp)
+        .map_err(|error| format!("Unable to create {}: {error}", tmp.display()))?;
+    tempfile::Builder::new()
+        .prefix("deleting-")
+        .tempdir_in(&tmp)
+        .map(tempfile::TempDir::keep)
+        .map_err(|error| format!("Unable to stage in {}: {error}", tmp.display()))
+}
+
 fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
     let texts =
         attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;

@@ -22,8 +22,8 @@ Every action the organization takes SHALL be classified by its effect:
 | Class | What it covers | Examples |
 |---|---|---|
 | **Observe** | Reading only; changes nothing | Reading files, querying an API, checking a device's state |
-| **Internal** | Changes that stay inside the org repo or the project, whether or not they can be undone | Editing or deleting files, updating or deleting working data, clearing caches and build output, writing logs and records, committing to the org repo |
-| **External** | Anything that reaches people, money, devices or systems outside the org repo and the project | Sending a message, spending money, placing a bid, actuating a device, deploying, pushing to a shared remote |
+| **Internal** | Changes that stay inside the organization's `.spark/` directory or the project, whether or not they can be undone | Editing or deleting files, updating or deleting working data, clearing caches and build output, writing logs and records, editing the definitions |
+| **External** | Anything that reaches people, money, devices or systems outside the organization's `.spark/` directory and the project | Sending a message, spending money, placing a bid, actuating a device, deploying, pushing to a shared remote |
 
 - Rationale: a single rule for "changes" cannot tell a branch edit from a
   purchase, and the difference is what matters for authority. The line is
@@ -113,4 +113,4 @@ unless the operator brief records the operator's approval of that change.
   ORG-012 made the operator's role visibility. Accepted by the operator,
   2026-10-28: "I also agree with the entirety of what you said for #1 and #2."
   (ADR-0010).
-- Verification: Inspection (org repo history against the operator brief).
+- Verification: Inspection (the changelog against the operator brief).

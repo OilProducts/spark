@@ -14,17 +14,10 @@ fn definition() -> TriggerDefinition {
     })).unwrap()
 }
 
-/// The project's trigger repository, its org repo given a git identity since
-/// every write commits.
+/// The project's trigger repository.
 fn repository(root: &std::path::Path) -> TriggerDefinitionRepository {
     let project = root.join("project");
-    let org = spark_common::project::ensure_org_repo(&project).unwrap();
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        spark_common::project::run_git(&org, &["config", key, value]).unwrap();
-    }
+    std::fs::create_dir_all(&project).unwrap();
     TriggerRepositories::new(root.join("config"), root.join("data"))
         .definitions(&project.to_string_lossy())
         .unwrap()

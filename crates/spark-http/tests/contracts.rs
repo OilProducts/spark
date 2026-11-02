@@ -1,3 +1,6 @@
+#[path = "contracts/isolated_home.rs"]
+mod isolated_home;
+pub(crate) use isolated_home::isolate_home;
 #[path = "contracts/deprecated_route_error_contracts.rs"]
 mod deprecated_route_error_contracts;
 #[path = "contracts/product_shell_contracts.rs"]

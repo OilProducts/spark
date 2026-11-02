@@ -134,8 +134,8 @@ impl Harness {
             .unwrap();
     }
     fn org_role(&self, name: &str, text: &str) {
-        let roles =
-            spark_common::project::org_dir(std::path::Path::new(&self.project)).join("roles");
+        let roles = spark_common::project::definitions_dir(std::path::Path::new(&self.project))
+            .join("roles");
         std::fs::create_dir_all(&roles).unwrap();
         std::fs::write(roles.join(format!("{name}.md")), text).unwrap();
     }
@@ -182,8 +182,8 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
         role.contains("standing Coordinator (coordinator)"),
         "{role}"
     );
-    assert!(role.contains("memory/coordinator"));
-    assert!(role.contains("Only the Chief of Staff role changes files in the org repo"));
+    assert!(role.contains(".spark/state/memory/coordinator"));
+    assert!(role.contains("Only the Chief of Staff role changes files in the definitions"));
     let chat = frame(&harness.user_turn("chat-1"));
     assert!(
         chat.starts_with("You are the Spark workspace assistant."),
@@ -192,7 +192,7 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     assert!(chat.contains("Org changes"), "{chat}");
     assert!(!chat.contains(NEVER_CHANGE), "{chat}");
     assert!(!chat.contains("standing Coordinator ("), "{chat}");
-    assert!(chat.contains("memory/coordinator"));
+    assert!(chat.contains(".spark/state/memory/coordinator"));
     assert!(chat.contains("never edit it"));
     let missions = WorkspaceMissionService::new(harness.settings.clone());
     let mission = missions
@@ -731,5 +731,47 @@ fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
     for unsafe_name in ["../outside", ".hidden", "a/b"] {
         assert!(harness.roles.start(&harness.project, unsafe_name).is_err());
         assert!(harness.roles.get(&harness.project, unsafe_name).is_err());
+    }
+}
+
+#[test]
+fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted() {
+    let harness = Harness::new();
+    let project = std::path::Path::new(&harness.project);
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    git(&["init", "-q"]);
+    spark_workspace::initialize_project(project).unwrap();
+    let state = project.join(".spark/state");
+    let memory = state.join("memory/coordinator");
+    for (turn, pass) in ["fresh", "after state deletion"].into_iter().enumerate() {
+        assert!(!state.exists(), "{pass}");
+        harness.message(COORDINATOR, "Note what you know.");
+        let role = frame(&harness.request(turn));
+        assert!(role.contains(&memory.display().to_string()), "{pass}");
+        assert_eq!(
+            std::fs::read_to_string(state.join(".gitignore")).unwrap(),
+            "*\n",
+            "{pass}"
+        );
+        // The memory the frame tells the role to create.
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("index.md"), "---\ntype: Memory\n---\n").unwrap();
+        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
+        assert!(!status.contains(".spark/state"), "{pass}: {status}");
+        assert!(
+            status.contains("?? .spark/definitions/README.md"),
+            "{pass}: {status}"
+        );
+        harness.finish_turn(COORDINATOR);
+        std::fs::remove_dir_all(&state).unwrap();
     }
 }

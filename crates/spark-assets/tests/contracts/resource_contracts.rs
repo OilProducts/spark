@@ -303,7 +303,7 @@ fn role_files_declare_standing_and_its_budget() {
 }
 
 #[test]
-fn agent_org_seed_is_packaged_whole_and_supplies_the_setup_playbook() {
+fn agent_org_seed_is_packaged_whole_without_a_setup_playbook() {
     fn collect(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
         for entry in fs::read_dir(dir).expect("seed dir") {
             let path = entry.expect("entry").path();
@@ -328,22 +328,15 @@ fn agent_org_seed_is_packaged_whole_and_supplies_the_setup_playbook() {
         .iter()
         .any(|(name, _)| name == "standards/rfc2119.txt"));
 
+    assert!(!packaged.iter().any(|(name, _)| name == "playbook.md"));
+
     let playbooks = spark_assets::playbooks::assets();
-    let setup = playbooks
-        .iter()
-        .filter(|(name, _)| name == "agent-org-setup.md")
-        .collect::<Vec<_>>();
-    assert_eq!(setup.len(), 1);
-    assert_eq!(
-        setup[0].1.as_bytes(),
-        fs::read(root.join("playbook.md")).expect("playbook")
-    );
     assert_eq!(
         playbooks
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        ["agent-org-setup.md", "bug-report.md"]
+        ["bug-report.md"]
     );
 }
 
@@ -408,6 +401,118 @@ fn agent_org_seed_declares_packaged_flows_and_fillable_templates() {
                 &rest[start..end + 2]
             );
             rest = &rest[end + 2..];
+        }
+    }
+}
+
+#[test]
+fn organization_review_takes_a_state_diff_and_roles_set_nothing_up_unasked() {
+    let flow = json!(bundled_flow("organization/review-change"));
+    let inputs = flow["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| input["key"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inputs,
+        ["context.request.proposal_path", "context.request.objective"]
+    );
+    assert!(flow["inputs"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains(".spark/state/reviews/"));
+    let review = &flow["nodes"]["review"];
+    assert_eq!(review["role"], json!("adversarial-reviewer"));
+    assert_eq!(
+        review["contracts"]["reads_context"],
+        json!([
+            "internal.org_root",
+            "context.request.proposal_path",
+            "context.request.objective"
+        ])
+    );
+    assert_eq!(
+        review["contracts"]["writes_context"],
+        json!(["context.review.verdict", "context.review.summary"])
+    );
+    let prompt = review["config"]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Do not modify any files"));
+    assert!(prompt.contains("Reject a change that widens what the organization may do"));
+
+    let role = |file: &str| {
+        spark_assets::roles::assets()
+            .into_iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file}"))
+            .1
+    };
+    let chief = role("chief-of-staff.md");
+    for expected in [
+        ".spark/state/reviews/",
+        "context.request.proposal_path",
+        "only when the operator asks",
+        "Create no triggers",
+    ] {
+        assert!(chief.contains(expected), "{expected}");
+    }
+    for file in ["chief-of-staff.md", "coordinator.md", "assistant.md"] {
+        let text = role(file);
+        for stale in [
+            "spark trigger create",
+            "first turn",
+            "agent-org-setup",
+            "--profile",
+            "worktree add",
+            "org repo",
+        ] {
+            assert!(!text.contains(stale), "{file}: {stale}");
+        }
+    }
+}
+
+/// No bundled instruction uses the old nested organization repository or
+/// writes ignore rules outside `.spark/state/`. Historical seed decisions keep
+/// their original wording under a superseding note.
+#[test]
+fn bundled_instructions_keep_working_data_under_state() {
+    let mut texts = Vec::new();
+    for name in flows::starter_flow_names().expect("names") {
+        for (file, text) in flows::starter_flow_files(&name).expect("files") {
+            texts.push((format!("flows/{name}/{file}"), text));
+        }
+    }
+    for (file, text) in spark_assets::roles::assets() {
+        texts.push((format!("roles/{file}"), text));
+    }
+    for (file, text) in spark_assets::playbooks::assets() {
+        texts.push((format!("playbooks/{file}"), text));
+    }
+    for name in guides::guide_names() {
+        let guide = guides::load_guide(&name).expect("guide");
+        texts.push((
+            format!("guides/{name}"),
+            guide.text().expect("utf-8").to_string(),
+        ));
+    }
+    for (path, bytes) in agent_org::files() {
+        if !path.starts_with("decisions/") && !path.starts_with("standards/") {
+            texts.push((
+                format!("seed/{path}"),
+                String::from_utf8(bytes.to_vec()).unwrap(),
+            ));
+        }
+    }
+    for (path, text) in &texts {
+        for stale in [
+            ".spark/agent-org",
+            ".spark/.gitignore",
+            ".spark/checkouts",
+            ".spark/integrations",
+            ".spark/spec-implementation",
+            "spark org init --project <path> --profile",
+        ] {
+            assert!(!text.contains(stale), "{path}: {stale}");
         }
     }
 }
@@ -767,6 +872,21 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(result["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".spark/state/integrations/merge-check"));
+        assert_eq!(
+            fs::read_to_string(repo.join(".spark/state/.gitignore")).unwrap(),
+            "*\n"
+        );
+        assert!(!repo.join(".spark/.gitignore").exists());
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(status.stdout).unwrap(), "");
         assert_eq!(
             result["conflict_count"],
             if scenario == "clean" { 0 } else { 1 }
@@ -802,7 +922,7 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
                     .count(),
                 2
             );
-            assert!(!repo.join(".spark/integrations/merge-check").exists());
+            assert!(!repo.join(".spark/state/integrations/merge-check").exists());
         }
     }
 }
@@ -943,11 +1063,21 @@ fn change_workspace_carries_only_the_request_and_preserves_retry_content() {
     assert_eq!(result["source_dirty"], true);
     let checkout = Path::new(result["path"].as_str().unwrap());
     assert_eq!(
+        checkout,
+        repo.join(".spark/state/checkouts/request-handoff")
+    );
+    assert_eq!(
         fs::read(checkout.join(artifact)).unwrap(),
         b"approved request\n"
     );
     assert!(!checkout.join("unrelated.txt").exists());
+    let ignore = repo.join(".spark/state/.gitignore");
+    assert_eq!(fs::read_to_string(&ignore).unwrap(), "*\n");
+    assert!(!repo.join(".spark/.gitignore").exists());
+    // An existing state ignore file is the operator's and is left alone.
+    fs::write(&ignore, "*\n# kept\n").unwrap();
     assert!(prepare().status.success());
+    assert_eq!(fs::read_to_string(&ignore).unwrap(), "*\n# kept\n");
     fs::write(checkout.join(artifact), "retained checkout request").unwrap();
     let conflict = prepare();
     assert!(!conflict.status.success());
@@ -998,7 +1128,7 @@ fn change_workspace_rejects_missing_and_escaping_request_paths() {
         let output = prepare_change_workspace(&repo, "invalid-request", artifact);
         assert!(!output.status.success(), "{artifact}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("task artifact:"));
-        assert!(!repo.join(".spark/checkouts/invalid-request").exists());
+        assert!(!repo.join(".spark/state/checkouts/invalid-request").exists());
     }
     #[cfg(unix)]
     {
@@ -1024,7 +1154,7 @@ fn change_workspace_rejects_destination_symlinks_without_writing_outside() {
         .success());
     fs::create_dir(repo.join("changes")).unwrap();
     fs::write(repo.join("changes/request.md"), "approved request").unwrap();
-    let checkout = repo.join(".spark/checkouts/destination-link");
+    let checkout = repo.join(".spark/state/checkouts/destination-link");
     std::os::unix::fs::symlink(temp.path(), checkout.join("changes")).unwrap();
     let output = prepare_change_workspace(&repo, "destination-link", "changes/request.md");
     assert!(!output.status.success());

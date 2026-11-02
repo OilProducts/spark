@@ -2622,6 +2622,7 @@ fn latest_journal_sequence(settings: &SparkSettings, run_id: &str) -> u64 {
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),
@@ -2641,16 +2642,8 @@ fn settings(root: &Path) -> SparkSettings {
     }
 }
 
-/// Registers the project and gives its org repo a git identity, since every
-/// trigger write commits.
+/// Registers the project so triggers can be written in it.
 fn trigger_project(settings: &SparkSettings, project: &Path) {
-    let org = spark_common::project::ensure_org_repo(project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Live Test"),
-        ("user.email", "live@example.com"),
-    ] {
-        spark_common::project::run_git(&org, &["config", key, value]).expect("git config");
-    }
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project.to_string_lossy())
         .expect("register project");

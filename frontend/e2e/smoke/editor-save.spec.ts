@@ -4,8 +4,8 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
 
-// A project's flows and roles live in its org repo.
-const orgDir = (projectPath: string) => path.join(projectPath, '.spark', 'agent-org')
+// A project's flows and roles live in its definitions.
+const orgDir = (projectPath: string) => path.join(projectPath, '.spark', 'definitions')
 
 const flowFiles = (projectPath: string, flowName: string) => {
   const flowDir = path.join(orgDir(projectPath), 'flows', flowName)

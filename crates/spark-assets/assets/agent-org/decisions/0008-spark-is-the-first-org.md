@@ -12,6 +12,10 @@ date: 2026-10-28
 
 Accepted
 
+Partly superseded, 2026-11-01: an organization's files live in
+`<project>/.spark/definitions/`, not in a separate org repository, and are
+installed when the project is registered (ADR-0004).
+
 ## Context
 
 The operator wants Spark to be self-consistent. Spark's own development already

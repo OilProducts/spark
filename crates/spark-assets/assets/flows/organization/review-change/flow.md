@@ -2,13 +2,13 @@
 type: Flow
 id: review_organization_change
 title: Review Organization Change
-description: Review a change to the organization's spec, roles, flows, playbooks or triggers on an org repo branch, biased toward fewer and more general rules, and return approve, revise or reject.
+description: Review a proposed change to the organization's spec, roles, flows, playbooks or triggers, given as a unified diff of the project's .spark/definitions, biased toward fewer and more general rules, and return approve, revise or reject.
 schema_version: '1'
 inputs:
-- key: context.request.source_ref
-  label: Source Ref
+- key: context.request.proposal_path
+  label: Proposal
   type: string
-  description: Branch in the org repo holding the change; the diff is taken against its merge base with the org repo's checked-out branch.
+  description: Path of a unified diff under the project's .spark/state/reviews/ holding the proposed change to .spark/definitions, with paths relative to the project root.
   required: true
 - key: context.request.objective
   label: Reason
@@ -21,4 +21,4 @@ defaults:
   reasoning_effort: xhigh
 ---
 
-Review a change to the organization's spec, roles, flows, playbooks or triggers on an org repo branch, biased toward fewer and more general rules, and return approve, revise or reject.
+Review a proposed change to the organization's spec, roles, flows, playbooks or triggers, given as a unified diff of the project's .spark/definitions, biased toward fewer and more general rules, and return approve, revise or reject.

@@ -26,17 +26,6 @@ pub(crate) fn project(settings: &SparkSettings) -> String {
     std::fs::create_dir_all(&settings.project_root).unwrap();
     settings.project_root.to_str().unwrap().to_string()
 }
-/// Gives the project's org repo a git identity, since trigger writes commit.
-fn trigger_org(project: &str) -> std::path::PathBuf {
-    let org = spark_common::project::ensure_org_repo(std::path::Path::new(project)).unwrap();
-    for (key, value) in [
-        ("user.name", "Mission Test"),
-        ("user.email", "mission@example.com"),
-    ] {
-        spark_common::project::run_git(&org, &["config", key, value]).unwrap();
-    }
-    org
-}
 pub(crate) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done() {
@@ -411,7 +400,7 @@ fn playbooks_resolve_through_the_missions_project_then_bundled() {
         .unwrap();
     };
     let org_playbooks = |project: &str| {
-        spark_common::project::org_dir(std::path::Path::new(project)).join("playbooks")
+        spark_common::project::definitions_dir(std::path::Path::new(project)).join("playbooks")
     };
     let bundled = harness.settings.bundled_dir().join("playbooks");
     write(&bundled, "bug-report", "Bundled bug report");
@@ -485,8 +474,8 @@ fn playbooks_resolve_through_the_missions_project_then_bundled() {
 #[test]
 fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
     let harness = Harness::new();
-    let playbooks =
-        spark_common::project::org_dir(std::path::Path::new(&harness.project)).join("playbooks");
+    let playbooks = spark_common::project::definitions_dir(std::path::Path::new(&harness.project))
+        .join("playbooks");
     std::fs::create_dir_all(&playbooks).unwrap();
     let file = playbooks.join("bug-report.md");
     std::fs::write(
@@ -1543,7 +1532,6 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     let h = Harness::new();
     let mission = h.create(json!({"title": "Wait for outside work"}));
     let id = &mission.id;
-    let org = trigger_org(&h.project);
     let triggers = WorkspaceTriggerService::new(h.settings.clone());
     let action = json!({"mode": "mission", "mission_id": id});
     let create = |kind: &str, source: Value| {
@@ -1701,8 +1689,6 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
             serde_json::from_value(json!({"kind":"trigger.fired"})).unwrap()
         )
         .is_err());
-    let head = || spark_common::project::run_git(&org, &["rev-parse", "HEAD"]).unwrap();
-    let before_close = head();
     let closed = h
         .missions
         .close(
@@ -1712,7 +1698,6 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         )
         .unwrap();
     // Mission close disables through runtime state, never the definitions.
-    assert_eq!(head(), before_close);
     for trigger in [&webhook, &schedule, &flow, &poll] {
         assert!(!states.load(&trigger.id).unwrap().enabled);
         assert_eq!(
@@ -1779,7 +1764,6 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
             },
         );
         let mission = h.create(json!({"title": "Waiting mission"}));
-        trigger_org(&h.project);
         let triggers = WorkspaceTriggerService::new(h.settings.clone());
         let create = |name: &str, enabled: bool, mission_id: &str| {
             triggers
@@ -1875,7 +1859,6 @@ fn a_retried_webhook_delivery_reaches_the_mission_once() {
     h.wait_turns(1);
     h.agent.release(1);
     h.wait_idle(&mission.id);
-    trigger_org(&h.project);
     let triggers = WorkspaceTriggerService::new(h.settings.clone());
     let webhook = triggers
         .create_trigger(TriggerCreateRequest {

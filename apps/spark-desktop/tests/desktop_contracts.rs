@@ -1,3 +1,7 @@
+#[path = "../../../crates/spark-http/tests/contracts/isolated_home.rs"]
+mod isolated_home;
+use isolated_home::isolate_home;
+
 use std::fs;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -269,6 +273,7 @@ fn desktop_server_codex_smoke_persists_codex_app_server_backend_marker() {
 
 /// Points settings resolution at the test's data directory, never the real one.
 fn spark_home(paths: &DesktopPaths) -> std::collections::BTreeMap<String, String> {
+    isolate_home();
     [(
         "SPARK_HOME".to_string(),
         paths.data_dir.to_string_lossy().into_owned(),

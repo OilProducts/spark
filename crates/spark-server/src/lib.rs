@@ -830,7 +830,7 @@ fn run_serve_process(
 
 /// Wipes and rewrites `$SPARK_HOME/bundled/{flows,roles,playbooks}` from the packaged
 /// assets. The bundled library is read-only: projects override it in their
-/// org repos.
+/// `.spark/definitions`.
 fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), String> {
     let flows = spark_assets::flows::starter_flow_assets()
         .map_err(|error| format!("Packaged flow assets are unavailable: {error:?}"))?
