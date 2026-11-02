@@ -2,6 +2,8 @@
 mod activity_repository_contracts;
 #[path = "contracts/conversation_commit_contracts.rs"]
 mod conversation_commit_contracts;
+#[path = "contracts/conversation_database_contracts.rs"]
+mod conversation_database_contracts;
 #[path = "contracts/conversation_runtime_session_contracts.rs"]
 mod conversation_runtime_session_contracts;
 #[path = "contracts/storage_contracts.rs"]
