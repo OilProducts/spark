@@ -4,8 +4,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Result, SparkCommonError};
 
-pub const WRITABLE_DIRECTORY_PROBE: &str = ".writable-directory-probe";
-
 /// Environment lookup abstraction used by path and settings resolution tests.
 pub trait Environment {
     fn get_var(&self, key: &str) -> Option<String>;
@@ -74,26 +72,13 @@ pub fn detect_project_root() -> PathBuf {
     manifest_dir
 }
 
-pub fn ensure_writable_directory(path: impl AsRef<Path>, label: &str) -> Result<()> {
+pub fn ensure_directory(path: impl AsRef<Path>, label: &str) -> Result<()> {
     let target = normalize_path(path)?;
     std::fs::create_dir_all(&target).map_err(|source| SparkCommonError::DirectoryCreate {
         label: label.to_string(),
-        path: target.clone(),
-        source,
-    })?;
-
-    let probe = target.join(WRITABLE_DIRECTORY_PROBE);
-    std::fs::write(&probe, "ok").map_err(|source| SparkCommonError::DirectoryNotWritable {
-        label: label.to_string(),
-        path: target.clone(),
-        source,
-    })?;
-    std::fs::remove_file(&probe).map_err(|source| SparkCommonError::DirectoryNotWritable {
-        label: label.to_string(),
         path: target,
         source,
-    })?;
-    Ok(())
+    })
 }
 
 pub fn resolve_runtime_workspace_path(value: impl AsRef<str>) -> Result<String> {

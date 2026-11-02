@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::{Result, SparkCommonError};
 use crate::paths::{
-    detect_project_root, ensure_writable_directory, normalize_path, Environment, ProcessEnvironment,
+    detect_project_root, ensure_directory, normalize_path, Environment, ProcessEnvironment,
 };
 
 pub const ENV_HOME_DIR: &str = "SPARK_HOME";
@@ -615,13 +615,13 @@ pub fn resolve_settings_with_persisted(
 }
 
 pub fn validate_settings(settings: &SparkSettings) -> Result<()> {
-    ensure_writable_directory(&settings.config_dir, "config")?;
-    ensure_writable_directory(&settings.runtime_dir, "runtime")?;
-    ensure_writable_directory(&settings.logs_dir, "logs")?;
-    ensure_writable_directory(&settings.workspace_dir, "workspace")?;
-    ensure_writable_directory(&settings.projects_dir, "projects")?;
-    ensure_writable_directory(&settings.attractor_dir, "attractor")?;
-    ensure_writable_directory(&settings.runs_dir, "runs")?;
+    ensure_directory(&settings.config_dir, "config")?;
+    ensure_directory(&settings.runtime_dir, "runtime")?;
+    ensure_directory(&settings.logs_dir, "logs")?;
+    ensure_directory(&settings.workspace_dir, "workspace")?;
+    ensure_directory(&settings.projects_dir, "projects")?;
+    ensure_directory(&settings.attractor_dir, "attractor")?;
+    ensure_directory(&settings.runs_dir, "runs")?;
     if let Some(ui_dir) = settings.ui_dir.as_deref() {
         if !ui_dir.join("index.html").exists() {
             return Err(SparkCommonError::InvalidUiDirectory(ui_dir.to_path_buf()));
