@@ -24,6 +24,7 @@ use crate::subagents::{
     SubAgentWorker,
 };
 use crate::tools::{ToolDispatchContext, ToolDispatchEvent, ToolHostControlHook, ToolHostControls};
+use unified_llm_adapter::native::stable_json;
 use unified_llm_adapter::ToolCall;
 
 pub const LOOP_DETECTION_WARNING: &str = "Repeated tool-call loop detected. Try a different approach instead of repeating the same tool calls.";
@@ -1955,17 +1956,19 @@ pub fn detect_loop(history: &[HistoryTurn], loop_detection_window: u32) -> bool 
 
 pub fn tool_call_signature(tool_call: &ToolCall) -> ToolCallSignature {
     let arguments = if tool_call.arguments.is_null() {
-        tool_call
-            .raw_arguments
-            .as_deref()
-            .map(canonicalize_raw_arguments)
-            .unwrap_or(Value::Null)
+        stable_json(
+            &tool_call
+                .raw_arguments
+                .as_deref()
+                .map(canonicalize_raw_arguments)
+                .unwrap_or(Value::Null),
+        )
     } else {
-        canonicalize_argument_value(&tool_call.arguments)
+        stable_json(&tool_call.arguments)
     };
     ToolCallSignature {
         name: tool_call.name.clone(),
-        arguments_hash: stable_digest(&stable_json(&arguments)),
+        arguments_hash: stable_digest(&arguments),
     }
 }
 
@@ -1982,50 +1985,7 @@ fn tool_call_signatures(history: &[HistoryTurn]) -> Vec<ToolCallSignature> {
 
 fn canonicalize_raw_arguments(raw_arguments: &str) -> Value {
     serde_json::from_str::<Value>(raw_arguments)
-        .map(|value| canonicalize_argument_value(&value))
         .unwrap_or_else(|_| Value::String(raw_arguments.to_string()))
-}
-
-fn canonicalize_argument_value(value: &Value) -> Value {
-    match value {
-        Value::String(_) => value.clone(),
-        Value::Array(values) => {
-            Value::Array(values.iter().map(canonicalize_argument_value).collect())
-        }
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .map(|(key, value)| (key.clone(), canonicalize_argument_value(value)))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-fn stable_json(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
-        Value::Array(values) => {
-            let items = values.iter().map(stable_json).collect::<Vec<_>>().join(",");
-            format!("[{items}]")
-        }
-        Value::Object(object) => {
-            let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-            let items = entries
-                .into_iter()
-                .map(|(key, value)| {
-                    let key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
-                    format!("{key}:{}", stable_json(value))
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{items}}}")
-        }
-    }
 }
 
 fn stable_digest(value: &str) -> String {

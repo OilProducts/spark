@@ -703,7 +703,7 @@ pub(super) fn json_compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
-pub(super) fn stable_json(value: &Value) -> String {
+pub fn stable_json(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(value) => value.to_string(),
