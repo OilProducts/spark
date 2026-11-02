@@ -1,3 +1,6 @@
+#[path = "../../spark-http/tests/contracts/isolated_home.rs"]
+mod isolated_home;
+pub(crate) use isolated_home::isolate_home;
 #[path = "process_contracts/cli_process_contracts.rs"]
 mod cli_process_contracts;
 #[path = "process_contracts/cli_shell_contracts.rs"]

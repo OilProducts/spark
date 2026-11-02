@@ -340,6 +340,8 @@ impl RunningServer {
         let data_dir_text = data_dir.to_string_lossy().into_owned();
         let ui_dir_text = ui_dir.to_string_lossy().into_owned();
         let mut command = Command::new(env!("CARGO_BIN_EXE_spark-server"));
+        // Home's setup writes under HOME; keep it in the test root.
+        command.env("HOME", root);
         configure(&mut command);
         let mut child = command
             .args([

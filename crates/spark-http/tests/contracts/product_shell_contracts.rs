@@ -254,6 +254,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn settings_with_project_root(root: &Path, project_root: PathBuf) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         project_root,
         ..settings(root)
@@ -261,6 +262,7 @@ fn settings_with_project_root(root: &Path, project_root: PathBuf) -> SparkSettin
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),

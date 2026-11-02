@@ -862,6 +862,7 @@ fn project(settings: &SparkSettings, name: &str) -> String {
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),

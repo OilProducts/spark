@@ -393,6 +393,7 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),

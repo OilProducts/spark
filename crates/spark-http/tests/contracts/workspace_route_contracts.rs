@@ -326,6 +326,205 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
 }
 
 #[tokio::test]
+async fn registering_a_project_installs_its_definitions_once() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app(settings.clone());
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project_path = project.to_string_lossy().into_owned();
+    let definitions = project.join(".spark/definitions");
+
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_path})),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    for path in [
+        ".initialized",
+        "README.md",
+        "flows/organization/review-change/flow.md",
+        "roles/coordinator.md",
+        "playbooks/bug-report.md",
+        "profiles/software/spec.md",
+    ] {
+        assert!(definitions.join(path).is_file(), "{path}");
+    }
+    assert!(!project.join(".spark/state").exists());
+
+    // Once initialized, files Spark would add (here, one the operator
+    // removed) stay out, however often the project is registered again.
+    fs::remove_file(definitions.join("roles/coordinator.md")).unwrap();
+    fs::write(definitions.join("README.md"), "ours\n").unwrap();
+    let again = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_path})),
+    )
+    .await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    assert!(!definitions.join("roles/coordinator.md").exists());
+    assert_eq!(
+        fs::read_to_string(definitions.join("README.md")).unwrap(),
+        "ours\n"
+    );
+}
+
+#[tokio::test]
+async fn rejected_registrations_install_nothing_and_record_nothing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app(settings.clone());
+    let file = temp.path().join("file");
+    fs::write(&file, "").unwrap();
+    let unprofiled = temp.path().join("unprofiled");
+    fs::create_dir_all(&unprofiled).unwrap();
+
+    for body in [
+        json!({"project_path": temp.path().join("missing").to_string_lossy()}),
+        json!({"project_path": file.to_string_lossy()}),
+        json!({"project_path": unprofiled.to_string_lossy(), "execution_profile_id": "missing"}),
+    ] {
+        let rejected = request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/projects/register",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(
+            rejected.0,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            rejected.1
+        );
+    }
+    assert!(!temp.path().join("missing").exists());
+    assert!(!unprofiled.join(".spark").exists());
+    let projects = request_json(app, "GET", "/workspace/api/projects", None).await;
+    let listed = projects.1.as_array().expect("projects");
+    assert!(
+        listed
+            .iter()
+            .all(|project| project["display_name"] == "Home"),
+        "{}",
+        projects.1
+    );
+}
+
+#[tokio::test]
+async fn startup_sets_up_home_without_touching_spark_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    crate::isolate_home();
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+    // Spark's default SPARK_HOME is ~/.spark, beside Home's own definitions.
+    let spark_home = home.join(".spark");
+    let mut settings = settings(temp.path());
+    settings.data_dir = spark_home.clone();
+    settings.config_dir = spark_home.join("config");
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    let config_files = [
+        ("spark.toml", "[server]\n"),
+        ("settings.toml", "# global settings\n"),
+        (
+            "execution-profiles.toml",
+            "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+        ),
+        ("client-settings.json", "{}\n"),
+    ];
+    for (name, text) in config_files {
+        fs::write(settings.config_dir.join(name), text).unwrap();
+    }
+
+    let app = build_app(settings.clone());
+    assert!(spark_home.join("definitions/.initialized").is_file());
+    assert!(spark_home
+        .join("definitions/flows/organization/review-change/flow.md")
+        .is_file());
+    let projects = request_json(app, "GET", "/workspace/api/projects", None).await;
+    assert_eq!(
+        projects.1[0]["project_path"],
+        home.to_string_lossy().as_ref(),
+        "{}",
+        projects.1
+    );
+    let mut names = fs::read_dir(&settings.config_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    let mut expected = config_files.map(|(name, _)| name.to_string()).to_vec();
+    expected.sort();
+    assert_eq!(names, expected);
+    for (name, text) in config_files {
+        assert_eq!(
+            fs::read_to_string(settings.config_dir.join(name)).unwrap(),
+            text
+        );
+    }
+}
+
+#[test]
+fn home_setup_failure_does_not_stop_the_app() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join(".spark")).unwrap();
+    // A file where Home's definitions directory belongs blocks its setup.
+    fs::write(home.join(".spark/definitions"), "").unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "workspace_route_contracts::home_setup_failure_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("HOME", &home)
+        .env("SPARK_TEST_HOME_SET", "1")
+        .env("SPARK_TEST_ROOT", temp.path())
+        .output()
+        .expect("child test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{output:?}"
+    );
+    assert!(
+        stderr.contains("Unable to set up the Home project")
+            && stderr.contains(&home.join(".spark/definitions").display().to_string()),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "run by home_setup_failure_does_not_stop_the_app"]
+async fn home_setup_failure_child() {
+    let Some(root) = std::env::var_os("SPARK_TEST_ROOT") else {
+        return;
+    };
+    let root = Path::new(&root);
+    let app = build_app(settings(root));
+    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
+    assert_eq!(projects.0, StatusCode::OK);
+    assert_eq!(projects.1, json!([]));
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let registered = request_json(
+        app,
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project.to_string_lossy()})),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    assert!(project.join(".spark/definitions/.initialized").is_file());
+}
+
+#[tokio::test]
 async fn home_project_is_default_and_lists_span_projects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
@@ -644,6 +843,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
 }
 
 fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),
@@ -1572,20 +1772,26 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
         "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
     )
     .unwrap();
+    let project = temp.path().join("revision");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().into_owned();
     let app = build_app(settings.clone());
     let registered = request_json(
         app.clone(),
         "POST",
         "/workspace/api/projects/register",
-        Some(json!({"project_path":"/projects/revision"})),
+        Some(json!({"project_path":project})),
     )
     .await;
     assert_eq!(registered.0, StatusCode::OK);
-    let uri = "/workspace/api/settings?project_path=%2Fprojects%2Frevision";
+    let uri = &format!(
+        "/workspace/api/settings?project_path={}",
+        project.replace('/', "%2F")
+    );
     let read = request_json(app.clone(), "GET", uri, None).await.1;
     let revision = read["execution"]["revision"].clone();
     let file = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .project_paths("/projects/revision")
+        .project_paths(&project)
         .unwrap()
         .project_file;
     let original = fs::read(&file).unwrap();
@@ -1594,13 +1800,14 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
             app.clone(),
             "PATCH",
             "/workspace/api/projects/state",
-            Some(json!({"project_path":"/projects/revision", "execution_profile_id":value})),
+            Some(json!({"project_path":project, "execution_profile_id":value})),
         )
         .await;
         assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{rejected:?}");
         assert_eq!(fs::read(&file).unwrap(), original);
     }
-    let payload = json!({"project_path":"/projects/revision", "execution_profile_id":"dev", "expected_revision":revision});
+    let payload =
+        json!({"project_path":project, "execution_profile_id":"dev", "expected_revision":revision});
     let saved = request_json(
         app.clone(),
         "PATCH",
@@ -1625,19 +1832,19 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
         app.clone(),
         "POST",
         "/workspace/api/projects/register",
-        Some(json!({"project_path":"/projects/revision", "execution_profile_id":"dev"})),
+        Some(json!({"project_path":project, "execution_profile_id":"dev"})),
     )
     .await;
     assert_eq!(reopen.0, StatusCode::BAD_REQUEST);
     assert_eq!(fs::read(&file).unwrap(), committed);
-    let unchanged = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":"/projects/revision"}}))).await;
+    let unchanged = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":project}}))).await;
     assert_eq!(unchanged.0, StatusCode::OK);
     assert_eq!(
         unchanged.1["execution"]["revision"],
         read["execution"]["revision"]
     );
     assert_eq!(fs::read(&file).unwrap(), committed);
-    let cleared = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":"/projects/revision", "execution_profile_id":null}}))).await;
+    let cleared = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":project, "execution_profile_id":null}}))).await;
     assert_eq!(cleared.0, StatusCode::OK, "{cleared:?}");
     assert!(cleared.1["execution"]["stored"].is_null());
     assert_eq!(cleared.1["execution"]["source"], "workspace");

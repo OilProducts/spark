@@ -1,3 +1,6 @@
+#[path = "contracts/isolated_home.rs"]
+mod isolated_home;
+pub(crate) use isolated_home::isolate_home;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[path = "process_contracts/workspace_live_sse_contracts.rs"]

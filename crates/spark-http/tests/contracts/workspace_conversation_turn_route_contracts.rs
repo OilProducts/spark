@@ -1382,6 +1382,7 @@ fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
 }
 
 pub(super) fn settings(root: &Path) -> SparkSettings {
+    crate::isolate_home();
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),
