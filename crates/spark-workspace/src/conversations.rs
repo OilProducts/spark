@@ -805,18 +805,26 @@ impl WorkspaceConversationService {
         project_path: &str,
         conversation_id: &str,
         handle: &str,
-    ) -> String {
+    ) -> WorkspaceResult<String> {
         if let Some(mission) = crate::missions::WorkspaceMissionService::new(self.settings.clone())
             .conversation_mission(project_path, conversation_id)
         {
-            return crate::missions::mission_frame(&mission, handle);
+            return Ok(crate::missions::mission_frame(&mission, handle));
         }
         if let Some(role) = crate::roles::WorkspaceRoleService::new(self.settings.clone())
             .conversation_role(project_path, conversation_id)
         {
-            return crate::roles::role_frame(&self.settings, &role, handle);
+            // The role creates its memory under state, so state ignores
+            // itself before the role can write there.
+            spark_common::project::state_dir(Path::new(&role.project_path))
+                .map_err(WorkspaceError::Internal)?;
+            return Ok(crate::roles::role_frame(&self.settings, &role, handle));
         }
-        workspace_assistant_frame(&self.settings, project_path, handle)
+        Ok(workspace_assistant_frame(
+            &self.settings,
+            project_path,
+            handle,
+        ))
     }
 
     fn attach_model_settings(&self, snapshot: &mut Value) -> WorkspaceResult<()> {
@@ -1420,7 +1428,7 @@ impl WorkspaceConversationService {
                 .as_str()
                 .filter(|handle| !handle.is_empty()),
         )?;
-        let instructions = self.conversation_frame(&project_path, conversation_id, &handle);
+        let instructions = self.conversation_frame(&project_path, conversation_id, &handle)?;
         let instructions_sha256 = spark_common::project::sha256_hex(instructions.as_bytes());
         // Providers that resume a thread keep its first instructions, so a change is announced once.
         let instructions_changed = snapshot["turns"]

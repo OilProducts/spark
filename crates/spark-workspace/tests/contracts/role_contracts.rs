@@ -733,3 +733,45 @@ fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
         assert!(harness.roles.get(&harness.project, unsafe_name).is_err());
     }
 }
+
+#[test]
+fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted() {
+    let harness = Harness::new();
+    let project = std::path::Path::new(&harness.project);
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    git(&["init", "-q"]);
+    spark_workspace::initialize_project(project).unwrap();
+    let state = project.join(".spark/state");
+    let memory = state.join("memory/coordinator");
+    for (turn, pass) in ["fresh", "after state deletion"].into_iter().enumerate() {
+        assert!(!state.exists(), "{pass}");
+        harness.message(COORDINATOR, "Note what you know.");
+        let role = frame(&harness.request(turn));
+        assert!(role.contains(&memory.display().to_string()), "{pass}");
+        assert_eq!(
+            std::fs::read_to_string(state.join(".gitignore")).unwrap(),
+            "*\n",
+            "{pass}"
+        );
+        // The memory the frame tells the role to create.
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("index.md"), "---\ntype: Memory\n---\n").unwrap();
+        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
+        assert!(!status.contains(".spark/state"), "{pass}: {status}");
+        assert!(
+            status.contains("?? .spark/definitions/README.md"),
+            "{pass}: {status}"
+        );
+        harness.finish_turn(COORDINATOR);
+        std::fs::remove_dir_all(&state).unwrap();
+    }
+}
