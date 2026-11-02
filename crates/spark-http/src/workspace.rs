@@ -1274,8 +1274,7 @@ async fn patch_settings(
         spark_workspace::settings::WorkspaceSettingsSection::ExecutionProfiles(_) => {
             ("workspace", "execution_profiles", None)
         }
-        spark_workspace::settings::WorkspaceSettingsSection::ClientPreferences { .. }
-        | spark_workspace::settings::WorkspaceSettingsSection::ImportClientPreferences { .. } => {
+        spark_workspace::settings::WorkspaceSettingsSection::ClientPreferences { .. } => {
             ("client", "preferences", None)
         }
         spark_workspace::settings::WorkspaceSettingsSection::ProjectExecution {
@@ -1285,8 +1284,7 @@ async fn patch_settings(
         spark_workspace::settings::WorkspaceSettingsSection::Runtime(_) => {
             ("workspace", "runtime", None)
         }
-        spark_workspace::settings::WorkspaceSettingsSection::Models(_)
-        | spark_workspace::settings::WorkspaceSettingsSection::ImportModels(_) => {
+        spark_workspace::settings::WorkspaceSettingsSection::Models(_) => {
             ("workspace", "models", None)
         }
         spark_workspace::settings::WorkspaceSettingsSection::UtilityModels(_) => {

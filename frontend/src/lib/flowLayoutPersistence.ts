@@ -1,6 +1,5 @@
 import { useStore } from '@/store'
-import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
-import { loadAndMigrateClientPreferences, LEGACY_LAYOUT_PREFIX, LAYOUT_CACHE_PREFIX } from '@/features/settings/services/clientPreferencesMigration'
+import { completePreferenceInteraction, fetchClientPreferences } from '@/features/settings/services/clientPreferences'
 import type { CanvasViewportState } from '@/state/store-types'
 
 import type { EdgeRoute, RouteSide } from './edgeRouting'
@@ -23,7 +22,7 @@ export type SavedFlowLayoutV1 = {
     viewport?: CanvasViewportState | null
 }
 
-const SAVED_FLOW_LAYOUT_STORAGE_PREFIX = LEGACY_LAYOUT_PREFIX
+const LAYOUT_CACHE_PREFIX = 'spark.flow_layout_cache.v1:'
 
 function isRouteSide(value: unknown): value is RouteSide {
     return value === 'top' || value === 'right' || value === 'bottom' || value === 'left'
@@ -139,13 +138,13 @@ function normalizeSavedLayout(raw: unknown): SavedFlowLayoutV1 | null {
     }
 }
 
-export function buildSavedFlowLayoutStorageKey(
+export function buildFlowLayoutKey(
     projectPath: string | null,
     flowName: string,
     canvasKind: FlowCanvasKind,
 ): string {
     const normalizedProjectPath = (projectPath ?? '__workspace__').trim() || '__workspace__'
-    return `${SAVED_FLOW_LAYOUT_STORAGE_PREFIX}${normalizedProjectPath}:${flowName}:${canvasKind}`
+    return `${normalizedProjectPath}:${flowName}:${canvasKind}`
 }
 
 export async function loadSavedFlowLayout(
@@ -157,23 +156,12 @@ export async function loadSavedFlowLayout(
         return null
     }
 
-    const legacyKey = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind)
-    const key = legacyKey.slice(LEGACY_LAYOUT_PREFIX.length)
+    const key = buildFlowLayoutKey(projectPath, flowName, canvasKind)
     if (!useStore.getState().clientPreferencesLoaded && !useStore.getState().clientFlowNodePositions[key]) {
         try {
-            const view = await loadAndMigrateClientPreferences()
+            const view = await fetchClientPreferences()
             useStore.setState({ clientFlowNodePositions: view.effective.flow_node_positions ?? {}, clientFlowEdgePorts: view.effective.flow_edge_ports ?? {} })
-        } catch {
-            // The controller reports migration/load failures. Preserve accessible legacy data.
-            const raw = window.localStorage.getItem(legacyKey)
-            if (raw) {
-                try {
-                    const layout = normalizeSavedLayout(JSON.parse(raw))
-                    if (layout) useStore.setState((state) => ({ clientFlowNodePositions: { ...state.clientFlowNodePositions, [key]: layout.nodePositions } }))
-                    return layout
-                } catch { return null }
-            }
-        }
+        } catch { /* The controller reports load failures. */ }
     }
     const nodePositions = useStore.getState().clientFlowNodePositions[key]
     if (!nodePositions) return null
@@ -201,7 +189,7 @@ export function saveSavedFlowLayout(
         return
     }
 
-    const key = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind).slice(LEGACY_LAYOUT_PREFIX.length)
+    const key = buildFlowLayoutKey(projectPath, flowName, canvasKind)
     if (userControlled) {
         const positions = { ...useStore.getState().clientFlowNodePositions, [key]: layout.nodePositions }
         const ports = { ...useStore.getState().clientFlowEdgePorts, [key]: Object.fromEntries(Object.entries(layout.edgeLayouts).map(([id, edge]) => [id, {
@@ -224,8 +212,7 @@ export function clearSavedFlowLayout(
         return
     }
 
-    const legacyKey = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind)
-    const key = legacyKey.slice(LEGACY_LAYOUT_PREFIX.length)
+    const key = buildFlowLayoutKey(projectPath, flowName, canvasKind)
     const positions = { ...useStore.getState().clientFlowNodePositions }
     delete positions[key]
     const ports = { ...useStore.getState().clientFlowEdgePorts }

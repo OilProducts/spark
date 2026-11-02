@@ -63,10 +63,10 @@ pub fn update_settings_sections<'a>(
         return Err(StorageError::SettingsConflict { path: path.into() });
     }
     for (section, value) in sections {
-        if section.is_empty() || matches!(section, "schema_version" | "browser_migration_version") {
+        if section.is_empty() || section == "schema_version" {
             return Err(invalid(
                 path,
-                "A settings section is required; version markers are migration-owned.",
+                "A settings section is required; schema_version is not editable.",
             ));
         }
         match value {
@@ -259,18 +259,6 @@ pub fn load_core_settings(core: &Path) -> Result<SettingsDocument> {
     Ok(document)
 }
 
-fn backup_migration_source(path: &Path, suffix: &str, bytes: &[u8]) -> Result<()> {
-    let backup = sidecar(path, suffix);
-    match read_bytes(&backup)? {
-        Some(existing) if existing != bytes => Err(invalid(
-            path,
-            "Migration backup differs from the original; resolve the backup before retrying.",
-        )),
-        Some(_) => Ok(()),
-        None => write_atomic(&backup, bytes),
-    }
-}
-
 pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
     validate_core_version(path, values)?;
     let document = SettingsDocument {
@@ -348,22 +336,6 @@ pub fn validate_core_version(path: &Path, values: &toml::Table) -> Result<()> {
     }
 }
 
-/// Called while the document update lock is held, after validating the candidate.
-pub fn backup_settings_before_import(path: &Path) -> Result<()> {
-    let Some(bytes) = read_bytes(path)? else {
-        return Ok(());
-    };
-    let backup = sidecar(path, ".browser-defaults-v0.bak");
-    match read_bytes(&backup)? {
-        Some(existing) if existing != bytes => Err(invalid(
-            path,
-            "Settings import backup differs; resolve the backup before retrying.",
-        )),
-        Some(_) => Ok(()),
-        None => write_atomic(&backup, &bytes),
-    }
-}
-
 /// Resolve authored defaults at launch time, including edits made since startup.
 /// Domain callers validate provider/profile compatibility before starting work.
 pub fn read_project_model_defaults(
@@ -427,97 +399,6 @@ pub fn read_execution_configuration(
             .map_err(|error| invalid(&path, error.to_string()))?,
         agents,
     })
-}
-
-/// One-time browser import under the client document lock. Existing fields win.
-pub fn import_client_preferences(
-    path: &Path,
-    expected_revision: &str,
-    preferences: &spark_common::settings::ClientPreferences,
-) -> Result<SettingsDocument> {
-    preferences
-        .validate()
-        .map_err(|error| invalid(path, error.to_string()))?;
-    let _lock = lock_document(path)?;
-    let mut document = read_settings_document(path)?;
-    if !matches!(
-        document.values.get("schema_version"),
-        None | Some(toml::Value::Integer(1))
-    ) {
-        return Err(invalid(path, "Unsupported client settings version."));
-    }
-    if !matches!(
-        document.values.get("browser_migration_version"),
-        None | Some(toml::Value::Integer(0 | 1))
-    ) {
-        return Err(invalid(
-            path,
-            "Unsupported browser preference migration version.",
-        ));
-    }
-
-    match document
-        .values
-        .get("browser_migration_version")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(0)
-    {
-        1 => return Ok(document),
-        0 => (),
-        _ => {
-            return Err(invalid(
-                path,
-                "Unsupported browser preference migration version.",
-            ))
-        }
-    }
-    if document.revision != expected_revision {
-        return Err(StorageError::SettingsConflict { path: path.into() });
-    }
-    let existing: spark_common::settings::ClientPreferences =
-        document.section(path, "preferences")?.unwrap_or_default();
-    existing
-        .validate()
-        .map_err(|error| invalid(path, error.to_string()))?;
-    let mut imported = toml::Value::try_from(preferences)
-        .map_err(|_| invalid(path, "Invalid client preferences."))?
-        .as_table()
-        .cloned()
-        .unwrap_or_default();
-    if let Some(existing) = document
-        .values
-        .get("preferences")
-        .and_then(toml::Value::as_table)
-    {
-        for (key, value) in existing {
-            if matches!(key.as_str(), "flow_node_positions" | "flow_edge_ports") {
-                if let (Some(incoming), Some(authoritative)) = (
-                    imported.get_mut(key).and_then(toml::Value::as_table_mut),
-                    value.as_table(),
-                ) {
-                    incoming.extend(authoritative.clone());
-                    continue;
-                }
-            }
-            imported.insert(key.clone(), value.clone());
-        }
-    }
-    let combined: spark_common::settings::ClientPreferences = toml::Value::Table(imported.clone())
-        .try_into()
-        .map_err(|_| invalid(path, "Invalid client preferences."))?;
-    combined
-        .validate()
-        .map_err(|error| invalid(path, error.to_string()))?;
-    if let Some(bytes) = read_bytes(path)? {
-        backup_migration_source(path, ".browser-import-v0.bak", &bytes)?;
-    }
-    document
-        .values
-        .insert("preferences".into(), toml::Value::Table(imported));
-    document
-        .values
-        .insert("browser_migration_version".into(), 1.into());
-    persist(path, &document.values)
 }
 
 /// Target for a new CLI using this configuration home (an explicit CLI flag wins before this).

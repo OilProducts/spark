@@ -53,7 +53,6 @@ export interface ClientPreferences {
 }
 export interface ClientPreferencesView {
     client_id: string
-    browser_migration_version?: number
     revision: string
     stored: ClientPreferences
     effective: ClientPreferences & { editor_mode: EditorMode; editor_sidebar_width: number }
@@ -61,7 +60,6 @@ export interface ClientPreferencesView {
 export function parseClientPreferences(payload: unknown, endpoint: string): ClientPreferencesView {
     const record = expectObjectRecord(expectObjectRecord(payload, endpoint).preferences, endpoint)
     if (record.scope !== 'client') throw new ApiSchemaError(endpoint, 'Expected client scope.')
-    if (record.browser_migration_version != null && record.browser_migration_version !== 0 && record.browser_migration_version !== 1) throw new ApiSchemaError(endpoint, 'Unsupported browser preference migration version.')
     const preferences = (value: unknown): ClientPreferences => {
         const fields = expectObjectRecord(value, endpoint)
         // An unknown stored mode (such as the retired raw mode) reads as the default.
@@ -111,7 +109,7 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
     }
     const effective = preferences(record.effective)
     if (effective.editor_sidebar_width === null) throw new ApiSchemaError(endpoint, 'Missing effective preferences.')
-    return { browser_migration_version: typeof record.browser_migration_version === 'number' ? record.browser_migration_version : 0, client_id: expectString(record.client_id, endpoint, 'client_id'), revision: expectString(record.revision, endpoint, 'revision'),
+    return { client_id: expectString(record.client_id, endpoint, 'client_id'), revision: expectString(record.revision, endpoint, 'revision'),
         stored: preferences(record.stored), effective: { ...effective, editor_mode: effective.editor_mode ?? 'structured', editor_sidebar_width: effective.editor_sidebar_width } }
 }
 export async function fetchClientPreferences(): Promise<ClientPreferencesView> {

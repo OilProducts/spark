@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
-import { loadAndMigrateModelDefaults } from './services/modelDefaultsMigration'
+import { fetchModelSettings } from '@/lib/api/settingsApi'
 
 export function ModelDefaultsController() {
     const [error, setError] = useState('')
     useEffect(() => {
         let cancelled = false
         const refresh = () => {
-            void loadAndMigrateModelDefaults().then(({ effective }) => {
+            void fetchModelSettings().then(({ effective }) => {
                 if (cancelled) return
                 if (!effective) { setError('Workspace model defaults are invalid. Repair them in Settings.'); return }
                 useStore.getState().setUiDefaults({ llm_provider: effective.provider ?? '', llm_profile: effective.llm_profile ?? '',

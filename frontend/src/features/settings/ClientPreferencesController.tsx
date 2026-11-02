@@ -1,4 +1,3 @@
-import { loadAndMigrateClientPreferences } from './services/clientPreferencesMigration'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { applyTheme } from '@/lib/theme'
@@ -30,7 +29,7 @@ export function ClientPreferencesController() {
         const refresh = () => {
             if (pending.current || draft.current) return
             const base = saved.current
-            void loadAndMigrateClientPreferences().then((value) => {
+            void fetchClientPreferences().then((value) => {
                 if (!cancelled && saved.current === base && !pending.current && !draft.current) { apply(value); setError('') }
             }).catch(() => { if (!cancelled && saved.current === base && !pending.current && !draft.current) setError('Unable to load client preferences.') })
         }

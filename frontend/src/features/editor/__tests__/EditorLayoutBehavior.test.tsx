@@ -6,7 +6,7 @@ import {
 } from '@/features/editor/services/editorPreview'
 import { buildFlowLayoutFromNodesAndEdges } from '@/lib/flowLayout'
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayoutConstants'
-import { buildSavedFlowLayoutStorageKey, type SavedFlowLayoutV1 } from '@/lib/flowLayoutPersistence'
+import { buildFlowLayoutKey, saveSavedFlowLayout, type SavedFlowLayoutV1 } from '@/lib/flowLayoutPersistence'
 import { routeFixedNodeGraph, type EdgeRoute } from '@/lib/edgeRouting'
 import * as flowPersistence from '@/lib/flowPersistence'
 import { useStore } from '@/store'
@@ -265,14 +265,14 @@ const buildSavedLayout = (
 ).layout
 
 // Flow layouts belong to the flow, whichever project a chat has open.
-const storageKeyFor = (flowName: string) => buildSavedFlowLayoutStorageKey(
+const layoutKeyFor = (flowName: string) => buildFlowLayoutKey(
   null,
   flowName,
   'editor-parent-only',
 )
 
 const readSavedLayout = (flowName: string): SavedFlowLayoutV1 =>
-  ({ ...JSON.parse(window.localStorage.getItem(storageKeyFor(flowName).replace('spark.saved_flow_layout.v1:', 'spark.flow_layout_cache.v1:')) ?? '{}'), nodePositions: useStore.getState().clientFlowNodePositions[storageKeyFor(flowName).slice('spark.saved_flow_layout.v1:'.length)] }) as SavedFlowLayoutV1
+  ({ ...JSON.parse(window.localStorage.getItem(`spark.flow_layout_cache.v1:${layoutKeyFor(flowName)}`) ?? '{}'), nodePositions: useStore.getState().clientFlowNodePositions[layoutKeyFor(flowName)] }) as SavedFlowLayoutV1
 
 const currentNodePosition = (nodeId: string) => {
   const node = reactFlowHarness.latestProps?.nodes.find((entry) => entry.id === nodeId)
@@ -335,7 +335,7 @@ describe('Editor layout behavior', () => {
       },
       [{ from: 'a', to: 'b' }],
     )
-    window.localStorage.setItem(storageKeyFor('flow-a.dot'), JSON.stringify(savedLayout))
+    saveSavedFlowLayout(null, 'flow-a.dot', 'editor-parent-only', savedLayout)
     usePreviewMap({ 'flow-a.dot': preview })
     queueElkLayout({
       a: { x: 0, y: 0 },
@@ -395,7 +395,7 @@ describe('Editor layout behavior', () => {
       { x: 460, y: 60 },
       { x: 340, y: 60 },
     ]
-    window.localStorage.setItem(storageKeyFor('flow-a.dot'), JSON.stringify(savedLayout))
+    saveSavedFlowLayout(null, 'flow-a.dot', 'editor-parent-only', savedLayout)
     usePreviewMap({ 'flow-a.dot': preview })
     queueElkLayout({
       a: { x: 0, y: 0 },
@@ -668,7 +668,7 @@ describe('Editor layout behavior', () => {
       },
       [{ from: 'a', to: 'b' }],
     )
-    window.localStorage.setItem(storageKeyFor('flow-a.dot'), JSON.stringify(initialSavedLayout))
+    saveSavedFlowLayout(null, 'flow-a.dot', 'editor-parent-only', initialSavedLayout)
     usePreviewMap({ 'flow-a.dot': preview })
     queueElkLayout({
       a: { x: 0, y: 0 },
@@ -706,7 +706,7 @@ describe('Editor layout behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Reset saved layout' }))
 
     await waitFor(() => {
-      expect(removeItemSpy).toHaveBeenCalledWith(storageKeyFor('flow-a.dot').replace('spark.saved_flow_layout.v1:', 'spark.flow_layout_cache.v1:'))
+      expect(removeItemSpy).toHaveBeenCalledWith(`spark.flow_layout_cache.v1:${layoutKeyFor('flow-a.dot')}`)
       expect(currentNodePosition('a')).toEqual({ x: 140, y: 10 })
       expect(currentNodePosition('b')).toEqual({ x: 500, y: 10 })
       const persistedLayout = readSavedLayout('flow-a.dot')
@@ -726,7 +726,7 @@ describe('Editor layout behavior', () => {
       },
       [{ from: 'start', to: 'manager' }],
     )
-    window.localStorage.setItem(storageKeyFor('flow-a.dot'), JSON.stringify(parentLayout))
+    saveSavedFlowLayout(null, 'flow-a.dot', 'editor-parent-only', parentLayout)
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({
       name: flowName,
       files: [],
