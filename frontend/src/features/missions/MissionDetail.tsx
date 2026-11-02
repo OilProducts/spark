@@ -1,7 +1,7 @@
 import { useStore } from '@/store'
 import { fetchTriggerListValidated, triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import { Check, MoreHorizontal, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,7 @@ import type { ModelSettings } from '@/lib/api/settingsApi'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { flowTitle, formatCompactCount } from '@/features/runs/model/runOverviewModel'
 import { projectLabel } from '@/features/projects/model/projectChoices'
+import { CONVERSATION_BOTTOM_THRESHOLD_PX } from '@/features/projects/hooks/useHomeSidebarLayout'
 
 type Props = {
     mission: Mission; project: string; busy: boolean; error: string; narrow: boolean; focusRequest: number
@@ -90,6 +91,14 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const runs: MissionRun[] = joinRuns(mission.runs ?? [], scopedRuns)
     const runsById = new Map(runs.map(run => [run.runId, run]))
     const tokens = totalTokens(runs)
+    // Like project chats, the conversation follows new content while the operator sits at the bottom of whichever element scrolls.
+    const scroller = useRef<HTMLDivElement>(null)
+    const pinned = useRef(true)
+    useLayoutEffect(() => {
+        const node = scroller.current
+        if (node && pinned.current) node.scrollTop = node.scrollHeight
+    }, [mission, conversation.snapshot, narrow])
+    const follow = { ref: scroller, onScroll: ({ currentTarget: node }: UIEvent<HTMLDivElement>) => { pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight <= CONVERSATION_BOTTOM_THRESHOLD_PX } }
     async function openModel() {
         setActionError('')
         try {
@@ -173,9 +182,9 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             </div>
         </header>
         {(error || actionError) && <div className="shrink-0 px-6 pt-4"><InlineError>{error || actionError}</InlineError></div>}
-        <div data-testid="mission-body" className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
+        <div data-testid="mission-body" {...(narrow ? follow : {})} className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
             <div data-testid="mission-conversation" className={`flex min-w-0 flex-col ${narrow ? '' : 'min-h-0 flex-1'}`}>
-                <div className={`px-6 py-5 ${narrow ? '' : 'min-h-0 flex-1 overflow-y-auto'}`}>
+                <div {...(narrow ? {} : follow)} className={`px-6 py-5 ${narrow ? '' : 'min-h-0 flex-1 overflow-y-auto'}`}>
                     <div className="flex max-w-3xl flex-col gap-5 text-sm">
                         {closed && mission.closed && <Well role="region" aria-label="Outcome" className="flex flex-col gap-2.5">
                             <div className="flex flex-wrap items-center gap-2">

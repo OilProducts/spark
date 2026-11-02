@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
@@ -665,4 +665,85 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     fireEvent.click(link)
     expect(screen.getByTestId('trigger-row-watcher')).toBe(row)
     expect(row).toHaveTextContent('Disabled')
+})
+
+/** Gives every element the same scroll geometry, with a clamped scrollTop of its own; jsdom lays nothing out. */
+function scrollGeometry(clientHeight: number, scrollHeight: number) {
+    const tops = new WeakMap<Element, number>()
+    const geometry = { scrollHeight }
+    Object.defineProperties(HTMLElement.prototype, {
+        clientHeight: { configurable: true, get: () => clientHeight },
+        scrollHeight: { configurable: true, get: () => geometry.scrollHeight },
+        scrollTop: { configurable: true, get() { return tops.get(this) ?? 0 }, set(value: number) { tops.set(this, Math.max(0, Math.min(value, geometry.scrollHeight - clientHeight))) } },
+    })
+    onTestFinished(() => { for (const key of ['clientHeight', 'scrollHeight', 'scrollTop']) delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key] })
+    return geometry
+}
+/** The conversation's scrolling element: its own pane when wide, the whole body when narrow. */
+const conversationScroller = () => window.innerWidth > 1024 ? detail().getByTestId('mission-conversation').firstElementChild as HTMLElement : detail().getByTestId('mission-body')
+/** Grows the conversation with a longer assistant reply delivered by a live snapshot event. */
+async function grow(geometry: { scrollHeight: number }, scrollHeight: number, reply: string) {
+    geometry.scrollHeight = scrollHeight
+    snapshot = conversation([turn('a1', 'assistant', 'Working on it.'), turn('u1', 'user', 'Keep going'), turn('a2', 'assistant', reply)])
+    await act(async () => { window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { conversationId: 'task-1' } })) })
+    expect(await detail().findByText(reply)).toBeInTheDocument()
+}
+
+it('follows the reply to the bottom after the operator sends a message', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    snapshot = conversation([turn('a1', 'assistant', 'Working on it.')])
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    await detail().findByText('Working on it.')
+    const geometry = scrollGeometry(200, 400)
+    const scroller = conversationScroller()
+    scroller.scrollTop = 200
+    fireEvent.change(detail().getByLabelText('Reply'), { target: { value: 'Keep going' } })
+    fireEvent.click(detail().getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(calls.at(-1)?.body).toEqual({ kind: 'human.message', payload: { message: 'Keep going' } }))
+    await grow(geometry, 600, 'First part of the answer.')
+    expect(scroller.scrollTop).toBe(400)
+    await grow(geometry, 800, 'First part of the answer, and the rest of it.')
+    expect(scroller.scrollTop).toBe(600)
+})
+
+it.each([['wide', 1440], ['narrow', 1024]])('keeps a scrolled-away position on the %s layout until the operator returns to the bottom', async (_, width) => {
+    window.innerWidth = width
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    snapshot = conversation([turn('a1', 'assistant', 'Working on it.')])
+    const geometry = scrollGeometry(200, 400)
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    await detail().findByText('Working on it.')
+    const scroller = conversationScroller()
+    expect(scroller.scrollTop).toBe(200)
+    scroller.scrollTop = 50
+    fireEvent.scroll(scroller)
+    await grow(geometry, 600, 'More output.')
+    expect(scroller.scrollTop).toBe(50)
+    scroller.scrollTop = 400
+    fireEvent.scroll(scroller)
+    await grow(geometry, 800, 'Even more output.')
+    expect(scroller.scrollTop).toBe(600)
+})
+
+it('starts an opened or switched mission at the bottom', async () => {
+    const a = mission({ id: 'a', status: 'running', conversation_id: 'conv-a', started_at: 't', fields: { ...fields, title: 'Mission A' } })
+    const b = mission({ id: 'b', status: 'running', conversation_id: 'conv-b', started_at: 't', fields: { ...fields, title: 'Mission B' } })
+    const snapshots: Record<string, unknown> = { 'conv-a': conversation([turn('a1', 'assistant', 'Working on A.')]), 'conv-b': conversation([turn('b1', 'assistant', 'Working on B.')]) }
+    vi.mocked(fetch).mockImplementation(async url => {
+        const id = /conversations\/([^/?]+)/.exec(String(url))?.[1]
+        return { ok: true, json: async () => id ? snapshots[id] : { missions: [a, b] } } as Response
+    })
+    scrollGeometry(200, 400)
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Mission A' }))
+    await detail().findByText('Working on A.')
+    const scroller = conversationScroller()
+    expect(scroller.scrollTop).toBe(200)
+    scroller.scrollTop = 0
+    fireEvent.scroll(scroller)
+    fireEvent.click(screen.getByRole('button', { name: 'Mission B' }))
+    await detail().findByText('Working on B.')
+    expect(conversationScroller().scrollTop).toBe(200)
 })
