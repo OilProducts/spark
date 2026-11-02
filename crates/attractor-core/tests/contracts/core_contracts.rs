@@ -797,6 +797,39 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
         .iter()
         .any(|(rule, message)| rule == "session" && message.contains("invalid session name")));
 
+    // `workdir_from` is only for agent tasks, and must be a valid context key.
+    let workdir = |a: serde_json::Value, b: serde_json::Value| json!({"start": {"kind": "start"}, "done": {"kind": "exit"}, "a": a, "b": b});
+    assert_eq!(
+        rules(
+            workdir(
+                agent(json!({"workdir_from": "context.workspace.path"}), json!({})),
+                agent(json!({}), json!({}))
+            ),
+            linear.clone()
+        ),
+        Vec::new()
+    );
+    let diagnostics = rules(
+        workdir(
+            json!({"kind": "tool", "runtime": {"workdir_from": "context.workspace.path"},
+                "config": {"kind": "tool", "command": "true"}}),
+            agent(json!({"workdir_from": "invalid.namespace"}), json!({})),
+        ),
+        linear.clone(),
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|(rule, _)| rule == "workdir_from")
+            .count(),
+        2,
+        "{diagnostics:?}"
+    );
+    assert!(diagnostics
+        .iter()
+        .any(|(rule, message)| rule == "workdir_from"
+            && message.contains("only allowed on agent_task")));
+
     // Every output_map parent key must be declared in writes_context.
     let subflow = |writes: serde_json::Value| {
         json!({

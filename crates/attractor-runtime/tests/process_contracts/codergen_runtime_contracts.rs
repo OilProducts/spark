@@ -1357,3 +1357,96 @@ fn child_sessions_continue_per_subflow_node_across_reentries() {
         "h-5"
     );
 }
+
+/// Records the `project_path` each agent call runs in.
+#[derive(Clone, Default)]
+struct WorkdirBackend {
+    paths: Arc<Mutex<Vec<Option<std::path::PathBuf>>>>,
+}
+
+impl spark_agent_adapter::CodergenBackend for WorkdirBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        self.paths
+            .lock()
+            .unwrap()
+            .push(request.project_path.clone());
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Outcome(
+                attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success),
+            ),
+            events: Vec::new(),
+            usage: None,
+            resume_metadata: BTreeMap::new(),
+        })
+    }
+}
+
+#[test]
+fn agent_task_runs_in_the_directory_named_by_runtime_workdir_from() {
+    let temp = tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("ws")).unwrap();
+    let run = |workdir_from: Option<&str>, ws: Option<&str>| {
+        let mut task = agent_in(None);
+        if let Some(key) = workdir_from {
+            task["runtime"] = json!({"workdir_from": key});
+        }
+        let flow = session_flow(
+            json!({"start": {"kind": "start"}, "done": {"kind": "exit"}, "task": task}),
+            json!([{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]),
+        );
+        let launch = ws
+            .map(|ws| ContextMap::from([("context.ws".to_string(), json!(ws))]))
+            .unwrap_or_default();
+        let backend = WorkdirBackend::default();
+        let runner = RuntimeHandlerRunner::new().with_codergen_backend_factory({
+            let backend = backend.clone();
+            move || Box::new(backend.clone())
+        });
+        let result = attractor_runtime::PipelineExecutor::new(runner)
+            .execute(attractor_runtime::ExecuteRunRequest {
+                store: attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs")),
+                record: attractor_core::RunRecord::new(
+                    format!("run-workdir-{}", ws.unwrap_or("none")),
+                    temp.path().to_string_lossy(),
+                ),
+                flow,
+                flow_definition_json: None,
+                launch_context: attractor_core::LaunchContext::new(launch).unwrap(),
+                runtime_context: ContextMap::new(),
+                max_steps: None,
+                start: Default::default(),
+            })
+            .expect("run executes");
+        let paths = backend.paths.lock().unwrap().clone();
+        (result, paths)
+    };
+
+    // The resolved, canonical directory becomes the agent's project path.
+    let (result, paths) = run(Some("context.ws"), Some("ws"));
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(
+        paths,
+        vec![Some(std::fs::canonicalize(temp.path().join("ws")).unwrap())]
+    );
+
+    // Without the field the agent runs in the run's working directory.
+    let (result, paths) = run(None, Some("ws"));
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(paths, vec![Some(temp.path().to_path_buf())]);
+
+    // A missing key or directory fails the node before the agent runs.
+    for ws in [None, Some("missing")] {
+        let (result, paths) = run(Some("context.ws"), ws);
+        assert_eq!(result.status, "failed");
+        assert!(
+            result.failure_reason.contains("runtime.workdir_from"),
+            "{}",
+            result.failure_reason
+        );
+        assert!(paths.is_empty());
+    }
+}

@@ -26,8 +26,6 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "software-development/run-retrospective",
     "software-development/spec-implementation/implement-milestone",
     "software-development/spec-implementation/implement-spec",
-    "software-development/workers/implement-task",
-    "software-development/workers/resolve-merge-conflicts",
 ];
 
 #[test]
@@ -153,9 +151,7 @@ fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
         assert!(files.keys().all(|file| file.ends_with(".md")), "{name}");
         let flow = bundled_flow(name);
         let software_metadata = flow.metadata.get("software_development");
-        if name.starts_with("software-development/workers/")
-            || name.contains("/spec-implementation/implement-milestone")
-        {
+        if name.contains("/spec-implementation/implement-milestone") {
             assert_ne!(
                 software_metadata
                     .and_then(|value| value.get("launcher"))
@@ -241,8 +237,8 @@ fn bundled_flows_use_named_sessions_instead_of_fidelity() {
     let roots = attractor_dsl::FlowRoots::new(temp.path(), None);
     for (name, sessions) in [
         (
-            "software-development/workers/implement-task",
-            json!({"implementer": ["work"]}),
+            "software-development/implement-change",
+            json!({"implementer": ["implement"]}),
         ),
         (
             "software-development/design-change",
@@ -573,9 +569,7 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
         assert_eq!(node["runtime"]["max_visits"], json!(cap), "{flow}/{id}");
         let writes = node["contracts"]["writes_context"].as_array().unwrap();
         assert!(writes.contains(&contested), "{flow}/{id}");
-        if id != "implement" {
-            assert_eq!(node["role"], json!("author"), "{flow}/{id}");
-        }
+        assert_eq!(node["role"], json!("author"), "{flow}/{id}");
     }
     // The validation fix loop is bounded by diagnose_validation's visits, not a counter node.
     let implement_change = bundled_flow("software-development/implement-change");
@@ -586,16 +580,23 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
     assert!(!implement_change
         .nodes
         .contains_key("count_validate_attempt"));
-    let work = node("software-development/workers/implement-task", "work");
-    assert_eq!(work["role"], json!("author"));
-    assert!(work["contracts"]["writes_context"]
-        .as_array()
-        .unwrap()
-        .contains(&contested));
-    assert_eq!(
-        node("software-development/implement-change", "implement")["config"]["output_map"],
-        json!({"context.review.contested": "context.review.contested"})
-    );
+    // The implementer and conflict resolver are agent steps run in their worktree.
+    for (flow, id, key) in [
+        (
+            "software-development/implement-change",
+            "implement",
+            "context.workspace.path",
+        ),
+        (
+            "software-development/merge-change",
+            "resolve_conflicts",
+            "context.integration.path",
+        ),
+    ] {
+        let node = node(flow, id);
+        assert_eq!(node["kind"], json!("agent_task"), "{flow}/{id}");
+        assert_eq!(node["runtime"]["workdir_from"], json!(key), "{flow}/{id}");
+    }
     for (flow, id) in [
         ("software-development/implement-change", "evaluate"),
         (

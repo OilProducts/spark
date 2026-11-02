@@ -230,6 +230,11 @@ pub struct NodeRuntimeConfig {
     /// fresh session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// Context key (`workdir_from: context.workspace.path`) naming the
+    /// directory this agent_task node's agent runs in; same rules as
+    /// `manager.child_workdir_from`. Absent means the run's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -724,6 +729,21 @@ impl FlowDefinition {
                         format!("invalid session name '{session}'"),
                         node_id,
                     ));
+                }
+            }
+            if let Some(key) = node
+                .runtime
+                .as_ref()
+                .and_then(|r| r.workdir_from.as_deref())
+            {
+                if node.kind != NodeKind::AgentTask {
+                    diagnostics.push(node_diagnostic(
+                        "workdir_from",
+                        format!("workdir_from '{key}' is only allowed on agent_task nodes"),
+                        node_id,
+                    ));
+                } else if let Err(error) = validate_context_key(key) {
+                    diagnostics.push(node_diagnostic("workdir_from", format!("{error}"), node_id));
                 }
             }
             for (key, _) in node
