@@ -503,6 +503,69 @@ run_at = "2026-06-24T09:30:00Z"
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn stalled_poll_times_out_without_blocking_due_schedules() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings.clone());
+    // Accepts the connection, then never responds.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind server");
+    let url = format!("http://{}/items", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        let _held = listener.accept();
+        thread::sleep(StdDuration::from_secs(30));
+    });
+    for (name, source_type, source) in [
+        (
+            "Stalled poll",
+            "poll",
+            json!({"url": url, "interval_seconds": 60, "items_path": "items", "item_id_path": "id"}),
+        ),
+        (
+            "Due schedule",
+            "schedule",
+            json!({"kind": "once", "run_at": "2026-06-24T09:00:00Z"}),
+        ),
+    ] {
+        service
+            .create_trigger(TriggerCreateRequest {
+                project_path: project.clone(),
+                message: None,
+                name: name.to_string(),
+                enabled: true,
+                source_type: source_type.to_string(),
+                action: action(),
+                source: source.as_object().cloned().unwrap(),
+            })
+            .expect("create trigger");
+    }
+    let runtime = TriggerSourceRuntime::new(TriggerRepositories::from_settings(&settings))
+        .with_poll_timeout(StdDuration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    let outcomes = runtime
+        .process_due_sources(at("2030-01-01T00:00:00Z"))
+        .await
+        .expect("process due sources");
+
+    assert!(started.elapsed() < StdDuration::from_secs(5));
+    let poll = outcomes
+        .iter()
+        .find(|outcome| outcome.trigger.name == "Stalled poll")
+        .expect("poll outcome");
+    assert_eq!(poll.status, "failed");
+    assert!(poll.message.starts_with("Polling failed: "));
+    let schedule = outcomes
+        .iter()
+        .find(|outcome| outcome.trigger.name == "Due schedule")
+        .expect("schedule outcome");
+    assert_eq!(
+        schedule.trigger.state.last_result.as_deref(),
+        Some("success")
+    );
+}
+
 #[test]
 fn activation_recording_keeps_a_switch_off_and_secret_rotation_made_during_it() {
     let temp = tempfile::tempdir().expect("tempdir");
