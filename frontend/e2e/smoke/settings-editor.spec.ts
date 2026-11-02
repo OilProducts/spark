@@ -335,6 +335,9 @@ test('saved core and Desktop-identity preferences survive a real server restart 
     test.setTimeout(60000)
     const home = testInfo.outputPath('restart-home')
     mkdirSync(home, { recursive: true })
+    // Keep the server's Home registration off the developer's real HOME.
+    const userHome = testInfo.outputPath('restart-user-home')
+    mkdirSync(userHome, { recursive: true })
     const repo = path.resolve(process.cwd(), '..')
     const ports = new Set<number>()
     let child: ChildProcess | null = null
@@ -355,7 +358,7 @@ test('saved core and Desktop-identity preferences survive a real server restart 
         ports.add(port)
         const url = `http://127.0.0.1:${port}`
         child = spawn(path.join(repo, 'target/debug/spark-server'), ['serve', '--host', '127.0.0.1', '--port', String(port), '--data-dir', home, '--ui-dir', path.join(repo, 'frontend/dist')], {
-            cwd: repo, stdio: 'ignore', env: { ...process.env, SPARK_HOME: home, SPARK_UI_DIR: path.join(repo, 'frontend/dist'), SPARK_FLOWS_DIR: '', ATTRACTOR_CODEX_RUNTIME_ROOT: '' },
+            cwd: repo, stdio: 'ignore', env: { ...process.env, HOME: userHome, SPARK_HOME: home, SPARK_UI_DIR: path.join(repo, 'frontend/dist'), SPARK_FLOWS_DIR: '', ATTRACTOR_CODEX_RUNTIME_ROOT: '' },
         })
         await expect.poll(async () => { try { return (await fetch(`${url}/workspace/api/settings`)).status } catch { return 0 } }, { timeout: 20000 }).toBe(200)
         return url
