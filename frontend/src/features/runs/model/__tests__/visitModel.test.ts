@@ -8,7 +8,7 @@ import {
   visitFlowNodesFromSnapshot,
   visitMark,
   visitPrompt,
-  visitTranscriptRows,
+  visitTranscriptEntries,
   type RunVisit,
   type VisitModelInput,
 } from '../visitModel'
@@ -323,12 +323,14 @@ describe('visit transcript', () => {
 
   it('keeps this visit rows, drops the final status envelope, and finds the prompt', () => {
     const [visit] = build({ journal: stage('evaluate', 2) })
-    const rows = visitTranscriptRows(visit, [
+    const entries = visitTranscriptEntries(visit, [
       segment({ id: 'a', order: 1 }),
       segment({ id: 'b', order: 2, content: '{"outcome":"fail","context_updates":{}}' }),
+      segment({ id: 'c', order: 3, kind: 'plan', content: '```json\n{"outcome":"success"}\n```' }),
+      segment({ id: 'd', order: 4, kind: 'user_message', role: 'user', content: '{"outcome":"retry"}' }),
       segment({ id: 'other-visit', stage_index: 4 }),
     ])
-    expect(rows.map((row) => row.segment.id)).toEqual(['a'])
+    expect(entries.map((entry) => entry.id)).toEqual(['a'])
     expect(visitPrompt(visit, [
       { run_id: RUN, node_id: 'evaluate', stage_index: 4, attempt: 0, content: 'Other.' },
       { run_id: RUN, node_id: 'evaluate', stage_index: 2, attempt: 0, content: 'Judge the worktree.' },

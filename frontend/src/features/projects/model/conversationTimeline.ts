@@ -39,6 +39,135 @@ function resolveWorkedElapsedSeconds(
     return Math.max(0, Math.round((completedMs - startedMs) / 1000))
 }
 
+/**
+ * One segment as its timeline entry, or null for kinds the transcript does not show. Shared by
+ * conversations and run nodes; `turnId` marks an assistant message as its turn's, for retry.
+ */
+export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnId?: string): ConversationTimelineEntry | null {
+    if (segment.kind === 'plan') {
+        return {
+            id: segment.id,
+            kind: 'plan',
+            role: 'assistant',
+            content: segment.content,
+            timestamp: segment.timestamp,
+            status: segment.status === 'running' ? 'streaming' : segment.status,
+            artifactId: segment.artifact_id ?? null,
+            error: segment.error ?? null,
+        }
+    }
+    if (segment.kind === 'assistant_message') {
+        return {
+            id: segment.id,
+            turnId,
+            kind: 'message',
+            role: 'assistant',
+            content: segment.content,
+            timestamp: segment.timestamp,
+            status: segment.status === 'running' ? 'streaming' : segment.status,
+            error: segment.error ?? null,
+        }
+    }
+    if (segment.kind === 'user_message') {
+        return {
+            id: segment.id,
+            kind: 'message',
+            role: 'user',
+            content: segment.content,
+            timestamp: segment.timestamp,
+            status: segment.status === 'failed' ? 'failed' : 'delivered',
+            error: segment.error ?? null,
+        }
+    }
+    if (segment.kind === 'reasoning') {
+        return {
+            id: segment.id,
+            kind: 'message',
+            role: 'assistant',
+            content: segment.content,
+            timestamp: segment.timestamp,
+            status: segment.status === 'running' ? 'streaming' : segment.status,
+            error: segment.error ?? null,
+            presentation: 'thinking',
+        }
+    }
+    if (segment.kind === 'context_compaction') {
+        return {
+            id: segment.id,
+            kind: 'context_compaction',
+            role: 'system',
+            content: segment.content || 'Context compacted.',
+            timestamp: segment.timestamp,
+            status: segment.status,
+        }
+    }
+    if (segment.kind === 'agent_event' && segment.category === 'warning') {
+        return {
+            id: segment.id,
+            kind: 'warning',
+            role: 'system',
+            content: segment.content,
+            timestamp: segment.timestamp,
+        }
+    }
+    if (segment.kind === 'request_user_input' && segment.request_user_input) {
+        return {
+            id: segment.id,
+            kind: 'request_user_input',
+            role: 'system',
+            content: segment.content,
+            timestamp: segment.timestamp,
+            status: segment.status,
+            requestUserInput: {
+                requestId: segment.request_user_input.request_id,
+                status: segment.request_user_input.status,
+                questions: segment.request_user_input.questions.map((question) => ({
+                    id: question.id,
+                    header: question.header,
+                    question: question.question,
+                    questionType: question.question_type,
+                    options: question.options.map((option) => ({
+                        label: option.label,
+                        description: option.description ?? null,
+                    })),
+                    allowOther: question.allow_other,
+                    isSecret: question.is_secret,
+                })),
+                answers: segment.request_user_input.answers,
+                submittedAt: segment.request_user_input.submitted_at ?? null,
+            },
+        }
+    }
+    if (segment.kind === 'tool_call' && segment.tool_call) {
+        return {
+            id: segment.id,
+            kind: 'tool_call',
+            role: 'system',
+            timestamp: segment.timestamp,
+            toolCall: toTranscriptToolCall(segment.tool_call),
+        }
+    }
+    if (segment.kind === 'flow_run_request' && segment.artifact_id) {
+        return {
+            id: segment.id,
+            kind: 'flow_run_request',
+            role: 'system',
+            artifactId: segment.artifact_id,
+            timestamp: segment.timestamp,
+        }
+    }
+    if (segment.kind === 'flow_launch' && segment.artifact_id) {
+        return {
+            id: segment.id,
+            kind: 'flow_launch',
+            role: 'system',
+            artifactId: segment.artifact_id,
+            timestamp: segment.timestamp,
+        }
+    }
+    return null
+}
+
 function buildAssistantTimelineEntries(
     turn: ConversationTurnResponse,
     turnSegments: ConversationSegmentResponse[],
@@ -78,138 +207,10 @@ function buildAssistantTimelineEntries(
             })
             insertedFinalSeparator = true
         }
-        if (segment.kind === 'plan') {
-            entries.push({
-                id: segment.id,
-                kind: 'plan',
-                role: 'assistant',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === 'running' ? 'streaming' : segment.status,
-                artifactId: segment.artifact_id ?? null,
-                error: segment.error ?? null,
-            })
-            return
-        }
-        if (segment.kind === 'assistant_message') {
-            entries.push({
-                id: segment.id,
-                turnId: turn.id,
-                kind: 'message',
-                role: 'assistant',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === 'running' ? 'streaming' : segment.status,
-                error: segment.error ?? null,
-            })
-            return
-        }
-        if (segment.kind === 'user_message') {
-            entries.push({
-                id: segment.id,
-                kind: 'message',
-                role: 'user',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === 'failed' ? 'failed' : 'delivered',
-                error: segment.error ?? null,
-            })
-            return
-        }
-        if (segment.kind === 'reasoning') {
-            entries.push({
-                id: segment.id,
-                kind: 'message',
-                role: 'assistant',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status === 'running' ? 'streaming' : segment.status,
-                error: segment.error ?? null,
-                presentation: 'thinking',
-            })
-            return
-        }
-        if (segment.kind === 'context_compaction') {
-            entries.push({
-                id: segment.id,
-                kind: 'context_compaction',
-                role: 'system',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status,
-            })
-            return
-        }
-        if (segment.kind === 'agent_event' && segment.category === 'warning') {
-            entries.push({
-                id: segment.id,
-                kind: 'warning',
-                role: 'system',
-                content: segment.content,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
-        if (segment.kind === 'request_user_input' && segment.request_user_input) {
-            entries.push({
-                id: segment.id,
-                kind: 'request_user_input',
-                role: 'system',
-                content: segment.content,
-                timestamp: segment.timestamp,
-                status: segment.status,
-                requestUserInput: {
-                    requestId: segment.request_user_input.request_id,
-                    status: segment.request_user_input.status,
-                    questions: segment.request_user_input.questions.map((question) => ({
-                        id: question.id,
-                        header: question.header,
-                        question: question.question,
-                        questionType: question.question_type,
-                        options: question.options.map((option) => ({
-                            label: option.label,
-                            description: option.description ?? null,
-                        })),
-                        allowOther: question.allow_other,
-                        isSecret: question.is_secret,
-                    })),
-                    answers: segment.request_user_input.answers,
-                    submittedAt: segment.request_user_input.submitted_at ?? null,
-                },
-            })
-            return
-        }
-        if (segment.kind === 'tool_call' && segment.tool_call) {
-            entries.push({
-                id: segment.id,
-                kind: 'tool_call',
-                role: 'system',
-                timestamp: segment.timestamp,
-                toolCall: toTranscriptToolCall(segment.tool_call),
-            })
-            hadWorkActivity = true
-            return
-        }
-        if (segment.kind === 'flow_run_request' && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: 'flow_run_request',
-                role: 'system',
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
-        if (segment.kind === 'flow_launch' && segment.artifact_id) {
-            entries.push({
-                id: segment.id,
-                kind: 'flow_launch',
-                role: 'system',
-                artifactId: segment.artifact_id,
-                timestamp: segment.timestamp,
-            })
-            return
-        }
+        const entry = segmentTimelineEntry(segment, turn.id)
+        if (!entry) return
+        entries.push(entry)
+        if (entry.kind === 'tool_call') hadWorkActivity = true
     })
 
     if (entries.length === 0) {

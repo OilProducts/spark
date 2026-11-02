@@ -7,6 +7,8 @@ import { SectionHeading } from '@/components/app/section-heading'
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { StatusDot, StatusPill, statusTextClassName, type StatusTone } from '@/components/app/status'
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
+import { Transcript } from '@/components/app/transcript/Transcript'
+import { isThinkingEntry } from '@/features/projects/model/conversationTimeline'
 import { Well } from '@/components/app/well'
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
@@ -22,12 +24,11 @@ import {
     visitMark,
     visitPrompt,
     visitToolResult,
-    visitTranscriptRows,
+    visitTranscriptEntries,
     type RunVisit,
     type VisitFlowNode,
     type VisitMark,
 } from '../model/visitModel'
-import { RunTranscript } from './RunTranscriptGroups'
 import { useRunActions, type SteerResult } from '../hooks/useRunActions'
 
 // Colour marks exceptions: a successful visit carries no icon, a visit that was sent
@@ -387,8 +388,8 @@ function RunVisitView({
     const nodeVisits = visits.filter((candidate) => candidate.nodeId === visit.nodeId)
     const next = visits.find((candidate) => candidate.key === visit.next?.key) ?? null
     const prompt = visitPrompt(visit, prompts)
-    const rows = useMemo(() => visitTranscriptRows(visit, segments), [visit, segments])
-    const hasThinking = rows.some((row) => row.kind === 'thinking')
+    const entries = useMemo(() => visitTranscriptEntries(visit, segments), [visit, segments])
+    const hasThinking = entries.some(isThinkingEntry)
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
@@ -576,10 +577,17 @@ function RunVisitView({
                     ) : (
                         <p className="text-sm text-muted-foreground">No child run was recorded for this visit.</p>
                     )
-                ) : rows.length > 0 ? (
-                    <RunTranscript data-testid="run-visit-transcript" rows={rows} showThinking={showThinking} />
                 ) : (
-                    <p className="text-sm text-muted-foreground">No transcript was recorded for this visit.</p>
+                    <Transcript
+                        data-testid="run-visit-transcript"
+                        testIdPrefix="run"
+                        turns={false}
+                        entries={entries}
+                        showThinking={showThinking}
+                        formatTimestamp={formatTimestamp}
+                        empty="No transcript was recorded for this visit."
+                        className="max-w-[80ch]"
+                    />
                 )}
                 {visit.kind === 'agent_task' ? (
                     <RunSteerForm runId={visit.runId} nodeId={visit.nodeId} running={visit.outcome === 'running'} />
