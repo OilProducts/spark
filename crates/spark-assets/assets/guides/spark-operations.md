@@ -459,10 +459,10 @@ spark-server init
 spark-server serve --host 127.0.0.1 --port 8000
 ```
 
-Linux user service:
+Linux user service (binds `127.0.0.1` by default; Spark does not authenticate requests, so `--host 0.0.0.0` exposes the unauthenticated server to the network):
 
 ```bash
-spark-server service install --host 0.0.0.0 --port 8000
+spark-server service install --host 127.0.0.1 --port 8000
 spark-server service status
 spark-server service remove
 ```

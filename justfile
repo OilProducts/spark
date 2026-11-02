@@ -71,4 +71,4 @@ install:
 install-systemd:
   cargo install --path crates/spark-cli --bin spark
   cargo install --path crates/spark-server --bin spark-server
-  spark-server service install --host "${SPARK_HOST:-0.0.0.0}" --port "${SPARK_PORT:-8000}" --data-dir "${SPARK_HOME:-$HOME/.spark}"
+  spark-server service install --host "${SPARK_HOST:-127.0.0.1}" --port "${SPARK_PORT:-8000}" --data-dir "${SPARK_HOME:-$HOME/.spark}"

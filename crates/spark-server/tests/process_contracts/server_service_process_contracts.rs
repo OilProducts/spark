@@ -19,7 +19,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
             "service",
             "install",
             "--host",
-            "127.0.0.1",
+            "0.0.0.0",
             "--port",
             "8123",
             "--data-dir",
@@ -33,7 +33,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
     assert_eq!(
         stdout_text(&install),
         format!(
-            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nBundled library: {}\n",
+            "Installed Spark user service: {}\nService name: spark.service\nListening on http://0.0.0.0:8123\nInitialized Spark at {}\nBundled library: {}\n",
             harness.unit_path.display(),
             harness.data_dir.display(),
             harness.data_dir.join("bundled").display()
@@ -74,7 +74,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
         harness.ui_dir.display()
     )));
     assert!(unit.contains(&format!(
-        "ExecStart={} serve --host 127.0.0.1 --port 8123 --data-dir {} --ui-dir {}\n",
+        "ExecStart={} serve --host 0.0.0.0 --port 8123 --data-dir {} --ui-dir {}\n",
         env!("CARGO_BIN_EXE_spark-server"),
         harness.data_dir.display(),
         harness.ui_dir.display()
@@ -122,7 +122,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
 }
 
 #[test]
-fn service_install_defaults_to_wildcard_host() {
+fn service_install_defaults_to_localhost() {
     let harness = ServiceHarness::new();
 
     let install = harness
@@ -136,11 +136,11 @@ fn service_install_defaults_to_wildcard_host() {
         .output()
         .expect("service install output");
     assert_success(&install);
-    assert!(stdout_text(&install).contains("Listening on http://0.0.0.0:8000\n"));
+    assert!(stdout_text(&install).contains("Listening on http://127.0.0.1:8000\n"));
 
     let unit = fs::read_to_string(&harness.unit_path).expect("service unit");
     assert!(unit.contains(&format!(
-        "ExecStart={} serve --host 0.0.0.0 --port 8000 --data-dir {}\n",
+        "ExecStart={} serve --host 127.0.0.1 --port 8000 --data-dir {}\n",
         env!("CARGO_BIN_EXE_spark-server"),
         harness.data_dir.display()
     )));
