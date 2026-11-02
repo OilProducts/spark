@@ -123,14 +123,10 @@ struct RoleFile {
 #[serde(default, deny_unknown_fields)]
 pub struct RoleBudget {
     pub concurrent_runs: usize,
-    pub runs_per_day: usize,
 }
 impl Default for RoleBudget {
     fn default() -> Self {
-        Self {
-            concurrent_runs: 4,
-            runs_per_day: 20,
-        }
+        Self { concurrent_runs: 4 }
     }
 }
 

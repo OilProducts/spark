@@ -290,12 +290,11 @@ fn role_files_declare_standing_and_its_budget() {
     let parse = |front: &str| {
         attractor_dsl::parse_role("r", &format!("---\ntype: Role\n{front}---\nBody.\n"))
     };
-    let role = parse("standing: true\nbudget:\n  runs_per_day: 3\n").expect("role");
+    let role = parse("standing: true\nbudget:\n  concurrent_runs: 3\n").expect("role");
     assert!(role.standing);
-    assert_eq!(
-        (role.budget.concurrent_runs, role.budget.runs_per_day),
-        (4, 3)
-    );
+    assert_eq!(role.budget.concurrent_runs, 3);
+    // A per-day limit no longer exists.
+    assert!(parse("standing: true\nbudget:\n  runs_per_day: 3\n").is_err());
     assert!(!parse("").expect("role").standing);
     let error = parse("budget:\n  concurrent_runs: 1\n").unwrap_err();
     assert!(error.contains("budget without standing: true"), "{error}");

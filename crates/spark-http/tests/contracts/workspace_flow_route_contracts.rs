@@ -339,7 +339,7 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
     let coordinator = find("role", "coordinator");
     assert_eq!(coordinator["usage"], json!([]));
     assert_eq!(coordinator["standing"]["state"], "idle");
-    assert_eq!(coordinator["standing"]["budget"]["runs_per_day"], 20);
+    assert_eq!(coordinator["standing"]["budget"]["concurrent_runs"], 4);
     assert!(coordinator["standing"]["conversation_id"]
         .as_str()
         .expect("conversation")

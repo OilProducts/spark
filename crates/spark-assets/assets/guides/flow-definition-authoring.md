@@ -166,8 +166,8 @@ node using an isolated role may not set `runtime.session`. Reviewers and
 verifiers use isolated roles so they never inherit the author's reasoning.
 
 A role that may run as a project's standing role sets `standing: true`, and
-may set its launch limits under `budget` (`concurrent_runs`, default 4;
-`runs_per_day`, default 20). `budget` without `standing: true` fails
+may set its launch limit under `budget` (`concurrent_runs`, default 4).
+`budget` without `standing: true` fails
 validation. See the operations guide's standing roles section.
 
 ## Sessions

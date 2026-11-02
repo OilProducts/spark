@@ -6,8 +6,7 @@ export type StandingRole = {
     title: string
     state: 'idle' | 'working' | 'stopped'
     conversation_id: string
-    budget: { concurrent_runs: number; runs_per_day: number }
-    recent_launches: number[]
+    budget: { concurrent_runs: number }
     runs: { run_id: string; status: string }[]
     recent_events: InboxEvent[]
 }
@@ -96,9 +95,8 @@ export function usageSummary(usage: { flow: string; node: string }[]): string {
     return `used in ${usage.length} ${usage.length === 1 ? 'step' : 'steps'} across ${flows} ${flows === 1 ? 'flow' : 'flows'}`
 }
 
-/** "2/4 concurrent · 3/20 today": current usage against the role's limits. */
-export function budgetLine(role: StandingRole, nowSeconds = Date.now() / 1000): string {
+/** "2/4 concurrent": current usage against the role's limit. */
+export function budgetLine(role: StandingRole): string {
     const running = role.runs.filter((run) => !TERMINAL.has(run.status)).length
-    const today = role.recent_launches.filter((at) => at > nowSeconds - 86_400).length
-    return `${running}/${role.budget.concurrent_runs} concurrent · ${today}/${role.budget.runs_per_day} today`
+    return `${running}/${role.budget.concurrent_runs} concurrent`
 }

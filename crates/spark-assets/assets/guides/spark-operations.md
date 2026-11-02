@@ -539,16 +539,15 @@ spark role stop --project /absolute/project --role chief-of-staff
 spark role send --project /absolute/project --role coordinator --conversation <sender handle> --message "Fixed the review flow"
 ```
 
-Only a role whose file declares `standing: true` can be started; the bundled `coordinator` and `chief-of-staff` do. The Coordinator is standing in every project whatever its file says. The role file also sets the role's launch limits:
+Only a role whose file declares `standing: true` can be started; the bundled `coordinator` and `chief-of-staff` do. The Coordinator is standing in every project whatever its file says. The role file also sets the role's launch limit:
 
 ```yaml
 standing: true
 budget:
   concurrent_runs: 4
-  runs_per_day: 20
 ```
 
-`budget` and each field are optional and default to the values shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only runtime state: inbox, runs, recent launches, and whether the role is stopped.
+`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only runtime state: inbox, runs, and whether the role is stopped.
 
 The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop|send?project_path=...` (`send` takes `{"conversation_handle", "message"}`).
 

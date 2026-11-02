@@ -6,7 +6,7 @@ import { askCoordinatorDraft, frontmatterFields, orgBadges, renderableMarkdown, 
 
 const coordinator = {
     name: 'coordinator', title: 'Coordinator', state: 'idle', conversation_id: 'role-p1-coordinator',
-    budget: { concurrent_runs: 4, runs_per_day: 20 }, recent_launches: [], runs: [],
+    budget: { concurrent_runs: 4 }, runs: [],
     recent_events: [{ seq: 2, id: 'e2', at: '2026-10-24T10:00:00Z', kind: 'run_completed', source: 'run-1' }],
 }
 const items = [
@@ -54,7 +54,7 @@ it('lists roles only, standing first, with non-default badges and the org status
     expect(screen.getByTestId('org-status')).toHaveTextContent('1 customized role · 1 project copy')
     expect(screen.getAllByTestId('org-item').map((button) => button.dataset.name)).toEqual(['coordinator', 'reviewer', 'helper', 'author'])
     expect(screen.queryByText('local')).not.toBeInTheDocument()
-    expect(row('coordinator')).toHaveTextContent('idle · 0/4 concurrent · 0/20 today')
+    expect(row('coordinator')).toHaveTextContent('idle · 0/4 concurrent')
     expect(row('coordinator')).toHaveTextContent('Last wake run_completed')
     expect(row('reviewer')).toHaveTextContent('Reviews work.')
     expect(row('reviewer')).toHaveTextContent('used in 3 steps across 2 flows')
@@ -129,5 +129,5 @@ it('builds drafts, badges, usage summaries and frontmatter fields', () => {
     expect(orgBadges({ layer: 'project_copy' })).toEqual(['project copy'])
     expect(orgBadges({ layer: 'bundled' })).toEqual([])
     expect(usageSummary([{ flow: 'a', node: 'x' }])).toBe('used in 1 step across 1 flow')
-    expect(frontmatterFields('---\ntype: Role\nbudget:\n  runs_per_day: 3\n---\nBody')).toEqual({ fields: [['type', 'Role'], ['budget', 'runs_per_day: 3']], body: 'Body' })
+    expect(frontmatterFields('---\ntype: Role\nbudget:\n  concurrent_runs: 3\n---\nBody')).toEqual({ fields: [['type', 'Role'], ['budget', 'concurrent_runs: 3']], body: 'Body' })
 })
