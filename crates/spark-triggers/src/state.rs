@@ -127,8 +127,13 @@ pub fn schedule_due_at(
         }
         "weekly" => {
             let scheduled = weekly_most_recent_scheduled_time(definition, now)?;
-            (scheduled <= now && last_fired_at.is_none_or(|last| last < scheduled))
-                .then_some(scheduled)
+            let not_yet_fired = match last_fired_at {
+                Some(last) => last < scheduled,
+                // Never fire for a slot that passed before the trigger existed.
+                None => parse_iso_datetime(Some(&definition.created_at))
+                    .is_none_or(|created| created <= scheduled),
+            };
+            (scheduled <= now && not_yet_fired).then_some(scheduled)
         }
         _ => None,
     }
