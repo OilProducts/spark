@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef } from 'react'
 import { useStore } from '@/store'
 
-const CONVERSATION_BOTTOM_THRESHOLD_PX = 4
+export const CONVERSATION_BOTTOM_THRESHOLD_PX = 4
 
 export function useHomeSidebarLayout(activeConversationId: string | null) {
     const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
