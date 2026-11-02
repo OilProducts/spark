@@ -16,8 +16,6 @@ use crate::models::{
 };
 use crate::{authenticate_webhook_request, serialize_trigger, state};
 
-const FLOW_EVENT_DELIVERY_WINDOW: usize = 500;
-
 pub trait TriggerActivationSink: Send + Sync {
     fn activate(
         &self,
@@ -289,13 +287,12 @@ impl TriggerSourceRuntime {
                 .update(&definition.id, |trigger_state| {
                     claimed = trigger_state.enabled
                         && !trigger_state.flow_event_deliveries.contains(&delivery_id);
+                    // ponytail: the list grows by one key per fired run, kept until
+                    // the trigger is deleted; move keys to their own files if it grows large.
                     if claimed {
-                        let deliveries = &mut trigger_state.flow_event_deliveries;
-                        deliveries.push(delivery_id.clone());
-                        // ponytail: bounded window; a terminal run re-published after
-                        // this many newer deliveries fires again.
-                        let excess = deliveries.len().saturating_sub(FLOW_EVENT_DELIVERY_WINDOW);
-                        deliveries.drain(..excess);
+                        trigger_state
+                            .flow_event_deliveries
+                            .push(delivery_id.clone());
                     }
                 })?;
             if !claimed {

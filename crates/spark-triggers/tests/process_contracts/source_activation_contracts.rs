@@ -285,9 +285,19 @@ fn flow_event_sources_match_terminal_statuses_and_fire_once_per_run() {
             .len(),
         1
     );
+    // However many runs fire it later, run-1 stays delivered.
+    for index in 3..=502 {
+        runtime
+            .emit_flow_event(event_for(&format!("run-{index}"), "completed", &project))
+            .expect("later run's event");
+    }
+    assert!(runtime
+        .emit_flow_event(event("completed", &project))
+        .expect("republished completed event")
+        .is_empty());
     let state = load_state(&settings, &project, &created.id);
     assert_eq!(state.last_result.as_deref(), Some("success"));
-    assert_eq!(state.recent_history.len(), 2);
+    assert_eq!(state.flow_event_deliveries.len(), 502);
 }
 
 #[test]
