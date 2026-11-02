@@ -16,6 +16,8 @@ use crate::models::{
 };
 use crate::{authenticate_webhook_request, serialize_trigger, state};
 
+const FLOW_EVENT_DELIVERY_WINDOW: usize = 500;
+
 pub trait TriggerActivationSink: Send + Sync {
     fn activate(
         &self,
@@ -230,9 +232,18 @@ impl TriggerSourceRuntime {
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase();
-        if flow_name.is_empty() || !TERMINAL_PIPELINE_STATUSES.contains(&status.as_str()) {
+        let run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if flow_name.is_empty()
+            || run_id.is_empty()
+            || !TERMINAL_PIPELINE_STATUSES.contains(&status.as_str())
+        {
             return Ok(Vec::new());
         }
+        let delivery_id = format!("{run_id}:{status}");
         let run_project = payload
             .get("project_path")
             .and_then(Value::as_str)
@@ -243,14 +254,6 @@ impl TriggerSourceRuntime {
         for definition in self.repositories.list_all()? {
             if definition.source_type != SOURCE_FLOW_EVENT
                 || run_project.as_deref() != Some(Path::new(&definition.project_path))
-            {
-                continue;
-            }
-            if !self
-                .repositories
-                .runtime_state(&definition.project_path)?
-                .load(&definition.id)?
-                .enabled
             {
                 continue;
             }
@@ -278,11 +281,31 @@ impl TriggerSourceRuntime {
             {
                 continue;
             }
+            // Claimed under the state lock before firing: every publish path
+            // re-emits a terminal run, and only the first claim fires.
+            let mut claimed = false;
+            self.repositories
+                .runtime_state(&definition.project_path)?
+                .update(&definition.id, |trigger_state| {
+                    claimed = trigger_state.enabled
+                        && !trigger_state.flow_event_deliveries.contains(&delivery_id);
+                    if claimed {
+                        let deliveries = &mut trigger_state.flow_event_deliveries;
+                        deliveries.push(delivery_id.clone());
+                        // ponytail: bounded window; a terminal run re-published after
+                        // this many newer deliveries fires again.
+                        let excess = deliveries.len().saturating_sub(FLOW_EVENT_DELIVERY_WINDOW);
+                        deliveries.drain(..excess);
+                    }
+                })?;
+            if !claimed {
+                continue;
+            }
             outcomes.push(self.execute_activation(
                 &definition,
                 Value::Object(payload.clone()),
                 now,
-                None,
+                Some(delivery_id.clone()),
             )?);
         }
         Ok(outcomes)

@@ -226,7 +226,7 @@ async fn poll_sources_record_failure_when_items_path_is_not_an_array() {
 }
 
 #[test]
-fn flow_event_sources_match_terminal_statuses_and_allow_repeated_events() {
+fn flow_event_sources_match_terminal_statuses_and_fire_once_per_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project = project(&settings, "project");
@@ -246,14 +246,15 @@ fn flow_event_sources_match_terminal_statuses_and_allow_repeated_events() {
         .expect("create flow event");
     let runtime = TriggerSourceRuntime::new(TriggerRepositories::from_settings(&settings));
 
-    let event = |status: &str, project_path: &str| {
+    let event_for = |run_id: &str, status: &str, project_path: &str| {
         Map::from_iter([
-            ("run_id".to_string(), json!("run-1")),
+            ("run_id".to_string(), json!(run_id)),
             ("flow_name".to_string(), json!("ops/run.dot")),
             ("project_path".to_string(), json!(project_path)),
             ("status".to_string(), json!(status)),
         ])
     };
+    let event = |status: &str, project_path: &str| event_for("run-1", status, project_path);
     let ignored = runtime
         .emit_flow_event(event("running", &project))
         .expect("running event");
@@ -267,13 +268,23 @@ fn flow_event_sources_match_terminal_statuses_and_allow_repeated_events() {
             .is_empty());
     }
 
-    for _ in 0..2 {
-        let outcomes = runtime
-            .emit_flow_event(event("completed", &project))
-            .expect("completed event");
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].trigger_id, created.id);
-    }
+    let outcomes = runtime
+        .emit_flow_event(event("completed", &project))
+        .expect("completed event");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].trigger_id, created.id);
+    // Every publish path re-emits a terminal run; it fires only once.
+    assert!(runtime
+        .emit_flow_event(event("completed", &project))
+        .expect("repeated completed event")
+        .is_empty());
+    assert_eq!(
+        runtime
+            .emit_flow_event(event_for("run-2", "completed", &project))
+            .expect("another run's event")
+            .len(),
+        1
+    );
     let state = load_state(&settings, &project, &created.id);
     assert_eq!(state.last_result.as_deref(), Some("success"));
     assert_eq!(state.recent_history.len(), 2);

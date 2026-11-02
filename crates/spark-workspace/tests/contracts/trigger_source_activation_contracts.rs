@@ -297,6 +297,7 @@ fn flow_event_trigger_keeps_static_context_nested() {
 
     let outcomes = WorkspaceTriggerService::new(settings.clone())
         .emit_flow_event(Map::from_iter([
+            ("run_id".to_string(), json!("run-1")),
             ("flow_name".to_string(), json!("ops/run")),
             ("project_path".to_string(), json!(project_path)),
             ("status".to_string(), json!("completed")),
@@ -390,6 +391,7 @@ fn hand_deleted_definitions_stop_firing_without_a_restart() {
     let emit = || {
         service
             .emit_flow_event(Map::from_iter([
+                ("run_id".to_string(), json!("run-1")),
                 ("flow_name".to_string(), json!("ops/run")),
                 ("project_path".to_string(), json!(project)),
                 ("status".to_string(), json!("completed")),
