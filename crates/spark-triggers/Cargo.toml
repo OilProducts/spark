@@ -17,7 +17,7 @@ sha2 = "0.10"
 spark-common = { path = "../spark-common" }
 spark-storage = { path = "../spark-storage" }
 thiserror = "1.0"
-time = "0.3"
+time = { version = "0.3", features = ["parsing"] }
 
 [dev-dependencies]
 tempfile = "3.10"

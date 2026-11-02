@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
 use spark_common::project::{definitions_dir, state_dir};
 use spark_common::settings::SparkSettings;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use toml::Value as TomlValue;
 
 use crate::error::{Result, StorageError};
@@ -628,6 +630,12 @@ fn normalize_schedule_source(
                 return Err(invalid_trigger(
                     path,
                     "One-shot schedule triggers require run_at.",
+                ));
+            }
+            if OffsetDateTime::parse(run_at, &Rfc3339).is_err() {
+                return Err(invalid_trigger(
+                    path,
+                    "One-shot schedule run_at must be an RFC 3339 timestamp with an offset or Z, such as 2030-01-01T10:00:00Z.",
                 ));
             }
             source.insert("run_at".to_string(), Value::String(run_at.to_string()));

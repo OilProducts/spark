@@ -519,6 +519,22 @@ fn persisted_trigger_definitions_are_validated_and_malformed_files_are_skipped_b
         .expect("get")
         .is_none());
 
+    let offsetless = definition_with_source(
+        "trigger-offsetless-once",
+        "schedule",
+        Map::from_iter([
+            ("kind".to_string(), json!("once")),
+            ("run_at".to_string(), json!("2030-01-01T10:00:00")),
+        ]),
+    );
+    match repository.put(&offsetless, None) {
+        Err(StorageError::InvalidRepositoryPath { reason, .. }) => assert_eq!(
+            reason,
+            "One-shot schedule run_at must be an RFC 3339 timestamp with an offset or Z, such as 2030-01-01T10:00:00Z."
+        ),
+        other => panic!("expected offset-less run_at to be rejected, got {other:?}"),
+    }
+
     for (trigger_id, toml, expected) in [
         (
             "trigger-missing-flow",

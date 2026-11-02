@@ -1,4 +1,5 @@
-use time::{Duration, OffsetDateTime, Weekday};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime, UtcOffset, Weekday};
 
 use crate::models::{
     TriggerDefinition, TriggerState, TriggerStateHistoryEntry, SOURCE_POLL, SOURCE_SCHEDULE,
@@ -298,19 +299,9 @@ fn weekday_name(value: Weekday) -> &'static str {
 }
 
 pub fn parse_iso_datetime(value: Option<&str>) -> Option<OffsetDateTime> {
-    let value = value?.trim();
-    if value.len() < 19 {
-        return None;
-    }
-    let year = value.get(0..4)?.parse::<i32>().ok()?;
-    let month = value.get(5..7)?.parse::<u8>().ok()?;
-    let day = value.get(8..10)?.parse::<u8>().ok()?;
-    let hour = value.get(11..13)?.parse::<u8>().ok()?;
-    let minute = value.get(14..16)?.parse::<u8>().ok()?;
-    let second = value.get(17..19)?.parse::<u8>().ok()?;
-    let date = time::Date::from_calendar_date(year, month.try_into().ok()?, day).ok()?;
-    let time = time::Time::from_hms(hour, minute, second).ok()?;
-    Some(OffsetDateTime::new_utc(date, time))
+    OffsetDateTime::parse(value?.trim(), &Rfc3339)
+        .ok()
+        .map(|value| value.to_offset(UtcOffset::UTC))
 }
 
 pub fn datetime_to_iso(value: OffsetDateTime) -> String {
