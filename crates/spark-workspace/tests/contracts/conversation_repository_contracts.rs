@@ -101,6 +101,27 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
     )
     .expect("flow launches");
 
+    // A conversation whose assistant turn is still streaming lists as running.
+    write_state(
+        &project.conversations_dir,
+        "conversation-b",
+        json!({
+            "schema_version": 5,
+            "settings_schema_version": 1,
+            "revision": 2,
+            "conversation_id": "conversation-b",
+            "project_path": project_path,
+            "title": "Working",
+            "created_at": "2025-12-01T00:00:00Z",
+            "updated_at": "2025-12-01T00:00:01Z",
+            "turns": [
+                {"id": "turn-b-user", "role": "user", "content": "Go", "timestamp": "2025-12-01T00:00:00Z", "status": "complete", "kind": "message"},
+                {"id": "turn-b-assistant", "role": "assistant", "content": "", "timestamp": "2025-12-01T00:00:01Z", "status": "streaming", "kind": "message"}
+            ],
+            "segments": []
+        }),
+    );
+
     let service = WorkspaceConversationService::new(settings);
     let snapshot = service
         .get_snapshot("conversation-a", Some(project_path))
@@ -139,6 +160,12 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
     assert_eq!(summaries[0].conversation_id, "conversation-a");
     assert_eq!(summaries[0].last_message_preview.as_deref(), Some("Done"));
     assert_eq!(summaries[0].launched_run_ids, vec!["run-a".to_string()]);
+    assert!(!summaries[0].running);
+    let running = summaries
+        .iter()
+        .find(|summary| summary.conversation_id == "conversation-b")
+        .expect("streaming conversation listed");
+    assert!(running.running);
 }
 
 #[test]

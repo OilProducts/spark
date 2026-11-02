@@ -1399,6 +1399,61 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
 }
 
 #[tokio::test]
+async fn thread_list_feed_flips_running_across_an_http_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let conversation_id = "conversation-running";
+    seed_conversation(&settings, &project_path, conversation_id);
+    let app = build_app_with_agent_turn_backend(
+        settings,
+        Arc::new(StaticAgentTurnBackend::new("Finished.")),
+    );
+    let live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_conversations=true",
+        None,
+    )
+    .await;
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app,
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": project_path, "message": "Work on this."})),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+
+    // The summary reports running when the turn starts and clears when it ends.
+    let mut started = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(tokio::time::Instant::now() < deadline, "started: {started}");
+        let frame = next_sse_chunk(&mut live_stream).await;
+        if !frame.contains("data: ") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        let conversation = &envelope["payload"]["conversation"];
+        if envelope["type"] != "conversation.summary_upsert"
+            || conversation["conversation_id"] != conversation_id
+        {
+            continue;
+        }
+        match conversation["running"].as_bool().expect("running") {
+            true => started = true,
+            false if started => break,
+            false => {}
+        }
+    }
+}
+
+#[tokio::test]
 async fn live_route_replays_run_journals_and_runs_overview() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -1878,10 +1933,12 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     // A newly started role appears, works its first turn, and settles.
     let working = summary_state(&mut live_stream, "working").await;
     assert_eq!(working["title"], "Chief of Staff");
+    assert_eq!(working["running"], true);
     // Release the first turn and any turn the resume below starts.
     open_gate.send(()).expect("gate");
     open_gate.send(()).expect("gate");
-    summary_state(&mut live_stream, "idle").await;
+    let idle = summary_state(&mut live_stream, "idle").await;
+    assert_eq!(idle["running"], false);
     let stopped = request(app.clone(), "POST", &control("stop"), None).await;
     assert_eq!(json_body(stopped).await["state"], "stopped");
     summary_state(&mut live_stream, "stopped").await;

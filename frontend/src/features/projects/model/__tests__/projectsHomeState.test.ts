@@ -872,6 +872,30 @@ describe('a standing role\'s thread-list row', () => {
   })
 })
 
+describe('a rebuilt summary\'s running flag', () => {
+  const projectPath = '/tmp/project-contract-behavior'
+  const summaryOf = (cache: typeof EMPTY_PROJECT_CONVERSATION_CACHE_STATE) => cache.summariesByProjectPath[projectPath]?.[0]
+
+  it('follows the record\'s assistant turn status', () => {
+    const streaming = applyConversationSnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, projectPath, buildSnapshot({
+      revision: 1, turns: [buildTurn({ status: 'streaming' })],
+    })).cache
+    expect(summaryOf(streaming)?.running).toBe(true)
+    const complete = applyConversationSnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, projectPath, buildSnapshot({ revision: 1 })).cache
+    expect(summaryOf(complete)?.running).toBe(false)
+  })
+
+  it('leaves a newer server summary in place when an older snapshot is applied', () => {
+    const newer = {
+      conversation_id: 'conversation-1', project_path: projectPath, title: 'Contract behavior',
+      created_at: '2026-03-06T15:00:00Z', updated_at: '2026-03-06T15:05:00Z', revision: 5, running: true,
+    }
+    const seeded = { ...EMPTY_PROJECT_CONVERSATION_CACHE_STATE, summariesByProjectPath: { [projectPath]: [newer] } }
+    const applied = applyConversationSnapshotToCache(seeded, projectPath, buildSnapshot({ revision: 4 })).cache
+    expect(summaryOf(applied)).toEqual(newer)
+  })
+})
+
 describe('applyTransientConversationEventToCache', () => {
   const buildDelta = (
     overrides: Partial<ConversationStreamDeltaEventResponse> = {},

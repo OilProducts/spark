@@ -32,10 +32,14 @@ describe('upsertHomeConversationSummary', () => {
         expect(titles()).toContainEqual(['b', 'other thread'])
     })
 
-    it('ignores older revisions and projects whose list is not loaded', () => {
+    it('ignores older revisions', () => {
         useStore.getState().upsertHomeConversationSummary(summary('b', 'stale', 4))
-        useStore.getState().upsertHomeConversationSummary(summary('c', 'elsewhere', 1, '/tmp/other'))
         expect(titles()).toContainEqual(['b', 'other thread'])
-        expect(useStore.getState().homeConversationCache.summariesByProjectPath['/tmp/other']).toBeUndefined()
+    })
+
+    it('starts a list for a project whose list is not loaded yet', () => {
+        useStore.getState().upsertHomeConversationSummary(summary('c', 'elsewhere', 1, '/tmp/other'))
+        expect(useStore.getState().homeConversationCache.summariesByProjectPath['/tmp/other'])
+            .toEqual([summary('c', 'elsewhere', 1, '/tmp/other')])
     })
 })

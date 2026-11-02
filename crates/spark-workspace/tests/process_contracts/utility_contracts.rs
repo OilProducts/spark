@@ -13,7 +13,7 @@ use spark_common::settings::{resolve_settings_with_env, SettingsOverrides, Spark
 use spark_storage::conversation::{ConversationMetadataPatch, ConversationMutation};
 use spark_storage::settings::{load_core_settings, read_settings_document};
 use spark_storage::ConversationRepository;
-use spark_workspace::live::{envelope_matches_query, validate_live_query};
+use spark_workspace::live::{envelope_matches_query, lagged_resync_envelopes, validate_live_query};
 use spark_workspace::settings::{update_workspace_settings, workspace_settings};
 use spark_workspace::utility::utility_complete;
 use spark_workspace::{
@@ -195,6 +195,31 @@ fn title_updates(updates: &mpsc::Receiver<LiveEnvelope>, wait: Duration) -> Opti
         summary.payload["conversation"].clone(),
         snapshot.payload["state"].clone(),
     ))
+}
+
+#[test]
+fn lagged_thread_list_subscriber_is_told_to_resync_conversation_summaries() {
+    let query = |include: Option<&str>| {
+        validate_live_query(RawLiveQuery {
+            include_conversations: include.map(str::to_string),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let kinds = |include| {
+        lagged_resync_envelopes(&query(include))
+            .into_iter()
+            .map(|envelope| (envelope.event_type, envelope.resource.kind))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        kinds(Some("true")),
+        vec![(
+            "resync_required".to_string(),
+            "conversation_summary".to_string()
+        )]
+    );
+    assert!(kinds(None).is_empty());
 }
 
 fn stored_title(service: &WorkspaceConversationService, id: &str) -> String {

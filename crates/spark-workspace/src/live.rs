@@ -985,6 +985,9 @@ pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
             REASON,
         ));
     }
+    if query.include_conversations {
+        envelopes.push(resync_required("conversation_summary", None, None, REASON));
+    }
     envelopes
 }
 

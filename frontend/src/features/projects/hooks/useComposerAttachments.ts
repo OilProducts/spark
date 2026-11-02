@@ -125,11 +125,11 @@ export function useComposerAttachments({
 
     // A send in flight still references the draft's uploads; keep them until the server answers.
     const isSending = useStore((state) => (
-        activeConversationId ? Boolean(state.runningChats[activeConversationId]?.sending) : false
+        activeConversationId ? Boolean(state.sendingChats[activeConversationId]) : false
     ))
 
     const remove = useCallback((localId: string) => {
-        if (!activeConversationId || useStore.getState().runningChats[activeConversationId]?.sending) return
+        if (!activeConversationId || useStore.getState().sendingChats[activeConversationId]) return
         const removed = readDraft(activeConversationId).filter((item) => item.localId === localId)
         updateDraft(activeConversationId, (draft) => draft.filter((item) => item.localId !== localId))
         release(removed)

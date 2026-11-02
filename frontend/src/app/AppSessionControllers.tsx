@@ -424,6 +424,8 @@ export function WorkspaceLiveEventsController() {
                         window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
                             detail: { projectPath: envelope.project_path ?? null, reason: payload.reason },
                         }))
+                    } else if (envelope.resource?.kind === 'conversation_summary') {
+                        resyncConversationSummaries(source)
                     }
                     return
                 }

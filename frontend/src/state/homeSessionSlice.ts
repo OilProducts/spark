@@ -54,13 +54,13 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
     homeProjectSessionsByPath: {},
     homeConversationSessionsById: {},
     homeProjectGitMetadataByPath: {},
-    runningChats: {},
-    setRunningChat: (conversationId, value) =>
+    sendingChats: {},
+    setSendingChat: (conversationId, sending) =>
         set((state) => {
-            const runningChats = { ...state.runningChats }
-            if (value) runningChats[conversationId] = value
-            else delete runningChats[conversationId]
-            return { runningChats }
+            const sendingChats = { ...state.sendingChats }
+            if (sending) sendingChats[conversationId] = true
+            else delete sendingChats[conversationId]
+            return { sendingChats }
         }),
     updateHomeProjectSession: (projectPath, patch) =>
         set((state) => ({
@@ -100,7 +100,7 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
         set((state) => {
             const current = state.homeConversationCache.summariesByProjectPath[summary.project_path]
             const existing = current?.find((entry) => entry.conversation_id === summary.conversation_id)
-            if (!current || (existing && existing.revision > summary.revision)) {
+            if (existing && existing.revision > summary.revision) {
                 return {}
             }
             return {
@@ -108,7 +108,7 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
                     ...state.homeConversationCache,
                     summariesByProjectPath: {
                         ...state.homeConversationCache.summariesByProjectPath,
-                        [summary.project_path]: upsertConversationSummary(current, summary),
+                        [summary.project_path]: upsertConversationSummary(current ?? [], summary),
                     },
                 },
             }
