@@ -90,6 +90,39 @@ fn claude_code_pins_instructions_on_every_spawn_as_a_system_prompt_file() {
     );
 }
 
+#[test]
+fn claude_code_rebuilds_the_system_prompt_on_fresh_and_resumed_spawns() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "resume-failure");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let mut request = agent_request(temp.path());
+    request.metadata.insert(
+        "spark.runtime.claude_code.session_id".to_string(),
+        json!("sess-dead"),
+    );
+
+    RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn(request)
+        .expect("fresh retry succeeds");
+
+    let invocations = logged_invocations(&log_path);
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(
+        arg_after(&invocations[0], "--resume").as_deref(),
+        Some("sess-dead")
+    );
+    assert_eq!(arg_after(&invocations[1], "--resume"), None);
+    for args in &invocations {
+        assert_eq!(
+            arg_after(args, "--system-prompt-snapshot").as_deref(),
+            Some("off")
+        );
+    }
+}
+
 impl EnvVarGuard {
     fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
         let previous = std::env::var(key).ok();

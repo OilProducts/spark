@@ -291,6 +291,10 @@ impl ClaudeCodeBackend {
             .arg("stdio")
             .arg("--include-partial-messages")
             .arg("--verbose")
+            // Resumes otherwise reuse the session's first system prompt and
+            // ignore the instructions appended below.
+            .arg("--system-prompt-snapshot")
+            .arg("off")
             .arg("--permission-mode")
             .arg(if plan_mode(request) {
                 "plan".to_string()
