@@ -1,5 +1,7 @@
 import { fetchPipelineResultValidated } from '@/lib/attractorClient'
-import { fetchConversationSegmentToolOutputValidated } from '@/lib/workspaceClient'
+import { fetchConversationSegmentToolOutputValidated, retryConversationTurnValidated, submitConversationRequestUserInputValidated } from '@/lib/workspaceClient'
 
 export const loadConversationSegmentToolOutput = fetchConversationSegmentToolOutputValidated
 export const loadPipelineResult = fetchPipelineResultValidated
+export const retryConversationTurn = retryConversationTurnValidated
+export const submitConversationRequestUserInput = submitConversationRequestUserInputValidated

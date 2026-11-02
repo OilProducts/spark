@@ -16,7 +16,8 @@ import {
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
-import { retryConversationTurnValidated, submitConversationRequestUserInputValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
+import type { ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 import { cn } from '@/lib/utils'
 import { parseTurn, runKinds, runStatusLabel, type MissionRun } from './model/missionModel'
 
@@ -50,7 +51,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         setInputError(null)
         setSubmitting(current => ({ ...current, [requestId]: true }))
         try {
-            await submitConversationRequestUserInputValidated(conversationId, requestId, { project_path: project, answers })
+            await submitConversationRequestUserInput(conversationId, requestId, { project_path: project, answers })
             reload()
         } catch (e) { setInputError(e instanceof Error ? e.message : String(e)) } finally {
             setSubmitting(current => { const next = { ...current }; delete next[requestId]; return next })
@@ -60,7 +61,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     const [retryError, setRetryError] = useState<string | null>(null)
     function retryTurn(turnId: string) {
         setRetryError(null)
-        void retryConversationTurnValidated(conversationId, turnId, project).then(reload)
+        void retryConversationTurn(conversationId, turnId, project).then(reload)
             .catch((e: unknown) => setRetryError(e instanceof Error ? e.message : String(e)))
     }
     const [showThinking, setShowThinking] = useState(false)
