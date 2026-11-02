@@ -333,7 +333,7 @@ pub enum ResetReason {
 }
 
 /// Every row with `from_revision < revision <= watermark` in the scope.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChangeBatch {
     pub from_revision: i64,
     pub watermark: i64,
@@ -878,19 +878,26 @@ impl ReadTransaction<'_> {
                 params![project_path, since, self.watermark, limit],
             )?,
         };
-        let bytes: usize = rows
-            .iter()
-            .filter_map(|row| row.payload.as_ref())
-            .map(|payload| payload.to_string().len())
-            .sum();
-        if rows.len() > CATCH_UP_MAX_ROWS || bytes > CATCH_UP_MAX_BYTES {
+        if rows.len() > CATCH_UP_MAX_ROWS {
             return Ok(CatchUp::Reset(ResetReason::CatchupLimit));
         }
-        Ok(CatchUp::Batch(ChangeBatch {
+        let batch = ChangeBatch {
             from_revision: since,
             watermark: self.watermark,
             rows,
-        }))
+        };
+        // The byte cap covers the whole serialized batch: identities,
+        // tombstones and envelope fields, not just payloads.
+        let bytes = serde_json::to_vec(&batch)
+            .map_err(|source| StorageError::JsonWrite {
+                path: PathBuf::from(CONVERSATION_DATABASE_FILE_NAME),
+                source,
+            })?
+            .len();
+        if bytes > CATCH_UP_MAX_BYTES {
+            return Ok(CatchUp::Reset(ResetReason::CatchupLimit));
+        }
+        Ok(CatchUp::Batch(batch))
     }
 
     /// The newest `limit` live turns, or the `limit` turns older than

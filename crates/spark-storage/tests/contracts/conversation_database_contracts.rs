@@ -606,3 +606,60 @@ fn read_query_plans_use_page_change_and_summary_indexes() {
         }
     }
 }
+
+#[test]
+fn catch_up_byte_cap_counts_whole_rows_including_identities_and_tombstones() {
+    let (_temp, database) = open();
+    let long_turns = |conversation_id: &str, count: usize| {
+        (0..count)
+            .map(|index| TurnRow {
+                payload: json!({}),
+                ..turn(
+                    conversation_id,
+                    &format!("{index:04}{}", "t".repeat(4000)),
+                    index as i64,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    database
+        .write(|write| {
+            write.put_conversation(&conversation("fits", "/p", "t1"))?;
+            write.put_conversation(&conversation("big", "/p", "t1"))?;
+            long_turns("fits", 300)
+                .iter()
+                .chain(&long_turns("big", 600))
+                .try_for_each(|row| write.put_turn(row))
+        })
+        .unwrap();
+    let catch_up = |conversation_id| {
+        database
+            .read(|read| {
+                read.changes(
+                    ChangeScope::Conversation(conversation_id),
+                    database.generation(),
+                    0,
+                )
+            })
+            .unwrap()
+    };
+
+    // Under the cap the whole range comes back.
+    match catch_up("fits") {
+        CatchUp::Batch(batch) => assert_eq!(batch.rows.len(), 301),
+        other => panic!("{other:?}"),
+    }
+    // Payloads total a few KiB, but the identities push the rows past 2 MiB.
+    assert!(600 * "{}".len() < CATCH_UP_MAX_BYTES && 600 * 4000 > CATCH_UP_MAX_BYTES);
+    assert_eq!(catch_up("big"), CatchUp::Reset(ResetReason::CatchupLimit));
+
+    // Tombstones carry no payload and are still counted.
+    database
+        .write(|write| {
+            long_turns("big", 600)
+                .iter()
+                .try_for_each(|row| write.delete_turn("big", &row.id).map(drop))
+        })
+        .unwrap();
+    assert_eq!(catch_up("big"), CatchUp::Reset(ResetReason::CatchupLimit));
+}
