@@ -249,13 +249,20 @@ function mergeArtifactList<T extends { id: string }>(
     return { ids: nextIds, byId: nextById }
 }
 
-/** Snapshots don't carry a standing role, so its row keeps the role and title the server listed. */
+/**
+ * Snapshots don't carry a standing role, so its row keeps the role and title the server listed.
+ * A summary the server published at a newer revision than the record outranks it.
+ */
 function upsertRecordSummary(
     items: ConversationSummaryResponse[],
     record: NormalizedConversationRecord,
 ): ConversationSummaryResponse[] {
+    const existing = items.find((item) => item.conversation_id === record.conversation_id)
+    if (existing && existing.revision > record.revision) {
+        return items
+    }
     const summary = buildConversationSummaryFromRecord(record)
-    const role = items.find((item) => item.conversation_id === record.conversation_id)?.standing_role
+    const role = existing?.standing_role
     return upsertConversationSummary(items, role ? { ...summary, title: role.title, standing_role: role } : summary)
 }
 
@@ -274,6 +281,9 @@ function buildConversationSummaryFromRecord(record: NormalizedConversationRecord
         revision: record.revision,
         last_message_preview: lastMessageTurn?.content || null,
         launched_run_ids: getConversationFlowLaunches(record).flatMap((launch) => launch.run_id ? [launch.run_id] : []),
+        running: Object.values(record.turnsById).some((turn) => (
+            turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming')
+        )),
     }
 }
 

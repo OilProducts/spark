@@ -75,10 +75,23 @@ export function useProjectConversationCache({
     const loadProjectConversationSummaries = useCallback(async (projectPath: string) => {
         setHomeThreadSummariesStatus(projectPath, 'loading', null)
         try {
-            const summaries = await fetchProjectConversationListValidated(projectPath)
+            const fetched = await fetchProjectConversationListValidated(projectPath)
+            // Summaries upserted while the request was in flight: the higher revision wins,
+            // and chats the response predates are kept.
+            const latestCache = useStore.getState().homeConversationCache
+            const cached = latestCache.summariesByProjectPath[projectPath] ?? []
+            const fetchedIds = new Set(fetched.map((summary) => summary.conversation_id))
+            const summaries = [
+                ...fetched.map((summary) => {
+                    const upserted = cached.find((entry) => entry.conversation_id === summary.conversation_id)
+                    return upserted && upserted.revision > summary.revision ? upserted : summary
+                }),
+                ...cached.filter((entry) => !fetchedIds.has(entry.conversation_id)),
+            ]
+            conversationCacheRef.current = latestCache
             setConversationSummaryList(projectPath, summaries)
             setHomeThreadSummariesStatus(projectPath, 'ready', null)
-            return summaries
+            return conversationCacheRef.current.summariesByProjectPath[projectPath] ?? []
         } catch {
             setHomeThreadSummariesStatus(projectPath, 'error', 'Unable to load threads.')
             return conversationCacheRef.current.summariesByProjectPath[projectPath] || []

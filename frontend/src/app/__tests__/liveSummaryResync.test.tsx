@@ -58,3 +58,14 @@ it('fetches again when a live upsert overtakes the refetch, instead of applying 
     await act(async () => responses[1]([summary('working')]))
     expect(roleState()).toBe('working')
 })
+
+it('refetches held summaries when a lagged stream asks for a conversation_summary resync', async () => {
+    render(<WorkspaceLiveEventsController />)
+    const source = MockEventSource.instances.at(-1)!
+    act(() => source.onmessage!({ data: JSON.stringify({
+        type: 'resync_required', resource: { kind: 'conversation_summary', id: null }, payload: { reason: 'lagged' },
+    }) } as MessageEvent))
+    await waitFor(() => expect(responses).toHaveLength(1))
+    await act(async () => responses[0]([summary('stopped')]))
+    await waitFor(() => expect(roleState()).toBe('stopped'))
+})

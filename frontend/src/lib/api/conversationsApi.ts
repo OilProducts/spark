@@ -209,6 +209,8 @@ export interface ConversationSummaryResponse {
     launched_run_ids?: string[]
     /** Set on a standing role's conversation, pinned first in the Threads list. */
     standing_role?: StandingRoleSummary | null
+    /** An assistant turn is pending or streaming. */
+    running?: boolean
 }
 
 export interface StandingRoleSummary {
@@ -651,6 +653,7 @@ export function parseConversationSummaryResponse(value: unknown): ConversationSu
             ? record.launched_run_ids.filter((id): id is string => typeof id === 'string')
             : [],
         standing_role: parseStandingRole(record.standing_role),
+        running: record.running === true,
     }
 }
 

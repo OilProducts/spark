@@ -10,7 +10,6 @@ import { useStore } from '@/store'
 import type { PendingConversationTurnState } from '../model/conversationState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments } from './useComposerAttachments'
-import { reconcileRunningChat } from './useChatRunning'
 
 export type ConversationComposerCommand =
     | {
@@ -175,8 +174,8 @@ export function useConversationComposer({
         const afterRevision = getCurrentConversationRevision(conversationId)
         setPendingConversationTurn({ conversationId, afterRevision })
         // The activity bar follows the turn even after the chat is left.
-        const { setRunningChat } = useStore.getState()
-        setRunningChat(conversationId, { projectPath: activeProjectPath, revision: afterRevision, sending: true })
+        const { setSendingChat } = useStore.getState()
+        setSendingChat(conversationId, true)
         try {
             const snapshot = await start()
             onAccepted?.()
@@ -188,12 +187,9 @@ export function useConversationComposer({
         } catch (error) {
             const message = formatErrorMessage(error, failure)
             setPanelError(message)
-            // A rejected send may still have started a turn; the server decides whether the chat runs.
-            void reconcileRunningChat(conversationId, activeProjectPath)
         } finally {
             setPendingConversationTurn(null)
-            const running = useStore.getState().runningChats[conversationId]
-            if (running) setRunningChat(conversationId, { ...running, sending: false })
+            setSendingChat(conversationId, false)
         }
     }
 

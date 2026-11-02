@@ -61,6 +61,9 @@ pub struct ConversationSummary {
     /// Set on a standing role's conversation, which the Threads list pins first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_role: Option<StandingRoleSummary>,
+    /// An assistant turn is pending or streaming.
+    #[serde(default)]
+    pub running: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -724,6 +727,7 @@ impl WorkspaceConversationService {
                         title: role.title,
                         state: role.state,
                     }),
+                    running: false,
                 });
             }
         }
@@ -6420,6 +6424,7 @@ pub(crate) fn conversation_summary_from_snapshot(
         last_message_preview,
         launched_run_ids,
         standing_role: None,
+        running: active_assistant_turn_id(snapshot).is_some(),
     })
 }
 
