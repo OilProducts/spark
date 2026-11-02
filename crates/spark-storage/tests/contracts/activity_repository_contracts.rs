@@ -538,3 +538,65 @@ fn terminated_or_earlier_corruption_remains_a_read_error() {
         assert!(repository.read_transcript_records_from(0).is_err());
     }
 }
+
+#[test]
+fn recovery_suffix_rejects_terminated_corruption() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repository = ActivityRepository::new(temp.path());
+    repository
+        .append_event(json!({"type": "turn_completed"}), "now")
+        .expect("event");
+    append_raw(&repository.events_path(), b"BROKEN\n");
+    append_raw(
+        &repository.events_path(),
+        b"{\"sequence\":3,\"committed_at\":\"now\",\"event\":{}}\n",
+    );
+    assert!(repository.read_events().is_err());
+    assert!(repository.uncommitted_event_suffix().is_err());
+}
+
+/// A reader racing an append sees the record either whole or not at all:
+/// a half-written record is not consumed, and the reused cursor delivers it
+/// once when complete. A stale cursor past the end yields nothing.
+#[test]
+fn transcript_cursor_never_consumes_an_in_flight_append() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repository = ActivityRepository::new(temp.path());
+    repository
+        .append_event(json!({"type": "turn_completed"}), "now")
+        .expect("event");
+    repository
+        .append_transcript(&turn_record(1, 1))
+        .expect("transcript");
+    let (_, cursor) = repository.read_transcript_records_from(0).expect("read");
+
+    let mut record = serde_json::to_vec(&turn_record(2, 1)).unwrap();
+    record.push(b'\n');
+    let (first, rest) = record.split_at(record.len() / 2);
+    append_raw(&repository.transcript_path(), first);
+    let (records, mid) = repository
+        .read_transcript_records_from(cursor)
+        .expect("during append");
+    assert!(records.is_empty());
+    assert_eq!(mid, cursor);
+
+    append_raw(&repository.transcript_path(), rest);
+    let (records, end) = repository
+        .read_transcript_records_from(mid)
+        .expect("after append");
+    assert_eq!(records, vec![turn_record(2, 1)]);
+    let len = std::fs::metadata(repository.transcript_path())
+        .unwrap()
+        .len();
+    assert_eq!(end, len);
+    assert!(repository
+        .read_transcript_records_from(end)
+        .unwrap()
+        .0
+        .is_empty());
+    let (records, past) = repository
+        .read_transcript_records_from(len + 1_000)
+        .expect("stale cursor");
+    assert!(records.is_empty());
+    assert_eq!(past, len);
+}

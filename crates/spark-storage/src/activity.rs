@@ -282,6 +282,9 @@ fn read_activity_records<T: DeserializeOwned>(path: &Path, offset: u64) -> Resul
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| activity_io("read", path, error))?;
+    // The cursor comes from the bytes actually read, never a stale length:
+    // an append racing this read is either fully consumed or left for later.
+    let length = start + bytes.len() as u64;
     let terminated_len = bytes
         .iter()
         .rposition(|byte| *byte == b'\n')
@@ -406,7 +409,7 @@ fn tail_transcript_revision(path: &Path) -> Result<u64> {
         .unwrap_or(0))
 }
 
-fn tail_record<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
+fn tail_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -426,14 +429,8 @@ fn tail_record<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
             .map_err(|error| activity_io("read", path, error))?;
         chunk.extend(bytes);
         bytes = chunk;
-        let mut lines = bytes.split(|byte| *byte == b'\n');
-        if start > 0 {
-            lines.next();
-        }
-        for line in lines.rev().filter(|line| !line.is_empty()) {
-            if let Ok(record) = serde_json::from_slice(line) {
-                return Ok(Some(record));
-            }
+        if let Some(record) = activity_lines(path, &bytes, start > 0)?.pop() {
+            return Ok(Some(record));
         }
         end = start;
     }
@@ -459,18 +456,10 @@ fn read_event_suffix(path: &Path, committed: u64) -> Result<Vec<ActivityEvent>> 
             .map_err(|error| activity_io("read", path, error))?;
         chunk.extend(bytes);
         bytes = chunk;
-        let skip_first = start > 0;
-        let mut records = Vec::new();
-        for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
-            if (skip_first && index == 0) || line.is_empty() {
-                continue;
-            }
-            if let Ok(record) = serde_json::from_slice::<ActivityEvent>(line) {
-                if record.sequence > committed {
-                    records.push(record);
-                }
-            }
-        }
+        let records: Vec<ActivityEvent> = activity_lines(path, &bytes, start > 0)?
+            .into_iter()
+            .filter(|record: &ActivityEvent| record.sequence > committed)
+            .collect();
         if records
             .first()
             .is_some_and(|record| record.sequence == committed + 1)
@@ -481,6 +470,38 @@ fn read_event_suffix(path: &Path, committed: u64) -> Result<Vec<ActivityEvent>> 
         end = start;
     }
     Ok(Vec::new())
+}
+
+/// Decode a window that ends at end of file, skipping its first (partial)
+/// line when the window starts mid-file. Like full reads, malformed
+/// terminated records are errors and only an invalid unterminated final
+/// record is ignored.
+fn activity_lines<T: DeserializeOwned>(
+    path: &Path,
+    bytes: &[u8],
+    skip_first: bool,
+) -> Result<Vec<T>> {
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    let tail = lines.pop().unwrap_or_default();
+    let mut records = Vec::new();
+    for line in lines.into_iter().skip(usize::from(skip_first)) {
+        if line.is_empty() {
+            continue;
+        }
+        records.push(
+            serde_json::from_slice(line).map_err(|source| StorageError::JsonRead {
+                path: path.to_path_buf(),
+                source,
+            })?,
+        );
+    }
+    // Without a newline, a mid-file window is all one partial first line.
+    if !skip_first || bytes.contains(&b'\n') {
+        if let Ok(record) = serde_json::from_slice(tail) {
+            records.push(record);
+        }
+    }
+    Ok(records)
 }
 
 struct ActivityFileLock(fs::File);
