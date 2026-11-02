@@ -5,7 +5,6 @@ use attractor_runtime::RunStore;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_http::build_app;
 use spark_storage::{
@@ -20,8 +19,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     install_run_flow(&settings);
     let other = project(&settings, "other");
     let project = project(&settings, "project");
-    let org = spark_common::project::org_dir(Path::new(&project));
-    let head = || run_git(&org, &["log", "-1", "--format=%H %s"]).unwrap();
+    let org = spark_common::project::definitions_dir(Path::new(&project));
     let app = build_app(settings.clone());
 
     let empty = request_json(app.clone(), "GET", "/workspace/api/triggers", None).await;
@@ -54,7 +52,6 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     assert!(created.1["source"].get("secret_hash").is_none());
     assert!(created.1["action"].get("project_path").is_none());
     let trigger_id = created.1["id"].as_str().unwrap().to_string();
-    assert!(head().ends_with(" Watch the CI webhook"));
 
     let listed = request_json(app.clone(), "GET", "/workspace/api/triggers", None).await;
     assert_eq!(listed.0, StatusCode::OK);
@@ -106,8 +103,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     assert!(described.1.get("webhook_secret").is_none());
     assert!(described.1["source"].get("secret_hash").is_none());
 
-    // Switching enabled writes state only: no definition change, no commit.
-    let before = (head(), definition_text.clone());
+    // Switching enabled writes state only: no definition change.
     let disabled = request_json(
         app.clone(),
         "PATCH",
@@ -120,8 +116,8 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     assert_eq!(disabled.1["revision"], described.1["revision"]);
     assert!(!states.load(&trigger_id).unwrap().enabled);
     assert_eq!(
-        before,
-        (head(), fs::read_to_string(&definition_path).unwrap())
+        definition_text,
+        fs::read_to_string(&definition_path).unwrap()
     );
 
     let updated = request_json(
@@ -134,7 +130,6 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     assert_eq!(updated.0, StatusCode::OK);
     assert_eq!(updated.1["name"], "Compat webhook updated");
     assert_eq!(updated.1["enabled"], json!(false));
-    assert!(head().ends_with(" Edit trigger Compat webhook updated"));
     assert_eq!(
         updated.1["source"]["webhook_key"],
         described.1["source"]["webhook_key"]
@@ -156,10 +151,9 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
         deleted.1,
         json!({"status": "deleted", "id": trigger_id, "project_path": project})
     );
-    assert!(head().ends_with(" Retired"));
     assert!(!definition_path.exists());
     assert!(!state_path.exists());
-    assert_eq!(run_git(&org, &["status", "--porcelain"]).unwrap(), "");
+    assert_eq!(fs::read_dir(org.join("triggers")).unwrap().count(), 0);
 }
 
 #[tokio::test]
@@ -812,7 +806,7 @@ fn write_persisted_trigger_toml(
     flow_name: &str,
     source_body: &str,
 ) {
-    let dir = spark_common::project::org_dir(Path::new(project)).join("triggers");
+    let dir = spark_common::project::definitions_dir(Path::new(project)).join("triggers");
     fs::create_dir_all(&dir).expect("trigger config dir");
     fs::write(
         dir.join(format!("{id}.toml")),
@@ -843,18 +837,10 @@ fn load_state(settings: &SparkSettings, project: &str, id: &str) -> TriggerState
         .expect("trigger state")
 }
 
-/// A registered project whose org repo has a git identity, since every
-/// definition write commits.
+/// A registered project.
 fn project(settings: &SparkSettings, name: &str) -> String {
     let project = settings.data_dir.parent().unwrap().join(name);
     fs::create_dir_all(&project).expect("project dir");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project.to_string_lossy())
         .expect("register project")

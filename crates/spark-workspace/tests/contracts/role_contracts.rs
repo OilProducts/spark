@@ -134,8 +134,8 @@ impl Harness {
             .unwrap();
     }
     fn org_role(&self, name: &str, text: &str) {
-        let roles =
-            spark_common::project::org_dir(std::path::Path::new(&self.project)).join("roles");
+        let roles = spark_common::project::definitions_dir(std::path::Path::new(&self.project))
+            .join("roles");
         std::fs::create_dir_all(&roles).unwrap();
         std::fs::write(roles.join(format!("{name}.md")), text).unwrap();
     }
@@ -182,8 +182,8 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
         role.contains("standing Coordinator (coordinator)"),
         "{role}"
     );
-    assert!(role.contains("memory/coordinator"));
-    assert!(role.contains("Only the Chief of Staff role changes files in the org repo"));
+    assert!(role.contains(".spark/state/memory/coordinator"));
+    assert!(role.contains("Only the Chief of Staff role changes files in the definitions"));
     let chat = frame(&harness.user_turn("chat-1"));
     assert!(
         chat.starts_with("You are the Spark workspace assistant."),
@@ -192,7 +192,7 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     assert!(chat.contains("Org changes"), "{chat}");
     assert!(!chat.contains(NEVER_CHANGE), "{chat}");
     assert!(!chat.contains("standing Coordinator ("), "{chat}");
-    assert!(chat.contains("memory/coordinator"));
+    assert!(chat.contains(".spark/state/memory/coordinator"));
     assert!(chat.contains("never edit it"));
     let missions = WorkspaceMissionService::new(harness.settings.clone());
     let mission = missions

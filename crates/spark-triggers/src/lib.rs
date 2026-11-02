@@ -2,7 +2,7 @@
 
 //! Trigger definition contracts and CRUD services.
 //!
-//! A trigger's definition lives in its project's org repo and its runtime
+//! A trigger's definition lives in its project's `.spark/definitions` and its runtime
 //! state under Spark's data directory. This crate owns protected edit
 //! guards, credential mutation, and production source activation. Webhook
 //! dispatch is routed through the source runtime so Workspace-owned launch
@@ -101,7 +101,7 @@ impl TriggerService {
         definition.project_path = repository.project_path().to_string();
         // State first, so the source loop never sees the new definition with
         // default state (enabled, no credentials); dropped again if the
-        // definition's commit fails.
+        // definition's write fails.
         let states = self.repositories.runtime_state(&definition.project_path)?;
         let mut webhook_secret = None;
         let mut initial = TriggerState {

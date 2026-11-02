@@ -16,17 +16,15 @@ export type OrgItem = {
     name: string
     layer: OrgLayer
     path: string
-    uncommitted: boolean
-    bundled_changed?: boolean | null
     title?: string
     description?: string
     usage?: { flow: string; node: string }[]
     standing?: StandingRole | null
 }
 export type OrgList = { org_path: string; bundled_path: string; org_exists: boolean; items: OrgItem[] }
-export type OrgFile = { name: string; content: string; status: 'modified' | 'untracked' | null }
+// Definitions have no Git history of their own: items report no uncommitted state or bundled drift, files no status, and history is empty.
+export type OrgFile = { name: string; content: string }
 export type OrgItemDetail = OrgItem & { files: OrgFile[]; bundled_diff: string | null }
-export type OrgCommit = { commit: string; author: string; date: string; message: string; diff: string }
 
 export const LAYER_LABELS: Record<OrgLayer, string> = { project: 'project', project_copy: 'project copy', bundled: 'bundled' }
 // The inbox's terminal run statuses (TERMINAL_RUN_STATUSES in spark-workspace).
@@ -70,22 +68,18 @@ export function frontmatterFields(text: string): { fields: [string, string][]; b
     return { fields, body }
 }
 
-/** The badges an item earns by differing from the bundled default; a plain bundled item has none. */
-export function orgBadges(item: Pick<OrgItem, 'layer' | 'uncommitted' | 'bundled_changed'>): string[] {
-    return [
-        ...(item.layer === 'project' ? ['customized'] : []),
-        ...(item.layer === 'project_copy' && item.bundled_changed ? ['project copy'] : []),
-        ...(item.uncommitted ? ['uncommitted'] : []),
-    ]
+/** An item's origin when it is not bundled only: the project's own, or a project copy of a bundled one. */
+export function orgBadges(item: Pick<OrgItem, 'layer'>): string[] {
+    return item.layer === 'project' ? ['customized'] : item.layer === 'project_copy' ? ['project copy'] : []
 }
 
-/** The roles' standing against the bundled defaults, from whether the org repo exists. */
+/** The roles' standing against the bundled defaults, from whether the project's definitions exist. */
 export function orgStatus(list: OrgList): string {
-    if (!list.org_exists) return 'No org repo: all roles are bundled defaults.'
+    if (!list.org_exists) return 'No project definitions: all roles are bundled defaults.'
     const roles = list.items.filter((item) => item.kind === 'role')
-    const customized = roles.filter((item) => item.layer !== 'bundled').length
-    const uncommitted = roles.filter((item) => item.uncommitted).length
-    return `${customized} customized ${customized === 1 ? 'role' : 'roles'} · ${uncommitted} uncommitted`
+    const customized = roles.filter((item) => item.layer === 'project').length
+    const copies = roles.filter((item) => item.layer === 'project_copy').length
+    return `${customized} customized ${customized === 1 ? 'role' : 'roles'} · ${copies} project ${copies === 1 ? 'copy' : 'copies'}`
 }
 
 /** A role's flow nodes, grouped by flow in first-seen order. */

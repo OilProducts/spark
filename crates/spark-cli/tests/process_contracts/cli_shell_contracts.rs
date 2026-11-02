@@ -447,7 +447,7 @@ fn flow_get_prints_each_file_exactly_and_json_prints_files_response() {
     let files = serde_json::json!({
         "name": "software-development/implement-change-request",
         "layer": "project",
-        "path": "/project/.spark/agent-org/flows/software-development/implement-change-request",
+        "path": "/project/.spark/definitions/flows/software-development/implement-change-request",
         "files": [
             {"name": "flow.md", "content": "---\nid: implement_change_request\n---\nGoal.\n"},
             {"name": "start.md", "content": "---\nkind: start\n---"},
@@ -472,7 +472,7 @@ fn flow_get_prints_each_file_exactly_and_json_prints_files_response() {
     assert_eq!(
         text_output.stdout,
         "Layer: project\n\
-Path: /project/.spark/agent-org/flows/software-development/implement-change-request\n\
+Path: /project/.spark/definitions/flows/software-development/implement-change-request\n\
 \n==> flow.md <==\n---\nid: implement_change_request\n---\nGoal.\n\
 \n==> start.md <==\n---\nkind: start\n---\n"
     );

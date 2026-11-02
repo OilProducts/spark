@@ -8,7 +8,6 @@ use std::thread;
 use std::time::Duration as StdDuration;
 
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_storage::{TriggerDefinition, TriggerRepositories, TriggerState};
 use spark_triggers::{
@@ -418,9 +417,9 @@ async fn due_sources_scan_every_registered_org_and_pick_up_hand_edits() {
     let now = at("2026-06-24T10:00:00Z");
     assert!(runtime.process_due_sources(now).await.unwrap().is_empty());
 
-    // A definition the Chief of Staff writes and commits by hand fires on the
+    // A definition the Chief of Staff writes by hand fires on the
     // next tick, in its own project.
-    let org = spark_common::project::org_dir(Path::new(&project));
+    let org = spark_common::project::definitions_dir(Path::new(&project));
     std::fs::create_dir_all(org.join("triggers")).unwrap();
     let path = org.join("triggers/by-hand.toml");
     std::fs::write(
@@ -441,15 +440,13 @@ run_at = "2026-06-24T09:30:00Z"
 "#,
     )
     .unwrap();
-    run_git(&org, &["add", "triggers/by-hand.toml"]).unwrap();
-    run_git(&org, &["commit", "-qm", "Add a trigger by hand"]).unwrap();
     let outcomes = runtime.process_due_sources(now).await.unwrap();
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].trigger_id, "by-hand");
     assert_eq!(outcomes[0].trigger.project_path, project);
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 
-    // Disabled in state, or deleted from the org repo: it no longer fires.
+    // Disabled in state, or its file deleted: it no longer fires.
     let interval = path.with_file_name("by-hand-interval.toml");
     std::fs::write(
         &interval,
@@ -679,17 +676,10 @@ fn project_dir(settings: &SparkSettings, name: &str) -> String {
         .project_path
 }
 
-/// A registered project whose org repo has a git identity, since every
-/// definition write commits.
+/// A registered project.
 fn project(settings: &SparkSettings, name: &str) -> String {
     let project = project_dir(settings, name);
-    let org = spark_common::project::ensure_org_repo(Path::new(&project)).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
+    std::fs::create_dir_all(&project).expect("project dir");
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project)
         .expect("register project");

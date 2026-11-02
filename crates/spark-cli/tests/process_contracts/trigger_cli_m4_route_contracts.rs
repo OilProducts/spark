@@ -3,7 +3,6 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 use spark_http::build_app;
 use spark_storage::{TriggerAction, TriggerDefinition, TriggerRepositories};
@@ -20,8 +19,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     write_flow(&settings, "ops/run");
     let project_dir = registered_project(&settings, &temp.path().join("project"));
     let project = project_dir.as_str();
-    let org = spark_common::project::org_dir(Path::new(project));
-    let subject = || run_git(&org, &["log", "-1", "--format=%s"]).unwrap();
+    let org = spark_common::project::definitions_dir(Path::new(project));
     let server = spawn_server(settings.clone()).await;
 
     let create_payload = temp.path().join("trigger-create.json");
@@ -71,7 +69,6 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         .as_str()
         .expect("trigger id")
         .to_string();
-    assert_eq!(subject(), "Watch CI for the release");
     let repositories = TriggerRepositories::from_settings(&settings);
     assert!(org.join(format!("triggers/{trigger_id}.toml")).exists());
     assert!(repositories
@@ -150,7 +147,6 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             .len()
             == 32
     );
-    assert_eq!(subject(), "Edit trigger Compat webhook updated");
 
     let deleted = run_spark(
         temp.path(),
@@ -175,7 +171,6 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         deleted_payload,
         json!({"id": trigger_id, "status": "deleted", "project_path": project})
     );
-    assert_eq!(subject(), "No longer needed & retired");
     assert!(repositories
         .definitions(project)
         .unwrap()
@@ -365,14 +360,9 @@ fn protected_definition(id: &str) -> TriggerDefinition {
     }
 }
 
-/// Registers the project and gives its org repo a git identity, since every
-/// trigger write commits. Returns the registered project path.
+/// Registers the project. Returns the registered project path.
 fn registered_project(settings: &SparkSettings, project: &Path) -> String {
     fs::create_dir_all(project).expect("project dir");
-    let org = spark_common::project::ensure_org_repo(project).expect("org repo");
-    for (key, value) in [("user.name", "CLI Test"), ("user.email", "cli@example.com")] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
     spark_storage::ProjectRegistry::new(settings.data_dir.clone())
         .ensure_project_paths(&project.to_string_lossy())
         .expect("register project")
@@ -792,7 +782,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
-    let org_playbooks = spark_common::project::org_dir(&project).join("playbooks");
+    let org_playbooks = spark_common::project::definitions_dir(&project).join("playbooks");
     let project = project.to_str().unwrap();
     let bundled_playbooks = settings.bundled_dir().join("playbooks");
     fs::create_dir_all(&bundled_playbooks).unwrap();
@@ -828,7 +818,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Reproduce, then fix.");
-    // `--project` resolves through the project's org repo first.
+    // `--project` resolves through the project's definitions first.
     let output = spark(&["playbook", "list", "--project", project]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(

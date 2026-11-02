@@ -1,7 +1,10 @@
 //! A read-only view of a project's agent organization: its flows and roles
-//! by layer (bundled, project, or a project copy shadowing bundled), their
-//! history in the org repo, and the standing roles' memory. Nothing here
+//! by layer (bundled, project, or a project copy shadowing bundled) under
+//! `.spark/definitions`, and the standing roles' memory. Nothing here
 //! writes; changes go through the Coordinator, the CoS and the flow editor.
+//! Definitions carry no Git history of their own, so the Git facts in these
+//! records (uncommitted, file status, bundled drift, history) are always
+//! unknown: false, null or empty, never a claim about the parent repository.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -10,7 +13,6 @@ use std::process::Command;
 use attractor_dsl::FlowRoots;
 use serde::Serialize;
 use serde_json::{json, Value};
-use spark_common::project::run_git;
 use spark_common::settings::SparkSettings;
 
 use crate::inbox::{invalid, read_events, InboxEvent};
@@ -43,9 +45,9 @@ pub struct OrgItem {
     pub layer: &'static str,
     /// Relative to the layer's root: `flows/<name>` or `roles/<name>.md`.
     pub path: String,
-    /// Some file differs from the org repo's HEAD or is untracked.
+    /// Always false: definitions have no Git history of their own.
     pub uncommitted: bool,
-    /// For a committed project copy: whether bundled differs from the copy's first commit.
+    /// Always null: no record of the bundled version a copy came from.
     pub bundled_changed: Option<bool>,
     /// A role file's frontmatter `title` and `description`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,7 +64,7 @@ pub struct OrgItem {
 pub struct OrgFile {
     pub name: String,
     pub content: String,
-    /// `untracked` or `modified` against the org repo's HEAD.
+    /// Always null: definitions have no Git history of their own.
     pub status: Option<&'static str>,
 }
 
@@ -107,11 +109,10 @@ impl WorkspaceOrgService {
     pub fn list(&self, project: &str) -> WorkspaceResult<Value> {
         let roots = self.roots(project)?;
         let org = roots.org.clone().unwrap();
-        let changed = uncommitted_paths(&org);
         let mut items = Vec::new();
         let mut usage: BTreeMap<String, Vec<RoleUsage>> = BTreeMap::new();
         for name in roots.list_flow_names().map_err(flow_error)? {
-            let flow = item(&roots, &changed, "flow", name)?;
+            let flow = item(&roots, "flow", name)?;
             let root = if flow.layer == "bundled" {
                 &roots.bundled
             } else {
@@ -134,7 +135,7 @@ impl WorkspaceOrgService {
         }
         let standing = self.standing_roles(project)?;
         for name in role_names(&roots) {
-            let mut role = item(&roots, &changed, "role", name)?;
+            let mut role = item(&roots, "role", name)?;
             // A role file that does not parse has no title or description.
             if let Ok(file) = roots
                 .role_text(&role.name)
@@ -150,7 +151,7 @@ impl WorkspaceOrgService {
         Ok(json!({
             "org_path": org,
             "bundled_path": roots.bundled,
-            "org_exists": org.join(".git").exists(),
+            "org_exists": org.is_dir(),
             "items": items,
         }))
     }
@@ -177,7 +178,7 @@ impl WorkspaceOrgService {
     }
 
     /// One item's files as its winning layer has them; for a project copy,
-    /// also its diff from bundled and whether bundled moved since the copy.
+    /// also its diff from bundled.
     pub fn item(&self, project: &str, kind: &str, name: &str) -> WorkspaceResult<OrgItemDetail> {
         let roots = self.roots(project)?;
         let org = roots.org.clone().unwrap();
@@ -190,8 +191,7 @@ impl WorkspaceOrgService {
             "role" => return Err(invalid(format!("Invalid role name: {name}"))),
             _ => return Err(invalid("kind must be flow or role")),
         };
-        let changed = uncommitted_paths(&org);
-        let item = item(&roots, &changed, kind, name)?;
+        let item = item(&roots, kind, name)?;
         let root = if item.layer == "bundled" {
             &roots.bundled
         } else {
@@ -199,15 +199,10 @@ impl WorkspaceOrgService {
         };
         let files = item_files(root, &item.path, kind)?
             .into_iter()
-            .map(|(file, content)| {
-                let path = file_path(&item.path, kind, &file);
-                OrgFile {
-                    status: (item.layer != "bundled")
-                        .then(|| changed.get(&path).copied())
-                        .flatten(),
-                    name: file,
-                    content,
-                }
+            .map(|(name, content)| OrgFile {
+                name,
+                content,
+                status: None,
             })
             .collect();
         let bundled_diff = if item.layer == "project_copy" {
@@ -227,43 +222,12 @@ impl WorkspaceOrgService {
         })
     }
 
-    /// Commits touching `path` in the org repo, newest first, with diffs.
+    /// Commits touching `path`: none, since definitions have no Git
+    /// history of their own.
     pub fn history(&self, project: &str, path: &str) -> WorkspaceResult<Vec<OrgCommit>> {
-        let org = self.roots(project)?.org.unwrap();
-        let path = relative_path(path)?;
-        if !org.join(".git").exists() {
-            return Ok(Vec::new());
-        }
-        let path = path.to_string_lossy();
-        // A repo without commits has no history.
-        let Ok(log) = run_git(
-            &org,
-            &[
-                "--literal-pathspecs",
-                "log",
-                "-p",
-                "--no-color",
-                "--no-ext-diff",
-                "--format=%x1e%H%x1f%an%x1f%aI%x1f%B%x1f",
-                "--",
-                &path,
-            ],
-        ) else {
-            return Ok(Vec::new());
-        };
-        Ok(log
-            .split('\x1e')
-            .filter_map(|entry| {
-                let mut fields = entry.splitn(5, '\x1f');
-                Some(OrgCommit {
-                    commit: fields.next()?.trim().to_string(),
-                    author: fields.next()?.to_string(),
-                    date: fields.next()?.to_string(),
-                    message: fields.next()?.trim().to_string(),
-                    diff: fields.next()?.trim().to_string(),
-                })
-            })
-            .collect())
+        self.roots(project)?;
+        relative_path(path)?;
+        Ok(Vec::new())
     }
 
     /// A role's memory files (relative paths, sorted), or one file's text
@@ -273,11 +237,11 @@ impl WorkspaceOrgService {
         if !valid_role_name(role) {
             return Err(invalid(format!("Invalid role name: {role}")));
         }
-        // A symlinked memory directory must not lead out of the org repo.
+        // A symlinked memory directory must not lead out of the project's state.
         let dir = memory_dir(project.trim(), role);
-        let org = spark_common::project::org_dir(Path::new(project.trim()));
-        let dir = match (dir.canonicalize(), org.canonicalize()) {
-            (Ok(dir), Ok(org)) if dir.starts_with(&org) && dir.is_dir() => dir,
+        let root = Path::new(project.trim()).join(".spark").join("state");
+        let dir = match (dir.canonicalize(), root.canonicalize()) {
+            (Ok(dir), Ok(root)) if dir.starts_with(&root) && dir.is_dir() => dir,
             _ if file.is_none() => return Ok(json!({ "role": role, "files": [] })),
             _ => {
                 return Err(WorkspaceError::NotFound(format!(
@@ -321,7 +285,7 @@ fn relative_path(path: &str) -> WorkspaceResult<PathBuf> {
             .all(|component| matches!(component, Component::Normal(_)))
     {
         return Err(invalid(format!(
-            "Path must stay inside the org repo: {}",
+            "Path must stay inside the definitions: {}",
             path.display()
         )));
     }
@@ -335,13 +299,6 @@ fn item_rel_path(kind: &str, name: &str) -> String {
     }
 }
 
-fn file_path(item_path: &str, kind: &str, file: &str) -> String {
-    match kind {
-        "flow" => format!("{item_path}/{file}"),
-        _ => item_path.to_string(),
-    }
-}
-
 fn exists(root: &Path, kind: &str, rel: &str) -> bool {
     match kind {
         "flow" => root.join(rel).join(attractor_dsl::FLOW_FILE).is_file(),
@@ -349,12 +306,7 @@ fn exists(root: &Path, kind: &str, rel: &str) -> bool {
     }
 }
 
-fn item(
-    roots: &FlowRoots,
-    changed: &BTreeMap<String, &'static str>,
-    kind: &'static str,
-    name: String,
-) -> WorkspaceResult<OrgItem> {
+fn item(roots: &FlowRoots, kind: &'static str, name: String) -> WorkspaceResult<OrgItem> {
     let path = item_rel_path(kind, &name);
     let in_org = roots
         .org
@@ -368,27 +320,13 @@ fn item(
             return Err(WorkspaceError::NotFound(format!("No {kind} named {name}")));
         }
     };
-    let uncommitted = in_org
-        && changed.keys().any(|file| match kind {
-            "flow" => file.starts_with(&format!("{path}/")),
-            _ => *file == path,
-        });
-    // Read (and so contain) the bundled files before comparing them; files
-    // that lead outside their root, or git failing, leave it unknown.
-    let bundled_changed = (layer == "project_copy")
-        .then(|| {
-            let bundled = item_files(&roots.bundled, &path, kind).ok()?;
-            let copied = first_commit_texts(roots.org.as_deref()?, &path, kind)?.ok()?;
-            Some(copied != bundled)
-        })
-        .flatten();
     Ok(OrgItem {
         kind,
         name,
         layer,
         path,
-        uncommitted,
-        bundled_changed,
+        uncommitted: false,
+        bundled_changed: None,
         title: None,
         description: None,
         usage: None,
@@ -444,97 +382,6 @@ fn item_files(root: &Path, rel: &str, kind: &str) -> WorkspaceResult<BTreeMap<St
         .map_err(|error| WorkspaceError::Internal(format!("Unable to read role: {error}")))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     Ok(BTreeMap::from([(name.to_string(), text)]))
-}
-
-/// The item's files as its first org commit recorded them; None before any commit.
-fn first_commit_texts(
-    org: &Path,
-    path: &str,
-    kind: &str,
-) -> Option<WorkspaceResult<BTreeMap<String, String>>> {
-    // Paths are literal, and listed unquoted (NUL-separated).
-    let log = run_git(
-        org,
-        &[
-            "--literal-pathspecs",
-            "log",
-            "--reverse",
-            "--format=%H",
-            "--",
-            path,
-        ],
-    )
-    .ok()?;
-    let commit = log.lines().next()?;
-    let listed = run_git(
-        org,
-        &[
-            "--literal-pathspecs",
-            "ls-tree",
-            "-r",
-            "-z",
-            "--name-only",
-            commit,
-            "--",
-            path,
-        ],
-    )
-    .ok()?;
-    let mut files = BTreeMap::new();
-    for file in listed.split('\0').filter(|file| !file.is_empty()) {
-        let name = Path::new(file)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let own = kind != "flow"
-            || (name.ends_with(".md") && !attractor_dsl::RESERVED_FILES.contains(&name.as_str()));
-        if !own {
-            continue;
-        }
-        match git_blob(org, &format!("{commit}:{file}")) {
-            Ok(text) => files.insert(name, text),
-            Err(error) => return Some(Err(error)),
-        };
-    }
-    Some(Ok(files))
-}
-
-/// Org-relative paths that differ from HEAD (staged or not) or are
-/// untracked; without a HEAD every tracked file counts as changed.
-fn uncommitted_paths(org: &Path) -> BTreeMap<String, &'static str> {
-    let mut paths = BTreeMap::new();
-    if !org.join(".git").exists() {
-        return paths;
-    }
-    let tracked = run_git(org, &["diff", "--name-only", "-z", "HEAD"])
-        .or_else(|_| run_git(org, &["ls-files", "-z", "--cached"]))
-        .unwrap_or_default();
-    let untracked =
-        run_git(org, &["ls-files", "-z", "--others", "--exclude-standard"]).unwrap_or_default();
-    for (list, status) in [(tracked, "modified"), (untracked, "untracked")] {
-        for path in list.split('\0').filter(|path| !path.is_empty()) {
-            paths.insert(path.to_string(), status);
-        }
-    }
-    paths
-}
-
-/// A blob's exact text; `run_git` would trim it.
-fn git_blob(org: &Path, spec: &str) -> WorkspaceResult<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(org)
-        .args(["show", spec])
-        .output()
-        .map_err(|error| WorkspaceError::Internal(format!("Unable to run git: {error}")))?;
-    if !output.status.success() {
-        return Err(WorkspaceError::Internal(format!(
-            "git show {spec} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// `git diff --no-index` from `from` to `to`; exit 1 just means they differ.

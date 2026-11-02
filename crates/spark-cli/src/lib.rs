@@ -693,7 +693,7 @@ fn project_query(options: &ParsedOptions) -> String {
         .unwrap_or_default()
 }
 
-/// `body` with the trigger's project and, when given, the org repo commit
+/// `body` with the trigger's project and, when given, the descriptive change
 /// message.
 fn trigger_write_body(mut body: Value, project: Option<String>, options: &ParsedOptions) -> Value {
     if let Some(object) = body.as_object_mut() {
@@ -1850,11 +1850,11 @@ fn run_flow_validate_dir_command(args: &[String], env: &impl Environment) -> Com
             EXIT_GENERAL_FAILURE,
         );
     }
-    // A file inside `<project>/.spark/agent-org` resolves roles through that
-    // project's org, then the bundled library.
+    // A file inside `<project>/.spark/definitions` resolves roles through
+    // that project's definitions, then the bundled library.
     let project = flow_path.ancestors().find_map(|dir| {
         let spark = dir.parent()?;
-        (dir.file_name()? == "agent-org" && spark.file_name()? == ".spark")
+        (dir.file_name()? == "definitions" && spark.file_name()? == ".spark")
             .then(|| spark.parent())
             .flatten()
             .map(Path::to_path_buf)

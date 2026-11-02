@@ -14,12 +14,12 @@ import { openChat } from '@/app/useAttention'
 import { cn } from '@/lib/utils'
 import {
     askCoordinatorDraft, budgetLine, frontmatterFields, orgBadges, orgRequest, orgStatus, renderableMarkdown, usageByFlow, usageSummary,
-    type OrgCommit, type OrgItem, type OrgItemDetail, type OrgList, type StandingRole,
+    type OrgItem, type OrgItemDetail, type OrgList, type StandingRole,
 } from './orgModel'
 
-/** Only what differs from the bundled default: customized, a drifted project copy, uncommitted. */
-export function OrgBadges({ item }: { item: Pick<OrgItem, 'layer' | 'uncommitted' | 'bundled_changed'> }) {
-    return <>{orgBadges(item).map((badge) => <Badge key={badge} data-testid="org-badge" variant={badge === 'uncommitted' ? 'destructive' : 'default'}>{badge}</Badge>)}</>
+/** Only what differs from bundled only: customized or a project copy. */
+export function OrgBadges({ item }: { item: Pick<OrgItem, 'layer'> }) {
+    return <>{orgBadges(item).map((badge) => <Badge key={badge} data-testid="org-badge" variant="default">{badge}</Badge>)}</>
 }
 
 /** A unified diff with added and removed lines marked. */
@@ -39,22 +39,6 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
         <h3 className="text-sm font-semibold">{title}</h3>
         {children}
     </section>
-}
-
-/** The org repo's commits for one path, each with its diff behind a disclosure. */
-export function OrgHistory({ commits }: { commits: OrgCommit[] | null }) {
-    if (!commits) return <p className="text-xs text-muted-foreground">Loading…</p>
-    if (!commits.length) return <p className="text-xs text-muted-foreground">No commits in the org repo.</p>
-    return <ul className="flex flex-col gap-2">{commits.map((commit) => <li key={commit.commit} data-testid="org-commit">
-        <details className="rounded-md border p-2">
-            <summary className="cursor-pointer text-sm">
-                <span className="font-medium">{commit.message.split('\n')[0]}</span>
-                <span className="text-xs text-muted-foreground"> · {commit.author} · {commit.date} · {commit.commit.slice(0, 8)}</span>
-            </summary>
-            {commit.message.includes('\n') && <p className="mt-2 whitespace-pre-wrap text-xs">{commit.message}</p>}
-            <div className="mt-2"><DiffBlock diff={commit.diff} /></div>
-        </details>
-    </li>)}</ul>
 }
 
 /** The flow nodes that use a role, each flow's nodes together. */
@@ -118,12 +102,10 @@ function StandingDetails({ project, role }: { project: string; role: StandingRol
 
 function RoleDetail({ project, item, coordinator }: { project: string; item: OrgItem; coordinator: StandingRole | null }) {
     const [detail, setDetail] = useState<OrgItemDetail | null>(null)
-    const [commits, setCommits] = useState<OrgCommit[] | null>(null)
     const [error, setError] = useState('')
     useEffect(() => {
         orgRequest<OrgItemDetail>('/item', project, { kind: item.kind, name: item.name }).then(setDetail, (e: Error) => setError(e.message))
-        orgRequest<{ commits: OrgCommit[] }>('/history', project, { path: item.path }).then((value) => setCommits(value.commits), (e: Error) => setError(e.message))
-    }, [project, item.kind, item.name, item.path])
+    }, [project, item.kind, item.name])
     return <section aria-label="Org role" className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
         <header className="flex flex-wrap items-center gap-2">
             <h2 className="text-base font-semibold">{item.title ?? item.name}</h2>
@@ -142,21 +124,13 @@ function RoleDetail({ project, item, coordinator }: { project: string; item: Org
         <Section title="Used in"><RoleUsage item={item} /></Section>
         <Section title="Prompt">
             {detail ? detail.files.map((file) => <div key={file.name} data-testid="org-file" className="rounded-md border p-3">
-                {file.status && <div className="mb-2"><Badge variant="destructive">{file.status}</Badge></div>}
                 <RolePrompt content={file.content} />
             </div>) : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
         </Section>
         {item.layer === 'project_copy' && <Section title="Diff from bundled">
-            <p data-testid="org-bundled-changed" className="text-sm">{item.bundled_changed == null
-                ? 'The copy is not committed yet, so its bundled origin is unknown.'
-                : item.bundled_changed ? 'Bundled has changed since this copy was made.' : 'Bundled is unchanged since this copy was made.'}</p>
             <p className="text-xs text-muted-foreground">Diff from today's bundled version to the copy:</p>
             {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
         </Section>}
-        <details aria-label="History" className="flex flex-col gap-2">
-            <summary className="cursor-pointer text-sm font-semibold">History</summary>
-            <div className="mt-2"><OrgHistory commits={commits} /></div>
-        </details>
     </section>
 }
 
@@ -218,7 +192,7 @@ export function OrgPanel() {
         {project && item
             ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} project={project} item={item} coordinator={coordinator} />
             : <div data-testid="org-empty-state" className="flex h-full items-center justify-center p-6">
-                <Empty className="max-w-md items-center text-center"><EmptyDescription>Select a role to see its prompt, where it is used and its history. This view is read-only; ask the Coordinator for changes.</EmptyDescription></Empty>
+                <Empty className="max-w-md items-center text-center"><EmptyDescription>Select a role to see its prompt and where it is used. This view is read-only; ask the Coordinator for changes.</EmptyDescription></Empty>
             </div>}
     </ViewLayout>
 }

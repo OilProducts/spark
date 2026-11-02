@@ -1,14 +1,12 @@
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
-use spark_common::project::run_git;
 use spark_storage::{
     StorageError, TriggerAction, TriggerDefinition, TriggerRepositories, TriggerState,
     TriggerStateHistoryEntry,
 };
 
-/// Repositories over a temp SPARK_HOME and a project whose org repo has a
-/// git identity, since every definition write commits.
+/// Repositories over a temp SPARK_HOME and a project directory.
 fn fixture(root: &Path) -> (TriggerRepositories, String) {
     let home = root.join("spark-home");
     let project = root.join("project");
@@ -16,13 +14,6 @@ fn fixture(root: &Path) -> (TriggerRepositories, String) {
     // Trigger repositories record canonical project paths; a temp dir may sit
     // behind a symlink (macOS /var -> /private/var).
     let project = project.canonicalize().expect("canonical project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Trigger Test"),
-        ("user.email", "trigger@example.com"),
-    ] {
-        run_git(&org, &["config", key, value]).expect("git config");
-    }
     (
         TriggerRepositories::new(home.join("config"), home.clone()),
         project.to_string_lossy().into_owned(),
@@ -30,15 +21,35 @@ fn fixture(root: &Path) -> (TriggerRepositories, String) {
 }
 
 fn org(project: &str) -> std::path::PathBuf {
-    spark_common::project::org_dir(Path::new(project))
+    spark_common::project::definitions_dir(Path::new(project))
 }
 
-fn last_commit(project: &str) -> String {
-    run_git(&org(project), &["log", "-1", "--format=%s"]).expect("git log")
+/// Runs git in `dir`, returning whether it succeeded and its stdout.
+fn git(dir: &Path, args: &[&str]) -> (bool, String) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    )
+}
+
+/// Names of the files in `dir`.
+fn file_names(dir: &Path) -> Vec<String> {
+    let mut names = std::fs::read_dir(dir)
+        .expect("read dir")
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 #[test]
-fn webhook_definitions_keep_credentials_out_of_the_org_file() {
+fn webhook_definitions_keep_credentials_out_of_the_definition_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
     let repository = repositories.definitions(&project).expect("repository");
@@ -50,7 +61,10 @@ fn webhook_definitions_keep_credentials_out_of_the_org_file() {
     assert!(text.contains("[action]"));
     assert!(text.contains(r#"static_context_json = "{\"origin\": \"compat\"}""#));
     for absent in ["webhook_key", "secret_hash", "enabled", "project_path"] {
-        assert!(!text.contains(absent), "{absent} stays out of the org file");
+        assert!(
+            !text.contains(absent),
+            "{absent} stays out of the definition file"
+        );
     }
 
     let loaded = repository
@@ -119,7 +133,7 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
 }
 
 #[test]
-fn definitions_live_in_the_org_repo_and_every_write_commits_only_its_file() {
+fn definitions_are_plain_files_and_writes_leave_the_project_history_unchanged() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
     let repository = repositories.definitions(&project).expect("repository");
@@ -130,72 +144,61 @@ fn definitions_live_in_the_org_repo_and_every_write_commits_only_its_file() {
         org.join("triggers/trigger-a.toml")
     );
     assert!(repository.definition_path("../bad").is_err());
-    // An unrelated change in the org repo stays out of trigger commits.
-    std::fs::write(org.join("notes.md"), "draft").expect("notes");
+    // The project is itself a Git repository; Spark never commits to it.
+    assert!(git(Path::new(&project), &["init", "-q"]).0);
 
     let mut first = webhook_definition("trigger-a");
     first.revision = repository.put(&first, None).expect("create");
-    assert_eq!(last_commit(&project), "Create trigger Storage trigger");
     first.name = "Renamed".into();
     first.revision = repository
         .put(&first, Some("Rename for the nightly report"))
         .expect("edit");
-    assert_eq!(last_commit(&project), "Rename for the nightly report");
     first.name = "Again".into();
     first.revision = repository.put(&first, Some("  ")).expect("edit");
-    assert_eq!(last_commit(&project), "Edit trigger Again");
+    assert_eq!(repository.get("trigger-a").unwrap().unwrap().name, "Again");
 
-    // No lock or temp files in the org repo: only the definition, committed.
-    let entries = std::fs::read_dir(org.join("triggers"))
-        .expect("triggers dir")
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(entries, vec!["trigger-a.toml"]);
-    assert_eq!(
-        run_git(&org, &["status", "--porcelain"]).expect("status"),
-        "?? notes.md"
-    );
+    // No lock or temp files among the definitions: only the definition.
+    assert_eq!(file_names(&org.join("triggers")), vec!["trigger-a.toml"]);
 
     repository
         .delete("trigger-a", &first.revision, None)
         .expect("delete");
-    assert_eq!(last_commit(&project), "Delete trigger Again");
     assert!(repository.get("trigger-a").expect("missing").is_none());
     let mut second = webhook_definition("trigger-b");
     second.revision = repository.put(&second, None).expect("create");
     repository
         .delete("trigger-b", &second.revision, Some("No longer needed"))
         .expect("delete");
-    assert_eq!(last_commit(&project), "No longer needed");
-    assert_eq!(
-        run_git(&org, &["status", "--porcelain"]).expect("status"),
-        "?? notes.md"
-    );
-}
+    assert!(file_names(&org.join("triggers")).is_empty());
 
-/// Makes every commit in the project's org repo fail, as a rejecting
-/// pre-commit hook does; returns the hook so a test can remove it.
-fn reject_commits(project: &str) -> std::path::PathBuf {
-    let hook = org(project).join(".git/hooks/pre-commit");
-    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    hook
+    // Unchanged parent history: no commit, no HEAD.
+    assert!(
+        !git(
+            Path::new(&project),
+            &["rev-parse", "--verify", "-q", "HEAD"]
+        )
+        .0
+    );
+    assert_eq!(
+        git(Path::new(&project), &["rev-list", "--all"]),
+        (true, String::new())
+    );
+    assert!(!org.join(".git").exists());
 }
 
 #[test]
-fn a_rejected_commit_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
+fn a_failed_staging_write_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
     let repository = repositories.definitions(&project).expect("repository");
     let mut saved = webhook_definition("trigger-a");
     saved.revision = repository.put(&saved, None).expect("create");
-    let head = run_git(&org(&project), &["rev-parse", "HEAD"]).unwrap();
-    let hook = reject_commits(&project);
+    let path = repository.definition_path("trigger-a").unwrap();
+    let original = std::fs::read(&path).unwrap();
+    // A file where the staging directory belongs makes every staged write fail.
+    let staging = Path::new(&project).join(".spark/state/tmp");
+    std::fs::remove_dir_all(&staging).unwrap();
+    std::fs::write(&staging, "not a directory").unwrap();
 
     // A failed create leaves no definition behind.
     assert!(repository
@@ -203,37 +206,22 @@ fn a_rejected_commit_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
         .is_err());
     assert!(repository.get("trigger-b").unwrap().is_none());
 
-    // A failed edit leaves the old definition and revision.
+    // A failed edit leaves the old definition bytes and revision.
     let mut edited = saved.clone();
     edited.name = "Edited".into();
     assert!(repository.put(&edited, None).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
     let current = repository.get("trigger-a").unwrap().unwrap();
     assert_eq!(
         (current.name.as_str(), &current.revision),
         ("Storage trigger", &saved.revision)
     );
+    assert_eq!(file_names(&repository.root_dir()), vec!["trigger-a.toml"]);
 
-    // A failed delete keeps the definition.
-    assert!(repository
-        .delete("trigger-a", &saved.revision, None)
-        .is_err());
-    assert_eq!(
-        repository.get("trigger-a").unwrap().unwrap().revision,
-        saved.revision
-    );
-    assert_eq!(
-        run_git(&org(&project), &["rev-parse", "HEAD"]).unwrap(),
-        head
-    );
-    assert_eq!(
-        run_git(&org(&project), &["status", "--porcelain"]).unwrap(),
-        ""
-    );
-
-    // Once commits work again, retrying with the original revision succeeds.
-    std::fs::remove_file(hook).unwrap();
+    // Once staging works again, retrying with the original revision succeeds.
+    std::fs::remove_file(&staging).unwrap();
     repository.put(&edited, None).expect("retry edit");
-    assert_eq!(last_commit(&project), "Edit trigger Edited");
+    assert_eq!(repository.get("trigger-a").unwrap().unwrap().name, "Edited");
 }
 
 /// A definition too large to write under the child's file-size limit.
@@ -314,22 +302,15 @@ fn a_failed_or_partial_write_leaves_the_original_definition_and_nothing_malforme
             saved
         );
         assert!(repository.get("trigger-b").unwrap().is_none(), "{mode}");
-        let entries = std::fs::read_dir(repository.root_dir())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(entries, vec!["trigger-a.toml"], "{mode}");
-        // No staged leftovers beside the org repo, and nothing new in it.
-        assert!(std::fs::read_dir(Path::new(&project).join(".spark"))
-            .unwrap()
-            .all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".spark-trigger-")));
         assert_eq!(
-            run_git(&org(&project), &["status", "--porcelain"]).unwrap(),
-            ""
+            file_names(&repository.root_dir()),
+            vec!["trigger-a.toml"],
+            "{mode}"
+        );
+        // No staged leftovers.
+        assert!(
+            file_names(&Path::new(&project).join(".spark/state/tmp")).is_empty(),
+            "{mode}"
         );
     }
 }
@@ -384,13 +365,13 @@ fn runtime_state_updates_serialize_under_a_lock_in_the_data_dir() {
         ),
         (false, Some("rotated"), Some("next"))
     );
-    // The lock lives beside the state, never in the org repo.
+    // The lock lives beside the state, never among the definitions.
     assert!(states.root_dir().join("trigger-a.json.lock").exists());
     assert!(!org(&project).join("triggers").exists());
 }
 
 #[test]
-fn reads_create_nothing_and_the_first_write_creates_the_org_repo() {
+fn reads_create_nothing_and_the_first_write_creates_the_definition_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project = temp.path().join("fresh");
@@ -403,20 +384,32 @@ fn reads_create_nothing_and_the_first_write_creates_the_org_repo() {
     assert!(repository.get("trigger-a").expect("get").is_none());
     assert!(!project.join(".spark").exists(), "reads create nothing");
 
-    // The first write creates the org repo, then commits into it.
-    let org = spark_common::project::org_dir(&project);
-    let result = repository.put(&webhook_definition("trigger-a"), None);
-    assert!(org.join(".git").is_dir());
-    if result.is_ok() {
-        assert_eq!(
-            run_git(&org, &["log", "-1", "--format=%s"]).expect("log"),
-            "Create trigger Storage trigger"
-        );
+    // The first write creates the definition file and stages it in state.
+    repository
+        .put(&webhook_definition("trigger-a"), None)
+        .expect("create");
+    assert!(project
+        .join(".spark/definitions/triggers/trigger-a.toml")
+        .is_file());
+    let spark = project.join(".spark");
+    let mut pending = vec![spark.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert_ne!(path.file_name().unwrap(), ".git", "{}", path.display());
+            if path.is_dir() {
+                pending.push(path);
+            }
+        }
     }
+    assert_eq!(
+        std::fs::read_to_string(spark.join("state/.gitignore")).unwrap(),
+        "*\n"
+    );
 }
 
 #[test]
-fn hand_edited_and_committed_definitions_are_read_as_they_are() {
+fn hand_edited_definitions_are_read_as_they_are() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
     let repository = repositories.definitions(&project).expect("repository");
@@ -426,7 +419,6 @@ fn hand_edited_and_committed_definitions_are_read_as_they_are() {
     let path = repository.definition_path("trigger-a").expect("path");
     let text = std::fs::read_to_string(&path).expect("text");
     std::fs::write(&path, text.replace("Storage trigger", "Edited by hand")).expect("edit");
-    run_git(&org(&project), &["commit", "-qam", "Edit by hand"]).expect("commit");
     let loaded = repository
         .get("trigger-a")
         .expect("get")
@@ -602,7 +594,7 @@ fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
         .expect("project paths")
         .root;
 
-    // Beside the project's role records, never in the org repo.
+    // Beside the project's role records, never among the definitions.
     assert_eq!(repository.root_dir(), project_root.join("triggers"));
     assert_eq!(
         repository.state_path("trigger-state").expect("state path"),

@@ -106,7 +106,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     let ui_dir = temp.path().join("ui");
     let project_dir = temp.path().join("project");
     // Serve rewrites the bundled library, so the flows live in the project's org.
-    let flows_dir = spark_common::project::org_dir(&project_dir).join("flows");
+    let flows_dir = spark_common::project::definitions_dir(&project_dir).join("flows");
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");

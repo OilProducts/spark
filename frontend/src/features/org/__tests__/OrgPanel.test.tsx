@@ -10,14 +10,13 @@ const coordinator = {
     recent_events: [{ seq: 2, id: 'e2', at: '2026-10-24T10:00:00Z', kind: 'run_completed', source: 'run-1' }],
 }
 const items = [
-    { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local', uncommitted: true },
-    { kind: 'role', name: 'reviewer', title: 'Reviewer', description: 'Reviews work.', layer: 'bundled', path: 'roles/reviewer.md', uncommitted: false,
+    { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local' },
+    { kind: 'role', name: 'reviewer', title: 'Reviewer', description: 'Reviews work.', layer: 'bundled', path: 'roles/reviewer.md',
         usage: [{ flow: 'local', node: 'review' }, { flow: 'other', node: 'check' }, { flow: 'local', node: 'recheck' }] },
-    { kind: 'role', name: 'helper', layer: 'project', path: 'roles/helper.md', uncommitted: true, usage: [] },
-    { kind: 'role', name: 'author', layer: 'project_copy', path: 'roles/author.md', uncommitted: false, bundled_changed: true, usage: [] },
-    { kind: 'role', name: 'coordinator', title: 'Coordinator', layer: 'bundled', path: 'roles/coordinator.md', uncommitted: false, usage: [], standing: coordinator },
+    { kind: 'role', name: 'helper', layer: 'project', path: 'roles/helper.md', usage: [] },
+    { kind: 'role', name: 'author', layer: 'project_copy', path: 'roles/author.md', usage: [] },
+    { kind: 'role', name: 'coordinator', title: 'Coordinator', layer: 'bundled', path: 'roles/coordinator.md', usage: [], standing: coordinator },
 ]
-const commits = [{ commit: 'abcdef1234567890', author: 'CoS', date: '2026-10-24T09:00:00Z', message: 'Copy author from bundled', diff: 'diff --git a/roles/author.md b/roles/author.md\n+title: Author' }]
 let urls: string[]
 let orgExists: boolean
 
@@ -34,9 +33,8 @@ beforeEach(() => {
         const path = url.split('?')[0]
         const params = new URL(url, 'http://spark').searchParams
         const json = (value: unknown) => ({ ok: true, json: async () => value })
-        if (path === '/workspace/api/org') return json({ org_path: '/project/.spark/agent-org', bundled_path: '/bundled', org_exists: orgExists,
-            items: orgExists ? items : items.map((item) => ({ ...item, layer: item.kind === 'role' ? 'bundled' : item.layer, uncommitted: false })) })
-        if (path === '/workspace/api/org/history') return json({ commits: params.get('path') === 'roles/author.md' ? commits : [] })
+        if (path === '/workspace/api/org') return json({ org_path: '/project/.spark/definitions', bundled_path: '/bundled', org_exists: orgExists,
+            items: orgExists ? items : items.map((item) => ({ ...item, layer: item.kind === 'role' ? 'bundled' : item.layer })) })
         if (path === '/workspace/api/org/memory') return json(params.get('file') ? { content: '# Known\n\nThe build is slow.' } : { files: ['index.md'] })
         if (path === '/workspace/api/org/item') {
             const item = items.find((entry) => entry.name === params.get('name'))!
@@ -53,7 +51,7 @@ const badges = (name: string) => within(row(name)).queryAllByTestId('org-badge')
 it('lists roles only, standing first, with non-default badges and the org status', async () => {
     render(<OrgPanel />)
     await screen.findByRole('region', { name: 'Standing' })
-    expect(screen.getByTestId('org-status')).toHaveTextContent('2 customized roles · 1 uncommitted')
+    expect(screen.getByTestId('org-status')).toHaveTextContent('1 customized role · 1 project copy')
     expect(screen.getAllByTestId('org-item').map((button) => button.dataset.name)).toEqual(['coordinator', 'reviewer', 'helper', 'author'])
     expect(screen.queryByText('local')).not.toBeInTheDocument()
     expect(row('coordinator')).toHaveTextContent('idle · 0/4 concurrent · 0/20 today')
@@ -62,33 +60,32 @@ it('lists roles only, standing first, with non-default badges and the org status
     expect(row('reviewer')).toHaveTextContent('used in 3 steps across 2 flows')
     expect(badges('reviewer')).toEqual([])
     expect(badges('coordinator')).toEqual([])
-    expect(badges('helper')).toEqual(['customized', 'uncommitted'])
+    expect(badges('helper')).toEqual(['customized'])
     expect(badges('author')).toEqual(['project copy'])
     expect(screen.queryByText('bundled')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'project' })).toBeInTheDocument()
     expect(urls[0]).toBe('/workspace/api/org?project_path=%2Fproject')
 })
 
-it('says all roles are bundled defaults without an org repo', async () => {
+it('says all roles are bundled defaults without project definitions', async () => {
     orgExists = false
     render(<OrgPanel />)
-    expect(await screen.findByTestId('org-status')).toHaveTextContent('No org repo: all roles are bundled defaults.')
+    expect(await screen.findByTestId('org-status')).toHaveTextContent('No project definitions: all roles are bundled defaults.')
     expect(screen.queryAllByTestId('org-badge')).toEqual([])
 })
 
-it('shows a copy with its prompt, bundled diff and collapsed history', async () => {
+it('shows a copy with its prompt and bundled diff, and no Git history or status', async () => {
     render(<OrgPanel />)
     await screen.findByRole('region', { name: 'Roles' })
     expect(screen.getByTestId('org-empty-state')).toHaveClass('justify-center')
     fireEvent.click(row('author'))
-    expect(await screen.findByTestId('org-bundled-changed')).toHaveTextContent('Bundled has changed since this copy was made.')
     expect(await within(screen.getByRole('region', { name: 'Diff from bundled' })).findByTestId('org-diff')).toHaveTextContent('-title: Author v2')
     const frontmatter = await screen.findByTestId('org-frontmatter')
     expect(within(frontmatter).getByText('title').nextSibling).toHaveTextContent('Author')
     expect(within(screen.getByTestId('org-file')).getByText('write').tagName).toBe('STRONG')
-    const history = screen.getByText('History').closest('details')!
-    expect(history.open).toBe(false)
-    expect(await within(history).findByTestId('org-commit')).toHaveTextContent('Copy author from bundled')
+    expect(screen.queryByText('History')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('org-bundled-changed')).not.toBeInTheDocument()
+    expect(urls.some((url) => url.includes('/history'))).toBe(false)
 })
 
 it('groups usage by flow and shows a standing role\'s live status once, with its memory', async () => {
@@ -129,8 +126,8 @@ it('builds drafts, badges, usage summaries and frontmatter fields', () => {
     expect(askCoordinatorDraft({ kind: 'role', name: 'reviewer', layer: 'bundled', path: 'roles/reviewer.md' })).toBe('About the role "reviewer" (bundled, roles/reviewer.md): ')
     expect(renderableMarkdown('---\ntype: Role\n---\nPersona.')).toBe('```yaml\ntype: Role\n```\n\nPersona.')
     expect(renderableMarkdown('No frontmatter')).toBe('No frontmatter')
-    expect(orgBadges({ layer: 'project_copy', uncommitted: false, bundled_changed: false })).toEqual([])
-    expect(orgBadges({ layer: 'bundled', uncommitted: false })).toEqual([])
+    expect(orgBadges({ layer: 'project_copy' })).toEqual(['project copy'])
+    expect(orgBadges({ layer: 'bundled' })).toEqual([])
     expect(usageSummary([{ flow: 'a', node: 'x' }])).toBe('used in 1 step across 1 flow')
     expect(frontmatterFields('---\ntype: Role\nbudget:\n  runs_per_day: 3\n---\nBody')).toEqual({ fields: [['type', 'Role'], ['budget', 'runs_per_day: 3']], body: 'Body' })
 })

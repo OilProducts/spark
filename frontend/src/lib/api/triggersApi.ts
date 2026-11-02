@@ -33,7 +33,7 @@ export interface TriggerStateResponse {
 export interface TriggerResponse {
     revision: string
     id: string
-    /** The project whose org repo holds the trigger; with `id`, its identity. */
+    /** The project whose definitions hold the trigger; with `id`, its identity. */
     project_path: string
     name: string
     enabled: boolean

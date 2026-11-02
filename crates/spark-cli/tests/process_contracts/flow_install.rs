@@ -1,5 +1,5 @@
 //! Tests install their flows the way Spark reads them: into the bundled
-//! library, or into a project's org repo, which shadows it.
+//! library, or into a project's definitions, which shadow it.
 
 use std::path::Path;
 
@@ -13,11 +13,14 @@ pub(crate) fn install_flow(
     install_into(&settings.bundled_dir().join("flows"), flow)
 }
 
-/// Installs a JSON `FlowDefinition` into `project`'s org repo and returns
+/// Installs a JSON `FlowDefinition` into `project`'s definitions and returns
 /// its name.
 #[allow(dead_code)]
 pub(crate) fn install_org_flow(project: &Path, flow: serde_json::Value) -> String {
-    install_into(&spark_common::project::org_dir(project).join("flows"), flow)
+    install_into(
+        &spark_common::project::definitions_dir(project).join("flows"),
+        flow,
+    )
 }
 
 fn install_into(flows_dir: &Path, flow: serde_json::Value) -> String {

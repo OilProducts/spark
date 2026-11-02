@@ -1,5 +1,5 @@
-//! Mission playbooks: `playbooks/<name>.md`, resolved project first (the org
-//! repo), then bundled (`$SPARK_HOME/bundled/playbooks`). Markdown with YAML
+//! Mission playbooks: `playbooks/<name>.md`, resolved project first (its
+//! `.spark/definitions`), then bundled (`$SPARK_HOME/bundled/playbooks`). Markdown with YAML
 //! frontmatter (`title`, `description`) and free-form instructions in the body.
 use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};

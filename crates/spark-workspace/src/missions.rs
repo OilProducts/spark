@@ -659,7 +659,7 @@ impl WorkspaceMissionService {
             return Ok(());
         }
         let mut disabled = Vec::new();
-        // Disabling is runtime state: the org repo's definitions stay as they are.
+        // Disabling is runtime state: the project's definitions stay as they are.
         let states = spark_storage::TriggerRepositories::from_settings(&self.settings)
             .runtime_state(&mission.project_path)?;
         for trigger in self.enabled_targeting_triggers(mission)? {

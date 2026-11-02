@@ -293,7 +293,7 @@ impl RuntimeControls {
         if let Some(project) = project_path.as_deref() {
             context.insert(
                 "internal.org_root".to_string(),
-                json!(spark_common::project::org_dir(Path::new(project))
+                json!(spark_common::project::definitions_dir(Path::new(project))
                     .to_string_lossy()
                     .to_string()),
             );

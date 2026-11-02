@@ -579,7 +579,7 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project = temp.path().join("project");
-    let org = project.join(".spark/agent-org");
+    let org = project.join(".spark/definitions");
     let flow_dir = org.join("flows/team/work");
     crate::write_flow_json(
         &flow_dir,

@@ -64,17 +64,10 @@ fn flow() -> FlowDefinition {
     flow_json(flow_value()).expect("valid flow")
 }
 
-/// A project with an org repo that has a local git identity, since editor
-/// saves commit under the repo's normal git config.
+/// A project directory.
 fn project_with_org(root: &Path) -> std::path::PathBuf {
     let project = root.join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org repo");
-    for (key, value) in [
-        ("user.name", "Editor Test"),
-        ("user.email", "editor@example.com"),
-    ] {
-        spark_common::project::run_git(&org, &["config", key, value]).expect("git config");
-    }
+    fs::create_dir_all(&project).expect("project");
     project
 }
 
@@ -306,7 +299,7 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
             rejected.body
         );
     }
-    let org = spark_common::project::org_dir(&project);
+    let org = spark_common::project::definitions_dir(&project);
     assert!(!org.join("flows/review").exists());
 
     fs::write(
@@ -372,7 +365,7 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
         assert_eq!(response.status_code, 200, "{}", response.body);
     };
     save(&flow());
-    let dir = spark_common::project::org_dir(&project).join("flows/review");
+    let dir = spark_common::project::definitions_dir(&project).join("flows/review");
 
     // Hand formatting that keeps the meaning survives a save untouched.
     let start = fs::read_to_string(dir.join("start.md")).expect("start");
@@ -873,7 +866,7 @@ fn launches_resolve_child_flows_by_name_to_the_project_copy() {
     write_flow_dir(&bundled.join("team/parent"), &parent).expect("parent");
     let project = temp.path().join("project");
     write_flow_dir(
-        &spark_common::project::org_dir(&project).join("flows/team/workers/child"),
+        &spark_common::project::definitions_dir(&project).join("flows/team/workers/child"),
         &child("Project Child"),
     )
     .expect("project child");
@@ -904,7 +897,7 @@ fn launches_resolve_child_flows_by_name_to_the_project_copy() {
 }
 
 #[test]
-fn run_manifests_hash_each_file_by_layer_with_org_state_and_spark_version() {
+fn run_manifests_hash_each_file_by_layer_and_spark_version() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir();
@@ -930,17 +923,14 @@ fn run_manifests_hash_each_file_by_layer_with_org_state_and_spark_version() {
     );
     assert_eq!(manifest["files"].as_object().expect("files").len(), 6);
 
-    // A project copy is hashed under org/, with the org repo's state.
+    // A project copy is hashed under org/.
     let project = project_with_org(temp.path());
-    let org = spark_common::project::org_dir(&project);
+    let org = spark_common::project::definitions_dir(&project);
     let roots = FlowRoots::new(&bundled, Some(&project));
     write_flow_dir(&org.join("flows/review"), &flow()).expect("org flow");
-    spark_common::project::run_git(&org, &["add", "-A"]).expect("add");
-    spark_common::project::run_git(&org, &["commit", "-q", "-m", "Add review"]).expect("commit");
-    let head = spark_common::project::run_git(&org, &["rev-parse", "HEAD"]).expect("head");
     let manifest = serde_json::to_value(load_flow(&roots, "review").expect("load").manifest)
         .expect("manifest");
-    assert_eq!(manifest["org"], json!({"commit": head, "dirty": false}));
+    assert_eq!(manifest["org"], Value::Null);
     let keys = manifest["files"]
         .as_object()
         .expect("files")
@@ -959,11 +949,6 @@ fn run_manifests_hash_each_file_by_layer_with_org_state_and_spark_version() {
         keys.iter().all(|key| !key.starts_with("bundled/flows/")),
         "{keys:?}"
     );
-
-    fs::write(org.join("notes.md"), "uncommitted\n").expect("dirty");
-    let manifest = serde_json::to_value(load_flow(&roots, "review").expect("load").manifest)
-        .expect("manifest");
-    assert_eq!(manifest["org"], json!({"commit": head, "dirty": true}));
 
     // Launches record the manifest beside the flow snapshot.
     let started = AttractorApiService::new(settings.clone()).start_pipeline(
@@ -1026,8 +1011,8 @@ fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
     // Org-only flows in two projects; runs execute in a separate checkout.
     let project_a = temp.path().join("a");
     let project_b = temp.path().join("b");
-    let org_a = spark_common::project::org_dir(&project_a).join("flows");
-    let org_b = spark_common::project::org_dir(&project_b).join("flows");
+    let org_a = spark_common::project::definitions_dir(&project_a).join("flows");
+    let org_b = spark_common::project::definitions_dir(&project_b).join("flows");
     write_flow_dir(&org_a.join("old/parent"), &parent("child")).expect("a parent");
     write_flow_dir(&org_a.join("old/child"), &child("A Child")).expect("a child");
     write_flow_dir(&org_b.join("new/parent"), &parent("child")).expect("b parent");
@@ -1109,7 +1094,7 @@ fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
     assert_eq!(context["internal.flow_name"], "new/parent");
     assert_eq!(
         context["internal.org_root"],
-        json!(path(&spark_common::project::org_dir(&project_b)))
+        json!(path(&spark_common::project::definitions_dir(&project_b)))
     );
     let child_bundle = store
         .read_run_bundle(&child_run.run_id)
@@ -1163,7 +1148,7 @@ fn bundled_only_runs_continue_bundled_only_when_the_project_has_overrides() {
     // Differing bundled and project copies of the same names.
     let bundled = settings.bundled_dir().join("flows");
     let project = temp.path().join("project");
-    let org = spark_common::project::org_dir(&project).join("flows");
+    let org = spark_common::project::definitions_dir(&project).join("flows");
     write_flow_dir(&bundled.join("parent"), &parent).expect("bundled parent");
     write_flow_dir(&bundled.join("child"), &child("Bundled Child")).expect("bundled child");
     write_flow_dir(&org.join("parent"), &parent).expect("org parent");

@@ -45,7 +45,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
     write_flow(&settings, "shared", simple_flow("shared", "shared"));
     // The project's copy of `shared` replaces the bundled one, with a lock.
     let project = temp.path().join("project");
-    let org_flows = spark_common::project::org_dir(&project).join("flows");
+    let org_flows = spark_common::project::definitions_dir(&project).join("flows");
     let mut project_shared = simple_flow("shared", "Project Shared");
     project_shared["execution_lock"] = json!({"scope": "project", "key": "integration"});
     write_flow_at(&org_flows.join("shared"), project_shared);
@@ -268,7 +268,7 @@ async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names()
 }
 
 #[tokio::test]
-async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() {
+async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_git() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir();
@@ -280,42 +280,22 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     std::fs::write(bundled.join("roles/coordinator.md"), role).expect("role");
 
     let project = temp.path().join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org");
-    let git = |args: &[&str]| {
-        spark_common::project::run_git(
-            &org,
-            &[
-                &[
-                    "-c",
-                    "user.name=Org Test",
-                    "-c",
-                    "user.email=org@example.com",
-                ],
-                args,
-            ]
-            .concat(),
-        )
-        .expect("git")
-    };
+    let org = spark_common::project::definitions_dir(&project);
     // `shared` is copied unmodified, then bundled moves on; `local` is the
     // project's own and uses the bundled reviewer role.
     let write_org_flow =
         |name: &str, flow: Value| write_flow_at(&org.join("flows").join(name), flow);
     write_org_flow("shared", simple_flow("shared", "shared"));
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "Copy shared from bundled"]);
     write_org_flow("local", reviewed_flow("local"));
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "Add local"]);
     write_flow(&settings, "shared", simple_flow("shared", "Shared v2"));
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
     let helper_role = "---\ntype: Role\ntitle: Helper\ndescription: Helps out.\n---\n\nYou help.\n";
-    std::fs::write(org.join("roles/helper.md"), helper_role).expect("untracked role");
-    let memory = org.join("memory/coordinator");
+    std::fs::write(org.join("roles/helper.md"), helper_role).expect("role");
+    let memory = project.join(".spark/state/memory/coordinator");
     std::fs::create_dir_all(memory.join("notes")).expect("memory");
     std::fs::write(memory.join("index.md"), "# Known\n").expect("index");
     std::fs::write(memory.join("notes/a.md"), "note a\n").expect("note");
-    let head = git(&["rev-parse", "HEAD"]);
+    let before = walk(&project);
 
     let app = build_app(settings.clone());
     let query = format!("project_path={}", project.display());
@@ -326,6 +306,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
 
     let (status, list, _) = get(format!("/workspace/api/org?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["org_path"], json!(org));
+    assert_eq!(list["org_exists"], true);
     let items = list["items"].as_array().expect("items");
     let find = |kind: &str, name: &str| {
         items
@@ -336,14 +318,15 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     };
     assert_eq!(find("flow", "shared")["layer"], "project_copy");
     assert_eq!(find("flow", "shared")["path"], "flows/shared");
-    assert_eq!(find("flow", "shared")["bundled_changed"], true);
-    assert_eq!(find("flow", "local")["bundled_changed"], Value::Null);
+    // Definitions have no Git history: those facts are always unknown.
+    for item in items {
+        assert_eq!(item["uncommitted"], false, "{item}");
+        assert_eq!(item["bundled_changed"], Value::Null, "{item}");
+    }
     assert_eq!(find("flow", "plain")["layer"], "bundled");
     assert_eq!(find("flow", "local")["layer"], "project");
-    assert_eq!(find("flow", "local")["uncommitted"], false);
     let helper = find("role", "helper");
     assert_eq!(helper["layer"], "project");
-    assert_eq!(helper["uncommitted"], true);
     assert_eq!(helper["standing"], Value::Null);
     assert_eq!(helper["title"], "Helper");
     assert_eq!(helper["description"], "Helps out.");
@@ -362,14 +345,13 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
         .expect("conversation")
         .ends_with("-coordinator"));
 
-    // A project copy carries its diff from today's bundled version and
-    // whether bundled changed since the copy's first commit.
+    // A project copy carries its diff from today's bundled version.
     let (status, copy, _) = get(format!(
         "/workspace/api/org/item?{query}&kind=flow&name=shared"
     ))
     .await;
     assert_eq!(status, StatusCode::OK, "{copy}");
-    assert_eq!(copy["bundled_changed"], true);
+    assert_eq!(copy["bundled_changed"], Value::Null);
     assert!(copy["bundled_diff"]
         .as_str()
         .expect("diff")
@@ -398,15 +380,14 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     .await;
     assert_eq!(
         helper["files"],
-        json!([{"name": "helper.md", "content": helper_role, "status": "untracked"}])
+        json!([{"name": "helper.md", "content": helper_role, "status": null}])
     );
-    // Copying shared again makes bundled match the first commit.
+    // Copying shared again makes bundled match the copy.
     write_flow(&settings, "shared", simple_flow("shared", "shared"));
     let (_, same, _) = get(format!(
         "/workspace/api/org/item?{query}&kind=flow&name=shared"
     ))
     .await;
-    assert_eq!(same["bundled_changed"], false);
     assert_eq!(same["bundled_diff"], "");
     // A whitespace-only change to bundled still counts.
     let bundled_flow = bundled.join("flows/shared/flow.md");
@@ -416,7 +397,6 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
         "/workspace/api/org/item?{query}&kind=flow&name=shared"
     ))
     .await;
-    assert_eq!(spaced["bundled_changed"], true);
     assert_ne!(spaced["bundled_diff"], "");
     write_flow(&settings, "shared", simple_flow("shared", "shared"));
 
@@ -424,15 +404,7 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
         "/workspace/api/org/history?{query}&path=flows/shared"
     ))
     .await;
-    assert_eq!(status, StatusCode::OK, "{history}");
-    let commits = history["commits"].as_array().expect("commits");
-    assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0]["message"], "Copy shared from bundled");
-    assert_eq!(commits[0]["author"], "Org Test");
-    assert!(commits[0]["diff"]
-        .as_str()
-        .expect("diff")
-        .contains("+title: shared"));
+    assert_eq!((status, history), (StatusCode::OK, json!({"commits": []})));
     let elsewhere = temp.path().join("no-org");
     let (status, empty, _) = get(format!(
         "/workspace/api/org/history?project_path={}&path=flows/shared",
@@ -453,7 +425,7 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
     .await;
     assert_eq!(note["content"], "note a\n");
 
-    // Paths stay inside the org repo and the bundled root.
+    // Paths stay inside the definitions, memory and the bundled root.
     for uri in [
         format!("/workspace/api/org/history?{query}&path=../outside"),
         format!("/workspace/api/org/history?{query}&path=/etc/passwd"),
@@ -467,9 +439,8 @@ async fn workspace_org_routes_show_layers_history_copies_and_memory_read_only() 
         let (status, body, _) = get(uri.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
     }
-    // Nothing above wrote to the org repo.
-    assert_eq!(git(&["rev-parse", "HEAD"]), head);
-    assert_eq!(git(&["status", "--porcelain"]), "?? memory/\n?? roles/");
+    // Nothing above wrote to the project.
+    assert_eq!(walk(&project), before);
 }
 
 #[tokio::test]
@@ -479,31 +450,13 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
     let bundled = settings.bundled_dir().join("roles");
     std::fs::create_dir_all(&bundled).expect("roles dir");
     let project = temp.path().join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let org = spark_common::project::definitions_dir(&project);
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
-    let git = |args: &[&str]| {
-        spark_common::project::run_git(
-            &org,
-            &[
-                &[
-                    "-c",
-                    "user.name=Org Test",
-                    "-c",
-                    "user.email=org@example.com",
-                ],
-                args,
-            ]
-            .concat(),
-        )
-        .expect("git")
-    };
-    // `review1` is committed first, so a glob `review[1]` would match it.
+    // `review1` exists too, so a glob `review[1]` would match it.
     for name in ["review1", "review[1]", "réviseur"] {
         let text = format!("---\ntype: Role\n---\n\n{name} reviews.\n");
         std::fs::write(bundled.join(format!("{name}.md")), &text).expect("bundled role");
         std::fs::write(org.join(format!("roles/{name}.md")), &text).expect("copy");
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", &format!("Copy {name}")]);
     }
     std::fs::write(
         bundled.join("réviseur.md"),
@@ -517,25 +470,17 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
         let app = app.clone();
         async move { request_json(app, "GET", &uri, None).await }
     };
-    let (status, history, _) = get(format!(
-        "/workspace/api/org/history?{query}&path=roles/review%5B1%5D.md"
-    ))
-    .await;
-    assert_eq!(status, StatusCode::OK, "{history}");
-    let messages: Vec<_> = history["commits"]
-        .as_array()
-        .expect("commits")
-        .iter()
-        .map(|commit| commit["message"].clone())
-        .collect();
-    assert_eq!(messages, vec![json!("Copy review[1]")]);
     let (status, bracketed, _) = get(format!(
         "/workspace/api/org/item?{query}&kind=role&name=review%5B1%5D"
     ))
     .await;
     assert_eq!(status, StatusCode::OK, "{bracketed}");
     assert_eq!(bracketed["layer"], "project_copy");
-    assert_eq!(bracketed["bundled_changed"], false);
+    assert_eq!(
+        bracketed["files"][0]["content"],
+        "---\ntype: Role\n---\n\nreview[1] reviews.\n"
+    );
+    assert_eq!(bracketed["bundled_diff"], "");
 
     let (status, unicode, _) = get(format!(
         "/workspace/api/org/item?{query}&kind=role&name=r%C3%A9viseur"
@@ -551,67 +496,10 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
             "status": null,
         }])
     );
-    assert_eq!(unicode["bundled_changed"], true);
     assert!(unicode["bundled_diff"]
         .as_str()
         .expect("diff")
         .contains("-Moved on."));
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn a_retried_save_after_a_failed_copy_commit_keeps_the_pristine_copy() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    write_flow(&settings, "shared", simple_flow("shared", "shared"));
-    let bundled = settings.bundled_dir().join("flows/shared/flow.md");
-    let before = std::fs::read_to_string(&bundled).expect("bundled");
-    let project = temp.path().join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org");
-    let git = |args: &[&str]| spark_common::project::run_git(&org, args).expect("git");
-    git(&["config", "user.name", "Org Test"]);
-    git(&["config", "user.email", "org@example.com"]);
-    let hook = org.join(".git/hooks/pre-commit");
-    std::fs::create_dir_all(hook.parent().expect("hooks")).expect("hooks dir");
-    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("hook");
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-
-    let service = attractor_api::AttractorApiService::new(settings.clone());
-    let save = || {
-        service.save_flow(attractor_api::SaveFlowRequest {
-            name: "shared".to_string(),
-            flow: Some(
-                serde_json::from_value(simple_flow("shared", "Edited")).expect("flow definition"),
-            ),
-            files: None,
-            project_path: Some(project.to_string_lossy().to_string()),
-        })
-    };
-    assert_eq!(save().status_code, 500);
-    std::fs::remove_file(&hook).expect("unhook");
-    let retried = save();
-    assert_eq!(retried.status_code, 200, "{}", retried.body);
-    assert_eq!(
-        git(&["log", "--format=%s"]),
-        "Edit shared in the flow editor\nCopy shared from bundled"
-    );
-
-    let app = build_app(settings);
-    let (status, copy, _) = request_json(
-        app,
-        "GET",
-        &format!(
-            "/workspace/api/org/item?project_path={}&kind=flow&name=shared",
-            project.display()
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{copy}");
-    assert_eq!(copy["layer"], "project_copy");
-    assert_eq!(copy["bundled_changed"], false);
-    assert_eq!(std::fs::read_to_string(&bundled).expect("bundled"), before);
 }
 
 #[cfg(unix)]
@@ -637,7 +525,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     symlink(outside.join("flow"), bundled.join("flows/linked")).expect("link");
 
     let project = temp.path().join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let org = spark_common::project::definitions_dir(&project);
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
     symlink(outside.join("secret.md"), org.join("roles/leak.md")).expect("link");
     // A project copy whose node file leads outside, and a linked flow directory.
@@ -655,8 +543,9 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     symlink(outside.join("flow/review.md"), nodelink.join("review.md")).expect("link");
     std::fs::create_dir_all(org.join("flows/loop")).expect("loop");
     symlink(org.join("flows"), org.join("flows/loop/back")).expect("link");
-    std::fs::create_dir_all(org.join("memory")).expect("memory");
-    symlink(&outside, org.join("memory/coordinator")).expect("link");
+    let memory = project.join(".spark/state/memory");
+    std::fs::create_dir_all(&memory).expect("memory");
+    symlink(&outside, memory.join("coordinator")).expect("link");
 
     let app = build_app(settings);
     let query = format!("project_path={}", project.display());
@@ -742,7 +631,7 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
     )
     .expect("link");
     let project = temp.path().join("project");
-    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let org = spark_common::project::definitions_dir(&project);
     let org_roles = org.join("roles");
     std::fs::create_dir_all(&org_roles).expect("org roles");
     symlink(outside.join("project.md"), org_roles.join("coordinator.md")).expect("link");

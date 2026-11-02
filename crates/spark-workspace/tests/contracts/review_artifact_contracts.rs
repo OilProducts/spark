@@ -1012,7 +1012,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
         "launches the flow immediately",
         "do not use any other Spark installation",
         "Every flow can be launched",
-        ".spark/agent-org",
+        ".spark/definitions",
         "$SPARK_HOME/attractor/runs",
         "spark playbook list --project ",
     ] {

@@ -86,7 +86,7 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
 }
 
 /// The ordered roots flows, roles and playbooks resolve through: the
-/// project's org repo (`<project>/.spark/agent-org`), then the bundled
+/// project's definitions (`<project>/.spark/definitions`), then the bundled
 /// library. Each root holds `flows/`, `roles/` and `playbooks/`; a project
 /// file replaces a bundled one of the same name. Reads never create
 /// anything, and a missing org means bundled only.
@@ -105,22 +105,15 @@ pub struct ResolvedFlowDir {
 }
 
 /// A run's `artifacts/flow/files.json`: the SHA-256 of every file the flow
-/// used (`org/...` or `bundled/...`), the org repo state, Spark's version,
-/// and the flow's named sessions.
+/// used (`org/...` or `bundled/...`), Spark's version, and the flow's named
+/// sessions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowManifest {
     pub files: BTreeMap<String, String>,
     /// Node ids of each named session in the flow as launched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sessions: BTreeMap<String, Vec<String>>,
-    pub org: Option<OrgState>,
     pub spark_version: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrgState {
-    pub commit: Option<String>,
-    pub dirty: bool,
 }
 
 pub const ORG_LAYER: &str = "org";
@@ -130,7 +123,7 @@ impl FlowRoots {
     /// The roots for `project` (none: bundled only) over `bundled`.
     pub fn new(bundled: impl Into<PathBuf>, project: Option<&Path>) -> Self {
         Self {
-            org: project.map(spark_common::project::org_dir),
+            org: project.map(spark_common::project::definitions_dir),
             bundled: bundled.into(),
         }
     }
@@ -241,20 +234,6 @@ impl FlowRoots {
             fs::read_to_string(real)
                 .ok()
                 .map(|text| (format!("{layer}/{dir}/{file}"), text))
-        })
-    }
-
-    /// The org repo's HEAD and whether it has uncommitted changes; None when
-    /// there is no org repo.
-    pub fn org_state(&self) -> Option<OrgState> {
-        let org = self
-            .org
-            .as_deref()
-            .filter(|org| org.join(".git").exists())?;
-        let run_git = spark_common::project::run_git;
-        Some(OrgState {
-            commit: run_git(org, &["rev-parse", "HEAD"]).ok(),
-            dirty: run_git(org, &["status", "--porcelain"]).is_ok_and(|text| !text.is_empty()),
         })
     }
 }
