@@ -10,28 +10,30 @@ YAML flow files are not loaded.
 
 Flows, roles and playbooks resolve through two roots, in order:
 
-1. The project's org repo, `<project>/.spark/agent-org/` (`flows/`, `roles/`
-   and `playbooks/`). It is a git repository; its history is the audit trail.
+1. The project's definitions, `<project>/.spark/definitions/` (`flows/`,
+   `roles/` and `playbooks/`). Spark installs a copy of the bundled library
+   there once, when the project is registered, and never updates it on its
+   own; the project owns these files.
 2. The bundled library, `$SPARK_HOME/bundled/` (`flows/`, `roles/` and
    `playbooks/`). Spark
    rewrites it from its packaged assets on every start, so never edit it.
 
 A project file with the same name as a bundled one replaces it. A launch with
-no project uses bundled flows only, and a project without an org repo sees
-the bundled library. Every flow can be launched, by people and by agents.
+no project uses bundled flows only, and a name missing from the project's
+definitions falls back to the bundled library. Every flow can be launched, by people and by agents.
 
-Editor saves write into the project's org repo, creating it on the first
-write (with `<project>/.spark/.gitignore` holding `*`), and commit only the
-files that changed with the message `Edit <flow> in the flow editor`, under
-the repo's normal git identity. Saving a bundled flow first copies it into the
-org. Deleting a project copy reverts to the bundled flow; bundled flows cannot
-be deleted.
+Editor saves write the changed files into the project's definitions; Spark
+runs no Git there, and versioning them is the operator's choice. Saving a
+bundled flow first copies it into the definitions. Deleting a project copy
+reverts to the bundled flow; bundled flows cannot be deleted.
 
-Flows may keep project scratch under `<project>/.spark/` (for example
-`checkouts/` or `changes/`), but must not use the data directory's top-level
-names there: `attractor`, `bundled`, `config`, `logs`, `playbooks`, `runtime`
-or `workspace`. The Home project's directory is `$HOME`, so its `.spark/` is
-the default data directory itself.
+Flows keep project working data under `<project>/.spark/state/` (for example
+`checkouts/` or `changes/`), never elsewhere in `.spark/` or the project. A
+step that creates `.spark/state/` writes `.spark/state/.gitignore` holding `*`
+when it is missing, so working data stays out of every Git command run in the
+project; write no other ignore file. The Home project's directory is `$HOME`,
+whose `.spark/` is also the default data directory; only its `definitions/` and
+`state/` belong to the project.
 
 The Rust `FlowDefinition` type is the assembled form of a flow, and
 `assets/schemas/flow-definition.schema.json` describes its JSON form. The
@@ -138,7 +140,7 @@ directory, hidden ones included, is an error.
 
 ## Roles
 
-A role is `roles/<name>.md` in the org repo or the bundled library, with
+A role is `roles/<name>.md` in the project's definitions or the bundled library, with
 `type: Role`. Its body is a
 persona; its frontmatter may set `execution` with the same fields as a node's
 `execution`.
@@ -220,13 +222,12 @@ Each run records the files it used in `artifacts/flow/files.json`:
 ```json
 {
   "files": {"org/flows/<flow>/<node>.md": "<sha256>", "bundled/roles/<name>.md": "<sha256>"},
-  "org": {"commit": "<org HEAD>", "dirty": false},
   "spark_version": "<version>",
   "sessions": {"implementer": ["work"]}
 }
 ```
 
-`org` is null when the run has no org repo. `sessions` lists the nodes of each
+`sessions` lists the nodes of each
 named session in the flow as launched, and is omitted when there are none. Launches, `flow_name` continues and
 subflow children compute their own manifest; snapshot continues keep the
 source run's.
@@ -264,9 +265,9 @@ routes:
 
 ```sh
 repo_root=$(git rev-parse --show-toplevel)
-mkdir -p "${repo_root}/.spark/checkouts"
-printf '*\n' > "${repo_root}/.spark/.gitignore"
-worktree="${repo_root}/.spark/checkouts/${SPARK_RUN_ID}"
+mkdir -p "${repo_root}/.spark/state/checkouts"
+[ -e "${repo_root}/.spark/state/.gitignore" ] || printf '*\n' > "${repo_root}/.spark/state/.gitignore"
+worktree="${repo_root}/.spark/state/checkouts/${SPARK_RUN_ID}"
 git worktree add -b "spark/task/${SPARK_RUN_ID}" "$worktree" >/dev/null
 printf '{"path":"%s"}' "$worktree"
 ```
@@ -442,6 +443,6 @@ spark flow validate --dir crates/spark-assets/assets/flows/examples/simple-linea
 
 Validation assembles the directory into a `FlowDefinition`, applies semantic
 rules, and then verifies the runtime graph derived from the typed model.
-A file inside `<project>/.spark/agent-org` resolves roles through that
-project's org, then the bundled library. `spark flow list|describe|get|validate`
-take `--project <path>` to include a project's org flows.
+A file inside `<project>/.spark/definitions` resolves roles through that
+project's definitions, then the bundled library. `spark flow list|describe|get|validate`
+take `--project <path>` to include a project's flows.

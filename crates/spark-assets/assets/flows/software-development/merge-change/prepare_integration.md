@@ -39,14 +39,14 @@ fi
 target_commit=$(git rev-parse HEAD)
 source_commit=$(git rev-parse --verify "${SPARK_SOURCE_REF}^{commit}")
 repo_root=$(git rev-parse --show-toplevel)
-# Worktrees live under <repo>/.spark, never inside .git: tooling such
-# as Vite refuses to serve or resolve paths matching **/.git/**. The
-# directory ignores itself so the target checkout stays clean.
-integration_root="${repo_root}/.spark/integrations"
+# Worktrees live under <repo>/.spark/state, never inside .git: tooling
+# such as Vite refuses to serve or resolve paths matching **/.git/**. The
+# state directory ignores itself so the target checkout stays clean.
+integration_root="${repo_root}/.spark/state/integrations"
 worktree="${integration_root}/${SPARK_RUN_ID}"
 if [ ! -d "$worktree" ]; then
   mkdir -p "$integration_root"
-  printf '*\n' > "${repo_root}/.spark/.gitignore"
+  [ -e "${repo_root}/.spark/state/.gitignore" ] || printf '*\n' > "${repo_root}/.spark/state/.gitignore"
   git worktree add --detach "$worktree" "$target_commit" >/dev/null
 fi
 cd "$worktree"

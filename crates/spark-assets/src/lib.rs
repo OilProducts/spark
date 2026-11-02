@@ -377,20 +377,9 @@ pub mod guides {
 }
 
 /// Bundled mission playbooks: `(file name, Markdown text)`, sorted by name.
-/// The agent organization setup playbook is the seed's `playbook.md`.
 pub mod playbooks {
-    const AGENT_ORG_SETUP_NAME: &str = "agent-org-setup.md";
-
     pub fn assets() -> Vec<(String, String)> {
-        let mut assets = super::markdown_assets(&super::PLAYBOOKS);
-        if let Some(text) = super::AGENT_ORG
-            .get_file("playbook.md")
-            .and_then(|file| file.contents_utf8())
-        {
-            assets.push((AGENT_ORG_SETUP_NAME.to_string(), text.to_string()));
-        }
-        assets.sort();
-        assets
+        super::markdown_assets(&super::PLAYBOOKS)
     }
 }
 

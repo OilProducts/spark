@@ -28,7 +28,7 @@ if (!existsSync(indexPath)) {
 
 const tmpRoot = path.join(frontendRoot, '.tmp-ui-smoke')
 const dataDir = path.join(tmpRoot, 'spark-home')
-// Home is a project: its org repo is $HOME/.spark/agent-org, so the server gets its own HOME.
+// Home is a project: its definitions are $HOME/.spark/definitions, so the server gets its own HOME.
 const homeDir = path.join(tmpRoot, 'home')
 rmSync(tmpRoot, { recursive: true, force: true })
 mkdirSync(dataDir, { recursive: true })
@@ -67,7 +67,7 @@ const child = spawn(
       HOME: homeDir,
       CARGO_HOME: process.env.CARGO_HOME ?? path.join(os.homedir(), '.cargo'),
       RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(os.homedir(), '.rustup'),
-      // Editor saves commit to the project's org repo; the isolated HOME has no git identity.
+      // Git commands in smoke projects need an identity; the isolated HOME has none.
       GIT_AUTHOR_NAME: 'Spark Smoke',
       GIT_AUTHOR_EMAIL: 'smoke@spark.invalid',
       GIT_COMMITTER_NAME: 'Spark Smoke',

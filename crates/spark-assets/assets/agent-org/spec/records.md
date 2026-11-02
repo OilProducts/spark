@@ -68,11 +68,10 @@ the command and its output, a file and line, or the external system's response.
 
 ## ORG-024: Credentials
 
-Credentials SHALL NOT be stored in any git repository, neither the project's nor
-the org repo. They MAY be kept near the project in an untracked location readable
+Credentials SHALL NOT be stored in any git repository or in the definitions
+directory. They MAY be kept near the project in an untracked location readable
 only by the operator's account, such as a `credentials/` directory under the
-project's `.spark/` (which the project repository ignores and the org repo does
-not contain) with file mode 0600, or in the operating system's credential store.
+project's `.spark/state/` (which ignores itself in Git) with file mode 0600, or in the operating system's credential store.
 Organization files SHALL refer to a credential by name. Agents SHALL pass a
 credential to the tool that needs it by reference, as an environment variable or
 a file path, and SHALL NOT read its value into their conversation.
@@ -91,23 +90,24 @@ a file path, and SHALL NOT read its value into their conversation.
   2026-10-28: "Approved".
 - Verification: Inspection (tracked files, file modes and conversation records).
 
-## ORG-025: The org repo holds the whole definition
+## ORG-025: The definitions directory holds the whole definition
 
-The org repo SHALL hold the organization's whole definition: its spec and
+The definitions directory SHALL hold the organization's whole definition: its spec and
 records, its roles and which of them are standing, its flows, its playbooks and
 its triggers. It runs only the flows, roles and playbooks it holds: before using
 one from Spark's bundled library, it copies it in (ADR-0003, ADR-0009).
 
-The org repo SHALL NOT hold working data, such as observations, datasets,
-inventories and histories; that SHALL live in the project. Runtime state, such
-as a trigger's last firing, a role's inbox, and whether a trigger or role is
-currently stopped, SHALL stay with Spark. Standing roles' memory also lives in
-the org repo, outside the definition (ORG-026).
+The definitions directory SHALL NOT hold working data, such as observations,
+datasets, inventories and histories; that SHALL live in the project or in
+`<project>/.spark/state/`. Runtime state, such as a trigger's last firing, a
+role's inbox, and whether a trigger or role is currently stopped, SHALL stay
+with Spark. Standing roles' memory lives in `.spark/state/`, outside the
+definition (ORG-026).
 
-- Rationale: the org repo's history is the record of how the agents work
-  (ORG-031). Anything that changes how they work but lives elsewhere, such as a
+- Rationale: the definitions and their changelog are the record of how the
+  agents work (ORG-031). Anything that changes how they work but lives elsewhere, such as a
   trigger in Spark's configuration, changes the organization without a record.
-  Working data in the repo would bury organization changes in data churn.
+  Working data in the definitions would bury organization changes in data churn.
   Stopping stays outside so that the operator can stop work at once without an
   organization change (EXT-006).
 - Source: proposed by the agent drafting the seed. Triggers, playbooks and
@@ -118,12 +118,14 @@ the org repo, outside the definition (ORG-026).
   approved." The pointer to ORG-026 was added with ORG-026. Running only what it
   holds replaced resolving uncopied files from the bundled library at the
   operator's direction, 2026-10-29: "#8. remaining gap, I choose A."
-  (ADR-0003).
+  (ADR-0003). The directory moved from a separate Git repository to
+  `.spark/definitions/`, with working data in `.spark/state/`, at the
+  operator's direction, 2026-11-01.
 - Verification: Inspection.
 
 ## ORG-026: Role memory
 
-Each standing role MAY keep its own memory in `memory/<role>/` in the org repo,
+Each standing role MAY keep its own memory in `.spark/state/memory/<role>/`,
 and SHALL be the only one that writes it; ORG-012, ORG-017 and ORG-031's
 changelog entry do not apply to memory. A rule about how the organization works SHALL NOT live
 only in memory: it goes into the definition through the Chief of Staff, or, if
@@ -138,5 +140,5 @@ it is the operator's decision, into the operator brief.
   found that memory in the org repo conflicted with ORG-012, ORG-025 and
   ORG-031. Accepted by the operator, 2026-10-28: "I like that ORG-026 that you
   propose."
-- Verification: Inspection (memory commits touch only their own role's
-  directory, and memory holds no rule missing from the definition or the brief).
+- Verification: Inspection (each role writes only its own memory directory,
+  and memory holds no rule missing from the definition or the brief).

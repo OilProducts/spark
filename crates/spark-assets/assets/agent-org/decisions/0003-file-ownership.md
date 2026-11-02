@@ -12,6 +12,11 @@ date: 2026-10-28
 
 Accepted
 
+Partly superseded, 2026-11-01: initialization now copies the whole seed spec,
+every profile as reference material, and every bundled flow, role and playbook
+into `<project>/.spark/definitions/` when the project is registered. Ownership
+and update rules are unchanged.
+
 ## Context
 
 Spark resolves flows and roles project first, then from Spark's bundled library.

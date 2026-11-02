@@ -18,13 +18,14 @@ and only when, they appear in all capitals, as shown here.
 This specification states what must hold for every agent organization in Spark,
 whatever it manages: software, a dataset, an ongoing process, accounts or
 devices. Capabilities that only some organizations need live in
-[profiles](../profiles/). Each organization copies the core and the profiles it
-chose at installation, owns its copy from then on, and evolves it as its work
-requires (ORG-040).
+[profiles](../profiles/). Spark copies the core and every profile into each
+project once, when the project is registered; the organization owns its copy
+from then on, applies the profiles its work needs, and evolves it as its work
+requires (ORG-040). A copied profile is reference material and grants no
+authority by being present (ORG-055).
 
 The spec says *what* must hold. *How* the organization runs lives in the role
-and flow files that carry each requirement out. The installation method lives in
-the [playbook](../playbook.md). Requirements follow
+and flow files that carry each requirement out. Requirements follow
 [writing-requirements.md](../standards/writing-requirements.md).
 
 ## Terms
@@ -32,9 +33,10 @@ the [playbook](../playbook.md). Requirements follow
 - **Operator**: the human the organization works for.
 - **Organization**: the organization's own definition and records (spec, roles,
   flows, playbooks, triggers, decisions, operator brief), kept in the project's
-  org repo, `<project>/.spark/agent-org/` (ORG-025), with its standing roles'
-  memory (ORG-026).
-- **Project**: whatever the organization manages outside its org repo. That may
+  definitions directory, `<project>/.spark/definitions/` (ORG-025). Its working
+  data, including its standing roles' memory (ORG-026), lives in
+  `<project>/.spark/state/`.
+- **Project**: whatever the organization manages outside its definitions directory. That may
   be a codebase, a dataset, an ongoing process, accounts or devices, together
   with the actions taken on them. This is the same "project" Spark registers: a
   directory, which may hold code, data, configuration or scripts.
@@ -44,7 +46,7 @@ the [playbook](../playbook.md). Requirements follow
   action has an effect class (ORG-050).
 - **Standing role**: a role with its own long-lived conversation and memory: the
   Coordinator, the Chief of Staff, and any role the organization adds.
-- **Seed**: the starting core, profiles, playbook, standards and templates.
+- **Seed**: the starting core, profiles, standards, templates and decisions.
 
 ## Areas
 

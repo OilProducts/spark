@@ -39,11 +39,22 @@ Operational rules:
 
 ## Discover And Validate Flows
 
-Flows resolve project first, then bundled: a project's org repo
-(`<project>/.spark/agent-org/flows`) replaces any bundled flow of the same name
+Flows resolve project first, then bundled: a project's definitions
+(`<project>/.spark/definitions/flows`) replace any bundled flow of the same name
 in `$SPARK_HOME/bundled/flows`. Pass `--project <path>` (or `project_path=` on
 the HTTP routes) to include a project's flows; without it you see the bundled
 library only. Every flow can be launched.
+
+Registering a project installs its definitions once: every bundled flow,
+role and playbook plus the organization seed, recorded with the Spark and
+seed versions in `.spark/definitions/README.md` and `CHANGELOG.md`, and marked
+by `.spark/definitions/.initialized`. Nothing asks questions and no trigger is
+created. `spark org init --project <path>` finishes an interrupted setup and
+does nothing once the marker exists. Spark never updates the installed copies
+on its own; newer bundled files are applied only when the operator asks.
+Working data, such as run checkouts and role memory, lives under
+`.spark/state/`, which ignores itself with a `*` `.gitignore`. Spark runs no
+Git in `.spark`; versioning the definitions is the operator's choice.
 
 List flows:
 
@@ -373,7 +384,7 @@ answered gate overwrites `human.gate.note` (empty when no note was given).
 
 ## Manage Triggers
 
-A trigger belongs to a project: its definition is `triggers/<id>.toml` in the project's org repo (`<project>/.spark/agent-org`), and a trigger is identified by its project plus its id.
+A trigger belongs to a project: its definition is `triggers/<id>.toml` in the project's definitions (`<project>/.spark/definitions`), and a trigger is identified by its project plus its id.
 
 List triggers, across registered projects or in one:
 
@@ -431,10 +442,10 @@ curl -X DELETE 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?projec
 
 Trigger operation notes:
 
-- Every create, update and delete commits the trigger's file into the org repo, with the given message or "Create/Edit/Delete trigger <name>". A definition edited and committed by hand is picked up on the next tick.
-- `enabled` is runtime state kept by Spark: switching it writes no definition and makes no commit.
+- Every create, update and delete writes the trigger's file in the project's definitions; the optional message is descriptive and Spark makes no Git commit. A definition edited by hand is picked up on the next tick.
+- `enabled` is runtime state kept by Spark: switching it writes no definition.
 - Protected triggers reject edits and deletes through the same CLI and HTTP surfaces.
-- Webhook triggers use the shared Workspace webhook ingress route and validate their secret before dispatch. Their key and secret hash live only in Spark's runtime state, never in the org repo; a webhook definition copied from another project has no key until its secret is regenerated.
+- Webhook triggers use the shared Workspace webhook ingress route and validate their secret before dispatch. Their key and secret hash live only in Spark's runtime state, never in the project's definitions; a webhook definition copied from another project has no key until its secret is regenerated.
 - An action's `mode` is `static` (launch `flow_name` in the trigger's project, the default), `mission` (deliver to `mission_id` in the trigger's project), or `role` (deliver to the standing role `role` in the trigger's project). `flow_event` triggers fire only for runs in their own project.
 - Production trigger runtime state, dispatch provenance, and live trigger events are emitted by the Rust trigger runtime. The browser/operator stream observes trigger changes through `/workspace/api/live/events` with `triggers_project_path`.
 - Trigger-launched repository mutation policy is compatibility behavior, not a new safety policy defined by this guide.
@@ -500,7 +511,7 @@ Questions from all descendants return to the mission with their owning run ID. L
 
 ### Playbooks
 
-A playbook is named, reusable guidance for a kind of mission: `playbooks/<name>.md`, Markdown with YAML frontmatter (`title`, `description`) and free-form instructions in the body. Playbooks resolve like flows and roles: the project's org repo (`<project>/.spark/agent-org/playbooks/`) first, then the bundled library (`$SPARK_HOME/bundled/playbooks/`, rewritten on every start, with playbooks such as `bug-report`). A project copy replaces the bundled playbook of the same name; to change a playbook for a project, edit or add it in the org repo. A mission resolves its playbook through its own project. The mission agent follows a playbook as the broad shape of the work, decides each step from run results and logs, and departs from it when the evidence calls for it.
+A playbook is named, reusable guidance for a kind of mission: `playbooks/<name>.md`, Markdown with YAML frontmatter (`title`, `description`) and free-form instructions in the body. Playbooks resolve like flows and roles: the project's definitions (`<project>/.spark/definitions/playbooks/`) first, then the bundled library (`$SPARK_HOME/bundled/playbooks/`, rewritten on every start, with playbooks such as `bug-report`). A project copy replaces the bundled playbook of the same name; to change a playbook for a project, edit or add it in the definitions. A mission resolves its playbook through its own project. The mission agent follows a playbook as the broad shape of the work, decides each step from run results and logs, and departs from it when the evidence calls for it.
 
 ```sh
 spark playbook list --project /absolute/project
@@ -519,7 +530,7 @@ Create rejects an unknown playbook. On start, the mission snapshots the playbook
 
 ## Standing roles
 
-A standing role is a role file (`roles/<name>.md`, resolved from the project's org repo, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. Two are bundled: the `coordinator`, the agent the user talks to, which exists in every project and is saved on first use, and the `chief-of-staff`, which owns and approves the org repo and starts only when asked. Each role keeps its memory in `<org>/memory/<name>/` (`index.md`, `log.md`), versioned in the org repo.
+A standing role is a role file (`roles/<name>.md`, resolved from the project's definitions, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. Two are bundled: the `coordinator`, the agent the user talks to, which exists in every project and is saved on first use, and the `chief-of-staff`, which owns the project's definitions and starts only when asked. Each role keeps its memory in `<project>/.spark/state/memory/<name>/` (`index.md`, `log.md`).
 
 ```bash
 spark role list --project /absolute/project
@@ -537,7 +548,7 @@ budget:
   runs_per_day: 20
 ```
 
-`budget` and each field are optional and default to the values shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its org repo. Spark's role record keeps only runtime state: inbox, runs, recent launches, and whether the role is stopped.
+`budget` and each field are optional and default to the values shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only runtime state: inbox, runs, recent launches, and whether the role is stopped.
 
 The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop|send?project_path=...` (`send` takes `{"conversation_handle", "message"}`).
 

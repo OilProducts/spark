@@ -82,8 +82,8 @@ fn setup_plan() -> Result<(String, BTreeMap<String, Vec<u8>>), String> {
         .ok_or("Seed spec/README.md declares no version")?
         .to_string();
 
-    // The seed's root files are its own README, changelog and the setup
-    // playbook; the definitions get rendered records instead.
+    // The seed's root files are its own README and changelog; the
+    // definitions get rendered records instead.
     let mut plan = seed
         .iter()
         .filter(|(path, _)| path.contains('/'))
@@ -98,11 +98,8 @@ fn setup_plan() -> Result<(String, BTreeMap<String, Vec<u8>>), String> {
     for (file, text) in spark_assets::roles::assets() {
         plan.insert(format!("roles/{file}"), text.into_bytes());
     }
-    let setup_playbook = seed.get("playbook.md").copied().unwrap_or_default();
     for (file, text) in spark_assets::playbooks::assets() {
-        if text.as_bytes() != setup_playbook {
-            plan.insert(format!("playbooks/{file}"), text.into_bytes());
-        }
+        plan.insert(format!("playbooks/{file}"), text.into_bytes());
     }
 
     let profiles = seed

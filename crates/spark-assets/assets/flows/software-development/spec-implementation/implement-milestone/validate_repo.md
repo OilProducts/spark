@@ -5,10 +5,10 @@ runtime: {}
 execution:
   reasoning_effort: xhigh
 extensions:
-  tool.artifacts.paths: .spark/spec-implementation/current/run-milestone-validation.sh,.spark/spec-implementation/current/validation-plan.json,.spark/spec-implementation/current/validation-plan.json,.spark/spec-implementation/current/validation.stdout.txt,.spark/spec-implementation/current/validation.stderr.txt
+  tool.artifacts.paths: .spark/state/spec-implementation/current/run-milestone-validation.sh,.spark/state/spec-implementation/current/validation-plan.json,.spark/state/spec-implementation/current/validation-plan.json,.spark/state/spec-implementation/current/validation.stdout.txt,.spark/state/spec-implementation/current/validation.stderr.txt
   tool.artifacts.stderr: validate-node.stderr.txt
   tool.artifacts.stdout: validate-node.stdout.txt
-  tool.command: bash .spark/spec-implementation/current/run-milestone-validation.sh
+  tool.command: bash .spark/state/spec-implementation/current/run-milestone-validation.sh
 routes:
 - to: assess_validation
   label: Assess Fail
@@ -23,5 +23,5 @@ routes:
 ---
 
 ```sh
-bash .spark/spec-implementation/current/run-milestone-validation.sh
+bash .spark/state/spec-implementation/current/run-milestone-validation.sh
 ```
