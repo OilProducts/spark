@@ -643,8 +643,10 @@ mod org_init {
 
     fn env() -> Env {
         let temp = tempfile::tempdir().expect("tempdir");
-        let home = temp.path().join("home");
-        let project = temp.path().join("project");
+        // The CLI reports canonical paths; macOS temp dirs sit behind /var -> /private/var.
+        let root = temp.path().canonicalize().expect("canonical tempdir");
+        let home = root.join("home");
+        let project = root.join("project");
         fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&project).expect("project");
         Env {
