@@ -16,6 +16,11 @@ export function flowTitle(flowName: string | null | undefined): string {
         : base.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+// Shared formatters: building one per call dominates rendering a long run list.
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const MONTH_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+const MONTH_DAY_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+
 /** "14:05" today, "Sep 27" this year, "Sep 27, 2025" before. */
 export function formatRunDate(timestamp: string | null | undefined, now: number): string {
     const time = timestamp ? Date.parse(timestamp) : Number.NaN
@@ -25,11 +30,9 @@ export function formatRunDate(timestamp: string | null | undefined, now: number)
     const date = new Date(time)
     const today = new Date(now)
     if (date.toDateString() === today.toDateString()) {
-        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        return TIME_FORMAT.format(date)
     }
-    return date.toLocaleDateString(undefined, date.getFullYear() === today.getFullYear()
-        ? { month: 'short', day: 'numeric' }
-        : { month: 'short', day: 'numeric', year: 'numeric' })
+    return (date.getFullYear() === today.getFullYear() ? MONTH_DAY_FORMAT : MONTH_DAY_YEAR_FORMAT).format(date)
 }
 
 /** The day group a run lists under: "Today", "Yesterday", then "Sep 27"-style dates; "" without a date. */

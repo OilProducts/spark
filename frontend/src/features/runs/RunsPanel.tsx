@@ -107,6 +107,7 @@ export function RunsPanel() {
     const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
     const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
     const setViewMode = useStore((state) => state.setViewMode)
+    const isRunsView = useStore((state) => state.viewMode === 'runs')
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
@@ -380,7 +381,9 @@ export function RunsPanel() {
             view="runs"
             title="Runs"
             actions={<RunsProjectFilter />}
-            panel={<RunsSidebar selectedRunId={selectedRunId} />}
+            // ponytail: the run list mounts only while Runs shows, so live updates behind
+            // other views don't regroup it; its search and expansion state resets on leaving.
+            panel={isRunsView ? <RunsSidebar selectedRunId={selectedRunId} /> : null}
         >
         <section
             data-testid="runs-panel"

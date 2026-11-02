@@ -169,3 +169,36 @@ it('keeps a live upsert that arrives while an older list fetch is out', async ()
   await complete(0)
   expect(result.current.scopedRuns.map((run) => [run.run_id, run.status])).toContainEqual(['launched', 'completed'])
 })
+
+it('shows detail records over list rows, follows live updates and sort, and keeps displayed runs stable otherwise', async () => {
+  const record = (runId: string, startedAt: string, extra: Partial<RunRecord> = {}): RunRecord => ({
+    run_id: runId, project_path: '/one', working_directory: '/one', flow_name: 'flow.yaml',
+    status: 'completed', model: '', started_at: startedAt, last_error: '', ...extra,
+  })
+  const { result } = renderHook(() => useRunsList({ selectedRunId: 'a' }))
+  await act(async () => pending[0].resolve(new Response(JSON.stringify({ runs: [
+    record('b', '2026-01-02T00:00:00Z'), record('a', '2026-01-01T00:00:00Z'),
+  ] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  const ids = () => result.current.scopedRuns.map((run) => run.run_id)
+  expect(ids()).toEqual(['b', 'a'])
+  expect(result.current.selectedRunSummary?.run_id).toBe('a')
+
+  act(() => useStore.getState().setRunsSelectedRunId('a'))
+  act(() => useStore.getState().reconcileRunRecord('a', 'status', record('a', '2026-01-01T00:00:00Z', { status: 'running' })))
+  expect(result.current.scopedRuns[1].status).toBe('running')
+  expect(useStore.getState().runsListSession.runs[1].status).toBe('completed')
+  expect(result.current.summary).toMatchObject({ total: 2, running: 1 })
+
+  const before = result.current.scopedRuns
+  act(() => useStore.setState({ viewMode: 'home' }))
+  act(() => useStore.getState().updateRunDetailSession('a', { contextStatus: 'loading' }))
+  expect(result.current.scopedRuns).toBe(before)
+
+  act(() => {
+    window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run: record('c', '2026-01-03T00:00:00Z', { status: 'queued' }) } }))
+  })
+  expect(ids()).toEqual(['c', 'b', 'a'])
+  expect(result.current.summary).toMatchObject({ total: 3, queued: 1 })
+  act(() => useStore.setState({ clientRunPresentation: { sort: 'oldest' } }))
+  expect(ids()).toEqual(['a', 'b', 'c'])
+})

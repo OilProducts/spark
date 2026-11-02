@@ -1,5 +1,6 @@
 import { RunVisitsCard } from '../components/RunVisitsCard'
 import { RunGraphCard } from '../components/RunGraphCard'
+import { runDayLabel } from '../model/runOverviewModel'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
@@ -18,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../components/RunVisitsCard', { spy: true })
 vi.mock('../components/RunGraphCard', { spy: true })
+vi.mock('../model/runOverviewModel', { spy: true })
 
 const jsonResponse = (payload: unknown) =>
   new Response(JSON.stringify(payload), {
@@ -387,6 +389,60 @@ describe('RunsPanel', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('keeps run records live but renders no run list outside the Runs view', async () => {
+    const history = Array.from({ length: 30 }, (_, index) => makeRun({
+      run_id: `run-${index}`, flow_name: `history-${index}.dot`, project_path: index % 2 ? '/tmp/project-two' : '/tmp/project-one',
+      started_at: new Date(Date.parse('2026-03-22T00:00:00Z') - index * 3_600_000).toISOString(),
+    }))
+    vi.mocked(global.fetch).mockImplementation((input) => (
+      resolveRequestUrl(input).endsWith('/attractor/runs')
+        ? Promise.resolve(jsonResponse({ runs: history }))
+        : new Promise<Response>(() => {})
+    ))
+    const { latestSourceMatching } = installControllableEventSource()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().registerProject('/tmp/project-two')
+    })
+    useStore.setState({ viewMode: 'runs' })
+    renderRunsWorkspace()
+    const row = async (name: string) => (await screen.findAllByText(name))
+      .map((element) => element.closest('[data-testid="run-history-row"]'))
+      .find((element) => element !== null)!
+    fireEvent.click(await row('History 3'))
+    fireEvent.change(screen.getByTestId('runs-project-filter'), { target: { value: '/tmp/project-two' } })
+    fireEvent.keyDown(window, { key: 'g' })
+    vi.mocked(RunGraphCard).mockClear()
+    const source = latestSourceMatching('/workspace/api/live/events')!
+    const status = (runId: string) => useStore.getState().runsListSession.runs.find((run) => run.run_id === runId)?.status
+    const upsert = (runId: string, runStatus: string) => act(() => source.emit({
+      type: 'run.upsert', resource: { kind: 'runs_overview', id: null },
+      payload: { run: { ...history[Number(runId.slice(4))], status: runStatus, outcome: null, ended_at: null } },
+    }))
+
+    for (const round of [1, 2]) {
+      act(() => useStore.getState().setViewMode('home'))
+      vi.mocked(runDayLabel).mockClear()
+      upsert('run-5', round === 1 ? 'running' : 'waiting')
+      upsert('run-7', round === 1 ? 'running' : 'failed')
+      expect(status('run-5')).toBe(round === 1 ? 'running' : 'waiting')
+      expect(status('run-7')).toBe(round === 1 ? 'running' : 'failed')
+      expect(screen.queryAllByTestId('run-history-row')).toHaveLength(0)
+      expect(runDayLabel).not.toHaveBeenCalled()
+
+      act(() => useStore.getState().setViewMode('runs'))
+      const updated = await row('History 7')
+      expect(updated.closest(round === 1 ? '[data-testid="run-list-group-running"]' : '[data-testid="run-history-row"]')).not.toBeNull()
+      if (round === 2) expect(within(updated).getByTestId('run-history-row-status')).toHaveTextContent('Failed')
+      expect(await row('History 3')).toHaveAttribute('aria-current', 'true')
+      expect(screen.getByTestId('runs-project-filter')).toHaveValue('/tmp/project-two')
+      expect(screen.queryByText('History 4')).not.toBeInTheDocument()
+      expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
+        run: expect.objectContaining({ run_id: 'run-3' }),
+      }), undefined)
+    }
   })
 
   it('lists every project\'s runs with the project on each row and filters by project', async () => {

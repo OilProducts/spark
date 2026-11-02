@@ -1,4 +1,4 @@
-import { useShallow } from 'zustand/react/shallow'
+import { shallow } from 'zustand/shallow'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
@@ -148,7 +148,15 @@ export function useRunsList({
         void fetchRuns()
     }, [fetchRuns, reconnectSignal, manageSync])
 
-    const displayedRuns = useStore(useShallow((state) => state.runsListSession.runs.map((run) => state.runDetailSessionsByRunId[run.run_id]?.record ?? run)))
+    const runs = useStore((state) => state.runsListSession.runs)
+    const detailSessions = useStore((state) => state.runDetailSessionsByRunId)
+    // A run's detail record is fresher than its list row; keep the array while the records are the same.
+    const lastDisplayedRuns = useRef<RunRecord[]>([])
+    const displayedRuns = useMemo(() => {
+        const next = runs.map((run) => detailSessions[run.run_id]?.record ?? run)
+        if (!shallow(next, lastDisplayedRuns.current)) lastDisplayedRuns.current = next
+        return lastDisplayedRuns.current
+    }, [runs, detailSessions])
     const summary = useMemo(() => {
         const total = displayedRuns.length
         const running = displayedRuns.filter(
@@ -162,8 +170,8 @@ export function useRunsList({
         if (!selectedRunId) {
             return null
         }
-        return runsListSession.runs.find((run) => run.run_id === selectedRunId) || null
-    }, [runsListSession.runs, selectedRunId])
+        return runs.find((run) => run.run_id === selectedRunId) || null
+    }, [runs, selectedRunId])
 
     return {
         error: runsListSession.error,
