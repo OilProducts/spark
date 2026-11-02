@@ -98,7 +98,9 @@ async fn schedule_sources_update_runtime_state_and_due_decisions() {
             ]),
         })
         .expect("create weekly");
-    let weekly_definition = definition(&settings, &project, &weekly.id);
+    let mut weekly_definition = definition(&settings, &project, &weekly.id);
+    // Created before the simulated slot; weekly never fires for pre-creation slots.
+    weekly_definition.created_at = "2026-06-24T09:00:00Z".to_string();
     let weekly_outcomes = runtime
         .process_schedule_source(&weekly_definition, now)
         .expect("process weekly");
