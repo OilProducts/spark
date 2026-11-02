@@ -19,14 +19,6 @@ pub enum SparkCommonError {
         source: std::io::Error,
     },
 
-    #[error("{label} directory is not writable: {path}")]
-    DirectoryNotWritable {
-        label: String,
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
     #[error("UI directory does not contain index.html: {0}")]
     InvalidUiDirectory(PathBuf),
 

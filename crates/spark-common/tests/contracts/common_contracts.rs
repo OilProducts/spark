@@ -8,9 +8,7 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::logging::spark_target;
-use spark_common::paths::{
-    ensure_writable_directory, resolve_runtime_workspace_path_with_env, WRITABLE_DIRECTORY_PROBE,
-};
+use spark_common::paths::{ensure_directory, resolve_runtime_workspace_path_with_env};
 use spark_common::process::ProcessLineReader;
 use spark_common::project::{build_project_id, normalize_project_path};
 use spark_common::settings::{
@@ -135,17 +133,16 @@ fn validate_settings_creates_runtime_directories_and_checks_ui_index() {
         &settings.runs_dir,
     ] {
         assert!(path.is_dir(), "{} should be created", path.display());
-        assert!(!path.join(WRITABLE_DIRECTORY_PROBE).exists());
     }
 }
 
 #[test]
-fn writable_directory_errors_use_compatible_message_shape() {
+fn directory_creation_errors_use_compatible_message_shape() {
     let temp = tempfile::tempdir().expect("tempdir");
     let blocked = temp.path().join("blocked");
     std::fs::write(&blocked, "not a dir").expect("blocked file");
 
-    let error = ensure_writable_directory(&blocked, "runtime").expect_err("directory creation");
+    let error = ensure_directory(&blocked, "runtime").expect_err("directory creation");
 
     assert!(error
         .to_string()
