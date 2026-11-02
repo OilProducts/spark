@@ -92,6 +92,10 @@ pub struct TriggerState {
     pub webhook_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_hash: Option<String>,
+    /// `<run id>:<status>` keys of the flow events this trigger already fired
+    /// for, newest last, so a re-published terminal run fires it only once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow_event_deliveries: Vec<String>,
 }
 
 impl Default for TriggerState {
@@ -105,6 +109,7 @@ impl Default for TriggerState {
             recent_history: Vec::new(),
             webhook_key: None,
             secret_hash: None,
+            flow_event_deliveries: Vec::new(),
         }
     }
 }

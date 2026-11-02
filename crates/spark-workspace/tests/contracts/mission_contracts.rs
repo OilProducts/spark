@@ -1669,7 +1669,19 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     server.join().unwrap();
     assert_eq!(outcomes.len(), 2);
     assert!(outcomes.iter().all(|o| o.status == "success"));
-    assert_eq!(triggers.emit_flow_event(json!({"flow_name": "work", "run_id": "external-run", "status": "completed", "project_path": h.project}).as_object().unwrap().clone()).unwrap().len(), 1);
+    let flow_event = json!({"flow_name": "work", "run_id": "external-run", "status": "completed", "project_path": h.project});
+    assert_eq!(
+        triggers
+            .emit_flow_event(flow_event.as_object().unwrap().clone())
+            .unwrap()
+            .len(),
+        1
+    );
+    // Republished, it adds nothing to the inbox counted below.
+    assert!(triggers
+        .emit_flow_event(flow_event.as_object().unwrap().clone())
+        .unwrap()
+        .is_empty());
     assert_eq!(h.agent.prompts().len(), 2);
     assert_eq!(h.get(id).inbox.event_seq - h.get(id).inbox.cursor, 3);
     h.agent.release(1);

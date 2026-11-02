@@ -288,6 +288,7 @@ pub fn serialize_trigger(
 ) -> SerializedTrigger {
     let mut source = definition.source.clone();
     state.secret_hash = None;
+    state.flow_event_deliveries.clear();
     if let Some(key) = state.webhook_key.take() {
         source.insert("webhook_key".to_string(), Value::String(key));
     }

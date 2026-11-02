@@ -230,9 +230,18 @@ impl TriggerSourceRuntime {
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase();
-        if flow_name.is_empty() || !TERMINAL_PIPELINE_STATUSES.contains(&status.as_str()) {
+        let run_id = payload
+            .get("run_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if flow_name.is_empty()
+            || run_id.is_empty()
+            || !TERMINAL_PIPELINE_STATUSES.contains(&status.as_str())
+        {
             return Ok(Vec::new());
         }
+        let delivery_id = format!("{run_id}:{status}");
         let run_project = payload
             .get("project_path")
             .and_then(Value::as_str)
@@ -243,14 +252,6 @@ impl TriggerSourceRuntime {
         for definition in self.repositories.list_all()? {
             if definition.source_type != SOURCE_FLOW_EVENT
                 || run_project.as_deref() != Some(Path::new(&definition.project_path))
-            {
-                continue;
-            }
-            if !self
-                .repositories
-                .runtime_state(&definition.project_path)?
-                .load(&definition.id)?
-                .enabled
             {
                 continue;
             }
@@ -278,11 +279,30 @@ impl TriggerSourceRuntime {
             {
                 continue;
             }
+            // Claimed under the state lock before firing: every publish path
+            // re-emits a terminal run, and only the first claim fires.
+            let mut claimed = false;
+            self.repositories
+                .runtime_state(&definition.project_path)?
+                .update(&definition.id, |trigger_state| {
+                    claimed = trigger_state.enabled
+                        && !trigger_state.flow_event_deliveries.contains(&delivery_id);
+                    // ponytail: the list grows by one key per fired run, kept until
+                    // the trigger is deleted; move keys to their own files if it grows large.
+                    if claimed {
+                        trigger_state
+                            .flow_event_deliveries
+                            .push(delivery_id.clone());
+                    }
+                })?;
+            if !claimed {
+                continue;
+            }
             outcomes.push(self.execute_activation(
                 &definition,
                 Value::Object(payload.clone()),
                 now,
-                None,
+                Some(delivery_id.clone()),
             )?);
         }
         Ok(outcomes)

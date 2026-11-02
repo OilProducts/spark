@@ -295,13 +295,27 @@ fn flow_event_trigger_keeps_static_context_nested() {
         .put(&trigger, None)
         .expect("put trigger");
 
-    let outcomes = WorkspaceTriggerService::new(settings.clone())
-        .emit_flow_event(Map::from_iter([
-            ("flow_name".to_string(), json!("ops/run")),
-            ("project_path".to_string(), json!(project_path)),
-            ("status".to_string(), json!("completed")),
-        ]))
-        .expect("emit event");
+    let service = WorkspaceTriggerService::new(settings.clone());
+    let emit = || {
+        service
+            .emit_flow_event(Map::from_iter([
+                ("run_id".to_string(), json!("run-1")),
+                ("flow_name".to_string(), json!("ops/run")),
+                ("project_path".to_string(), json!(project_path)),
+                ("status".to_string(), json!("completed")),
+            ]))
+            .expect("emit event")
+    };
+    let outcomes = emit();
+    // A republished terminal run launches no second flow.
+    assert!(emit().is_empty());
+    assert_eq!(
+        RunStore::for_settings(&settings)
+            .list_run_records()
+            .expect("list runs")
+            .len(),
+        1
+    );
 
     let run = RunStore::for_settings(&settings)
         .read_run_bundle(outcomes[0].run_id.as_deref().expect("run"))
@@ -367,6 +381,7 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
         emit("run-other", &project),
         vec!["Trigger delivered to role."]
     );
+    assert!(emit("run-other", &project).is_empty());
     let role = spark_workspace::roles::WorkspaceRoleService::new(settings.clone())
         .get(&project, "coordinator")
         .expect("role");
@@ -390,6 +405,7 @@ fn hand_deleted_definitions_stop_firing_without_a_restart() {
     let emit = || {
         service
             .emit_flow_event(Map::from_iter([
+                ("run_id".to_string(), json!("run-1")),
                 ("flow_name".to_string(), json!("ops/run")),
                 ("project_path".to_string(), json!(project)),
                 ("status".to_string(), json!("completed")),
