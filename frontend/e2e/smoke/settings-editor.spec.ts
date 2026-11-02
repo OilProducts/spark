@@ -310,27 +310,6 @@ test('provider and agent sections validate, save, report references and restart 
     }
 })
 
-test('legacy graph positions migrate once into the current client while caches remain local', async ({ page }) => {
-    const legacy = 'spark.saved_flow_layout.v1:/legacy:flow:editor-parent-only'
-    await page.addInitScript(({ legacy }) => {
-        if (!localStorage.getItem('spark.client_id')) {
-            localStorage.setItem('spark.client_id', 'browser-layout-migration-e2e')
-            localStorage.setItem(legacy, JSON.stringify({ version: 1, topologyStamp: 'cache-only', nodePositions: { task: { x: 42, y: 84 } }, edgeLayouts: {} }))
-        }
-    }, { legacy })
-    await page.goto('/')
-    const read = async () => (await page.request.get('/workspace/api/settings?client_id=browser-layout-migration-e2e')).json()
-    await expect.poll(async () => (await read()).preferences.browser_migration_version).toBe(1)
-    const view = (await read()).preferences
-    expect(view.stored.flow_node_positions['/legacy:flow:editor-parent-only']).toEqual({ task: { x: 42, y: 84 } })
-    expect(JSON.stringify(view.stored)).not.toContain('cache-only')
-    await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), legacy)).toBeNull()
-    expect(await page.evaluate((key) => localStorage.getItem(`${key}.v0.bak`), legacy)).not.toBeNull()
-    await page.reload()
-    expect((await read()).preferences.revision).toBe(view.revision)
-})
-
-
 test('saved core and Desktop-identity preferences survive a real server restart on a different port', async ({ page }, testInfo) => {
     test.setTimeout(60000)
     const home = testInfo.outputPath('restart-home')

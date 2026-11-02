@@ -26,7 +26,7 @@ spark settings validate --base-url http://127.0.0.1:8000 --json settings-update.
 spark settings set --base-url http://127.0.0.1:8000 --json settings-update.json
 ```
 
-Pass a filename to `--json`, or use `--json -` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `models`, `import_models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `import_client_preferences`, `llm_profiles`, and `execution_profiles`.
+Pass a filename to `--json`, or use `--json -` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `llm_profiles`, and `execution_profiles`.
 
 Example conversation override update:
 
@@ -56,9 +56,7 @@ The settings sections and dedicated profile editors provide explicit Save/Discar
 
 ## Migration boundaries
 
-Server and Desktop bootstrap read `config/spark.toml` under its document lock before loading persisted runtime choices; a missing document is created with `schema_version = 1`. A core document declaring any other `schema_version`, and a `conversation.json` whose `settings_schema_version` is not 1, is rejected with an error naming the file and the version found. The earlier `ui-defaults.json` and Desktop `spark-desktop.json` sources are no longer imported; bootstrap fails with an error naming `config/ui-defaults.json` while that file exists, so delete it or move its values into `spark.toml`. Accessible browser model defaults import only when the workspace has no authoritative model group. Historical run snapshots, transcripts, tasks, caches and session state remain outside settings documents.
-
-Accessible browser defaults/layouts are imported through versioned, backed-up migrations. Do not run old and new binaries concurrently against migrated workspace metadata.
+Server and Desktop bootstrap read `config/spark.toml` under its document lock before loading persisted runtime choices; a missing document is created with `schema_version = 1`. A core document declaring any other `schema_version`, and a `conversation.json` whose `settings_schema_version` is not 1, is rejected with an error naming the file and the version found. The earlier `ui-defaults.json` and Desktop `spark-desktop.json` sources are no longer imported; bootstrap fails with an error naming `config/ui-defaults.json` while that file exists, so delete it or move its values into `spark.toml`. Historical run snapshots, transcripts, tasks, caches and session state remain outside settings documents.
 
 Trigger definitions remain in their existing TOML files. Trigger reads include `revision`; PATCH bodies require `expected_revision`, and DELETE requires the `expected_revision` query parameter. Both use the shared per-document lock, reject stale writes with HTTP 409, and validate definition writes before atomic replacement. New definitions can only create an absent document. Runtime trigger state remains separate. CLI updates carry the revision in `--json`; deletion uses `spark trigger delete --id <id> --expected-revision <revision> --base-url <url>`. Trigger drafts retain their original revision across live changes and failed saves; Discard reloads current values.
 
@@ -76,8 +74,7 @@ Desktop stores its generated identity in its app-owned configuration directory's
 `client-id` file, and returns it through the native bootstrap boundary. It is
 independent of the embedded HTTP port. Browsers persist a separate generated
 identity in `spark.client_id` in localStorage. Corrupt identities produce an error
-instead of silently switching preference ownership. Inaccessible browser origins
-cannot be migrated automatically.
+instead of silently switching preference ownership.
 
 The Preferences editor saves explicitly and retains drafts on conflicts. Editor
 mode changes and completed sidebar resize interactions persist without opening
@@ -91,7 +88,7 @@ or `all`. `appearance` is `system` (default, follows the OS), `light` or `dark`.
 These controls support explicit Save/Discard in Preferences, and their contextual toggles persist when the interaction completes. Existing per-flow and
 per-node view state remains session state.
 
-Split/sort choices, graph layouts and browser preference migration are described below.
+Split/sort choices and graph layouts are described below.
 
 ### Home sidebar split
 
@@ -268,7 +265,7 @@ subsequent independent messages/runs read and validate current files. Credential
 references are captured; credential values and OAuth material are not persisted
 in snapshots.
 
-## Reusable presentation and legacy layouts
+## Reusable presentation and layouts
 
 Client documents also own run sort order, activity/inspector defaults, timeline
 category/severity filters, graph height, and per-flow user node positions and edge port choices.
@@ -277,20 +274,11 @@ layout interactions save through the same client revision boundary. New run
 sessions start with the client's presentation defaults. Selected runs and
 existing run-session caches remain operational state.
 
-Accessible `spark.saved_flow_layout.v1:*` browser records are backed up verbatim
-as `.v0.bak` before a revision-checked, client-scoped import. The client document
-records `browser_migration_version = 1`; existing authoritative positions win,
-and rerunning the import is harmless. Existing client documents are backed up as
-`.browser-import-v0.bak` before migration. Failed imports retain the original
-browser record and backup. Only after success is the superseded browser record
-removed. New layout writes never recreate it.
-
 Only user node positions and edge side/slot choices enter preferences. Topology stamps, computed edge
 routes, and viewport restoration stay in `spark.flow_layout_cache.v1:*` on the
 current origin and can be recomputed. Desktop restores its durable positions
 using its stable native identity even when the new HTTP port has no browser
-cache. Other clients have their own documents. Browser origins that cannot be
-accessed cannot be imported automatically.
+cache. Other clients have their own documents.
 
 ### Targeted settings corrections (CR-2026-0118)
 

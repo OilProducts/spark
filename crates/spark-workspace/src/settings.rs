@@ -23,17 +23,12 @@ pub enum WorkspaceSettingsSection {
     Agents(spark_common::agent_settings::SessionConfig),
     LlmProfiles(Vec<unified_llm_adapter::LlmProfile>),
     ExecutionProfiles(crate::profile_settings::ExecutionProfilesUpdate),
-    ImportClientPreferences {
-        client_id: String,
-        preferences: spark_common::settings::ClientPreferences,
-    },
     ClientPreferences {
         client_id: String,
         preferences: spark_common::settings::ClientPreferences,
     },
     Runtime(RuntimeSettings),
     Models(ModelSettings),
-    ImportModels(ModelSettings),
     /// `None` turns utility inference off.
     UtilityModels(Option<ModelSettings>),
     ConversationModels {
@@ -346,10 +341,6 @@ pub fn validate_workspace_settings_update(
         WorkspaceSettingsSection::ClientPreferences {
             client_id,
             preferences,
-        }
-        | WorkspaceSettingsSection::ImportClientPreferences {
-            client_id,
-            preferences,
         } => spark_common::settings::validate_client_id(client_id)
             .and_then(|_| preferences.validate())
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
@@ -363,9 +354,7 @@ pub fn validate_workspace_settings_update(
             }
             Ok(())
         }
-        WorkspaceSettingsSection::Models(value) | WorkspaceSettingsSection::ImportModels(value) => {
-            validate_model_settings(settings, value)
-        }
+        WorkspaceSettingsSection::Models(value) => validate_model_settings(settings, value),
         WorkspaceSettingsSection::UtilityModels(value) => value
             .as_ref()
             .map(|value| validate_model_settings(settings, value))
@@ -392,7 +381,6 @@ pub fn update_workspace_settings(
     let _references = if matches!(
         &request.section,
         WorkspaceSettingsSection::Models(_)
-            | WorkspaceSettingsSection::ImportModels(_)
             | WorkspaceSettingsSection::UtilityModels(_)
             | WorkspaceSettingsSection::ProjectModels { .. }
     ) {
@@ -402,13 +390,6 @@ pub fn update_workspace_settings(
     } else {
         None
     };
-    let importing = matches!(&request.section, WorkspaceSettingsSection::ImportModels(_));
-    if importing {
-        let path = settings.config_dir.join("spark.toml");
-        if read_settings_document(&path)?.values.contains_key("models") {
-            return workspace_settings(settings);
-        }
-    }
     validate_workspace_settings_update(settings, &request)?;
     let path = settings.config_dir.join("spark.toml");
     let (section, value) = match request.section {
@@ -432,19 +413,6 @@ pub fn update_workspace_settings(
                 crate::profile_settings::execution_candidate(&value)?,
                 true,
             )
-        }
-        WorkspaceSettingsSection::ImportClientPreferences {
-            client_id,
-            preferences,
-        } => {
-            let path =
-                spark_storage::settings::client_settings_path(&settings.config_dir, &client_id)?;
-            let document = spark_storage::settings::import_client_preferences(
-                &path,
-                &request.expected_revision,
-                &preferences,
-            )?;
-            return client_preferences_view(&path, &client_id, &document);
         }
         WorkspaceSettingsSection::ClientPreferences {
             client_id,
@@ -489,9 +457,7 @@ pub fn update_workspace_settings(
             return project_model_settings_view(settings, &project_path);
         }
         WorkspaceSettingsSection::Runtime(value) => ("runtime", toml::Value::try_from(value)),
-        WorkspaceSettingsSection::Models(value) | WorkspaceSettingsSection::ImportModels(value) => {
-            ("models", toml::Value::try_from(value))
-        }
+        WorkspaceSettingsSection::Models(value) => ("models", toml::Value::try_from(value)),
         WorkspaceSettingsSection::UtilityModels(value) => {
             let value = value
                 .map(toml::Value::try_from)
@@ -593,9 +559,6 @@ pub fn update_workspace_settings(
                     }
                 })?;
             }
-            if importing {
-                spark_storage::settings::backup_settings_before_import(&path)?;
-            }
             Ok(())
         },
     )?;
@@ -613,17 +576,6 @@ fn validate_client_document(
         return Err(spark_storage::StorageError::SettingsValidation {
             path: path.into(),
             reason: "Unsupported client settings version; use a compatible Spark binary.".into(),
-        });
-    }
-    if !matches!(
-        values.get("browser_migration_version"),
-        None | Some(toml::Value::Integer(0 | 1))
-    ) {
-        return Err(spark_storage::StorageError::SettingsValidation {
-            path: path.into(),
-            reason:
-                "Unsupported browser preference migration version; use a compatible Spark binary."
-                    .into(),
         });
     }
     let document = SettingsDocument {
@@ -662,7 +614,6 @@ fn client_preferences_view(
             "flow_edge_ports": stored.flow_edge_ports,
             "triggers_scope": stored.triggers_scope.clone().unwrap_or(spark_common::settings::PresentationScope::All),
             "appearance": stored.appearance.clone().unwrap_or_default()},
-        "browser_migration_version": document.values.get("browser_migration_version").and_then(toml::Value::as_integer).unwrap_or(0),
         "stored": stored, "restart_fields": [], "validation_errors": [],
     }}))
 }

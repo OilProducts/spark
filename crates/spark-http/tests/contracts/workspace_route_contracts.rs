@@ -1610,16 +1610,6 @@ async fn model_settings_http_scopes_have_independent_conflicts_and_browser_impor
     assert_eq!(cleared.1["models"]["source"], "workspace");
     assert_eq!(cleared.1["models"]["effective"]["model"], "workspace-model");
     let bytes = fs::read(config.config_dir.join("spark.toml")).unwrap();
-    let imported = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"expected_revision": "absent", "section": "import_models", "value": {"provider": "anthropic", "model": "old-browser"}}))).await;
-    assert_eq!(imported.0, StatusCode::OK);
-    assert_eq!(
-        imported.1["models"]["effective"]["model"],
-        "workspace-model"
-    );
-    assert_eq!(
-        fs::read(config.config_dir.join("spark.toml")).unwrap(),
-        bytes
-    );
     let invalid = request_json(app, "PATCH", "/workspace/api/settings", Some(json!({"expected_revision": saved.1["models"]["revision"], "section": "models", "value": {"provider": "openai", "llm_profile": "SECRET_DO_NOT_EXPOSE"}}))).await;
     assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
     assert!(!invalid.1.to_string().contains("SECRET_DO_NOT_EXPOSE"));
