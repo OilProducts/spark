@@ -29,7 +29,7 @@ Independent reviewers will read only this document and the files it references, 
 - Approach.
 - Alternatives considered: at least one other viable approach and why it lost.
 - Risks.
-- Implementation plan: the target files, each marked create, modify or delete; ordered steps, each leaving the code buildable and testable; and the test plan. Leave no design choice to the implementer.
+- Implementation plan: the target files, each marked create, modify or delete; ordered steps, each leaving the code buildable and testable; and the test plan. Write the smallest design that meets the request: decide every choice that changes behaviour or scope, and leave routine mechanics to the implementer.
 - Open questions.
 
 Before writing, verify every file, symbol, behaviour and line you cite against the current code. When the user's intent is unclear, ask the run's owner through the clarification tool rather than guessing. Do not change any file other than the design. Respond with ONLY a JSON status envelope whose context_updates set context.design.path (the design's path relative to the working directory) and context.design.summary (a few sentences on the problem and the chosen approach).
