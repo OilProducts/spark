@@ -928,7 +928,7 @@ fn parse_serve_args(args: &[String]) -> std::result::Result<ServeArgs, String> {
 
 fn parse_service_install_args(args: &[String]) -> std::result::Result<ServiceInstallArgs, String> {
     let mut parsed = ServiceInstallArgs {
-        host: "0.0.0.0".to_string(),
+        host: "127.0.0.1".to_string(),
         port: 8000,
         ..ServiceInstallArgs::default()
     };
