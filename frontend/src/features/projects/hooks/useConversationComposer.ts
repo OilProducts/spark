@@ -135,20 +135,42 @@ export function useConversationComposer({
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
         const chatMode = parsedCommand?.chatMode ?? null
-        const attachmentIds = sending.map((entry) => entry.attachment!.id)
-        await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const sentAttachments = sending.map((entry) => entry.attachment!)
+        const attachmentIds = sentAttachments.map((attachment) => attachment.id)
+        // The server keeps this id for the user turn, so the pending entry is
+        // replaced in place and a resent request cannot add a second turn.
+        const clientTurnId = `turn-${crypto.randomUUID().replace(/-/g, '')}`
+        const userEntry = {
+            id: clientTurnId,
+            kind: 'message' as const,
+            role: 'user' as const,
+            content: messageToSend,
+            timestamp: new Date().toISOString(),
+            status: 'pending' as const,
+            ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
+        }
+        // The message shows in the transcript now, so the composer clears now;
+        // a failed send puts the text back unless something new was typed.
+        const replaceDraft = (from: string, to: string) => {
+            const store = useStore.getState()
+            if ((store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? '') === from) {
+                store.updateHomeProjectSession(activeProjectPath, { chatDraft: to })
+            }
+        }
+        replaceDraft(chatDraft, '')
+        const accepted = await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
+            client_turn_id: clientTurnId,
             ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
             chat_mode: chatMode,
         }), () => {
-            // Accepted: clear what was sent, keeping anything typed or attached meanwhile.
+            // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
-            const store = useStore.getState()
-            if (store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft === chatDraft) {
-                store.updateHomeProjectSession(activeProjectPath, { chatDraft: '' })
-            }
-        })
+        }, userEntry)
+        if (!accepted) {
+            replaceDraft('', chatDraft)
+        }
     }
 
     /** Resends a failed turn's message as a new turn; the draft is left alone. */
@@ -167,12 +189,13 @@ export function useConversationComposer({
         failure: string,
         start: () => Promise<ConversationSnapshotResponse>,
         onAccepted?: () => void,
-    ) => {
+        userEntry?: PendingConversationTurnState['userEntry'],
+    ): Promise<boolean> => {
         if (!activeProjectPath) {
-            return
+            return false
         }
         const afterRevision = getCurrentConversationRevision(conversationId)
-        setPendingConversationTurn({ conversationId, afterRevision })
+        setPendingConversationTurn({ conversationId, afterRevision, userEntry })
         // The activity bar follows the turn even after the chat is left.
         const { setSendingChat } = useStore.getState()
         setSendingChat(conversationId, true)
@@ -184,9 +207,11 @@ export function useConversationComposer({
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
+            return true
         } catch (error) {
             const message = formatErrorMessage(error, failure)
             setPanelError(message)
+            return false
         } finally {
             setPendingConversationTurn(null)
             setSendingChat(conversationId, false)

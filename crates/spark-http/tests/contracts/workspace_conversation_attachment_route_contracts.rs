@@ -494,6 +494,18 @@ async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_upload
             .0,
         StatusCode::OK
     );
+    // A referenced upload stays even when its record is unreadable.
+    let sent_dir = attachment_dir(&settings, "chat-c", &sent);
+    std::fs::write(sent_dir.join("attachment.json"), b"{corrupt").expect("corrupt record");
+    let removed = repository
+        .prune_attachments(
+            "chat-c",
+            PROJECT,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .expect("prune");
+    assert!(removed.is_empty(), "{removed:?}");
+    assert!(sent_dir.exists());
 
     let (status, _, _) = request_json(
         app.clone(),

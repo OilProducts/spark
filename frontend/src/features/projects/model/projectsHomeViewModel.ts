@@ -66,7 +66,13 @@ export function buildProjectsHomeViewModel({
     projectGitMetadata,
     uiDefaults,
 }: BuildProjectsHomeViewModelArgs): ProjectsHomeViewModel {
-    const activeConversationHistory = getConversationTimelineEntries(activeConversationRecord)
+    const pendingUserEntry = pendingConversationTurn?.conversationId === activeConversationId
+        ? pendingConversationTurn?.userEntry
+        : undefined
+    const committedHistory = getConversationTimelineEntries(activeConversationRecord)
+    const activeConversationHistory = pendingUserEntry && !activeConversationRecord?.turnsById[pendingUserEntry.id]
+        ? [...committedHistory, pendingUserEntry]
+        : committedHistory
     const activeFlowRunRequests = getConversationFlowRunRequests(activeConversationRecord)
     const activeFlowLaunches = getConversationFlowLaunches(activeConversationRecord)
     const activeProposedPlans = getConversationProposedPlans(activeConversationRecord)

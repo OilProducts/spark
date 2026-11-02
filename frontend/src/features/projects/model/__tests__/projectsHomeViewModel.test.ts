@@ -146,4 +146,34 @@ describe('buildProjectsHomeViewModel', () => {
       content: 'Start planning.',
     })
   })
+
+  it('shows a sent message until the server turn with the same id replaces it', () => {
+    const userEntry = {
+      id: 'turn-sent',
+      kind: 'message' as const,
+      role: 'user' as const,
+      content: 'Next step?',
+      timestamp: '2026-03-24T18:02:00Z',
+      status: 'pending' as const,
+    }
+    const build = (turns: ConversationSnapshotResponse['turns']) => buildProjectsHomeViewModel({
+      activeConversationId: 'conversation-1',
+      activeConversationRecord: hydrateConversationRecordFromSnapshot({ ...snapshot, turns }),
+      activeProjectPath: '/tmp/project-alpha',
+      pendingConversationTurn: { conversationId: 'conversation-1', afterRevision: 0, userEntry },
+      projectGitMetadata: {},
+      uiDefaults: { llm_model: '', llm_provider: 'codex', reasoning_effort: '' },
+    })
+
+    const before = build(snapshot.turns.slice(0, 1))
+    expect(before.activeConversationHistory.map((entry) => entry.id)).toEqual(['turn-user', 'turn-sent'])
+    expect(before.activeConversationHistory.at(-1)).toMatchObject({ content: 'Next step?', status: 'pending' })
+
+    const after = build([
+      snapshot.turns[0],
+      { ...userEntry, kind: 'message', status: 'complete', artifact_id: null },
+    ])
+    expect(after.activeConversationHistory.map((entry) => entry.id)).toEqual(['turn-user', 'turn-sent'])
+    expect(after.activeConversationHistory.at(-1)).toMatchObject({ status: 'complete' })
+  })
 })

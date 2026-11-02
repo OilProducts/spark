@@ -69,3 +69,20 @@ it('refetches held summaries when a lagged stream asks for a conversation_summar
     await act(async () => responses[0]([summary('stopped')]))
     await waitFor(() => expect(roleState()).toBe('stopped'))
 })
+
+it('drops a run journal entry repeated because the server subscribes before reading initial state', () => {
+    render(<WorkspaceLiveEventsController />)
+    const source = MockEventSource.instances.at(-1)!
+    const received: unknown[] = []
+    const onEntry = (event: Event) => received.push((event as CustomEvent).detail.entry)
+    window.addEventListener('spark:run-journal-entry', onEntry)
+    const entry = (sequence: number) => ({ data: JSON.stringify({
+        type: 'run.journal_entry', resource: { kind: 'run', id: 'run-1' },
+        cursor: { kind: 'run_sequence', value: sequence }, payload: { sequence },
+    }) } as MessageEvent)
+    act(() => {
+        for (const sequence of [1, 2, 2, 3]) source.onmessage!(entry(sequence))
+    })
+    window.removeEventListener('spark:run-journal-entry', onEntry)
+    expect(received).toEqual([{ sequence: 1 }, { sequence: 2 }, { sequence: 3 }])
+})

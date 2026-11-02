@@ -108,6 +108,10 @@ pub struct ConversationTurnRequest {
     /// Ids of this conversation's uploads to send with the message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
+    /// Browser-chosen id for the user turn, so the browser can render the
+    /// message before the response and a resent request adds no second turn.
+    #[serde(default)]
+    pub client_turn_id: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -1274,6 +1278,21 @@ impl WorkspaceConversationService {
             ));
         }
 
+        if let Some(client_turn_id) = request.client_turn_id.as_deref() {
+            // The id becomes a stored turn id, so it gets the same rules as other client ids.
+            spark_common::settings::validate_client_id(client_turn_id).map_err(|_| {
+                WorkspaceError::Validation(
+                    "client_turn_id must contain 1–80 ASCII letters, digits, underscores or hyphens."
+                        .to_string(),
+                )
+            })?;
+            // A resend of an accepted request answers with the current state.
+            if find_turn(&snapshot, client_turn_id).is_some() {
+                prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+                self.attach_model_settings(&mut snapshot)?;
+                return Ok((None, snapshot));
+            }
+        }
         let base_revision = snapshot_revision(&snapshot);
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
         let current_chat_mode = normalize_chat_mode(
@@ -1371,7 +1390,10 @@ impl WorkspaceConversationService {
         let mut user_turn = match mode {
             TurnStart::Queued(turn) => turn.clone(),
             _ => json!({
-                "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
+                "id": request
+                    .client_turn_id
+                    .clone()
+                    .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple())),
                 "role": "user",
                 "content": message,
                 "timestamp": iso_now(),

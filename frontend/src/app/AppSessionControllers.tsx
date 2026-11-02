@@ -381,6 +381,10 @@ export function WorkspaceLiveEventsController() {
                     && typeof envelope.cursor.value === 'number'
                     && Number.isFinite(envelope.cursor.value)
                 ) {
+                    // The server subscribes before reading initial state, so an
+                    // entry committed in between arrives twice; drop the repeat.
+                    const previous = latestRunSequenceById.current[envelope.resource.id]
+                    if (typeof previous === 'number' && envelope.cursor.value <= previous) return
                     latestRunSequenceById.current[envelope.resource.id] = envelope.cursor.value
                 }
                 if (typeof envelope.sequence === 'number' && selectedRunId) {

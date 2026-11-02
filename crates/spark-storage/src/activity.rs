@@ -184,6 +184,21 @@ impl ActivityRepository {
         Ok(())
     }
 
+    /// Flush both logs to disk. Appends do not sync; a commit calls this once
+    /// before publishing state that refers to the appended records.
+    pub fn sync(&self) -> Result<()> {
+        for path in [self.events_path(), self.transcript_path()] {
+            match fs::File::open(&path) {
+                Ok(file) => file
+                    .sync_all()
+                    .map_err(|error| activity_io("sync", &path, error))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(activity_io("open", &path, error)),
+            }
+        }
+        Ok(())
+    }
+
     pub fn read_events(&self) -> Result<Vec<ActivityEvent>> {
         read_lines(&self.events_path())
     }

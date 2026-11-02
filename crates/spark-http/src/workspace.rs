@@ -911,9 +911,11 @@ async fn workspace_live_events(
 ) -> Result<Response, WorkspaceApiError> {
     let raw_query = optional_query_payload(payload)?;
     let query = validate_live_query(raw_query)?;
+    // Subscribe before reading initial state so a commit in between is
+    // delivered live; the browser drops the resulting stale duplicates.
+    let mut live_receiver = live_query_subscribes(&query).then(|| live_hub.subscribe());
     let initial = initial_live_envelopes(&settings, &query)?;
     let has_initial = !initial.is_empty();
-    let mut live_receiver = live_query_subscribes(&query).then(|| live_hub.subscribe());
     let stream = async_stream::stream! {
         for envelope in initial {
             yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));

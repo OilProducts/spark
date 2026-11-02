@@ -1,4 +1,11 @@
-import { parseConversationComposerCommand } from '@/features/projects/hooks/useConversationComposer'
+import type { SetStateAction } from 'react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseConversationComposerCommand, useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import type { PendingConversationTurnState } from '@/features/projects/model/conversationState'
+import { sendConversationTurnValidated, type ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
+
+vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), sendConversationTurnValidated: vi.fn() }))
 
 describe('parseConversationComposerCommand', () => {
     it('parses bare mode switches', () => {
@@ -28,5 +35,72 @@ describe('parseConversationComposerCommand', () => {
     it('leaves unknown slash commands alone', () => {
         expect(parseConversationComposerCommand('/unknown something')).toBeNull()
         expect(parseConversationComposerCommand('/planner')).toBeNull()
+    })
+})
+
+describe('onChatComposerSubmit', () => {
+    const projectPath = '/tmp/project'
+    let pending: PendingConversationTurnState | null = null
+    const setPending = vi.fn((value: SetStateAction<PendingConversationTurnState | null>) => {
+        pending = typeof value === 'function' ? value(pending) : value
+    })
+
+    const composer = (overrides: Partial<Parameters<typeof useConversationComposer>[0]> = {}) => useConversationComposer({
+        activeProjectPath: projectPath,
+        chatDraft: 'Hello there',
+        attachments: [],
+        isUploadBlocking: false,
+        isChatInputDisabled: false,
+        ensureConversationId: () => 'conversation-1',
+        getCurrentConversationId: () => 'conversation-1',
+        getCurrentConversationRevision: () => 3,
+        applyConversationSnapshot: vi.fn(),
+        formatErrorMessage: (_error, fallback) => fallback,
+        setChatDraft: vi.fn(),
+        setPanelError: vi.fn(),
+        setPendingConversationTurn: setPending,
+        ...overrides,
+    })
+    const draft = () => useStore.getState().homeProjectSessionsByPath[projectPath]?.chatDraft
+
+    beforeEach(() => {
+        useStore.setState(useStore.getInitialState(), true)
+        useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Hello there' })
+        pending = null
+        setPending.mockClear()
+        vi.mocked(sendConversationTurnValidated).mockReset()
+    })
+
+    it('shows the message as pending under the id it sends, before the server answers', async () => {
+        let respond!: (snapshot: ConversationSnapshotResponse) => void
+        vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise((resolve) => { respond = resolve }))
+        const applyConversationSnapshot = vi.fn()
+        composer({ applyConversationSnapshot }).onChatComposerSubmit()
+        await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+        const request = vi.mocked(sendConversationTurnValidated).mock.calls[0][1]
+        expect(request.client_turn_id).toMatch(/^turn-[0-9a-f]{32}$/)
+        expect(pending?.userEntry).toMatchObject({
+            id: request.client_turn_id,
+            role: 'user',
+            content: 'Hello there',
+            status: 'pending',
+        })
+        expect(draft()).toBe('')
+
+        respond({ revision: 4 } as ConversationSnapshotResponse)
+        await vi.waitFor(() => expect(applyConversationSnapshot).toHaveBeenCalled())
+        expect(pending).toBeNull()
+        expect(draft()).toBe('')
+    })
+
+    it('reports a failed send and puts the message text back', async () => {
+        vi.mocked(sendConversationTurnValidated).mockRejectedValue(new Error('offline'))
+        const setPanelError = vi.fn()
+        composer({ setPanelError }).onChatComposerSubmit()
+
+        await vi.waitFor(() => expect(setPanelError).toHaveBeenCalledWith('Unable to send the project chat turn.'))
+        expect(pending).toBeNull()
+        expect(draft()).toBe('Hello there')
     })
 })

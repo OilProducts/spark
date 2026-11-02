@@ -7,10 +7,13 @@ import type {
     ConversationTurnResponse,
     ConversationTurnUpsertEventResponse,
 } from '@/lib/workspaceClient'
+import type { ConversationTimelineEntry } from './types'
 
 export type PendingConversationTurnState = {
     conversationId: string
     afterRevision: number
+    /** The sent message, shown until the server's turn with the same id arrives. */
+    userEntry?: Extract<ConversationTimelineEntry, { kind: 'message' }>
 }
 
 export type ConversationStreamEvent =

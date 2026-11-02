@@ -179,6 +179,15 @@ impl ConversationRepository {
         let referenced = self.referenced_attachment_ids(conversation_id, project_path)?;
         let mut removed = Vec::new();
         for entry in read_dir_or_empty(&dir)? {
+            // Check the directory name first: a referenced attachment must
+            // survive even when its record is unreadable.
+            if entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| referenced.contains(name))
+            {
+                continue;
+            }
             let created_at = match read_attachment_record(&entry)? {
                 Some(record) if referenced.contains(&record.id) => continue,
                 Some(record) => OffsetDateTime::parse(&record.created_at, &Rfc3339).ok(),
