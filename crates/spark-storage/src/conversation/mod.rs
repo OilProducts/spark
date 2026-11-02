@@ -9,6 +9,7 @@
 
 mod attachments;
 mod commit;
+mod database;
 mod identity;
 mod journal;
 mod mutations;
@@ -26,6 +27,12 @@ pub(crate) use tool_output::{
 
 pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
 pub use commit::ConversationCommit;
+pub use database::{
+    ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, ConversationDatabase,
+    ConversationRow, EntityKind, EntityRow, PageCursor, PageRead, ReadTransaction, ResetReason,
+    SegmentRow, TurnPage, TurnRow, WriteTransaction, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
+    CONVERSATION_DATABASE_FILE_NAME, CONVERSATION_DATABASE_SCHEMA_VERSION,
+};
 pub use identity::{
     agent_event_segment_id, assistant_segment_id, context_compaction_segment_id,
     model_tool_segment_id, plan_segment_id, reasoning_segment_id, request_user_input_segment_id,

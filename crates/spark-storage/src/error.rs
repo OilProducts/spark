@@ -84,6 +84,18 @@ pub enum StorageError {
         conversation_id: String,
         reason: String,
     },
+
+    #[error("Conversation database error: {0}")]
+    ConversationDatabase(#[from] rusqlite::Error),
+
+    #[error(
+        "Conversation database {path} has unsupported schema version {found} (expected {expected}); stop Spark and remove it to reset conversation history."
+    )]
+    UnsupportedConversationDatabase {
+        path: PathBuf,
+        found: i64,
+        expected: i64,
+    },
 }
 
 impl StorageError {
