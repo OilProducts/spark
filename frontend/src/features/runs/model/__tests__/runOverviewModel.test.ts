@@ -147,6 +147,20 @@ describe('formatRunDate and formatCompactCount', () => {
     expect(runDayLabel('2025-12-01T09:05:00', now)).toBe('Dec 1, 2025')
     expect(runDayLabel(null, now)).toBe('')
   })
+  it('formats with the default locale options across invalid, today, yesterday and year-boundary dates', () => {
+    const newYear = Date.parse('2026-01-01T10:00:00')
+    const local = (timestamp: string, options: Intl.DateTimeFormatOptions) => new Date(timestamp).toLocaleString(undefined, options)
+    const monthDay = { month: 'short', day: 'numeric' } as const
+    for (const invalid of ['', 'not a date', undefined]) {
+      expect(formatRunDate(invalid, newYear)).toBe('')
+      expect(runDayLabel(invalid, newYear)).toBe('')
+    }
+    expect(formatRunDate('2026-01-01T00:30:00', newYear)).toBe(local('2026-01-01T00:30:00', { hour: 'numeric', minute: '2-digit' }))
+    expect(runDayLabel('2025-12-31T23:30:00', newYear)).toBe('Yesterday')
+    expect(formatRunDate('2025-12-31T23:30:00', newYear)).toBe(local('2025-12-31T23:30:00', { ...monthDay, year: 'numeric' }))
+    expect(runDayLabel('2025-12-30T12:00:00', newYear)).toBe(local('2025-12-30T12:00:00', { ...monthDay, year: 'numeric' }))
+    expect(runDayLabel('2026-12-30T12:00:00', newYear)).toBe(local('2026-12-30T12:00:00', monthDay))
+  })
   it('shortens counts', () => {
     expect(formatCompactCount(5_517_077)).toBe('5.5M')
     expect(formatCompactCount(193_400)).toBe('193.4k')
