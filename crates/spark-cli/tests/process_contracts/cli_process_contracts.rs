@@ -520,10 +520,12 @@ fn valid_flow() -> Value {
 
 #[test]
 fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence() {
-    let temp = tempfile::tempdir().unwrap();
+    // Hard-link beside the build so no writable copy exists for a concurrent
+    // spawn to inherit (exec would hit ETXTBSY), even with TMPDIR on another mount.
+    let temp = tempfile::tempdir_in(std::path::Path::new(spark_bin()).parent().unwrap()).unwrap();
     let bin = temp.path().join("package/bin/spark");
     fs::create_dir_all(bin.parent().unwrap()).unwrap();
-    fs::copy(spark_bin(), &bin).unwrap();
+    fs::hard_link(spark_bin(), &bin).unwrap();
     let home = temp.path().join("home");
     fs::create_dir_all(home.join("config")).unwrap();
     for source in ["persisted", "environment", "flag"] {
