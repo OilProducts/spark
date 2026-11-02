@@ -83,9 +83,10 @@ fn init_source_checkout_guard_matches_runtime_home_contract() {
 #[cfg(unix)]
 #[test]
 fn cargo_installed_server_process_init_uses_default_home_without_source_checkout_guard() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let temp = tempfile::tempdir().expect("tempdir");
+    let source_bin = Path::new(env!("CARGO_BIN_EXE_spark-server"));
+    // Hard-link beside the build so no writable copy exists for a concurrent
+    // spawn to inherit (exec would hit ETXTBSY), even with TMPDIR on another mount.
+    let temp = tempfile::tempdir_in(source_bin.parent().expect("bin dir")).expect("tempdir");
     // Canonicalize: init output prints canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let install_root = root.join("cargo-root");
@@ -93,12 +94,7 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
     let home = root.join("home");
     fs::create_dir_all(installed_bin.parent().expect("bin parent")).expect("bin dir");
     fs::create_dir_all(&home).expect("home dir");
-    fs::copy(env!("CARGO_BIN_EXE_spark-server"), &installed_bin).expect("copy binary");
-    let mut permissions = fs::metadata(&installed_bin)
-        .expect("installed metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&installed_bin, permissions).expect("installed executable");
+    fs::hard_link(source_bin, &installed_bin).expect("link binary");
 
     let output = Command::new(&installed_bin)
         .arg("init")
