@@ -213,7 +213,7 @@ describe('composer attachments', () => {
     await waitFor(() => expect(pendingAttachments()).toHaveLength(0))
     expect(server.turns).toEqual([{
       conversationId: 'chat-a',
-      body: { project_path: PROJECT, message: '', attachment_ids: ['att-1', 'att-2', 'att-3'], chat_mode: null },
+      body: { project_path: PROJECT, message: '', client_turn_id: expect.stringMatching(/^turn-/), attachment_ids: ['att-1', 'att-2', 'att-3'], chat_mode: null },
     }])
     const history = await screen.findByTestId('message-attachments')
     expect(within(history).getByRole('img', { name: 'screenshot.png' })).toHaveAttribute(
@@ -340,7 +340,7 @@ describe('composer attachments', () => {
     await waitFor(() => expect(server.turns).toHaveLength(1))
     expect(server.turns[0]).toEqual({
       conversationId: 'chat-b',
-      body: { project_path: PROJECT, message: 'Only text here', chat_mode: null },
+      body: { project_path: PROJECT, message: 'Only text here', client_turn_id: expect.stringMatching(/^turn-/), chat_mode: null },
     })
 
     await user.click(screen.getByRole('button', { name: /Open thread Chat A/i }))

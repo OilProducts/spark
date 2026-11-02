@@ -441,9 +441,10 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('renders the server-created user turn before the assistant response completes', async () => {
+  it('renders the sent message at once and swaps in the server turn with the same id', async () => {
     const user = userEvent.setup()
     let resolveTurnResponse: ((response: Response) => void) | null = null
+    let clientTurnId = ''
 
     vi.stubGlobal(
       'fetch',
@@ -469,6 +470,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
+          clientTurnId = JSON.parse(String(init.body)).client_turn_id
           return await new Promise<Response>((resolve) => {
             resolveTurnResponse = resolve
           })
@@ -488,9 +490,11 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Show this message immediately.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    expect(screen.queryByTestId('project-ai-conversation-history-list')).not.toBeInTheDocument()
-    // The draft stays until the server accepts the turn.
-    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Show this message immediately.')
+    // Shown before the server answers; the composer clears at once.
+    const pendingHistory = await screen.findByTestId('project-ai-conversation-history-list')
+    expect(within(pendingHistory).getAllByText('Show this message immediately.')).toHaveLength(1)
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
+    expect(clientTurnId).toMatch(/^turn-/)
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Sending...')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
@@ -501,7 +505,7 @@ describe('ProjectsPanel', () => {
           project_path: '/tmp/chat-project',
           turns: [
             {
-              id: 'turn-user-1',
+              id: clientTurnId,
               role: 'user',
               content: 'Show this message immediately.',
               timestamp: '2026-03-06T21:45:00Z',
@@ -517,7 +521,7 @@ describe('ProjectsPanel', () => {
               status: 'pending',
               kind: 'message',
               artifact_id: null,
-              parent_turn_id: 'turn-user-1',
+              parent_turn_id: clientTurnId,
             },
           ],
           event_log: [],
@@ -530,7 +534,7 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn')
     })
     expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
     const history = screen.getByTestId('project-ai-conversation-history-list')

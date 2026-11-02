@@ -1046,7 +1046,8 @@ fn seed_change_repository(repo: &Path) {
 #[test]
 fn change_workspace_carries_only_the_request_and_preserves_retry_content() {
     let temp = tempfile::tempdir().unwrap();
-    let repo = temp.path();
+    // The flow reports a canonical path; macOS temp dirs sit behind /var -> /private/var.
+    let repo = &temp.path().canonicalize().unwrap();
     seed_change_repository(repo);
     let artifact = "changes/request with spaces.md";
     fs::create_dir(repo.join("changes")).unwrap();
