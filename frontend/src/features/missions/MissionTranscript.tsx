@@ -1,22 +1,12 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, CircleHelp, Flag, Pencil, Play, TriangleAlert, X, Zap } from 'lucide-react'
+import { Check, CircleHelp, Flag, Pencil, Play, X, Zap } from 'lucide-react'
 import { useStore } from '@/store'
 import { buildRunsHash } from '@/app/runsRouting'
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
-import { groupTranscript, type TranscriptToolCallNode } from '@/components/app/transcript/groupTranscript'
-import {
-    AssistantTurnHeader,
-    EventLine,
-    MessageRow,
-    RunCard,
-    ShowThinkingToggle,
-    ThinkingRow,
-    ToolCallGroupRow,
-    ToolCallRow,
-} from '@/components/app/transcript/SegmentRows'
-import { Empty, EmptyDescription } from '@/components/ui/empty'
+import { EventLine, MessageRow, RunCard, ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
+import { Transcript } from '@/components/app/transcript/Transcript'
 import { ProjectConversationRequestUserInputCard } from '@/features/projects/components/ProjectConversationRequestUserInputCard'
 import {
     getConversationFlowLaunches,
@@ -24,10 +14,10 @@ import {
     hydrateConversationRecordFromSnapshot,
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
-import { loadConversationSegmentToolOutput } from '@/features/projects/services/conversationArtifacts'
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
-import { retryConversationTurnValidated, submitConversationRequestUserInputValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
+import type { ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 import { cn } from '@/lib/utils'
 import { parseTurn, runKinds, runStatusLabel, type MissionRun } from './model/missionModel'
 
@@ -48,35 +38,6 @@ export function RunLink({ runId, className, children }: { runId: string; classNa
 }
 
 type Entry = ConversationTimelineEntry
-type UserEntry = Extract<Entry, { kind: 'message' }>
-type ToolCallEntry = Extract<Entry, { kind: 'tool_call' }>
-type NoticeEntry = Extract<Entry, { kind: 'final_separator' }>
-/** A user turn carries the mission's events; everything between two user turns is one assistant turn; a notice (such as a turn that could not start) stands alone. */
-type Turn = { kind: 'user'; entry: UserEntry } | { kind: 'assistant'; entries: Entry[]; worked: string | null } | { kind: 'notice'; entry: NoticeEntry }
-
-function splitTurns(entries: Entry[]): Turn[] {
-    const turns: Turn[] = []
-    let open: Extract<Turn, { kind: 'assistant' }> | null = null
-    for (const entry of entries) {
-        if (entry.kind === 'message' && entry.role === 'user') { open = null; turns.push({ kind: 'user', entry }); continue }
-        const worked = entry.kind === 'final_separator' ? /^Worked(?: for (.+))?$/.exec(entry.label) : null
-        if (entry.kind === 'final_separator' && !worked) {
-            open = null
-            // The outcome closes the thread instead; any other notice stays visible.
-            if (!entry.label.startsWith('Closed as ')) turns.push({ kind: 'notice', entry })
-            continue
-        }
-        if (!open) { open = { kind: 'assistant', entries: [], worked: null }; turns.push(open) }
-        // "Worked for 16s" becomes the turn header's meta rather than a centered rule.
-        if (worked) open.worked = worked[1] ?? open.worked
-        else open.entries.push(entry)
-    }
-    return turns
-}
-
-const isThinking = (entry: Entry) => entry.kind === 'message' && entry.role === 'assistant' && entry.presentation === 'thinking'
-const live = (status: string) => status !== 'complete' && status !== 'failed'
-const toggleKey = (set: (update: (current: Record<string, boolean>) => Record<string, boolean>) => void) => (id: string) => set(current => ({ ...current, [id]: !current[id] }))
 
 type Conversation = { conversationId: string; snapshot: ConversationSnapshotResponse | null; loading: boolean; error: string; reload: () => void }
 
@@ -90,7 +51,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         setInputError(null)
         setSubmitting(current => ({ ...current, [requestId]: true }))
         try {
-            await submitConversationRequestUserInputValidated(conversationId, requestId, { project_path: project, answers })
+            await submitConversationRequestUserInput(conversationId, requestId, { project_path: project, answers })
             reload()
         } catch (e) { setInputError(e instanceof Error ? e.message : String(e)) } finally {
             setSubmitting(current => { const next = { ...current }; delete next[requestId]; return next })
@@ -100,24 +61,10 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     const [retryError, setRetryError] = useState<string | null>(null)
     function retryTurn(turnId: string) {
         setRetryError(null)
-        void retryConversationTurnValidated(conversationId, turnId, project).then(reload)
+        void retryConversationTurn(conversationId, turnId, project).then(reload)
             .catch((e: unknown) => setRetryError(e instanceof Error ? e.message : String(e)))
     }
     const [showThinking, setShowThinking] = useState(false)
-    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
-    const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
-    const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({})
-    // A truncated output is fetched in full the first time its call opens; `{}` while loading.
-    const [fullOutputs, setFullOutputs] = useState<Record<string, { output?: string; error?: string }>>({})
-    function toggleToolCall(entry: ToolCallEntry) {
-        const id = entry.toolCall.id
-        setExpandedToolCalls(current => ({ ...current, [id]: !current[id] }))
-        if (expandedToolCalls[id] || !entry.toolCall.outputTruncated || fullOutputs[entry.id]) return
-        setFullOutputs(current => ({ ...current, [entry.id]: {} }))
-        void loadConversationSegmentToolOutput(conversationId, entry.id, project)
-            .then(payload => setFullOutputs(current => ({ ...current, [entry.id]: { output: payload.output } })))
-            .catch(() => setFullOutputs(current => ({ ...current, [entry.id]: { error: 'Unable to load full output.' } })))
-    }
     const record = useMemo(() => snapshot ? hydrateConversationRecordFromSnapshot(snapshot) : null, [snapshot])
     const entries = getConversationTimelineEntries(record)
     const launchesById = new Map(getConversationFlowLaunches(record).map(launch => [launch.id, launch]))
@@ -125,45 +72,37 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     const title = (runId: string | null, fallback: string) => (runId && runs.get(runId)?.title) || fallback || runId || 'Run'
     const when = (at: string) => <time dateTime={at}>{formatTime(at)}</time>
 
-    /** One entry of an assistant turn as its row; tool calls arrive through their group. */
-    function row(entry: Entry): ReactNode {
-        const key = `${entry.kind}:${entry.id}`
+    /** The mission's own rows: user turns carry its events, launches are run cards, and the agent's questions are answered here. */
+    function renderEntry(entry: Entry): ReactNode | undefined {
         switch (entry.kind) {
-            case 'message':
-                if (isThinking(entry)) {
-                    // Thinking stays hidden until asked for, except while the agent is still at it.
-                    return showThinking || live(entry.status)
-                        ? <ThinkingRow key={key} entry={entry} isExpanded={expandedThinking[entry.id] === true} onToggleThinkingEntryExpanded={toggleKey(setExpandedThinking)} formatConversationTimestamp={formatTime} testIdPrefix="mission" />
-                        : null
-                }
-                return <MessageRow key={key} entry={entry} enableCopy formatConversationTimestamp={formatTime} onRetryTurn={retryTurn} />
-            case 'plan': return <MessageRow key={key} entry={entry} enableCopy formatConversationTimestamp={formatTime} />
+            case 'message': return entry.role === 'user' ? userTurn(entry) : undefined
+            case 'final_separator':
+                // The outcome closes the thread instead; a notice the runtime appended on its own, such as a turn that could not start, stays visible.
+                if (/^Worked(?: for .+)?$/.test(entry.label)) return undefined
+                if (entry.label.startsWith('Closed as ')) return null
+                return <li><EventLine data-testid="mission-event" icon={<X className={statusTextClassName('destructive')} />} at={when(entry.timestamp)} title={entry.label}>{entry.label.split('\n')[0]}</EventLine></li>
             case 'flow_launch': {
                 const launch = launchesById.get(entry.artifactId)
-                if (!launch) return <li key={key}><EventLine at={when(entry.timestamp)}>Flow launch unavailable</EventLine></li>
+                if (!launch) return <li><EventLine at={when(entry.timestamp)}>Flow launch unavailable</EventLine></li>
                 // A launch that never became a run keeps its error as an event line.
                 if (!launch.run_id) {
-                    return <li key={key}><EventLine icon={launch.status === 'launch_failed' ? <X className="text-destructive" /> : <Play className="text-info" />} at={when(entry.timestamp)} title={launch.launch_error ?? undefined}>
+                    return <li><EventLine icon={launch.status === 'launch_failed' ? <X className="text-destructive" /> : <Play className="text-info" />} at={when(entry.timestamp)} title={launch.launch_error ?? undefined}>
                         {launch.status === 'launch_failed' ? <><b>{launch.summary}</b> failed to launch{launch.launch_error && `: ${launch.launch_error}`}</> : <>Launching <b>{launch.summary}</b>…</>}
                     </EventLine></li>
                 }
                 const run = runs.get(launch.run_id)
-                return <li key={key}><RunCard data-testid="mission-run-card" kicker={`Launched run · ${flowTitle(launch.flow_name)}`}
+                return <li><RunCard data-testid="mission-run-card" kicker={`Launched run · ${flowTitle(launch.flow_name)}`}
                     title={<RunLink runId={launch.run_id}>{title(launch.run_id, launch.summary)}</RunLink>}
                     tone={run ? runKinds[run.kind].tone : 'neutral'} status={run ? runStatusLabel(run) : 'Launched'} duration={run?.duration || undefined} /></li>
             }
-            case 'request_user_input': return <li key={key} className="flex min-w-0 justify-start">
+            case 'request_user_input': return <li className="flex min-w-0 justify-start">
                 <ProjectConversationRequestUserInputCard actionError={inputError} entry={entry} formatConversationTimestamp={formatTime} isSubmitting={submitting[entry.requestUserInput.requestId] === true} onSubmitRequestUserInput={submitInput} />
             </li>
-            case 'mode_change': return <li key={key}><EventLine at={when(entry.timestamp)}>{entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}</EventLine></li>
-            case 'context_compaction': return <li key={key}><EventLine at={when(entry.timestamp)}>{entry.content}</EventLine></li>
-            case 'warning': return <li key={key}><EventLine icon={<TriangleAlert className={statusTextClassName('warning')} />} at={when(entry.timestamp)}>{entry.content}</EventLine></li>
-            // The worked separator is the turn header's meta; missions never raise run requests.
-            default: return null
+            default: return undefined
         }
     }
 
-    function userTurn(entry: UserEntry) {
+    function userTurn(entry: Extract<Entry, { kind: 'message' }>) {
         return parseTurn(entry.content, entry.id === firstTurnId).map((event, index) => {
             const key = `${entry.id}:${index}`
             const at = when(entry.timestamp)
@@ -186,44 +125,11 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         })
     }
 
-    /** A notice the runtime appended on its own, such as a turn that could not start, stays visible as an event line. */
-    function noticeTurn(entry: NoticeEntry) {
-        return <li key={`notice:${entry.id}`}><EventLine data-testid="mission-event" icon={<X className={statusTextClassName('destructive')} />} at={when(entry.timestamp)} title={entry.label}>{entry.label.split('\n')[0]}</EventLine></li>
-    }
-
-    /** A grouped tool call as a line, with any subagent calls nested under it. */
-    function toolCallLine({ item, toolCall, children }: TranscriptToolCallNode<Entry>): ReactNode {
-        if (item.kind !== 'tool_call') return null
-        const output = fullOutputs[item.id]
-        return <ToolCallRow key={toolCall.id} variant="line" entry={item} isExpanded={expandedToolCalls[toolCall.id] === true} onToggleToolCallExpanded={() => toggleToolCall(item)}
-            fullOutput={output?.output ?? null} isLoadingFullOutput={output !== undefined && output.output === undefined && output.error === undefined}
-            loadFullOutputError={output?.error ?? null} testIdPrefix="mission" childCalls={children.map(toolCallLine)} />
-    }
-
-    function assistantTurn(turn: Extract<Turn, { kind: 'assistant' }>, key: string) {
-        const blocks = groupTranscript(turn.entries, entry => entry.kind === 'tool_call' ? { kind: 'tool_call', toolCall: entry.toolCall } : isThinking(entry) ? { kind: 'thinking' } : { kind: 'other' })
-        const meta = [formatTime(turn.entries[0]?.timestamp ?? ''), turn.worked && `worked ${turn.worked}`].filter(Boolean).join(' · ')
-        return <li key={key} className="flex min-w-0 flex-col gap-3">
-            <AssistantTurnHeader meta={meta} />
-            <ul className="flex min-w-0 flex-col gap-3 pl-[30px]">
-                {blocks.map(block => block.kind === 'tool_group'
-                    ? <ToolCallGroupRow key={block.id} summary={block.summary} isExpanded={openGroups[block.id] === true} onToggle={() => toggleKey(setOpenGroups)(block.id)} testId={`mission-tool-group-${block.id}`}>
-                        {block.members.map(member => member.kind === 'tool_call' ? toolCallLine(member) : row(member.item))}
-                    </ToolCallGroupRow>
-                    : row(block.item))}
-            </ul>
-        </li>
-    }
-
-    const turns = splitTurns(entries)
     return <>
         {error && <InlineError>{error}</InlineError>}
         {retryError && <InlineError>{retryError}</InlineError>}
         <SectionHeading as="h3" action={<ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} />}>Log</SectionHeading>
-        {loading && !entries.length
-            ? <p className="text-xs text-muted-foreground" aria-live="polite">Restoring thread history...</p>
-            : !entries.length
-                ? <Empty><EmptyDescription>No conversation history for this thread yet.</EmptyDescription></Empty>
-                : <ol className="flex min-w-0 flex-col gap-4">{turns.map((turn, index) => turn.kind === 'user' ? userTurn(turn.entry) : turn.kind === 'notice' ? noticeTurn(turn.entry) : assistantTurn(turn, `turn:${turn.entries[0]?.id ?? index}`))}</ol>}
+        <Transcript testIdPrefix="mission" entries={entries} showThinking={showThinking} formatTimestamp={formatTime} loading={loading}
+            conversation={{ id: conversationId, projectPath: project }} onRetryTurn={retryTurn} renderEntry={renderEntry} />
     </>
 }

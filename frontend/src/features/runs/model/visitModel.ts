@@ -5,7 +5,9 @@ import type {
     RunTranscriptSegment,
 } from '@/lib/api/attractorApi'
 import type { TimelineEventEntry } from './shared'
-import { buildRunTranscriptRow, timestampMs, type RunTranscriptRow } from './transcriptModel'
+import { segmentTimelineEntry } from '@/features/projects/model/conversationTimeline'
+import type { ConversationTimelineEntry } from '@/features/projects/model/types'
+import { timestampMs } from './transcriptModel'
 
 // A visit is one execution of one node: run id, node id, stage_index and
 // attempt. Visits are derived from the journal (timing, routing, child runs,
@@ -483,7 +485,12 @@ const isStatusEnvelope = (content: string): boolean => {
     }
 }
 
-export function visitTranscriptRows(visit: RunVisit, segments: RunTranscriptSegment[]): RunTranscriptRow[] {
+/**
+ * One visit's segments as transcript entries. Questions and flow requests are left to the raw
+ * journal, so the transcript stays on the agent exchange; ids stay segment ids, unique within
+ * the visit's one execution.
+ */
+export function visitTranscriptEntries(visit: RunVisit, segments: RunTranscriptSegment[]): ConversationTimelineEntry[] {
     if (visit.parentKey) {
         return []
     }
@@ -491,11 +498,17 @@ export function visitTranscriptRows(visit: RunVisit, segments: RunTranscriptSegm
         .filter((segment) => isVisitSegment(visit, segment))
         .sort((left, right) => left.order - right.order)
         .flatMap((segment) => {
-            const row = buildRunTranscriptRow(segment)
-            if (!row || (row.kind === 'message' && isStatusEnvelope(row.entry.content))) {
+            const entry = segmentTimelineEntry(segment)
+            if (
+                !entry
+                || entry.kind === 'request_user_input'
+                || entry.kind === 'flow_run_request'
+                || entry.kind === 'flow_launch'
+                || ((entry.kind === 'message' || entry.kind === 'plan') && isStatusEnvelope(entry.content))
+            ) {
                 return []
             }
-            return [row]
+            return [entry]
         })
 }
 

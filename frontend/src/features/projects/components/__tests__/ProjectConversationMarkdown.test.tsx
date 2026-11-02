@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { StrictMode, useState } from 'react'
 import { ProjectConversationMarkdown } from '../ProjectConversationMarkdown'
-import { RunTranscriptRowItem, useTranscriptExpansion } from '@/features/runs/components/RunTranscriptGroups'
-import { buildRunTranscriptRow } from '@/features/runs/model/transcriptModel'
+import { Transcript } from '@/components/app/transcript/Transcript'
+import { segmentTimelineEntry } from '@/features/projects/model/conversationTimeline'
 import { MessageRow, ThinkingRow, ToolCallRow } from '@/components/app/transcript/SegmentRows'
 
 const { renderDiagram, initialize, isTauri, openUrl } = vi.hoisted(() => ({
@@ -93,18 +93,16 @@ describe('shared Markdown', () => {
         }
     })
 
-    it('uses the shared renderer through the Run transcript adapter', () => {
-        const row = buildRunTranscriptRow({
+    it('uses the shared renderer through the run transcript', () => {
+        const entry = segmentTimelineEntry({
             id: 'run', turn_id: 'turn', order: 1, kind: 'assistant_message', role: 'assistant',
             status: 'complete', timestamp: '', updated_at: '', content: '~~Run output~~ $x$',
             node_id: 'node', attempt: 1, source_scope: 'root', source_parent_node_id: null,
             source_flow_name: null, source_run_id: null, latest_sequence: 1,
         })!
-        function Run() { return <RunTranscriptRowItem row={row} expansion={useTranscriptExpansion()} /> }
-        const { container } = render(<Run />)
+        const { container } = render(<Transcript testIdPrefix="run" turns={false} entries={[entry]} showThinking={false} formatTimestamp={() => ''} />)
         expect(screen.getByText('Run output').tagName).toBe('DEL')
         expect(container.querySelector('.katex')).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: 'Copy message' })).not.toBeInTheDocument()
     })
 
     it('loads safe images, falls back after failure, and offers local image path copying', () => {

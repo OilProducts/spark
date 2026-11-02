@@ -1,9 +1,10 @@
-import { useEffect, useEffectEvent, useRef } from 'react'
+import { useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react'
 import { useStore } from '@/store'
 
-export const CONVERSATION_BOTTOM_THRESHOLD_PX = 4
+const CONVERSATION_BOTTOM_THRESHOLD_PX = 4
 
-export function useHomeSidebarLayout(activeConversationId: string | null) {
+/** Keeps a conversation's scroller at the bottom while pinned, and remembers its position per conversation id. */
+export function useScrollFollow(activeConversationId: string | null, hasContent: boolean) {
     const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
     const updateHomeConversationSession = useStore((state) => state.updateHomeConversationSession)
     const isConversationPinnedToBottom = activeConversationId
@@ -85,14 +86,21 @@ export function useHomeSidebarLayout(activeConversationId: string | null) {
         }
     })
 
+    // Restore again once history loads, so a saved scrollTop is not clamped to the loading placeholder.
     useEffect(() => {
         restoreConversationScrollState()
-    }, [activeConversationId])
+    }, [activeConversationId, hasContent])
+
+    // Follow new content after every commit while pinned.
+    useLayoutEffect(() => {
+        const node = conversationBodyRef.current
+        if (node && isConversationPinnedToBottom) node.scrollTop = node.scrollHeight
+    })
 
     return {
-        conversationBodyRef,
-        isConversationPinnedToBottom,
-        scrollConversationToBottom,
-        syncConversationPinnedState,
+        ref: conversationBodyRef,
+        onScroll: syncConversationPinnedState,
+        isPinned: isConversationPinnedToBottom,
+        scrollToBottom: scrollConversationToBottom,
     }
 }

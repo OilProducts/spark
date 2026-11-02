@@ -1,7 +1,7 @@
 import { useStore } from '@/store'
 import { fetchTriggerListValidated, triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import { Check, MoreHorizontal, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,6 @@ import { StatusDot, StatusPill, statusTextClassName } from '@/components/app/sta
 import { Well } from '@/components/app/well'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { MissionConflict, request, statusLabels, type Budget, type Mission, type Playbook } from './MissionsPanel'
 import { MissionTranscript, RunLink } from './MissionTranscript'
 import { useMissionConversation } from './hooks/useMissionConversation'
@@ -24,7 +23,8 @@ import type { ModelSettings } from '@/lib/api/settingsApi'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { flowTitle, formatCompactCount } from '@/features/runs/model/runOverviewModel'
 import { projectLabel } from '@/features/projects/model/projectChoices'
-import { CONVERSATION_BOTTOM_THRESHOLD_PX } from '@/features/projects/hooks/useHomeSidebarLayout'
+import { useScrollFollow } from '@/features/projects/hooks/useScrollFollow'
+import { ChatPane } from '@/features/projects/components/ChatPane'
 
 type Props = {
     mission: Mission; project: string; busy: boolean; error: string; narrow: boolean; focusRequest: number
@@ -92,13 +92,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const runsById = new Map(runs.map(run => [run.runId, run]))
     const tokens = totalTokens(runs)
     // Like project chats, the conversation follows new content while the operator sits at the bottom of whichever element scrolls.
-    const scroller = useRef<HTMLDivElement>(null)
-    const pinned = useRef(true)
-    useLayoutEffect(() => {
-        const node = scroller.current
-        if (node && pinned.current) node.scrollTop = node.scrollHeight
-    }, [mission, conversation.snapshot, narrow])
-    const follow = { ref: scroller, onScroll: ({ currentTarget: node }: UIEvent<HTMLDivElement>) => { pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight <= CONVERSATION_BOTTOM_THRESHOLD_PX } }
+    const follow = useScrollFollow(conversationId, conversation.snapshot !== null)
     async function openModel() {
         setActionError('')
         try {
@@ -182,10 +176,19 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             </div>
         </header>
         {(error || actionError) && <div className="shrink-0 px-6 pt-4"><InlineError>{error || actionError}</InlineError></div>}
-        <div data-testid="mission-body" {...(narrow ? follow : {})} className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
+        <div data-testid="mission-body" {...(narrow ? { ref: follow.ref, onScroll: follow.onScroll } : {})} className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
             <div data-testid="mission-conversation" className={`flex min-w-0 flex-col ${narrow ? '' : 'min-h-0 flex-1'}`}>
-                <div {...(narrow ? {} : follow)} className={`px-6 py-5 ${narrow ? '' : 'min-h-0 flex-1 overflow-y-auto'}`}>
-                    <div className="flex max-w-3xl flex-col gap-5 text-sm">
+                <ChatPane follow={follow} scrolls={!narrow} hasContent={status !== 'draft'} composer={closed ? undefined : {
+                    label: 'Reply',
+                    placeholder: status === 'draft' ? 'Start the mission to talk to its agent' : 'Message the mission’s agent…',
+                    draft: reply,
+                    onDraftChange: setReply,
+                    onSubmit: () => { const text = reply.trim(); if (text) void send(text, true) },
+                    inputDisabled: disabled || status === 'draft',
+                    sendDisabled: disabled || status === 'draft' || !reply.trim(),
+                    sendLabel: 'Send',
+                }}>
+                    <div className="flex flex-col gap-5 text-sm">
                         {closed && mission.closed && <Well role="region" aria-label="Outcome" className="flex flex-col gap-2.5">
                             <div className="flex flex-wrap items-center gap-2">
                                 {mission.closed.status === 'done'
@@ -206,18 +209,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                             {question.options.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{question.options.map(option => <Button key={option} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void send(option)}>{option}</Button>)}</div>}
                         </Well>}
                     </div>
-                </div>
-                {!closed && <form className="flex shrink-0 items-end gap-2 px-6 pb-5" onSubmit={e => {
-                    e.preventDefault()
-                    const text = reply.trim()
-                    if (text) void send(text, true)
-                }}>
-                    <Textarea aria-label="Reply" rows={1} className="min-h-9 max-w-3xl flex-1 resize-none" placeholder={status === 'draft' ? 'Start the mission to talk to its agent' : 'Message the mission’s agent…'} disabled={disabled || status === 'draft'} value={reply} onChange={e => setReply(e.target.value)} onKeyDown={e => {
-                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit() }
-                    }} />
-                    {/* Start is a draft's one primary button; Send takes over once the mission runs. */}
-                    <Button type="submit" size="sm" variant={status === 'draft' ? 'outline' : 'default'} disabled={disabled || status === 'draft' || !reply.trim()}>Send</Button>
-                </form>}
+                </ChatPane>
             </div>
             <aside aria-label="Mission overview" className={narrow ? 'px-6 pb-6' : 'w-80 shrink-0 overflow-y-auto py-5 pr-6'}>
                 <Well className="flex flex-col gap-5 text-sm">

@@ -466,7 +466,9 @@ describe('RunVisitsCard', () => {
 
     const transcript = screen.getByTestId('run-visit-transcript')
     const groups = within(transcript).getAllByRole('button', { expanded: false }).filter((button) => button.dataset.testid?.startsWith('run-tool-group-'))
-    expect(groups.map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed', 'Ran 1 command'])
+    // A lone call is a plain row, not a group of one.
+    expect(groups.map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed'])
+    expect(within(transcript).getByTestId('run-tool-call-toggle-c')).toHaveTextContent('cat AGENTS.md')
     expect(transcript).toHaveTextContent('The tests fail on the loop.')
     // Thinking stays hidden until asked, then appears inside the group it sat in.
     expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()

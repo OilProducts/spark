@@ -680,7 +680,7 @@ function scrollGeometry(clientHeight: number, scrollHeight: number) {
     return geometry
 }
 /** The conversation's scrolling element: its own pane when wide, the whole body when narrow. */
-const conversationScroller = () => window.innerWidth > 1024 ? detail().getByTestId('mission-conversation').firstElementChild as HTMLElement : detail().getByTestId('mission-body')
+const conversationScroller = () => window.innerWidth > 1024 ? detail().getByTestId('project-ai-conversation-body') : detail().getByTestId('mission-body')
 /** Grows the conversation with a longer assistant reply delivered by a live snapshot event. */
 async function grow(geometry: { scrollHeight: number }, scrollHeight: number, reply: string) {
     geometry.scrollHeight = scrollHeight
@@ -746,4 +746,35 @@ it('starts an opened or switched mission at the bottom', async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mission B' }))
     await detail().findByText('Working on B.')
     expect(conversationScroller().scrollTop).toBe(200)
+})
+
+it('returns a mission to where the operator left it once its history loads', async () => {
+    const a = mission({ id: 'a', status: 'running', conversation_id: 'conv-restore-a', started_at: 't', fields: { ...fields, title: 'Mission A' } })
+    const b = mission({ id: 'b', status: 'running', conversation_id: 'conv-restore-b', started_at: 't', fields: { ...fields, title: 'Mission B' } })
+    const snapshots: Record<string, unknown> = { 'conv-restore-a': conversation([turn('a1', 'assistant', 'Working on A.')]), 'conv-restore-b': conversation([turn('b1', 'assistant', 'Working on B.')]) }
+    let held: (() => void) | null = null
+    let returning = false
+    vi.mocked(fetch).mockImplementation(async url => {
+        const id = /conversations\/([^/?]+)/.exec(String(url))?.[1]
+        if (id && held === null && returning) await new Promise<void>(resolve => { held = resolve })
+        return { ok: true, json: async () => id ? snapshots[id] : { missions: [a, b] } } as Response
+    })
+    const geometry = scrollGeometry(200, 400)
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Mission A' }))
+    await detail().findByText('Working on A.')
+    conversationScroller().scrollTop = 50
+    fireEvent.scroll(conversationScroller())
+    fireEvent.click(screen.getByRole('button', { name: 'Mission B' }))
+    await detail().findByText('Working on B.')
+    // A's history loads after its detail mounts; the placeholder cannot scroll.
+    geometry.scrollHeight = 200
+    returning = true
+    fireEvent.click(screen.getByRole('button', { name: 'Mission A' }))
+    await waitFor(() => expect(held).not.toBeNull())
+    expect(conversationScroller().scrollTop).toBe(0)
+    geometry.scrollHeight = 400
+    await act(async () => { held!() })
+    await detail().findByText('Working on A.')
+    expect(conversationScroller().scrollTop).toBe(50)
 })

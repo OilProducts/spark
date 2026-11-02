@@ -11,7 +11,7 @@ import {
     updateConversationSettingsValidated,
     type ConversationChatMode,
 } from '@/lib/workspaceClient'
-import { useHomeSidebarLayout } from './useHomeSidebarLayout'
+import { useScrollFollow } from './useScrollFollow'
 import { useConversationComposer } from './useConversationComposer'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useConversationReviews } from './useConversationReviews'
@@ -24,39 +24,12 @@ import { isThinkingEntry } from '../model/conversationTimeline'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
 import { projectLabel } from '../model/projectChoices'
 import { latestContextUsage } from '../components/ContextMeter'
-import type { ConversationTimelineEntry } from '../model/types'
 import {
     buildProjectConversationId,
     extractApiErrorMessage,
     formatConversationAgeShort,
     formatConversationTimestamp,
 } from '../model/projectsHomeState'
-
-function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[]) {
-    const latestEntry = history.at(-1)
-    if (!latestEntry) {
-        return 'empty'
-    }
-    switch (latestEntry.kind) {
-    case 'message':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.status}:${latestEntry.content}:${latestEntry.timestamp}`
-    case 'mode_change':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.mode}:${latestEntry.timestamp}`
-    case 'context_compaction':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.status}:${latestEntry.content}:${latestEntry.timestamp}`
-    case 'warning':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.content}:${latestEntry.timestamp}`
-    case 'request_user_input':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.status}:${latestEntry.requestUserInput.status}:${JSON.stringify(latestEntry.requestUserInput.answers)}:${latestEntry.timestamp}`
-    case 'tool_call':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.toolCall.status}:${latestEntry.toolCall.output || ''}:${latestEntry.timestamp}`
-    case 'final_separator':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.label}:${latestEntry.timestamp}`
-    case 'flow_run_request':
-    case 'flow_launch':
-        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.artifactId}:${latestEntry.timestamp}`
-    }
-}
 
 const INHERITED_MODEL_SETTINGS: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 
@@ -127,13 +100,6 @@ export function useProjectsHomeController() {
     const [chatSettingsDrafts, setChatSettingsDrafts] = useState<Record<string, ModelSettings>>({})
     const pendingChatSettings = activeConversationId ? chatSettingsDrafts[activeConversationId] ?? null : null
     const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null }>())
-    const {
-        conversationBodyRef,
-        isConversationPinnedToBottom,
-        scrollConversationToBottom,
-        syncConversationPinnedState,
-    } = useHomeSidebarLayout(activeConversationId)
-    const isConversationPinnedToBottomRef = useRef(isConversationPinnedToBottom)
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationRecord,
@@ -198,10 +164,7 @@ export function useProjectsHomeController() {
                     : null
         : null
     const isChatSubmissionDisabled = isConversationTurnStarting || !isChatModelReady
-    const conversationHistoryRevisionKey = useMemo(
-        () => buildConversationHistoryRevisionKey(activeConversationHistory),
-        [activeConversationHistory],
-    )
+    const follow = useScrollFollow(activeConversationId, hasRenderableConversationHistory)
 
     const activateConversationThread = useCallback((projectPath: string, conversationId: string, source = 'unknown') => {
         debugProjectChat('activate conversation thread', {
@@ -234,10 +197,6 @@ export function useProjectsHomeController() {
     }, [activeConversationId])
 
     useEffect(() => {
-        isConversationPinnedToBottomRef.current = isConversationPinnedToBottom
-    }, [isConversationPinnedToBottom])
-
-    useEffect(() => {
         if (!pendingConversationTurn || !activeConversationRecord) {
             return
         }
@@ -248,17 +207,6 @@ export function useProjectsHomeController() {
             setPendingConversationTurn(null)
         }
     }, [activeConversationRecord, pendingConversationTurn, setPendingConversationTurn])
-
-    useEffect(() => {
-        if (!isConversationPinnedToBottomRef.current) {
-            return
-        }
-        const node = conversationBodyRef.current
-        if (!node) {
-            return
-        }
-        node.scrollTop = node.scrollHeight
-    }, [activeProjectPath, conversationBodyRef, conversationHistoryRevisionKey])
 
     const attachmentUrl = useMemo(() => (
         activeConversationId && activeProjectPath
@@ -273,7 +221,6 @@ export function useProjectsHomeController() {
     })
 
     const {
-        onChatComposerKeyDown,
         onChatComposerSubmit,
         onRetryTurn,
         onSwitchChatMode,
@@ -485,7 +432,7 @@ export function useProjectsHomeController() {
             isModelSettingsLoading: isConversationHydrating,
             chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
-            isConversationPinnedToBottom,
+            follow,
             isNarrowViewport,
             chatDraft,
             attachments: composerAttachments.attachments,
@@ -498,12 +445,8 @@ export function useProjectsHomeController() {
             isChatInputDisabled,
             isChatSendDisabled: isChatSubmissionDisabled,
             panelError: panelError || activeConversationRecord?.model_settings_view?.validation_errors?.join(' ') || null,
-            conversationBodyRef,
-            onSyncConversationPinnedState: syncConversationPinnedState,
-            onScrollConversationToBottom: scrollConversationToBottom,
             onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn ? onStopTurn : undefined,
             onChatComposerSubmit,
-            onChatComposerKeyDown,
             onChatDraftChange: setChatDraft,
             modelSettingsSource: activeConversationRecord?.model_settings_view?.source,
             onUseModelDefaults,

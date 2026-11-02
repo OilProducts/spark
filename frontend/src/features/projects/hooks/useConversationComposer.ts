@@ -1,4 +1,4 @@
-import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import {
     retryConversationTurnValidated,
     sendConversationTurnValidated,
@@ -197,20 +197,11 @@ export function useConversationComposer({
         }
     }
 
-    const onChatComposerSubmit = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault()
+    const onChatComposerSubmit = () => {
         void onSendChatMessage()
     }
 
-    const onChatComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault()
-            void onSendChatMessage()
-        }
-    }
-
     return {
-        onChatComposerKeyDown,
         onChatComposerSubmit,
         onRetryTurn,
         onSwitchChatMode,

@@ -1,6 +1,4 @@
-import { memo, useCallback, useState, type ReactNode } from 'react'
-import { TriangleAlert } from 'lucide-react'
-import { loadConversationSegmentToolOutput } from '../services/conversationArtifacts'
+import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
@@ -17,25 +15,12 @@ import {
     getFlowRunRequestStatusPresentation,
     getProposedPlanStatusPresentation,
 } from '../model/presentation'
-import {
-    AssistantTurnHeader,
-    EventLine,
-    MessageRow,
-    ThinkingRow,
-    ToolCallGroupRow,
-    ToolCallRow,
-} from '@/components/app/transcript/SegmentRows'
-import { groupTranscript, type TranscriptToolCallNode } from '@/components/app/transcript/groupTranscript'
+import { Transcript, type TranscriptExpansionState } from '@/components/app/transcript/Transcript'
 import { statusTextClassName } from '@/components/app/status'
-import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { formatRunDate } from '@/features/runs/model/runOverviewModel'
-import { isThinkingEntry } from '../model/conversationTimeline'
 import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
 
-type MessageEntry = Extract<ConversationTimelineEntry, { kind: 'message' }>
-type ToolCallEntry = Extract<ConversationTimelineEntry, { kind: 'tool_call' }>
 type RequestUserInputEntry = Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
 type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 
@@ -77,60 +62,6 @@ interface ProjectConversationHistoryProps {
     /** Resends a failed turn's message. */
     onRetryTurn?: (turnId: string) => void | Promise<void>
 }
-
-function conversationEntryKey(entry: ConversationTimelineEntry) {
-    return `${entry.kind}:${entry.id}:${entry.timestamp}`
-}
-
-const isToolCallEntry = (entry: ConversationTimelineEntry): entry is ToolCallEntry => entry.kind === 'tool_call'
-
-type TranscriptTurn =
-    | { kind: 'entry'; entry: ConversationTimelineEntry }
-    | { kind: 'assistant'; id: string; timestamp: string; worked: string | null; entries: ConversationTimelineEntry[] }
-
-/**
- * Splits the flat timeline into user messages, standalone events (mode changes, notices)
- * and assistant turns. The "Worked for 20s" separator the timeline inserts before a turn's
- * final answer becomes the turn header's meta instead of a row of its own.
- */
-function groupConversationTurns(entries: readonly ConversationTimelineEntry[]): TranscriptTurn[] {
-    const turns: TranscriptTurn[] = []
-    let open: Extract<TranscriptTurn, { kind: 'assistant' }> | null = null
-    for (const entry of entries) {
-        const worked = entry.kind === 'final_separator' ? entry.label.match(/^Worked(?: for (.+))?$/) : null
-        const isUserMessage = entry.kind === 'message' && entry.role === 'user'
-        if (isUserMessage || entry.kind === 'mode_change' || (entry.kind === 'final_separator' && !worked)) {
-            open = null
-            turns.push({ kind: 'entry', entry })
-            continue
-        }
-        if (!open) {
-            open = { kind: 'assistant', id: entry.id, timestamp: entry.timestamp, worked: null, entries: [] }
-            turns.push(open)
-        }
-        if (worked) {
-            if (worked[1]) open.worked = `worked ${worked[1]}`
-        } else {
-            open.entries.push(entry)
-        }
-    }
-    return turns
-}
-
-/** The live "Thinking" marker shown while thinking is hidden and the agent is still at it. */
-const ThinkingIndicatorRow = memo(function ThinkingIndicatorRow({
-    entry,
-    formatConversationTimestamp,
-}: {
-    entry: MessageEntry
-    formatConversationTimestamp: (value: string) => string
-}) {
-    return (
-        <li className="min-w-0 text-xs text-muted-foreground" title={formatConversationTimestamp(entry.timestamp)}>
-            <p className="italic">Thinking</p>
-        </li>
-    )
-})
 
 const RequestUserInputRow = memo(function RequestUserInputRow({
     actionError,
@@ -358,7 +289,6 @@ export function ProjectConversationHistory({
     activeProjectPath,
     attachmentUrl,
     isConversationHistoryLoading,
-    hasRenderableConversationHistory,
     activeConversationHistory,
     activeFlowRunRequestsById,
     activeFlowLaunchesById,
@@ -382,132 +312,28 @@ export function ProjectConversationHistory({
     onRetryTurn,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
-    const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
-    const [loadingFullToolOutputs, setLoadingFullToolOutputs] = useState<Record<string, boolean>>({})
-    const [fullToolOutputErrors, setFullToolOutputErrors] = useState<Record<string, string>>({})
-    const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({})
-    // eslint-disable-next-line react-hooks/purity -- render-time clock for turn dates; the history re-renders on every stream update
-    const now = Date.now()
     const onPlanReviewNoteChange = useCallback((proposedPlanId: string, value: string) => {
         setPlanReviewNotes((current) => ({
             ...current,
             [proposedPlanId]: value,
         }))
     }, [])
-    const onToolCallExpanded = useCallback((entry: ToolCallEntry) => {
-        onToggleToolCallExpanded(entry.toolCall.id)
-        if (
-            !activeConversationId
-            || !activeProjectPath
-            || entry.toolCall.outputTruncated !== true
-            || expandedToolCalls[entry.toolCall.id] === true
-            || fullToolOutputs[entry.id] !== undefined
-            || loadingFullToolOutputs[entry.id] === true
-        ) {
-            return
-        }
-        setLoadingFullToolOutputs((current) => ({
-            ...current,
-            [entry.id]: true,
-        }))
-        setFullToolOutputErrors((current) => {
-            const next = { ...current }
-            delete next[entry.id]
-            return next
-        })
-        void loadConversationSegmentToolOutput(activeConversationId, entry.id, activeProjectPath)
-            .then((payload) => {
-                setFullToolOutputs((current) => ({
-                    ...current,
-                    [entry.id]: payload.output,
-                }))
-            })
-            .catch(() => {
-                setFullToolOutputErrors((current) => ({
-                    ...current,
-                    [entry.id]: 'Unable to load full output.',
-                }))
-            })
-            .finally(() => {
-                setLoadingFullToolOutputs((current) => {
-                    const next = { ...current }
-                    delete next[entry.id]
-                    return next
-                })
-            })
-    }, [
-        activeConversationId,
-        activeProjectPath,
+    const expansion = useMemo<TranscriptExpansionState>(() => ({
         expandedToolCalls,
-        fullToolOutputs,
-        loadingFullToolOutputs,
-        onToggleToolCallExpanded,
-    ])
+        expandedThinking: expandedThinkingEntries,
+        onToggleToolCall: onToggleToolCallExpanded,
+        onToggleThinking: onToggleThinkingEntryExpanded,
+    }), [expandedToolCalls, expandedThinkingEntries, onToggleToolCallExpanded, onToggleThinkingEntryExpanded])
+    const conversation = useMemo(() => (
+        activeConversationId && activeProjectPath ? { id: activeConversationId, projectPath: activeProjectPath } : undefined
+    ), [activeConversationId, activeProjectPath])
 
-    /** A tool call with any subagent calls nested under it as lines. */
-    const renderToolCall = (
-        entry: ToolCallEntry,
-        variant: 'row' | 'line' = 'row',
-        children: TranscriptToolCallNode<ConversationTimelineEntry>[] = [],
-    ): ReactNode => (
-        <ToolCallRow
-            key={conversationEntryKey(entry)}
-            entry={entry}
-            variant={variant}
-            fullOutput={fullToolOutputs[entry.id] ?? null}
-            isLoadingFullOutput={loadingFullToolOutputs[entry.id] === true}
-            isExpanded={expandedToolCalls[entry.toolCall.id] === true}
-            loadFullOutputError={fullToolOutputErrors[entry.id] ?? null}
-            onToggleToolCallExpanded={() => onToolCallExpanded(entry)}
-            childCalls={children.map((child) => isToolCallEntry(child.item) ? renderToolCall(child.item, 'line', child.children) : null)}
-        />
-    )
-
-    // Thinking is hidden until the toggle reveals it; a thought still in progress (or a
-    // turn that has produced nothing yet) keeps a bare "Thinking" marker so the agent
-    // never looks idle.
-    const renderThinking = (entry: MessageEntry) => {
-        const key = conversationEntryKey(entry)
-        if (showThinking) {
-            return (
-                <ThinkingRow
-                    key={key}
-                    entry={entry}
-                    formatConversationTimestamp={formatConversationTimestamp}
-                    isExpanded={expandedThinkingEntries[entry.id] === true}
-                    onToggleThinkingEntryExpanded={onToggleThinkingEntryExpanded}
-                />
-            )
-        }
-        const isLive = entry.status !== 'complete' && entry.status !== 'failed'
-        return isLive || !entry.content.trim()
-            ? <ThinkingIndicatorRow key={key} entry={entry} formatConversationTimestamp={formatConversationTimestamp} />
-            : null
-    }
-
-    const renderEntryRow = (entry: ConversationTimelineEntry): ReactNode => {
-        const key = conversationEntryKey(entry)
+    // The rows only the chat acts on: plan review, flow requests and launches, and questions.
+    const renderEntry = (entry: ConversationTimelineEntry): ReactNode | undefined => {
         switch (entry.kind) {
-        case 'tool_call':
-            return renderToolCall(entry)
-        case 'final_separator':
-            return <li key={key}><EventLine data-testid={`project-notice-row-${entry.id}`}>{entry.label}</EventLine></li>
-        case 'mode_change':
-            return (
-                <li key={key}>
-                    <EventLine data-testid={`project-mode-change-row-${entry.id}`}>
-                        {entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}
-                    </EventLine>
-                </li>
-            )
-        case 'context_compaction':
-            return <li key={key}><EventLine data-testid={`project-context-compaction-row-${entry.id}`}>{entry.content}</EventLine></li>
-        case 'warning':
-            return <li key={key}><EventLine data-testid={`project-warning-row-${entry.id}`} icon={<TriangleAlert className={statusTextClassName('warning')} />}>{entry.content}</EventLine></li>
         case 'request_user_input':
             return (
                 <RequestUserInputRow
-                    key={key}
                     actionError={requestUserInputActionError}
                     entry={entry}
                     formatConversationTimestamp={formatConversationTimestamp}
@@ -519,7 +345,6 @@ export function ProjectConversationHistory({
             const flowRunRequest = activeFlowRunRequestsById.get(entry.artifactId) || null
             return (
                 <FlowRunRequestRow
-                    key={key}
                     flowRunRequest={flowRunRequest}
                     formatConversationTimestamp={formatConversationTimestamp}
                     isLatestFlowRunRequest={flowRunRequest?.id === latestFlowRunRequestId}
@@ -533,7 +358,6 @@ export function ProjectConversationHistory({
             const flowLaunch = activeFlowLaunchesById.get(entry.artifactId) || null
             return (
                 <FlowLaunchRow
-                    key={key}
                     flowLaunch={flowLaunch}
                     formatConversationTimestamp={formatConversationTimestamp}
                     isLatestFlowLaunch={flowLaunch?.id === latestFlowLaunchId}
@@ -553,7 +377,6 @@ export function ProjectConversationHistory({
                 : ''
             return (
                 <PlanRow
-                    key={key}
                     entry={entry}
                     formatConversationTimestamp={formatConversationTimestamp}
                     onOpenFlowRun={onOpenFlowRun}
@@ -566,81 +389,27 @@ export function ProjectConversationHistory({
                 />
             )
         }
-        case 'message':
-            if (isThinkingEntry(entry)) return renderThinking(entry)
-            return (
-                <MessageRow
-                    key={key}
-                    entry={entry}
-                    enableCopy
-                    formatConversationTimestamp={formatConversationTimestamp}
-                    attachmentUrl={attachmentUrl}
-                    onRetryTurn={onRetryTurn && ((turnId) => void onRetryTurn(turnId))}
-                />
-            )
+        default:
+            return undefined
         }
-    }
-
-    /** A turn's rows: consecutive tool calls fold into one group; a lone call stays a plain row. */
-    const renderTurnBody = (entries: ConversationTimelineEntry[]) => {
-        const blocks = groupTranscript(entries, (entry) => {
-            if (entry.kind === 'tool_call') return { kind: 'tool_call', toolCall: entry.toolCall }
-            return isThinkingEntry(entry) ? { kind: 'thinking' } : { kind: 'other' }
-        })
-        return blocks.map((block) => {
-            if (block.kind === 'item') return renderEntryRow(block.item)
-            const [firstMember] = block.members
-            if (block.members.length === 1 && firstMember.kind === 'tool_call' && isToolCallEntry(firstMember.item)) {
-                return renderToolCall(firstMember.item, 'row', firstMember.children)
-            }
-            return (
-                <ToolCallGroupRow
-                    key={block.id}
-                    summary={block.summary}
-                    isExpanded={openToolGroups[block.id] === true}
-                    onToggle={() => setOpenToolGroups((current) => ({ ...current, [block.id]: !current[block.id] }))}
-                    testId={`project-tool-group-${firstMember.kind === 'tool_call' ? firstMember.toolCall.id : firstMember.item.id}`}
-                >
-                    {block.members.map((member) => member.kind === 'tool_call' && isToolCallEntry(member.item)
-                        ? renderToolCall(member.item, 'line', member.children)
-                        : isThinkingEntry(member.item) ? renderThinking(member.item) : null)}
-                </ToolCallGroupRow>
-            )
-        })
     }
 
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
-            {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
-                <p data-testid="project-conversation-history-loading" className="text-xs text-muted-foreground" aria-live="polite">
-                    Restoring thread history...
-                </p>
-            ) : !hasRenderableConversationHistory ? (
-                <Empty>
-                    <EmptyHeader>
-                        <EmptyDescription>
-                            {activeConversationId
-                                ? 'No conversation history for this thread yet.'
-                                : 'Create or select a thread to begin chatting.'}
-                        </EmptyDescription>
-                    </EmptyHeader>
-                </Empty>
-            ) : (
-                <ol data-testid="project-ai-conversation-history-list" className="flex min-w-0 flex-col gap-5">
-                    {groupConversationTurns(activeConversationHistory).map((turn) => {
-                        if (turn.kind === 'entry') return renderEntryRow(turn.entry)
-                        return (
-                            <li key={`turn:${turn.id}`} data-testid={`project-assistant-turn-${turn.id}`} className="flex min-w-0 flex-col gap-3">
-                                <AssistantTurnHeader
-                                    meta={[formatRunDate(turn.timestamp, now), turn.worked].filter(Boolean).join(' · ')}
-                                    title={formatConversationTimestamp(turn.timestamp)}
-                                />
-                                <ol className="flex min-w-0 flex-col gap-3 pl-8">{renderTurnBody(turn.entries)}</ol>
-                            </li>
-                        )
-                    })}
-                </ol>
-            )}
+            <Transcript
+                data-testid="project-ai-conversation-history-list"
+                testIdPrefix="project"
+                entries={activeConversationHistory}
+                showThinking={showThinking}
+                formatTimestamp={formatConversationTimestamp}
+                loading={isConversationHistoryLoading}
+                empty={activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
+                conversation={conversation}
+                expansion={expansion}
+                attachmentUrl={attachmentUrl}
+                onRetryTurn={onRetryTurn}
+                renderEntry={renderEntry}
+            />
         </div>
     )
 }

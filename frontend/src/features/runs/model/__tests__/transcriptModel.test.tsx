@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest'
 import { useRunTranscriptStore } from '../../state/runTranscriptStore'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
-import { buildRunTranscriptRow } from '../transcriptModel'
-import { RunTranscript } from '../../components/RunTranscriptGroups'
+import { Transcript } from '@/components/app/transcript/Transcript'
+import type { ConversationTimelineEntry } from '@/features/projects/model/types'
+import { formatTimestamp } from '../shared'
+import { visitTranscriptEntries, type RunVisit } from '../visitModel'
 
 const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment => ({
   id: 'segment-1',
@@ -35,9 +37,16 @@ const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment
   ...overrides,
 })
 
-describe('buildRunTranscriptRow', () => {
-  it('maps messages, reasoning, tool calls, compaction and warnings onto the shared rows and skips other kinds', () => {
-    const rows = [
+// The visit only scopes segments to its execution (node, visit, attempt, run).
+const visit = { nodeId: 'implement', stageIndex: 0, attempt: 0, runId: 'run-1', parentKey: null } as RunVisit
+const entriesOf = (segments: RunTranscriptSegment[]) => visitTranscriptEntries(visit, segments.map((entry, order) => ({ ...entry, order, source_run_id: 'run-1' })))
+const RunTranscript = ({ entries }: { entries: ConversationTimelineEntry[] }) => (
+  <Transcript testIdPrefix="run" turns={false} entries={entries} showThinking={false} formatTimestamp={formatTimestamp} />
+)
+
+describe('visitTranscriptEntries', () => {
+  it('maps messages, reasoning, tool calls, compaction and warnings onto timeline entries and skips other kinds', () => {
+    const entries = entriesOf([
       segment({ id: 's-answer' }),
       segment({ id: 's-thinking', kind: 'reasoning', content: '**Weighing options** details here' }),
       segment({
@@ -59,27 +68,36 @@ describe('buildRunTranscriptRow', () => {
       segment({ id: 's-compaction', kind: 'context_compaction', role: 'system', content: '' }),
       segment({ id: 's-warning', kind: 'agent_event', category: 'warning', role: 'system', content: 'API error 529; retrying' }),
       segment({ id: 's-session', kind: 'agent_event', category: 'lifecycle', role: 'system', content: 'session started' }),
-      segment({ id: 's-question', kind: 'request_user_input', role: 'system' }),
-    ].map(buildRunTranscriptRow)
-    expect(rows.map((row) => row?.kind ?? null)).toEqual(['message', 'thinking', 'tool_call', 'event', 'event', null, null])
-    expect(rows.slice(3, 5)).toEqual([
-      expect.objectContaining({ text: 'Context compacted.', warning: false }),
-      expect.objectContaining({ text: 'API error 529; retrying', warning: true }),
+      segment({
+        id: 's-question',
+        kind: 'request_user_input',
+        role: 'system',
+        request_user_input: { request_id: 'q', status: 'pending', questions: [], answers: {}, submitted_at: null },
+      }),
     ])
+    expect(entries.map((entry) => entry.id)).toEqual(['s-answer', 's-thinking', 's-tool', 's-compaction', 's-warning'])
+    expect(entries).toEqual([
+      expect.objectContaining({ kind: 'message', role: 'assistant', content: 'Done.' }),
+      expect.objectContaining({ kind: 'message', presentation: 'thinking' }),
+      expect.objectContaining({ kind: 'tool_call', toolCall: expect.objectContaining({ id: 'call-1', command: 'ls -la' }) }),
+      expect.objectContaining({ kind: 'context_compaction', content: 'Context compacted.' }),
+      expect.objectContaining({ kind: 'warning', content: 'API error 529; retrying' }),
+    ])
+    // No turn id, so a run node offers no retry.
+    expect(entries[0]).toMatchObject({ turnId: undefined })
   })
 
   it('renders compaction and warning rows as event lines', () => {
-    const rows = [
+    render(<RunTranscript entries={entriesOf([
       segment({ id: 's-compaction', kind: 'context_compaction', role: 'system', content: 'Context compacted (21.6k \u2192 1.9k tokens).' }),
       segment({ id: 's-warning', kind: 'agent_event', category: 'warning', role: 'system', content: 'Rate limited until 15:00 UTC' }),
-    ].map((entry) => buildRunTranscriptRow(entry)!)
-    render(<RunTranscript rows={rows} showThinking={false} />)
-    expect(screen.getByTestId('run-event-row-s-compaction')).toHaveTextContent('Context compacted (21.6k \u2192 1.9k tokens).')
-    expect(screen.getByTestId('run-event-row-s-warning')).toHaveTextContent('Rate limited until 15:00 UTC')
+    ])} />)
+    expect(screen.getByTestId('run-context-compaction-row-s-compaction')).toHaveTextContent('Context compacted (21.6k \u2192 1.9k tokens).')
+    expect(screen.getByTestId('run-warning-row-s-warning')).toHaveTextContent('Rate limited until 15:00 UTC')
   })
 
   it('shows a steer as the user\'s message, and one the agent never read as not sent', () => {
-    const rows = [
+    render(<RunTranscript entries={entriesOf([
       segment({ id: 'segment-user-message-1', kind: 'user_message', role: 'user', content: 'Use the docs.' }),
       segment({
         id: 'segment-user-message-2',
@@ -89,8 +107,7 @@ describe('buildRunTranscriptRow', () => {
         content: 'Too late.',
         error: 'Not sent: the turn ended before the agent read it.',
       }),
-    ].map((entry) => buildRunTranscriptRow(entry)!)
-    render(<RunTranscript rows={rows} showThinking={false} />)
+    ])} />)
     const sent = screen.getByText('Use the docs.').closest('li')!
     expect(sent).toHaveTextContent('Sent into the running turn')
     const unread = screen.getByText('Too late.').closest('li')!
@@ -112,11 +129,11 @@ describe('RunTranscript subagent nesting', () => {
       toolSegment('grep', { kind: 'dynamic_tool', title: 'Grep', command: null, file_paths: ['/src'], parent_call_id: 'agent' }),
       toolSegment('read', { kind: 'dynamic_tool', title: 'Read', command: null, file_paths: ['/src/config.rs'], parent_call_id: 'agent' }),
       toolSegment('top', {}),
-    ].map((entry) => buildRunTranscriptRow(entry)!)
-    render(<RunTranscript rows={rows} showThinking={false} />)
+    ]
+    render(<RunTranscript entries={entriesOf(rows)} />)
 
     // Top-level calls still fold into one group; nested calls are not counted there.
-    const group = screen.getByTestId('run-tool-group-tool-group:agent')
+    const group = screen.getByTestId('run-tool-group-agent')
     expect(group).toHaveTextContent('Ran 1 command, used 1 tool')
     fireEvent.click(group)
     const agent = screen.getByTestId('run-tool-call-toggle-agent')
@@ -139,9 +156,9 @@ describe('RunTranscript subagent nesting', () => {
       toolSegment('agent', { kind: 'subagent', title: 'Explore', command: null, tool_uses: 3 }),
       toolSegment('grep', { kind: 'dynamic_tool', title: 'Grep', command: null, parent_call_id: 'agent' }),
       toolSegment('solo', { kind: 'subagent', title: 'Background', command: null, tool_uses: 2 }),
-    ].map((entry) => buildRunTranscriptRow(entry)!)
-    render(<RunTranscript rows={rows} showThinking={false} />)
-    fireEvent.click(screen.getByTestId('run-tool-group-tool-group:agent'))
+    ]
+    render(<RunTranscript entries={entriesOf(rows)} />)
+    fireEvent.click(screen.getByTestId('run-tool-group-agent'))
     expect(screen.getByTestId('run-tool-call-children-agent')).toHaveTextContent('3 tool calls')
     expect(screen.getByTestId('run-tool-call-children-solo')).toHaveTextContent('2 tool calls')
   })
