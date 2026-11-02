@@ -2556,3 +2556,240 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
         assert_eq!(context.get("context.b"), None, "{status}");
     }
 }
+
+/// Resumes `visit_loop_flow` paused while routed into evaluate's first visit
+/// (no durable outcome), with evaluate's `outcome=fail` route leading back to
+/// implement. Evaluate raises a retryable runtime failure on its first
+/// `runtime_failures` calls, then succeeds. Returns the result, the node ids
+/// executed after resume, and the run id.
+fn resume_into_runtime_failure(
+    store: &RunStore,
+    workdir: &std::path::Path,
+    run_id: &str,
+    max_retries: Option<u64>,
+    allow_partial: bool,
+    runtime_failures: usize,
+) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
+    let mut flow = visit_loop_flow(
+        vec![
+            edge("implement", "Fix", "outcome=fail"),
+            edge("done", "", ""),
+        ],
+        None,
+    );
+    let evaluate = flow.nodes.get_mut("evaluate").unwrap();
+    evaluate.retry = Some(attractor_core::RetryConfig {
+        policy: None,
+        max_retries,
+    });
+    evaluate.runtime = Some(NodeRuntimeConfig {
+        allow_partial,
+        ..NodeRuntimeConfig::default()
+    });
+    let (paused, _) = run_visit_loop(
+        store,
+        run_id,
+        workdir,
+        flow.clone(),
+        OutcomeStatus::Success,
+        Some(2),
+        Default::default(),
+    );
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta(run_id).unwrap().unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "evaluate");
+
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        let mut seen = seen.lock().unwrap();
+        seen.push(request.node_id.clone());
+        let evaluations = seen.iter().filter(|node| *node == "evaluate").count();
+        if request.node_id == "evaluate" && evaluations <= runtime_failures {
+            return Err(attractor_runtime::RuntimeNodeError::runtime(
+                "failed to read activity transcript",
+            ));
+        }
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    let result = executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: attractor_runtime::ExecutionStart::Resume {
+                paths: meta.paths,
+                checkpoint,
+            },
+        })
+        .expect("resume");
+    let calls = calls.lock().unwrap().clone();
+    (result, calls)
+}
+
+#[test]
+fn resumed_runtime_failure_is_retried_once_without_configured_retries() {
+    for allow_partial in [false, true] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (result, calls) =
+            resume_into_runtime_failure(&store, temp.path(), "run-rt-once", None, allow_partial, 1);
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        assert_eq!(result.current_node, "done");
+        assert_eq!(calls, vec!["evaluate", "evaluate"]);
+    }
+}
+
+#[test]
+fn exhausted_runtime_failure_fails_the_run_instead_of_following_a_fail_route() {
+    for (max_retries, allow_partial, expected_attempts) in [
+        (None, false, 2),
+        (Some(0), true, 2),
+        (Some(3), false, 4),
+        (Some(3), true, 4),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let run_id = "run-rt-exhausted";
+        let (result, calls) = resume_into_runtime_failure(
+            &store,
+            temp.path(),
+            run_id,
+            max_retries,
+            allow_partial,
+            usize::MAX,
+        );
+        let case = format!("max_retries={max_retries:?} allow_partial={allow_partial}");
+        assert_eq!(result.status, "failed", "{case}");
+        assert_eq!(
+            result.failure_reason, "failed to read activity transcript",
+            "{case}"
+        );
+        assert_eq!(calls, vec!["evaluate"; expected_attempts], "{case}");
+
+        let meta = store.read_run_meta(run_id).unwrap().unwrap();
+        let checkpoint = meta.checkpoint.unwrap();
+        assert_eq!(checkpoint.current_node, "evaluate", "{case}");
+        assert!(
+            !checkpoint.completed_nodes.contains(&"evaluate".to_string()),
+            "{case}"
+        );
+        assert_eq!(meta.record.unwrap().status, "failed", "{case}");
+
+        let execution = store
+            .list_node_executions(&meta.paths)
+            .unwrap()
+            .into_iter()
+            .filter(|execution| execution.node_id == "evaluate")
+            .max_by_key(|execution| execution.attempt)
+            .expect("evaluate execution");
+        let status: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                store
+                    .node_execution_root(
+                        &meta.paths,
+                        "evaluate",
+                        execution.stage_index,
+                        execution.attempt,
+                    )
+                    .unwrap()
+                    .join("status.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["outcome"], "fail", "{case}");
+        assert_eq!(status["failure_kind"], "runtime", "{case}");
+        assert_eq!(status["retryable"], true, "{case}");
+        assert_eq!(
+            status["failure_reason"], "failed to read activity transcript",
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_failures_keep_their_retry_count_routes_and_partial_acceptance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut flow = visit_loop_flow(
+        vec![
+            edge("implement", "Fix", "outcome=fail"),
+            edge("done", "", ""),
+        ],
+        None,
+    );
+    flow.nodes.get_mut("implement").unwrap().runtime = None;
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-verdict-fail",
+        temp.path(),
+        flow.clone(),
+        OutcomeStatus::Fail,
+        Some(4),
+        Default::default(),
+    );
+    // A review verdict is not retried and follows its failure route.
+    assert_eq!(result.status, "paused");
+    assert_eq!(calls, vec!["start", "implement", "evaluate", "implement"]);
+
+    let mut partial = flow;
+    partial.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
+        allow_partial: true,
+        ..NodeRuntimeConfig::default()
+    });
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-verdict-partial",
+        temp.path(),
+        partial,
+        OutcomeStatus::Retry,
+        None,
+        Default::default(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(
+        result.node_outcomes["evaluate"].status,
+        OutcomeStatus::PartialSuccess
+    );
+    assert_eq!(calls, vec!["start", "implement", "evaluate"]);
+}
+
+#[test]
+fn parallel_branch_runtime_failure_fails_the_branch_instead_of_following_a_fail_route() {
+    let mut flow = looping_branch_flow(None, true);
+    flow.edges[1].condition = "outcome=fail".to_string();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut runner = RuntimeHandlerRunner::new();
+    let counter = calls.clone();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Err(attractor_runtime::RuntimeNodeError::runtime(
+            "failed to read activity transcript",
+        ))
+    });
+    let result = execute_looping_branch(&mut runner, &calls, &flow);
+    assert_eq!(result["status"], "failed", "{result}");
+    assert_eq!(result["work_calls"], 1, "{result}");
+    assert_eq!(
+        result["failure_reason"],
+        "failed to read activity transcript"
+    );
+
+    // A verdict failure still follows its outcome=fail route.
+    let counter = calls.clone();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
+        if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(Outcome::new(OutcomeStatus::Fail));
+        }
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    let result = execute_looping_branch(&mut runner, &calls, &flow);
+    assert_eq!(result["status"], "completed", "{result}");
+    assert_eq!(result["work_calls"], 2, "{result}");
+}

@@ -2284,6 +2284,19 @@ impl RuntimeHandlerRunner {
             )
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             node_outcomes.insert(current_node.clone(), outcome.clone());
+            // Infrastructure failures fail the branch rather than follow a verdict route.
+            if crate::retry::is_runtime_failure(&outcome) {
+                return Ok(branch_payload(
+                    start_node,
+                    "failed",
+                    None,
+                    &current_node,
+                    &completed_nodes,
+                    &context,
+                    &node_outcomes,
+                    &stage_failure_reason(&outcome),
+                ));
+            }
             completed_nodes.push(current_node.clone());
 
             let selection = select_next_node_with_prior(

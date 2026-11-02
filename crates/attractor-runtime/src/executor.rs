@@ -25,7 +25,10 @@ use crate::events::{
 };
 use crate::records::{mark_record_canceled, mark_record_paused, write_run_record};
 use crate::results::{canceled_run_result, failed_run_result, result_summary_request};
-use crate::retry::{coerce_retry_exhausted_outcome, retry_policy_for_node, should_retry_attempt};
+use crate::retry::{
+    coerce_retry_exhausted_outcome, is_runtime_failure, retry_policy_for_outcome,
+    should_retry_attempt,
+};
 use crate::routing::{
     first_target_with_visits_left, is_conditional_node, is_exit_node, mark_unavailable_routes,
     max_visits, outgoing_routing_edges, resolve_start_node, select_exhausted_route_with_prior,
@@ -804,7 +807,7 @@ where
                 &mut artifact_node_ids,
             )?;
 
-            let policy = retry_policy_for_node(&flow, &current_node);
+            let policy = retry_policy_for_outcome(&flow, &current_node, &outcome);
             let max_retries = policy.max_attempts.saturating_sub(1);
             let retries_so_far = retry_counts.get(&current_node).copied().unwrap_or(0);
             if should_retry_attempt(&outcome, retries_so_far, &policy) {
@@ -851,6 +854,41 @@ where
                     &visit_counts,
                 )?;
                 continue;
+            }
+
+            // An exhausted runtime failure stops the run before partial
+            // acceptance, completion, or any outcome=fail route.
+            if is_runtime_failure(&outcome) {
+                clear_runtime_retry_context(&mut context)?;
+                let reason = stage_failure_reason(&outcome);
+                store.append_event(
+                    &paths,
+                    stage_failed_event(
+                        &run_id,
+                        stage_index,
+                        &current_node,
+                        reason.clone(),
+                        false,
+                        None,
+                    ),
+                )?;
+                return finalize_failed(
+                    &store,
+                    &paths,
+                    &run_id,
+                    &mut record,
+                    &mut self.node_executor,
+                    &flow,
+                    &current_node,
+                    &completed_nodes,
+                    &context,
+                    &retry_counts,
+                    &visit_counts,
+                    &node_outcomes,
+                    &route_trace,
+                    reason,
+                    artifact_node_ids.len(),
+                );
             }
 
             let coerced = coerce_retry_exhausted_outcome(
