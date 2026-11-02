@@ -2141,6 +2141,41 @@ fn tool_call_signatures_ignore_call_ids_and_hash_stable_arguments() {
 }
 
 #[test]
+fn tool_call_signatures_keep_pinned_hashes_for_nested_and_invalid_arguments() {
+    let nested = ToolCall::new(
+        "call-1",
+        "lookup",
+        json!({"z": [{"d": 1, "c": null}], "a": {"y": "s", "x": true}}),
+    );
+    let reordered = ToolCall::from_raw_arguments(
+        "call-2",
+        "lookup",
+        r#"{"a":{"x":true,"y":"s"},"z":[{"c":null,"d":1}]}"#,
+    );
+    let invalid_raw = ToolCall::from_raw_arguments("call-3", "lookup", "{not json");
+    let mut null_arguments_invalid_raw =
+        ToolCall::from_raw_arguments("call-4", "lookup", "{not json");
+    null_arguments_invalid_raw.arguments = Value::Null;
+
+    assert_eq!(
+        tool_call_signature(&nested),
+        tool_call_signature(&reordered)
+    );
+    assert_eq!(
+        tool_call_signature(&nested).arguments_hash,
+        "d1a31adec07bd0c7"
+    );
+    assert_eq!(
+        tool_call_signature(&invalid_raw).arguments_hash,
+        "17904e123f5ac353"
+    );
+    assert_eq!(
+        tool_call_signature(&null_arguments_invalid_raw).arguments_hash,
+        "17904e123f5ac353"
+    );
+}
+
+#[test]
 fn tool_call_signatures_hash_nested_json_strings_as_strings() {
     let nested_json_string = ToolCall::new(
         "call-1",
