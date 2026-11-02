@@ -1046,6 +1046,33 @@ impl RuntimeHandlerRunner {
             .filter(|value| !value.is_empty())
             .unwrap_or(runtime.run_id.as_str())
             .to_string();
+        let workdir_key = runtime
+            .node
+            .runtime
+            .as_ref()
+            .and_then(|config| config.workdir_from.as_deref())
+            .map(str::trim)
+            .filter(|key| !key.is_empty());
+        let agent_workdir = match workdir_key {
+            Some(key) => match crate::manager_loop::resolve_context_workdir(
+                &runtime.context,
+                &runtime.run_workdir,
+                key,
+                "runtime.workdir_from",
+            ) {
+                Ok(path) => path,
+                Err(reason) => {
+                    return Ok(Outcome {
+                        status: OutcomeStatus::Fail,
+                        failure_reason: reason,
+                        retryable: Some(false),
+                        failure_kind: Some(attractor_core::FailureKind::Runtime),
+                        ..Outcome::new(OutcomeStatus::Fail)
+                    });
+                }
+            },
+            None => runtime.run_workdir.clone(),
+        };
         let session_name = runtime
             .node
             .runtime
@@ -1161,7 +1188,7 @@ impl RuntimeHandlerRunner {
             runtime.fallback_profile.clone(),
             runtime.fallback_reasoning_effort.clone(),
         )
-        .with_runtime_context(Some(runtime.run_workdir.clone()), {
+        .with_runtime_context(Some(agent_workdir), {
             let mut metadata = BTreeMap::from([
                 (
                     "spark.runtime.run_id".to_string(),

@@ -717,6 +717,13 @@
             "string",
             "null"
           ]
+        },
+        "workdir_from": {
+          "description": "Context key (`workdir_from: context.workspace.path`) naming the directory this agent_task node's agent runs in; same rules as `manager.child_workdir_from`. Absent means the run's working directory.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

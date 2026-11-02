@@ -198,6 +198,22 @@ runtime:
 - `session` is only allowed on `agent_task` nodes. The former `fidelity` and
   `thread_id` settings are rejected.
 
+An `agent_task` node runs its agent in the run's working directory unless it
+sets `runtime.workdir_from: <context key>`. The agent then runs in the
+directory that key names, under the same rules as a subflow's
+`manager.child_workdir_from` (see Subflows); a value that does not resolve
+fails the node before the agent starts. `workdir_from` is only allowed on
+`agent_task` nodes.
+
+```yaml
+runtime:
+  workdir_from: context.workspace.path
+```
+
+Nodes sharing a session should use the same directory: Claude Code keys its
+stored sessions by working directory, so a session resumed from a different
+directory starts fresh with a `continuity_reset` event.
+
 ## Execution Locks
 
 `flow.md` may declare an execution lock. Runs whose locks resolve to the same
@@ -299,8 +315,8 @@ the error recorded.
 
 A `subflow` node's `config.flow_ref` names another flow directory. It resolves
 relative to the directory that contains the parent flow's directory, so
-`software-development/implement-change` refers to
-`software-development/workers/implement-task` as `workers/implement-task`.
+`software-development/implement-change` would refer to
+`software-development/workers/child` as `workers/child`.
 The resulting name resolves through the roots like any flow, so a project copy
 of a bundled child replaces it.
 
@@ -310,8 +326,9 @@ produced by an earlier node, use `manager.child_workdir_from` with a context
 key. The runtime validates that the resolved directory exists and is either
 inside the run's working directory or a linked git worktree of the same
 repository. Declaring both `child_workdir` and `child_workdir_from` fails the
-node. Run working directories are immutable once a run starts; crossing a
-workspace boundary always means launching a child run bound to that workspace.
+node. Run working directories are immutable once a run starts; to run a single
+agent step in another workspace, use the agent_task's `runtime.workdir_from`
+(see Sessions) instead of a child run.
 
 The child starts from the parent's context, with `config.input_map`
 (`child_key: parent_key`) copying parent values into child keys. To hand child
@@ -323,7 +340,7 @@ failed; a listed child key that is absent clears the parent key. Every
 
 ```yaml
 config:
-  flow_ref: workers/implement-task
+  flow_ref: workers/child
   output_map:
     context.task.summary: context.implementation.summary
 contracts:
@@ -335,15 +352,16 @@ contracts:
 
 ```markdown
 ---
-type: subflow
+type: agent_task
 title: Implement
-config:
-  flow_ref: workers/implement-task
-manager:
-  child_workdir_from: context.workspace.path
+role: author
+runtime:
+  workdir_from: context.workspace.path
 routes:
 - to: evaluate
 ---
+
+Implement the task in the current working directory.
 ```
 
 ## Conditions

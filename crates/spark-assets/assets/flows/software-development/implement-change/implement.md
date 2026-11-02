@@ -1,24 +1,24 @@
 ---
-type: subflow
+type: agent_task
 title: Implement
-config:
-  flow_ref: workers/implement-task
-  input_map:
-    context.review.required_changes: context.review.required_changes
-    context.review.summary: context.review.summary
-    context.task.artifact_path: context.task.artifact_path
-    context.task.objective: context.task.objective
-    context.task.validation_command: context.task.validation_command
-  output_map:
-    context.review.contested: context.review.contested
+role: author
 runtime:
+  session: implementer
+  workdir_from: context.workspace.path
   max_visits: 5
 contracts:
+  reads_context:
+  - context.task.objective
+  - context.task.artifact_path
+  - context.task.validation_command
+  - context.review.summary
+  - context.review.required_changes
   writes_context:
   - context.review.contested
-manager:
-  child_workdir_from: context.workspace.path
+  response: status_envelope
 routes:
 - to: evaluate
   condition: outcome=success
 ---
+
+Implement the task described by context.task.objective in the current working directory, which is an isolated git worktree on a dedicated branch. Inspect the repository, make the smallest coherent implementation, and test and review observable behavior; context.task.validation_command names the project validation gate. If context.review.required_changes is present, it lists findings from the gatekeeper evaluation of your previous attempt; resolve each one as your role describes before finishing. Do not write a change-request result file; the run records its own result. Respect repository ignore rules; do not force-add ignored change requests or evidence. After testing and self-review, commit the task changes on the existing worktree branch with a descriptive message. On subsequent implementation iterations, create a new commit for the fixes; do not amend or rewrite earlier commits. If there are no changes, do not create an empty commit. Do not push, merge, create branches or worktrees, or clean anything up; later steps evaluate, validate, finalize, and release the workspace. Respond with ONLY a JSON status envelope.

@@ -308,10 +308,10 @@ fn packaged_software_development_flows_validate_cleanly() {
         );
         seen += 1;
     }
-    assert!(seen >= 10, "expected the packaged flow library, saw {seen}");
+    assert!(seen >= 9, "expected the packaged flow library, saw {seen}");
 }
 
-/// Tool-only replica of implement-change's review loop: the child `work`
+/// Tool-only subflow review loop: the child `work`
 /// node contests a finding through its write contract, the parent's subflow
 /// `output_map` carries it to `evaluate`, and `implement`'s visit limit ends
 /// a loop that never converges.

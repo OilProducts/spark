@@ -374,7 +374,12 @@ fn autostart_child_pipeline(
                     .to_string(),
             )));
         }
-        match resolve_context_child_workdir(context, &runtime.run_workdir, &workdir_key) {
+        match resolve_context_workdir(
+            context,
+            &runtime.run_workdir,
+            &workdir_key,
+            "manager.child_workdir_from",
+        ) {
             Ok(path) => path,
             Err(reason) => return Ok(Some(fail_outcome(reason))),
         }
@@ -1456,10 +1461,13 @@ fn resolve_child_workdir_path(
     resolve_path_from_base(authored_child_workdir, &run_workdir)
 }
 
-fn resolve_context_child_workdir(
+/// Resolves `workdir_key` to a directory inside `run_workdir` or a linked
+/// worktree of the same repository; `field` names the setting in errors.
+pub(crate) fn resolve_context_workdir(
     context: &ContextMap,
     run_workdir: &Path,
     workdir_key: &str,
+    field: &str,
 ) -> std::result::Result<PathBuf, String> {
     let raw_value = context_path_value(context, workdir_key)
         .as_ref()
@@ -1468,20 +1476,20 @@ fn resolve_context_child_workdir(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| {
-            format!("manager.child_workdir_from key {workdir_key} did not resolve to a non-empty string")
+            format!("{field} key {workdir_key} did not resolve to a non-empty string")
         })?;
     let run_workdir =
         context_path(context, "internal.run_workdir").unwrap_or_else(|| run_workdir.to_path_buf());
     let candidate = resolve_path_from_base(&raw_value, &run_workdir);
     if !candidate.is_dir() {
         return Err(format!(
-            "manager.child_workdir_from directory does not exist: {}",
+            "{field} directory does not exist: {}",
             candidate.display()
         ));
     }
     let candidate = fs::canonicalize(&candidate).map_err(|error| {
         format!(
-            "Unable to canonicalize child working directory {}: {error}",
+            "Unable to canonicalize {field} directory {}: {error}",
             candidate.display()
         )
     })?;
@@ -1501,7 +1509,7 @@ fn resolve_context_child_workdir(
             Ok(candidate)
         }
         _ => Err(format!(
-            "manager.child_workdir_from directory {} is outside the run working directory {} and is not a linked worktree of the same repository",
+            "{field} directory {} is outside the run working directory {} and is not a linked worktree of the same repository",
             candidate.display(),
             launch_root.display()
         )),
