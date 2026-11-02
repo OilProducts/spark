@@ -170,6 +170,33 @@ pub fn should_retry_outcome(outcome: &Outcome) -> bool {
     }
 }
 
+/// An infrastructure failure explicitly marked retryable (see
+/// `RuntimeNodeError::runtime`), as opposed to a node's own verdict. It never
+/// follows a failure route: it is retried, then fails the run. Runtime
+/// failures without the flag, such as a node timeout, route as before.
+pub fn is_runtime_failure(outcome: &Outcome) -> bool {
+    outcome.status == OutcomeStatus::Fail
+        && outcome.failure_kind == Some(FailureKind::Runtime)
+        && outcome.retryable == Some(true)
+}
+
+/// Runtime failures get at least one automatic retry, even when none is configured.
+pub fn retry_policy_for_outcome(
+    flow: &FlowDefinition,
+    node_id: &str,
+    outcome: &Outcome,
+) -> RetryPolicy {
+    let policy = retry_policy_for_node(flow, node_id);
+    if is_runtime_failure(outcome) {
+        RetryPolicy {
+            max_attempts: policy.max_attempts.max(2),
+            ..policy
+        }
+    } else {
+        policy
+    }
+}
+
 pub fn should_retry_attempt(outcome: &Outcome, retries_so_far: u64, policy: &RetryPolicy) -> bool {
     retries_so_far.saturating_add(1) < policy.max_attempts && should_retry_outcome(outcome)
 }

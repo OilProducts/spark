@@ -322,19 +322,24 @@ while True:
             );
         }
         let historical = store.read_run_bundle(&id).unwrap().unwrap();
-        if control != "exit" {
-            assert!(!historical
+        // An agent that exits is a runtime failure, retried once; each
+        // attempt asks its two questions.
+        let attempts = if control == "exit" { 2 } else { 1 };
+        assert_eq!(
+            historical
                 .raw_events
                 .iter()
-                .any(|e| e.event_type == "StageRetrying"));
-        }
+                .filter(|e| e.event_type == "StageRetrying")
+                .count(),
+            attempts - 1
+        );
         assert_eq!(
             historical
                 .raw_events
                 .iter()
                 .filter(|e| e.event_type == "human_gate")
                 .count(),
-            2
+            2 * attempts
         );
         assert_eq!(
             historical
