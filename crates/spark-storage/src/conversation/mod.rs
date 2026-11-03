@@ -12,7 +12,7 @@ mod attachments;
 mod commit;
 mod database;
 mod identity;
-mod journal;
+mod loaded;
 mod mutations;
 mod projection;
 mod provider_trace;
@@ -22,6 +22,7 @@ mod store;
 mod tool_output;
 mod transient;
 
+pub(crate) use loaded::LoadedConversation;
 pub(crate) use provider_trace::{append_trace, read_trace};
 pub(crate) use store::remove_dir_if_exists;
 pub(crate) use tool_output::{
@@ -43,7 +44,6 @@ pub use identity::{
     model_tool_segment_id, plan_segment_id, reasoning_segment_id, request_user_input_segment_id,
     segment_source, tool_call_id, tool_segment_id,
 };
-pub use journal::{JournalEntry, JournalEntryKind, CONVERSATION_SNAPSHOT_REF_TYPE};
 pub use mutations::{ConversationMetadataPatch, ConversationMutation};
 pub use projection::{record_from_snapshot, snapshot_from_record};
 pub use provider_trace::{ProviderTraceRecord, PROVIDER_TRACE_FILE_NAME};
@@ -55,6 +55,6 @@ pub use records::{
     SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,
 };
 pub use runtime_session::{RuntimeSession, RUNTIME_SESSION_SCHEMA_VERSION};
-pub use store::{ConversationStore, SERVER_LOCK_FILE_NAME};
+pub use store::{CommitListener, CommitNotice, ConversationStore, SERVER_LOCK_FILE_NAME};
 pub use tool_output::{truncate_utf8, TOOL_OUTPUT_INLINE_LIMIT_BYTES};
 pub use transient::{TransientStreamBody, TransientStreamEvent, TRANSIENT_STREAM_EVENT_TYPE};

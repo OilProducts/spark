@@ -1,6 +1,5 @@
 import { type StateCreator } from 'zustand'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
-import { sortConversationSummaries, upsertConversationSummary } from '@/features/projects/model/conversationState'
 import type { AppState } from './store-types'
 import type {
     HomeConversationSessionState,
@@ -87,33 +86,6 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
         set((state) => ({
             homeConversationCache: typeof next === 'function' ? next(state.homeConversationCache) : next,
         })),
-    setHomeConversationSummaryList: (projectPath, summaries) =>
-        set((state) => ({
-            homeConversationCache: {
-                ...state.homeConversationCache,
-                summariesByProjectPath: {
-                    ...state.homeConversationCache.summariesByProjectPath,
-                    [projectPath]: sortConversationSummaries(summaries),
-                },
-            },
-        })),
-    upsertHomeConversationSummary: (summary) =>
-        set((state) => {
-            const current = state.homeConversationCache.summariesByProjectPath[summary.project_path]
-            const existing = current?.find((entry) => entry.conversation_id === summary.conversation_id)
-            if (existing && existing.revision > summary.revision) {
-                return {}
-            }
-            return {
-                homeConversationCache: {
-                    ...state.homeConversationCache,
-                    summariesByProjectPath: {
-                        ...state.homeConversationCache.summariesByProjectPath,
-                        [summary.project_path]: upsertConversationSummary(current ?? [], summary),
-                    },
-                },
-            }
-        }),
     setHomeThreadSummariesStatus: (projectPath, status, error = null) =>
         set((state) => ({
             homeThreadSummariesStatusByProjectPath: {

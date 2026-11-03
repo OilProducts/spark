@@ -151,3 +151,138 @@ fn stored_upserts(
         })
         .collect()
 }
+
+/// The payloads of one row kind in a Page's `rows`, or a Batch's (an ack's
+/// `changes`), in row order; tombstones are left out.
+#[allow(dead_code)]
+fn row_payloads<'a>(rows_owner: &'a serde_json::Value, kind: &str) -> Vec<&'a serde_json::Value> {
+    rows_owner["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["kind"] == kind && row["deleted"] == false)
+        .map(|row| &row["payload"])
+        .collect()
+}
+
+/// The conversation row's payload (metadata and summary) in `rows_owner`.
+#[allow(dead_code)]
+fn conversation_payload(rows_owner: &serde_json::Value) -> serde_json::Value {
+    row_payloads(rows_owner, "conversation")
+        .first()
+        .map(|payload| (*payload).clone())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The conversation row's revision, as the decimal string the wire carries.
+#[allow(dead_code)]
+fn conversation_revision(rows_owner: &serde_json::Value) -> String {
+    rows_owner["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["kind"] == "conversation")
+        .and_then(|row| row["revision"].as_str())
+        .expect("conversation row revision")
+        .to_string()
+}
+
+/// One conversation's full committed state, read from the home's shared
+/// store: the explicit history projection, for assertions only.
+#[allow(dead_code)]
+fn stored_snapshot(data_dir: &std::path::Path, conversation_id: &str) -> serde_json::Value {
+    spark_storage::ConversationRepository::new(shared_store(data_dir))
+        .read_snapshot(conversation_id, None)
+        .expect("read snapshot")
+        .expect("stored conversation")
+}
+
+/// A SummarySnapshot's live, listed conversation rows as thread-list entries.
+#[allow(dead_code)]
+fn summary_entries(snapshot: &serde_json::Value) -> Vec<serde_json::Value> {
+    snapshot["rows"]
+        .as_array()
+        .expect("summary rows")
+        .iter()
+        .filter(|row| row["deleted"] == false)
+        .map(|row| {
+            let mut entry = row["payload"].clone();
+            entry["conversation_id"] = row["id"].clone();
+            entry["revision"] = row["revision"].clone();
+            entry
+        })
+        .collect()
+}
+
+/// A conversation's newest window read through the route, as the fields
+/// tests inspect: `revision` and `handle` from its conversation row,
+/// `settings`, `turns` in position order and `segments` in turn order.
+#[allow(dead_code)]
+async fn conversation_view(
+    app: axum::Router,
+    conversation_id: &str,
+    project_path: &str,
+) -> serde_json::Value {
+    use tower::ServiceExt;
+    let uri = format!(
+        "/workspace/api/conversations/{conversation_id}?project_path={}&limit=100",
+        encode_query(project_path)
+    );
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let conversation = conversation_payload(&page);
+    let position = |row: &serde_json::Value| {
+        row["position"]
+            .as_str()
+            .and_then(|position| position.parse::<i64>().ok())
+            .unwrap_or_default()
+    };
+    let mut turns: Vec<&serde_json::Value> = page["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "turn")
+        .collect();
+    turns.sort_by_key(|row| position(row));
+    let mut view = serde_json::json!({
+        "conversation_id": conversation_id,
+        "revision": conversation_revision(&page),
+        "conversation_handle": conversation["handle"],
+        "project_path": conversation["project_path"],
+        "title": conversation["title"],
+        "settings": conversation["settings"],
+        "turns": turns.iter().map(|row| row["payload"].clone()).collect::<Vec<_>>(),
+        "segments": row_payloads(&page, "segment"),
+    });
+    for collection in [
+        "flow_run_requests",
+        "flow_launches",
+        "run_recoveries",
+        "proposed_plans",
+        "event_log",
+    ] {
+        let mut artifacts: Vec<&serde_json::Value> = page["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "artifact" && row["collection"] == collection)
+            .collect();
+        artifacts.sort_by_key(|row| position(row));
+        view[collection] = artifacts.iter().map(|row| row["payload"].clone()).collect();
+    }
+    view
+}

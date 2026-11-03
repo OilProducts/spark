@@ -116,6 +116,7 @@ CREATE TABLE artifacts (
 ) WITHOUT ROWID;
 CREATE INDEX artifacts_owner ON artifacts(conversation_id, turn_id, collection, artifact_id) WHERE deleted = 0;
 CREATE INDEX artifacts_revision ON artifacts(conversation_id, revision);
+CREATE INDEX artifacts_pending ON artifacts(conversation_id, status) WHERE deleted = 0;
 
 CREATE TABLE attachments (
     conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -191,8 +192,8 @@ const CONVERSATION_CHANGES_SQL: &str = concat!(
     " UNION ALL SELECT 'segment', conversation_id, segment_id, NULL, turn_id, NULL, sort_order, \
      revision, deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM segments \
      WHERE conversation_id = ?1 AND revision > ?2 AND revision <= ?3",
-    " UNION ALL SELECT 'artifact', conversation_id, artifact_id, collection, turn_id, NULL, NULL, \
-     revision, deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM artifacts \
+    " UNION ALL SELECT 'artifact', conversation_id, artifact_id, collection, turn_id, position, \
+     NULL, revision, deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM artifacts \
      WHERE conversation_id = ?1 AND revision > ?2 AND revision <= ?3",
     " UNION ALL SELECT 'attachment', conversation_id, attachment_id, NULL, NULL, NULL, NULL, \
      revision, deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM attachments \
@@ -212,9 +213,20 @@ const PAGE_SEGMENTS_SQL: &str = "SELECT 'segment', conversation_id, segment_id, 
 // Without statistics the planner prefers the primary key prefix for the
 // nullable owner column, which scans every artifact of the conversation.
 const PAGE_ARTIFACTS_SQL: &str = "SELECT 'artifact', conversation_id, artifact_id, collection, \
-     turn_id, NULL, NULL, revision, deleted, payload FROM artifacts INDEXED BY artifacts_owner \
+     turn_id, position, NULL, revision, deleted, payload FROM artifacts INDEXED BY artifacts_owner \
      WHERE conversation_id = ?1 AND turn_id = ?2 AND deleted = 0 \
      ORDER BY collection, artifact_id";
+/// Active and queued turns, which a window pins even outside its page.
+const PINNED_TURNS_SQL: &str = "SELECT 'turn', conversation_id, turn_id, NULL, NULL, position, \
+     NULL, revision, deleted, payload FROM turns INDEXED BY turns_status \
+     WHERE status IN ('pending', 'streaming', 'queued') AND conversation_id = ?1 AND deleted = 0";
+/// Artifacts awaiting review, which a window pins even outside its page.
+const PINNED_ARTIFACTS_SQL: &str = "SELECT 'artifact', conversation_id, artifact_id, collection, \
+     turn_id, position, NULL, revision, deleted, payload FROM artifacts INDEXED BY artifacts_pending \
+     WHERE conversation_id = ?1 AND status IN ('pending', 'pending_review') AND deleted = 0";
+/// Indexes added after the first schema; created on open when missing.
+const ENSURE_INDEXES: &str =
+    "CREATE INDEX IF NOT EXISTS artifacts_pending ON artifacts(conversation_id, status) WHERE deleted = 0;";
 
 /// Named read statements whose query plans contract checks inspect.
 const READ_STATEMENTS: &[(&str, &str)] = &[
@@ -226,6 +238,8 @@ const READ_STATEMENTS: &[(&str, &str)] = &[
     ("page_turns", PAGE_TURNS_SQL),
     ("page_segments", PAGE_SEGMENTS_SQL),
     ("page_artifacts", PAGE_ARTIFACTS_SQL),
+    ("pinned_turns", PINNED_TURNS_SQL),
+    ("pinned_artifacts", PINNED_ARTIFACTS_SQL),
 ];
 
 /// Turn and segment statuses a previous process may have left unsettled.
@@ -251,13 +265,16 @@ pub struct ConversationDatabase {
 pub struct StoredConversation {
     pub project_path: String,
     pub handle: String,
+    /// The conversation row's last-change revision.
+    pub revision: i64,
     pub trace_sequence_high_water: u64,
     pub metadata: Value,
     /// Ascending position: (turn id, position, applied trace sequence, payload).
     pub turns: Vec<(String, i64, u64, Value)>,
     pub segments: Vec<Value>,
-    /// (collection, artifact id, payload), in insertion order per collection.
-    pub artifacts: Vec<(String, String, Value)>,
+    /// (collection, artifact id, position, owner turn, payload), in insertion
+    /// order per collection.
+    pub artifacts: Vec<(String, String, i64, Option<String>, Value)>,
     /// (attachment id, blob path, status, payload).
     pub attachments: Vec<(String, String, String, Value)>,
 }
@@ -399,9 +416,14 @@ pub struct PageCursor {
 pub struct TurnPage {
     pub watermark: i64,
     pub conversation: EntityRow,
-    /// Turns followed by their live segments and owned artifacts.
+    /// Turns followed by their live segments and owned artifacts, then the
+    /// pinned turns (with their segments) and pinned artifacts.
     pub rows: Vec<EntityRow>,
     pub turn_ids: Vec<String>,
+    /// Active or queued turns outside the page.
+    pub pinned_turn_ids: Vec<String>,
+    /// Artifacts awaiting review that no page turn owns: (collection, id).
+    pub pinned_artifact_ids: Vec<(String, String)>,
     pub older_cursor: Option<PageCursor>,
 }
 
@@ -466,6 +488,7 @@ impl ConversationDatabase {
                 expected: CONVERSATION_DATABASE_SCHEMA_VERSION,
             });
         }
+        tx.execute_batch(ENSURE_INDEXES)?;
         tx.commit()?;
 
         Ok(Self {
@@ -864,7 +887,8 @@ impl WriteTransaction<'_> {
         provider: &str,
         payload: &Value,
     ) -> Result<()> {
-        self.touch(conversation_id)?;
+        // Internal recovery bookkeeping: never a browser-visible change.
+        self.require_live(conversation_id)?;
         self.tx.execute(
             "INSERT INTO runtime_sessions (conversation_id, provider, revision, payload) \
              VALUES (?1, ?2, ?3, ?4) ON CONFLICT (conversation_id, provider) DO UPDATE SET \
@@ -1021,9 +1045,35 @@ impl WriteTransaction<'_> {
         Ok(changed > 0)
     }
 
+    /// Every row this transaction changed in one conversation, tombstones
+    /// included: the entity result of a mutation.
+    pub fn changed_rows(&self, conversation_id: &str) -> Result<Vec<EntityRow>> {
+        entity_rows(
+            &self.tx,
+            CONVERSATION_CHANGES_SQL,
+            params![conversation_id, self.revision - 1, self.revision, i64::MAX],
+        )
+    }
+
+    fn require_live(&self, conversation_id: &str) -> Result<()> {
+        let live: bool = self.tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 AND deleted = 0)",
+            [conversation_id],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(StorageError::ConversationCommitRejected {
+                conversation_id: conversation_id.to_string(),
+                reason: "conversation does not exist or was deleted".to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Stamp the owning conversation with this revision; children of a
-    /// missing or deleted conversation are rejected.
-    fn touch(&self, conversation_id: &str) -> Result<()> {
+    /// missing or deleted conversation are rejected. Alone, it re-delivers the
+    /// conversation row, such as when a summary decoration changed.
+    pub fn touch(&self, conversation_id: &str) -> Result<()> {
         let changed = self.tx.execute(
             "UPDATE conversations SET revision = ?1 WHERE id = ?2 AND deleted = 0",
             params![self.revision, conversation_id],
@@ -1059,6 +1109,41 @@ impl ReadTransaction<'_> {
             Some(project_path) => self.entity_rows(SUMMARIES_FOR_PROJECT_SQL, [project_path]),
             None => self.entity_rows(SUMMARIES_ALL_SQL, []),
         }
+    }
+
+    /// A live conversation's metadata and summary row.
+    pub fn conversation_row(&self, conversation_id: &str) -> Result<Option<EntityRow>> {
+        Ok(self
+            .entity_rows(LIVE_CONVERSATION_SQL, [conversation_id])?
+            .pop())
+    }
+
+    /// One turn's current row or tombstone.
+    pub fn turn_row(&self, conversation_id: &str, turn_id: &str) -> Result<Option<EntityRow>> {
+        Ok(self
+            .entity_rows(
+                "SELECT 'turn', conversation_id, turn_id, NULL, NULL, position, NULL, revision, \
+                 deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM turns \
+                 WHERE conversation_id = ?1 AND turn_id = ?2",
+                [conversation_id, turn_id],
+            )?
+            .pop())
+    }
+
+    /// One segment's current row or tombstone.
+    pub fn segment_row(
+        &self,
+        conversation_id: &str,
+        segment_id: &str,
+    ) -> Result<Option<EntityRow>> {
+        Ok(self
+            .entity_rows(
+                "SELECT 'segment', conversation_id, segment_id, NULL, turn_id, NULL, sort_order, \
+                 revision, deleted, CASE WHEN deleted THEN NULL ELSE payload END FROM segments \
+                 WHERE conversation_id = ?1 AND segment_id = ?2",
+                [conversation_id, segment_id],
+            )?
+            .pop())
     }
 
     /// Live conversations needing attention, newest first.
@@ -1166,11 +1251,46 @@ impl ReadTransaction<'_> {
             rows.extend(self.entity_rows(PAGE_SEGMENTS_SQL, [conversation_id, turn_id])?);
             rows.extend(self.entity_rows(PAGE_ARTIFACTS_SQL, [conversation_id, turn_id])?);
         }
+        // Few rows, sorted here rather than by a second index.
+        let mut pinned_turns = self.entity_rows(PINNED_TURNS_SQL, [conversation_id])?;
+        pinned_turns
+            .sort_by(|left, right| (left.position, &left.id).cmp(&(right.position, &right.id)));
+        let mut pinned_artifacts = self.entity_rows(PINNED_ARTIFACTS_SQL, [conversation_id])?;
+        pinned_artifacts.sort_by(|left, right| {
+            (&left.collection, left.position).cmp(&(&right.collection, right.position))
+        });
+        let mut pinned_turn_ids = Vec::new();
+        for turn in pinned_turns {
+            if turn_ids.contains(&turn.id) {
+                continue;
+            }
+            pinned_turn_ids.push(turn.id.clone());
+            let segments = self.entity_rows(PAGE_SEGMENTS_SQL, [conversation_id, &turn.id])?;
+            rows.push(turn);
+            rows.extend(segments);
+        }
+        let mut pinned_artifact_ids = Vec::new();
+        for artifact in pinned_artifacts {
+            if artifact
+                .turn_id
+                .as_ref()
+                .is_some_and(|owner| turn_ids.contains(owner))
+            {
+                continue;
+            }
+            pinned_artifact_ids.push((
+                artifact.collection.clone().unwrap_or_default(),
+                artifact.id.clone(),
+            ));
+            rows.push(artifact);
+        }
         Ok(PageRead::Page(TurnPage {
             watermark: self.watermark,
             conversation,
             rows,
             turn_ids,
+            pinned_turn_ids,
+            pinned_artifact_ids,
             older_cursor,
         }))
     }
@@ -1178,8 +1298,8 @@ impl ReadTransaction<'_> {
     /// Every live row of a conversation; `None` when it is unknown or deleted.
     pub fn conversation(&self, conversation_id: &str) -> Result<Option<StoredConversation>> {
         let head = self.tx.query_row(
-            "SELECT project_path, handle, trace_sequence_high_water, metadata FROM conversations \
-             WHERE id = ?1 AND deleted = 0",
+            "SELECT project_path, handle, trace_sequence_high_water, metadata, revision \
+             FROM conversations WHERE id = ?1 AND deleted = 0",
             [conversation_id],
             |row| {
                 Ok((
@@ -1187,10 +1307,11 @@ impl ReadTransaction<'_> {
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         );
-        let (project_path, handle, high_water, metadata) = match head {
+        let (project_path, handle, high_water, metadata, revision) = match head {
             Ok(head) => head,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -1226,20 +1347,22 @@ impl ReadTransaction<'_> {
             .collect::<Result<Vec<_>>>()?;
         let artifacts = self
             .json_rows(
-                "SELECT collection, artifact_id, payload FROM artifacts \
+                "SELECT collection, artifact_id, position, turn_id, payload FROM artifacts \
                  WHERE conversation_id = ?1 AND deleted = 0 ORDER BY collection, position",
                 conversation_id,
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get(2)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 },
             )?
             .into_iter()
-            .map(|(collection, id, payload): (String, String, String)| {
-                Ok((collection, id, parse(&payload)?))
+            .map(|(collection, id, position, owner, payload)| {
+                Ok((collection, id, position, owner, parse(&payload)?))
             })
             .collect::<Result<Vec<_>>>()?;
         let attachments = self
@@ -1266,6 +1389,7 @@ impl ReadTransaction<'_> {
         Ok(Some(StoredConversation {
             project_path,
             handle,
+            revision,
             trace_sequence_high_water: high_water as u64,
             metadata: parse(&metadata)?,
             turns,
@@ -1371,40 +1495,48 @@ impl ReadTransaction<'_> {
     }
 
     fn entity_rows(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<EntityRow>> {
-        let mut statement = self.tx.prepare_cached(sql)?;
-        let rows = statement.query_map(params, |row| {
-            let kind = match row.get_ref(0)?.as_str()? {
-                "conversation" => EntityKind::Conversation,
-                "turn" => EntityKind::Turn,
-                "segment" => EntityKind::Segment,
-                "artifact" => EntityKind::Artifact,
-                _ => EntityKind::Attachment,
-            };
-            let payload: Option<String> = row.get(9)?;
-            Ok(EntityRow {
-                kind,
-                conversation_id: row.get(1)?,
-                id: row.get(2)?,
-                collection: row.get(3)?,
-                turn_id: row.get(4)?,
-                position: row.get(5)?,
-                order: row.get(6)?,
-                revision: row.get(7)?,
-                deleted: row.get(8)?,
-                payload: payload
-                    .map(|payload| serde_json::from_str(&payload))
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            9,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        entity_rows(&self.tx, sql, params)
     }
+}
+
+fn entity_rows(
+    connection: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<EntityRow>> {
+    let mut statement = connection.prepare_cached(sql)?;
+    let rows = statement.query_map(params, |row| {
+        let kind = match row.get_ref(0)?.as_str()? {
+            "conversation" => EntityKind::Conversation,
+            "turn" => EntityKind::Turn,
+            "segment" => EntityKind::Segment,
+            "artifact" => EntityKind::Artifact,
+            _ => EntityKind::Attachment,
+        };
+        let payload: Option<String> = row.get(9)?;
+        Ok(EntityRow {
+            kind,
+            conversation_id: row.get(1)?,
+            id: row.get(2)?,
+            collection: row.get(3)?,
+            turn_id: row.get(4)?,
+            position: row.get(5)?,
+            order: row.get(6)?,
+            revision: row.get(7)?,
+            deleted: row.get(8)?,
+            payload: payload
+                .map(|payload| serde_json::from_str(&payload))
+                .transpose()
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        9,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The connection after a complete FULL checkpoint, for rechecking cleanup

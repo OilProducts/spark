@@ -233,8 +233,8 @@ pub(crate) fn deliver_inbox(
     if begin.is_none() && inbox.event_seq <= inbox.cursor {
         // Messages held while a role was stopped start once it delivers again.
         return match conversations.start_queued_turn(conversation, project_path)? {
-            Some((prepared, snapshot)) => {
-                complete_in_background(settings, runtime, conversations, prepared, snapshot, after);
+            Some((prepared, _)) => {
+                complete_in_background(runtime, conversations, prepared, after);
                 Ok(true)
             }
             None => Ok(false),
@@ -262,8 +262,8 @@ pub(crate) fn deliver_inbox(
         message: message.clone(),
         ..Default::default()
     };
-    let (prepared, snapshot) = match conversations.send_turn(conversation, request) {
-        Ok((Some(prepared), snapshot)) => (prepared, snapshot),
+    let (prepared, _) = match conversations.send_turn(conversation, request) {
+        Ok((Some(prepared), acceptance)) => (prepared, acceptance),
         // Queued behind a running turn, or behind held messages that start now.
         Ok((None, _)) => match conversations.start_queued_turn(conversation, project_path)? {
             Some(started) => started,
@@ -279,59 +279,33 @@ pub(crate) fn deliver_inbox(
             return Ok(false);
         }
     };
-    complete_in_background(settings, runtime, conversations, prepared, snapshot, after);
+    complete_in_background(runtime, conversations, prepared, after);
     Ok(true)
 }
 
-/// Publishes a started turn, then completes it and each message queued
-/// behind it on its own thread.
+/// Completes a started turn and each message queued behind it on its own
+/// thread. Committed changes reach live clients through the store's commit
+/// notices; only transient stream deltas are published here.
 fn complete_in_background(
-    settings: &SparkSettings,
     runtime: InboxRuntime,
     conversations: WorkspaceConversationService,
     prepared: PreparedConversationTurn,
-    snapshot: Value,
     after: impl FnOnce() + Send + 'static,
 ) {
-    let store = conversations.store().clone();
-    if let Ok(envelope) = crate::live::conversation_snapshot_envelope(
-        settings,
-        &store,
-        &prepared.conversation_id,
-        &prepared.project_path,
-    ) {
-        (runtime.publish)(envelope);
-    }
-    let settings = settings.clone();
     std::thread::spawn(move || {
         let publish = runtime.publish.clone();
         let (conversation, project_path) = (
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
         );
-        let (progress_conversation, progress_project) =
-            (conversation.clone(), project_path.clone());
-        let _ = conversations.complete_started_turn_with_progress_payloads(
-            prepared,
-            snapshot,
-            move |payload| {
-                let revision = payload["revision"].as_i64().unwrap_or(0);
+        let _ =
+            conversations.complete_started_turn_with_progress_payloads(prepared, move |payload| {
                 publish(crate::live::conversation_event_envelope(
-                    &progress_conversation,
-                    &progress_project,
+                    &conversation,
+                    &project_path,
                     payload,
-                    revision,
                 ));
-            },
-        );
-        if let Ok(envelope) = crate::live::conversation_snapshot_envelope(
-            &settings,
-            &store,
-            &conversation,
-            &project_path,
-        ) {
-            (runtime.publish)(envelope);
-        }
+            });
         after();
     });
 }

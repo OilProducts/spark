@@ -131,16 +131,30 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     )
     .await;
     assert_eq!(response.0, StatusCode::OK);
-    assert_eq!(response.1["conversation_id"], "conversation-http-turn");
-    assert_eq!(response.1["provider"], "openai");
-    assert_eq!(response.1["model"], "gpt-5");
-    assert_eq!(response.1["llm_profile"], Value::Null);
-    assert_eq!(response.1["reasoning_effort"], "high");
-    assert_eq!(response.1["turns"].as_array().expect("turns").len(), 4);
-    let assistant_turn = response.1["turns"]
+    // The acceptance: ids, status, and only the rows it committed. The
+    // earlier exchange is history, which acceptance never reads or returns.
+    assert_eq!(response.1["status"], "accepted");
+    let changes = &response.1["changes"];
+    assert_eq!(crate::row_payloads(changes, "turn").len(), 2);
+    assert!(changes["rows"]
         .as_array()
-        .expect("turns")
+        .unwrap()
         .iter()
+        .all(|row| row["revision"] == response.1["revision"]));
+    let effective = &crate::conversation_payload(changes)["effective"];
+    assert_eq!(effective["provider"], "openai");
+    assert_eq!(effective["model"], "gpt-5");
+    assert_eq!(effective["llm_profile"], Value::Null);
+    assert_eq!(effective["reasoning_effort"], "high");
+    assert_eq!(
+        crate::stored_snapshot(&settings.data_dir, "conversation-http-turn")["turns"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let assistant_turn = crate::row_payloads(&response.1["changes"], "turn")
+        .into_iter()
         .find(|turn| turn["role"] == "assistant" && turn["status"] == "pending")
         .expect("assistant turn");
     assert_eq!(assistant_turn["content"], "");
@@ -239,10 +253,8 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     let assistant_turn_id = backend_request.metadata["spark.workspace.assistant_turn_id"]
         .as_str()
         .expect("assistant turn id");
-    assert!(response.1["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
+    assert!(crate::row_payloads(&response.1["changes"], "turn")
+        .into_iter()
         .any(|turn| turn["id"] == user_turn_id && turn["content"] == "Ship it"));
     assert_eq!(assistant_turn["id"], assistant_turn_id);
     let history = serde_json::to_value(&backend_request.history).expect("history");
@@ -304,7 +316,10 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     )
     .await;
     assert_eq!(queued.0, StatusCode::OK, "{}", queued.1);
-    let turns = queued.1["turns"].as_array().expect("turns");
+    assert_eq!(queued.1["status"], "queued");
+    assert_eq!(queued.1["assistant_turn_id"], Value::Null);
+    let stored = crate::stored_snapshot(&settings.data_dir, "conversation-http-queued");
+    let turns = stored["turns"].as_array().expect("turns");
     assert_eq!(turns.len(), 3);
     assert_eq!(turns[1]["status"], "pending");
     assert_eq!(turns[2]["content"], "Again");
@@ -385,9 +400,9 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let turns = response.1["turns"].as_array().expect("turns");
+    let turns = crate::row_payloads(&response.1["changes"], "turn");
     let assistant_turn = turns
-        .iter()
+        .into_iter()
         .find(|turn| turn["role"] == "assistant")
         .expect("assistant turn");
     assert_eq!(assistant_turn["status"], "pending");
@@ -493,10 +508,8 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let started_assistant_turn = response.1["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
+    let started_assistant_turn = crate::row_payloads(&response.1["changes"], "turn")
+        .into_iter()
         .find(|turn| turn["role"] == "assistant")
         .expect("assistant turn");
     assert_eq!(started_assistant_turn["status"], "pending");
@@ -606,10 +619,8 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let started_assistant_turn = response.1["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
+    let started_assistant_turn = crate::row_payloads(&response.1["changes"], "turn")
+        .into_iter()
         .find(|turn| turn["role"] == "assistant")
         .expect("assistant turn");
     assert_eq!(started_assistant_turn["status"], "pending");
@@ -721,10 +732,8 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    let started_assistant_turn = response.1["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
+    let started_assistant_turn = crate::row_payloads(&response.1["changes"], "turn")
+        .into_iter()
         .find(|turn| turn["role"] == "assistant")
         .expect("assistant turn");
     assert_eq!(started_assistant_turn["status"], "pending");
@@ -813,18 +822,14 @@ async fn request_user_input_answer_route_continues_pending_requests() {
     )
     .await;
     assert_eq!(answered.0, StatusCode::OK);
-    let segment = answered.1["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
+    let segment = crate::row_payloads(&answered.1["changes"], "segment")
+        .into_iter()
         .find(|segment| segment["kind"] == "request_user_input")
         .expect("request segment");
     assert_eq!(segment["request_user_input"]["status"], "answered");
     assert_eq!(segment["status"], "complete");
-    let assistant_turn = answered.1["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
+    let assistant_turn = crate::row_payloads(&answered.1["changes"], "turn")
+        .into_iter()
         .find(|turn| turn["id"] == prepared.assistant_turn_id)
         .expect("assistant turn");
     assert_eq!(assistant_turn["status"], "complete");
@@ -990,10 +995,13 @@ async fn conversation_turn_route_keeps_client_turn_id_and_ignores_a_resend() {
 
     let (status, first, _) = request_json(app.clone(), "POST", uri, Some(body.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    let user_turn = turns_of(&first)
+    assert_eq!(first["user_turn_id"], "turn-browser1");
+    assert_eq!(first["client_turn_id"], "turn-browser1");
+    let user_turn = crate::row_payloads(&first["changes"], "turn")
         .into_iter()
         .find(|turn| turn["role"] == "user")
-        .expect("user turn");
+        .expect("user turn")
+        .clone();
     assert_eq!(user_turn["id"], "turn-browser1");
     assert_eq!(user_turn["content"], "Hello");
     let answered = wait_for_conversation_snapshot(
@@ -1010,10 +1018,33 @@ async fn conversation_turn_route_keeps_client_turn_id_and_ignores_a_resend() {
     )
     .await;
 
-    let (status, resent, _) = request_json(app.clone(), "POST", uri, Some(body)).await;
+    let (status, resent, _) = request_json(app.clone(), "POST", uri, Some(body.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(turns_of(&resent).len(), turns_of(&answered).len());
+    // The original acceptance again, at its rows' current state; no new turn.
+    assert_eq!(resent["user_turn_id"], first["user_turn_id"]);
+    assert_eq!(resent["assistant_turn_id"], first["assistant_turn_id"]);
+    assert_eq!(resent["status"], "accepted");
+    assert!(crate::row_payloads(&resent["changes"], "turn")
+        .iter()
+        .any(|turn| turn["id"] == first["assistant_turn_id"] && turn["status"] == "complete"));
+    assert_eq!(
+        turns_of(&crate::stored_snapshot(
+            &settings.data_dir,
+            "conversation-client-id"
+        ))
+        .len(),
+        turns_of(&answered).len()
+    );
     assert_eq!(backend_requests.lock().expect("requests").len(), 1);
+    // Reusing the id for a different message is a conflict.
+    let mut conflicting = body;
+    conflicting["message"] = json!("Something else");
+    let (status, conflict, _) = request_json(app.clone(), "POST", uri, Some(conflicting)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert!(conflict["detail"]
+        .as_str()
+        .unwrap()
+        .starts_with("turn_id_conflict"));
 
     let (status, _, _) = request_json(
         app.clone(),

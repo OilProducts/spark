@@ -4,6 +4,7 @@ import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { conversationAcceptance, conversationPage, summarySnapshot } from '@/test/conversationWire'
 
 const PROJECT = '/tmp/attach-project'
 
@@ -15,8 +16,7 @@ const json = (payload: unknown, status = 200) => new Response(JSON.stringify(pay
 const url = (input: RequestInfo | URL) => (typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url)
 
 const snapshot = (conversationId: string, turns: unknown[] = []) => ({
-  schema_version: 5,
-  revision: turns.length,
+  revision: turns.length + 1,
   conversation_id: conversationId,
   project_path: PROJECT,
   title: conversationId === 'chat-a' ? 'Chat A' : 'Chat B',
@@ -24,7 +24,6 @@ const snapshot = (conversationId: string, turns: unknown[] = []) => ({
   updated_at: '2026-10-01T10:00:00Z',
   turns,
   segments: [],
-  event_log: [],
 })
 
 type Upload = { conversationId: string; filename: string; size: number }
@@ -47,10 +46,10 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
       })
     }
     if (requestUrl.includes('/projects/conversations')) {
-      return json([
-        { conversation_id: 'chat-a', project_path: PROJECT, title: 'Chat A', created_at: '2026-10-01T10:00:00Z', updated_at: '2026-10-01T10:00:00Z', revision: 0 },
-        { conversation_id: 'chat-b', project_path: PROJECT, title: 'Chat B', created_at: '2026-10-01T09:00:00Z', updated_at: '2026-10-01T09:00:00Z', revision: 0 },
-      ])
+      return json(summarySnapshot([
+        { conversation_id: 'chat-a', project_path: PROJECT, title: 'Chat A', created_at: '2026-10-01T10:00:00Z', updated_at: '2026-10-01T10:00:00Z', revision: 1 },
+        { conversation_id: 'chat-b', project_path: PROJECT, title: 'Chat B', created_at: '2026-10-01T09:00:00Z', updated_at: '2026-10-01T09:00:00Z', revision: 1 },
+      ], { project_path: PROJECT }))
     }
     if (parsed.pathname.endsWith('/attachments') && init?.method === 'POST') {
       if (uploadFailures > 0) {
@@ -81,7 +80,7 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
       const ids = (body.attachment_ids as string[] | undefined) ?? []
       // Like the server, the user turn keeps the browser's id.
       const userTurnId = String(body.client_turn_id)
-      return json(snapshot(conversationId, [{
+      return json(conversationAcceptance(snapshot(conversationId, [{
         id: userTurnId,
         role: 'user',
         content: body.message,
@@ -105,10 +104,10 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
         status: 'complete',
         kind: 'message',
         parent_turn_id: userTurnId,
-      }]))
+      }]), userTurnId, { assistant_turn_id: 'turn-assistant-1' }))
     }
     if (conversationId && !init?.method) {
-      return json(snapshot(conversationId))
+      return json(conversationPage(snapshot(conversationId)))
     }
     return json({})
   })

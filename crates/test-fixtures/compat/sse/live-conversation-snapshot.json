@@ -2,57 +2,107 @@
   "decisions": [
     "CD-RR-001",
     "CD-RR-013",
-    "CD-RR-015"
+    "CD-RR-015",
+    "CR-2026-0177"
   ],
   "fixture_id": "sse/live-conversation-snapshot",
   "frames": [
     {
       "data": {
-        "cursor": {
-          "kind": "conversation_revision",
-          "value": 2
-        },
+        "cursor": null,
         "payload": {
-          "state": {
-            "chat_mode": "chat",
-            "conversation_handle": "keen-field",
-            "conversation_id": "conversation-compat",
-            "created_at": "2026-06-28T19:40:51Z",
-            "event_log": [],
-            "flow_launches": [],
-            "flow_run_requests": [],
-            "llm_profile": null,
-            "model": null,
-            "project_path": "__PROJECT_DIR__",
-            "proposed_plans": [],
-            "provider": "codex",
-            "reasoning_effort": null,
-            "revision": 2,
-            "run_recoveries": [],
-            "schema_version": 5,
-            "segments": [],
-            "title": "New thread",
-            "turns": [
-              {
+          "conversation_id": "conversation-compat",
+          "generation": "__GENERATION__",
+          "older_cursor": null,
+          "pinned_artifact_ids": [],
+          "pinned_turn_ids": [],
+          "rows": [
+            {
+              "conversation_id": "conversation-compat",
+              "deleted": false,
+              "id": "conversation-compat",
+              "kind": "conversation",
+              "payload": {
+                "created_at": "2026-06-28T19:40:51Z",
+                "effective": {
+                  "llm_profile": null,
+                  "model": null,
+                  "provider": "codex",
+                  "reasoning_effort": null
+                },
+                "handle": "keen-field",
+                "launched_run_ids": [],
+                "metadata": {
+                  "chat_mode": "chat",
+                  "conversation_handle": "keen-field",
+                  "conversation_id": "conversation-compat",
+                  "created_at": "2026-06-28T19:40:51Z",
+                  "llm_profile": null,
+                  "model": null,
+                  "model_settings": null,
+                  "project_path": "__PROJECT_DIR__",
+                  "provider": "codex",
+                  "reasoning_effort": null,
+                  "revision": 1,
+                  "schema_version": 5,
+                  "settings_schema_version": 1,
+                  "title": "New thread",
+                  "updated_at": "2026-06-28T19:40:51Z"
+                },
+                "needs_attention": false,
+                "preview": "Ready for a compatibility run request.",
+                "project_path": "__PROJECT_DIR__",
+                "running": false,
+                "settings": {
+                  "models": {
+                    "effective": {
+                      "llm_profile": null,
+                      "model": null,
+                      "provider": "codex",
+                      "reasoning_effort": null
+                    },
+                    "restart_fields": [],
+                    "revision": "1",
+                    "scope": "conversation",
+                    "source": "workspace",
+                    "stored": null
+                  }
+                },
+                "title": "New thread",
+                "updated_at": "2026-06-28T19:40:51Z"
+              },
+              "revision": "1"
+            },
+            {
+              "conversation_id": "conversation-compat",
+              "deleted": false,
+              "id": "turn-assistant-compat",
+              "kind": "turn",
+              "payload": {
                 "content": "Ready for a compatibility run request.",
                 "id": "turn-assistant-compat",
                 "kind": "message",
                 "role": "assistant",
                 "status": "complete",
                 "timestamp": "2026-01-01T00:00:00Z"
-              }
-            ],
-            "updated_at": "2026-06-28T19:40:51Z"
-          }
+              },
+              "position": "0",
+              "revision": "1"
+            }
+          ],
+          "turn_ids": [
+            "turn-assistant-compat"
+          ],
+          "watermark": "1"
         },
         "project_path": "__PROJECT_DIR__",
         "resource": {
           "id": "conversation-compat",
           "kind": "conversation"
         },
-        "type": "conversation.snapshot"
+        "type": "conversation.window"
       },
-      "data_text": "{\"type\":\"conversation.snapshot\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"conversation\",\"id\":\"conversation-compat\"},\"cursor\":{\"kind\":\"conversation_revision\",\"value\":2},\"payload\":{\"state\":{\"chat_mode\":\"chat\",\"conversation_handle\":\"keen-field\",\"conversation_id\":\"conversation-compat\",\"created_at\":\"2026-06-28T19:40:51Z\",\"event_log\":[],\"flow_launches\":[],\"flow_run_requests\":[],\"llm_profile\":null,\"model\":null,\"project_path\":\"__PROJECT_DIR__\",\"proposed_plans\":[],\"provider\":\"codex\",\"reasoning_effort\":null,\"revision\":2,\"run_recoveries\":[],\"schema_version\":5,\"segments\":[],\"title\":\"New thread\",\"turns\":[{\"content\":\"Ready for a compatibility run request.\",\"id\":\"turn-assistant-compat\",\"kind\":\"message\",\"role\":\"assistant\",\"status\":\"complete\",\"timestamp\":\"2026-01-01T00:00:00Z\"}],\"updated_at\":\"2026-06-28T19:40:51Z\"}}}",
+      "data_text": "{\"type\":\"conversation.window\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"conversation\",\"id\":\"conversation-compat\"},\"cursor\":null,\"payload\":{\"generation\":\"__GENERATION__\",\"watermark\":\"1\",\"conversation_id\":\"conversation-compat\",\"rows\":[{\"kind\":\"conversation\",\"conversation_id\":\"conversation-compat\",\"id\":\"conversation-compat\",\"revision\":\"1\",\"deleted\":false,\"payload\":{\"handle\":\"keen-field\",\"project_path\":\"__PROJECT_DIR__\",\"created_at\":\"2026-06-28T19:40:51Z\",\"updated_at\":\"2026-06-28T19:40:51Z\",\"title\":\"New thread\",\"preview\":\"Ready for a compatibility run request.\",\"running\":false,\"needs_attention\":false,\"launched_run_ids\":[],\"metadata\":{\"schema_version\":5,\"settings_schema_version\":1,\"revision\":1,\"conversation_id\":\"conversation-compat\",\"conversation_handle\":\"keen-field\",\"project_path\":\"__PROJECT_DIR__\",\"chat_mode\":\"chat\",\"provider\":\"codex\",\"model\":null,\"llm_profile\":null,\"reasoning_effort\":null,\"model_settings\":null,\"title\":\"New thread\",\"created_at\":\"2026-06-28T19:40:51Z\",\"updated_at\":\"2026-06-28T19:40:51Z\"},\"settings\":{\"models\":{\"scope\":\"conversation\",\"revision\":\"1\",\"stored\":null,\"effective\":{\"provider\":\"codex\",\"model\":null,\"llm_profile\":null,\"reasoning_effort\":null},\"source\":\"workspace\",\"restart_fields\":[]}},\"effective\":{\"provider\":\"codex\",\"model\":null,\"llm_profile\":null,\"reasoning_effort\":null}}},{\"kind\":\"turn\",\"conversation_id\":\"conversation-compat\",\"id\":\"turn-assistant-compat\",\"position\":\"0\",\"revision\":\"1\",\"deleted\":false,\"payload\":{\"id\":\"turn-assistant-compat\",\"role\":\"assistant\",\"kind\":\"message\",\"content\":\"Ready for a compatibility run request.\",\"status\":\"complete\",\"timestamp\":\"2026-01-01T00:00:00Z\"}}],\"turn_ids\":[\"turn-assistant-compat\"],\"pinned_turn_ids\":[],\"pinned_artifact_ids\":[],\"older_cursor\":null}}",
       "event": "message",
       "kind": "event"
     }
@@ -65,7 +115,7 @@
       "SPARK_FLOWS_DIR": "__SPARK_FLOWS_DIR__",
       "SPARK_HOME": "__SPARK_HOME__"
     },
-    "oracle": "python-spark-server",
+    "oracle": "rust-spark-server",
     "server_argv": [
       "uv",
       "run",

@@ -5,6 +5,7 @@ import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { MissionsPanel } from '../MissionsPanel'
 import { useStore } from '@/store'
+import { conversationMutationAck, conversationPage } from '@/test/conversationWire'
 
 const fields = { title: 'Deliver search', description: '', archived: false }
 type Task = { id: string; revision: number; fields: typeof fields; activity: unknown[]; status?: string; updated_at?: string; [key: string]: unknown }
@@ -31,13 +32,13 @@ beforeEach(() => {
         }
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
-            if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
+            if (url.includes('/conversations/')) return { ok: true, json: async () => conversationMutationAck(positioned(snapshot)) }
             if (init.method === 'PATCH' && body.revision !== task.revision) return { ok: false, status: 409, json: async () => ({ detail: 'Conflict' }) }
             if (init.method === 'POST' && !url.includes('/missions/')) task = { ...task, id: 'task-new', revision: 1, fields: { ...task.fields, ...body.fields } }
             else if (body.fields) task = { ...task, revision: task.revision + 1, fields: { ...task.fields, ...body.fields } }
             return { ok: true, json: async () => task }
         }
-        if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
+        if (url.includes('/conversations/')) return { ok: true, json: async () => page(snapshot) }
         if (url === `/workspace/api/playbooks/bug-report?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => ({ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the draft first.' }) }
         if (url === `/workspace/api/playbooks?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }
         return { ok: true, json: async () => ({ missions: [task] }) }
@@ -45,8 +46,15 @@ beforeEach(() => {
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
-function conversation(turns: unknown[]) {
-    return { schema_version: 5, revision: turns.length, conversation_id: 'task-1', project_path: '/project', turns, segments: [], event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [] }
+function conversation(turns: unknown[], revision = turns.length) {
+    return { schema_version: 5, revision, conversation_id: 'task-1', project_path: '/project', turns, segments: [], event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [] }
+}
+/** Turns share a timestamp, so each carries its transcript position. */
+const positioned = (fixture: Record<string, unknown>) => ({ ...fixture, turns: (fixture.turns as Record<string, unknown>[]).map((entry, index) => ({ ...entry, position: entry.position ?? index + 1 })) })
+/** The conversation GET response: the fixture's newest page, under the requested conversation id. */
+const page = (fixture: unknown, conversationId?: string) => {
+    const record = fixture as Record<string, unknown>
+    return conversationPage(positioned({ ...record, conversation_id: conversationId ?? record.conversation_id }))
 }
 const turn = (id: string, role: string, content: string, kind = 'message') => ({ id, role, content, kind, status: 'complete', timestamp: '2026-09-20T10:00:00Z' })
 const detail = () => within(screen.getByRole('region', { name: 'Mission details' }))
@@ -217,7 +225,7 @@ it('starts a clean pane with its own transcript when another mission is selected
         const id = /conversations\/([^/?]+)/.exec(String(url))?.[1]
         if (!id) return { ok: true, json: async () => ({ missions: [a, b] }) } as Response
         if (id === 'conv-b') await new Promise<void>(resolve => { releaseB = resolve })
-        return { ok: true, json: async () => snapshots[id] } as Response
+        return { ok: true, json: async () => page(snapshots[id], id) } as Response
     })
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Mission A' }))
@@ -681,10 +689,10 @@ function scrollGeometry(clientHeight: number, scrollHeight: number) {
 }
 /** The conversation's scrolling element: its own pane when wide, the whole body when narrow. */
 const conversationScroller = () => window.innerWidth > 1024 ? detail().getByTestId('project-ai-conversation-body') : detail().getByTestId('mission-body')
-/** Grows the conversation with a longer assistant reply delivered by a live snapshot event. */
+/** Grows the conversation with a longer assistant reply, at a newer revision, announced by a live event. */
 async function grow(geometry: { scrollHeight: number }, scrollHeight: number, reply: string) {
     geometry.scrollHeight = scrollHeight
-    snapshot = conversation([turn('a1', 'assistant', 'Working on it.'), turn('u1', 'user', 'Keep going'), turn('a2', 'assistant', reply)])
+    snapshot = conversation([turn('a1', 'assistant', 'Working on it.'), turn('u1', 'user', 'Keep going'), turn('a2', 'assistant', reply)], scrollHeight)
     await act(async () => { window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { conversationId: 'task-1' } })) })
     expect(await detail().findByText(reply)).toBeInTheDocument()
 }
@@ -733,7 +741,7 @@ it('starts an opened or switched mission at the bottom', async () => {
     const snapshots: Record<string, unknown> = { 'conv-a': conversation([turn('a1', 'assistant', 'Working on A.')]), 'conv-b': conversation([turn('b1', 'assistant', 'Working on B.')]) }
     vi.mocked(fetch).mockImplementation(async url => {
         const id = /conversations\/([^/?]+)/.exec(String(url))?.[1]
-        return { ok: true, json: async () => id ? snapshots[id] : { missions: [a, b] } } as Response
+        return { ok: true, json: async () => id ? page(snapshots[id], id) : { missions: [a, b] } } as Response
     })
     scrollGeometry(200, 400)
     render(<MissionsPanel active />)
@@ -757,7 +765,7 @@ it('returns a mission to where the operator left it once its history loads', asy
     vi.mocked(fetch).mockImplementation(async url => {
         const id = /conversations\/([^/?]+)/.exec(String(url))?.[1]
         if (id && held === null && returning) await new Promise<void>(resolve => { held = resolve })
-        return { ok: true, json: async () => id ? snapshots[id] : { missions: [a, b] } } as Response
+        return { ok: true, json: async () => id ? page(snapshots[id], id) : { missions: [a, b] } } as Response
     })
     const geometry = scrollGeometry(200, 400)
     render(<MissionsPanel active />)

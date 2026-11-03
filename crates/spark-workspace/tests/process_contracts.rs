@@ -135,56 +135,63 @@ fn stored_upserts(
         .collect()
 }
 
-/// The `conversation.snapshot` envelope a client behind `revision` receives.
+/// The wire rows of the `conversation.changes` envelope a live client
+/// behind `since` receives.
 #[allow(dead_code)]
-fn live_snapshot_state(
+fn live_change_rows(
     settings: &spark_common::settings::SparkSettings,
     conversation_id: &str,
     project_path: &str,
-    revision: i64,
-) -> serde_json::Value {
-    let envelopes = spark_workspace::live::conversation_envelopes_after(
-        settings,
-        &shared_store(&settings.data_dir),
+    since: i64,
+) -> Vec<serde_json::Value> {
+    let service = conversations(settings.clone());
+    let generation = service.store().database().generation().to_string();
+    let (envelope, _) = spark_workspace::live::conversation_changes_envelope(
+        &service,
         conversation_id,
         project_path,
-        revision,
+        &generation,
+        since,
     )
-    .expect("live envelopes");
-    assert_eq!(envelopes.len(), 1, "one snapshot replaces journal replay");
-    assert_eq!(envelopes[0].event_type, "conversation.snapshot");
-    envelopes[0].payload["state"].clone()
+    .expect("live changes");
+    assert_eq!(envelope.event_type, "conversation.changes");
+    envelope.payload["rows"].as_array().expect("rows").clone()
 }
 
-/// Live envelopes for the stored turn and segment rows, followed by the
-/// snapshot envelope a client behind them receives.
+/// The conversation state a live client behind `since` rebuilds from its
+/// `conversation.changes` rows: the conversation row's metadata, plus its
+/// turns, segments and artifact collections.
 #[allow(dead_code)]
-fn stored_live_envelopes(
+fn live_rows_state(
     settings: &spark_common::settings::SparkSettings,
     conversation_id: &str,
     project_path: &str,
-) -> Vec<spark_workspace::LiveEnvelope> {
-    let mut envelopes: Vec<_> = stored_upserts(settings, conversation_id)
-        .into_iter()
-        .map(|payload| {
-            let revision = payload["revision"].as_i64().unwrap_or(0);
-            spark_workspace::live::conversation_event_envelope(
-                conversation_id,
-                project_path,
-                payload,
-                revision,
-            )
-        })
-        .collect();
-    envelopes.extend(
-        spark_workspace::live::conversation_envelopes_after(
-            settings,
-            &shared_store(&settings.data_dir),
-            conversation_id,
-            project_path,
-            0,
-        )
-        .expect("live envelopes"),
-    );
-    envelopes
+    since: i64,
+) -> serde_json::Value {
+    let mut state = serde_json::json!({"turns": [], "segments": []});
+    for row in live_change_rows(settings, conversation_id, project_path, since) {
+        if row["deleted"] == true {
+            continue;
+        }
+        let payload = row["payload"].clone();
+        match row["kind"].as_str() {
+            Some("conversation") => {
+                for (key, value) in payload["metadata"].as_object().into_iter().flatten() {
+                    state[key] = value.clone();
+                }
+                state["settings"] = payload["settings"].clone();
+            }
+            Some("turn") => state["turns"].as_array_mut().unwrap().push(payload),
+            Some("segment") => state["segments"].as_array_mut().unwrap().push(payload),
+            Some("artifact") => {
+                let collection = row["collection"].as_str().expect("collection");
+                if !state[collection].is_array() {
+                    state[collection] = serde_json::json!([]);
+                }
+                state[collection].as_array_mut().unwrap().push(payload);
+            }
+            _ => {}
+        }
+    }
+    state
 }

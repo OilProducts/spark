@@ -61,6 +61,13 @@ interface ProjectConversationHistoryProps {
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
     /** Resends a failed turn's message. */
     onRetryTurn?: (turnId: string) => void | Promise<void>
+    /** The chat was deleted, or is gone after a reset. */
+    isConversationUnavailable?: boolean
+    /** An older page exists before the loaded messages. */
+    hasOlderMessages?: boolean
+    isLoadingOlderMessages?: boolean
+    olderMessagesError?: string | null
+    onLoadOlderMessages?: () => void | Promise<void>
 }
 
 const RequestUserInputRow = memo(function RequestUserInputRow({
@@ -310,6 +317,11 @@ export function ProjectConversationHistory({
     onReviewProposedPlan,
     onOpenFlowRun,
     onRetryTurn,
+    isConversationUnavailable = false,
+    hasOlderMessages = false,
+    isLoadingOlderMessages = false,
+    olderMessagesError = null,
+    onLoadOlderMessages,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const onPlanReviewNoteChange = useCallback((proposedPlanId: string, value: string) => {
@@ -396,6 +408,28 @@ export function ProjectConversationHistory({
 
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
+            {olderMessagesError ? (
+                <div role="alert" className="flex flex-wrap items-center justify-center gap-2 text-sm text-destructive">
+                    <span>{olderMessagesError}</span>
+                    <Button type="button" variant="outline" size="xs" onClick={() => { void onLoadOlderMessages?.() }}>
+                        Retry
+                    </Button>
+                </div>
+            ) : hasOlderMessages ? (
+                <div className="flex justify-center">
+                    <Button
+                        type="button"
+                        data-testid="project-load-older-messages"
+                        variant="ghost"
+                        size="xs"
+                        disabled={isLoadingOlderMessages}
+                        aria-busy={isLoadingOlderMessages}
+                        onClick={() => { void onLoadOlderMessages?.() }}
+                    >
+                        {isLoadingOlderMessages ? 'Loading older messages…' : 'Load older messages'}
+                    </Button>
+                </div>
+            ) : null}
             <Transcript
                 data-testid="project-ai-conversation-history-list"
                 testIdPrefix="project"
@@ -403,7 +437,9 @@ export function ProjectConversationHistory({
                 showThinking={showThinking}
                 formatTimestamp={formatConversationTimestamp}
                 loading={isConversationHistoryLoading}
-                empty={activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
+                empty={isConversationUnavailable
+                    ? 'This chat is no longer available.'
+                    : activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
                 conversation={conversation}
                 expansion={expansion}
                 attachmentUrl={attachmentUrl}

@@ -137,8 +137,8 @@ impl Harness {
     }
     /// A user message typed into a conversation; its turn is left running.
     fn user_turn(&self, conversation_id: &str) -> AgentTurnRequest {
-        let (prepared, _) = self
-            .conversations()
+        let conversations = self.conversations();
+        let (prepared, _) = conversations
             .send_turn(
                 conversation_id,
                 ConversationTurnRequest {
@@ -148,7 +148,9 @@ impl Harness {
                 },
             )
             .unwrap();
-        prepared.unwrap().agent_turn_request
+        conversations
+            .prepare_agent_turn_request(&prepared.unwrap())
+            .unwrap()
     }
 }
 
@@ -255,9 +257,11 @@ fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
     harness.message(COORDINATOR, "One");
     assert_eq!(harness.request(0).model.as_deref(), Some("role-model"));
     harness.finish_turn(COORDINATOR);
-    let revision = conversations
-        .get_snapshot(&coordinator, Some(&harness.project))
-        .unwrap()["revision"]
+    // Role state changes re-deliver the conversation row; the settings
+    // revision a save names stays that of the last committed change.
+    let revision = models(&coordinator)["revision"]
+        .as_str()
+        .unwrap()
         .to_string();
     conversations
         .update_conversation_settings(

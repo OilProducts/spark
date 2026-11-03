@@ -252,13 +252,104 @@ impl ConversationRepository {
             .map(|root| root.join(CODEX_JSONRPC_TRACE_FILE_NAME)))
     }
 
-    /// The legacy full snapshot of a live conversation, from its loaded state.
-    /// `None` when it is unknown, deleted, or bound to another project.
+    /// The full snapshot of a live conversation, from its loaded state: only
+    /// for explicit history and export consumers. `None` when it is unknown,
+    /// deleted, or bound to another project.
     pub fn read_snapshot(
         &self,
         conversation_id: &str,
         project_path: Option<&str>,
     ) -> Result<Option<Value>> {
+        self.read_loaded(conversation_id, project_path, |loaded| {
+            crate::conversation::snapshot_from_record(&loaded.record())
+        })
+    }
+
+    /// The snapshot-shaped head of a live conversation: its metadata, its
+    /// pending, streaming and queued turns with their segments and artifacts,
+    /// and artifacts awaiting review. Accepting a message or projecting a
+    /// running turn reads this, never history. Adds `derived_title` and
+    /// `completed_replies` for title generation, and `settings_revision`.
+    pub fn read_head(
+        &self,
+        conversation_id: &str,
+        project_path: Option<&str>,
+    ) -> Result<Option<Value>> {
+        self.read_loaded(conversation_id, project_path, |loaded| {
+            let mut head = crate::conversation::snapshot_from_record(&loaded.head());
+            head["derived_title"] = Value::from(loaded.derived_title());
+            // The last committed change: draft uploads and summary touches
+            // move the row revision, never this.
+            head["settings_revision"] = Value::from(loaded.meta.revision);
+            head["completed_replies"] = Value::from(loaded.completed_replies());
+            head
+        })
+    }
+
+    /// One turn of a live conversation, by id.
+    pub fn read_turn(&self, conversation_id: &str, turn_id: &str) -> Result<Option<Value>> {
+        Ok(self
+            .read_loaded(conversation_id, None, |loaded| {
+                loaded.turn(turn_id).map(serde_json::to_value)
+            })?
+            .flatten()
+            .transpose()
+            .map_err(|source| StorageError::JsonWrite {
+                path: PathBuf::from(conversation_id),
+                source,
+            })?)
+    }
+
+    /// One segment of a live conversation, by id.
+    pub fn read_segment(&self, conversation_id: &str, segment_id: &str) -> Result<Option<Value>> {
+        Ok(self
+            .read_loaded(conversation_id, None, |loaded| {
+                loaded.segment(segment_id).map(serde_json::to_value)
+            })?
+            .flatten()
+            .transpose()
+            .map_err(|source| StorageError::JsonWrite {
+                path: PathBuf::from(conversation_id),
+                source,
+            })?)
+    }
+
+    /// Re-deliver a conversation's summary row to summary subscribers, when
+    /// something outside the database decorates it (a standing role's state).
+    /// A conversation with no live row yet gets a placeholder revision.
+    pub fn touch_conversation(&self, conversation_id: &str, project_path: &str) -> Result<()> {
+        let Some(project_path) = self.conversation_project_path(conversation_id)? else {
+            let project_path = self
+                .store
+                .registry()
+                .project_paths(project_path)?
+                .project_path;
+            return self.store.touch_placeholder(conversation_id, &project_path);
+        };
+        let revision = self.store.with_conversation(conversation_id, |loaded| {
+            let Some(loaded) = loaded.as_mut() else {
+                return Ok(None);
+            };
+            let (revision, ()) = self
+                .store
+                .database()
+                .write(|tx| tx.touch(conversation_id))?;
+            loaded.revision = revision;
+            Ok(Some(revision))
+        })?;
+        if let Some(revision) = revision {
+            self.store
+                .notify_commit(revision, vec![(conversation_id.to_string(), project_path)]);
+        }
+        Ok(())
+    }
+
+    fn read_loaded<T>(
+        &self,
+        conversation_id: &str,
+        project_path: Option<&str>,
+        read: impl FnOnce(&crate::conversation::LoadedConversation) -> T,
+    ) -> Result<Option<T>> {
         let expected = project_path
             .and_then(non_empty_str)
             .map(|path| self.store.registry().project_paths(path))
@@ -270,9 +361,9 @@ impl ConversationRepository {
                 .filter(|loaded| {
                     expected
                         .as_deref()
-                        .is_none_or(|expected| loaded.record.meta.project_path == expected)
+                        .is_none_or(|expected| loaded.meta.project_path == expected)
                 })
-                .map(|loaded| crate::conversation::snapshot_from_record(&loaded.record)))
+                .map(|loaded| read(loaded)))
         })
     }
 
@@ -402,7 +493,7 @@ impl ConversationRepository {
         self.store.with_conversation(conversation_id, |loaded| {
             let Some(loaded) = loaded
                 .as_mut()
-                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .filter(|loaded| loaded.meta.project_path == project_path)
             else {
                 return Err(StorageError::ConversationCommitRejected {
                     conversation_id: conversation_id.to_string(),
@@ -490,16 +581,27 @@ impl ConversationRepository {
         let gate = self.store.project_gate(&project_paths.project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
         let root = project_paths.conversations_dir.join(conversation_id);
-        self.store.with_conversation(conversation_id, |loaded| {
-            if loaded.is_some() {
-                self.store
-                    .database()
-                    .write(|tx| tx.delete_conversation(conversation_id))?;
-                *loaded = None;
+        let deleted = self.store.with_conversation(conversation_id, |loaded| {
+            if loaded.is_none() {
+                return Ok(None);
             }
-            Ok(())
+            let (revision, _) = self
+                .store
+                .database()
+                .write(|tx| tx.delete_conversation(conversation_id))?;
+            *loaded = None;
+            Ok(Some(revision))
         })?;
         self.store.evict(&[conversation_id.to_string()]);
+        if let Some(revision) = deleted {
+            self.store.notify_commit(
+                revision,
+                vec![(
+                    conversation_id.to_string(),
+                    project_paths.project_path.clone(),
+                )],
+            );
+        }
         let cleanup = self.store.database().after_checkpoint(|view| {
             if view.conversation_is_live(conversation_id)? {
                 return Ok(());
@@ -573,7 +675,7 @@ impl ConversationRepository {
         if let Some(handle) = self.store.with_conversation(conversation_id, |loaded| {
             Ok(loaded
                 .as_ref()
-                .map(|loaded| loaded.record.meta.conversation_handle.clone()))
+                .map(|loaded| loaded.meta.conversation_handle.clone()))
         })? {
             return Ok(handle);
         }

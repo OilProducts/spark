@@ -5,47 +5,72 @@ import type {
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
     ApiHttpError,
+    compareRevisions,
+    conversationSummaryFromRow,
+    type ConversationBatch,
+    type ConversationPage,
+    type ConversationRow,
+    type ConversationRowPayload,
     type ConversationSegmentResponse,
-    type ConversationSegmentTombstoneEventResponse,
-    type ConversationSegmentUpsertEventResponse,
-    type ConversationSnapshotResponse,
     type ConversationStreamDeltaEventResponse,
     type ConversationSummaryResponse,
+    type ConversationSummarySnapshot,
     type ConversationTurnResponse,
-    type ConversationTurnUpsertEventResponse,
     type FlowLaunchResponse,
     type FlowRunRequestResponse,
     type ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
 import type { ProjectGitMetadata } from './presentation'
 import {
+    conversationRowKey,
+    mergeConversationRows,
     sanitizeStreamingTurnUpsert,
-    sortConversationSummaries,
     upsertConversationSummary,
+    type ConversationRows,
 } from './conversationState'
 import { buildConversationTimelineEntriesForTurn } from './conversationTimeline'
 import type { ConversationTimelineEntry } from './types'
 
-export type {
-    ConversationSnapshotResponse,
-    ConversationSummaryResponse,
-} from '@/lib/workspaceClient'
-
-export type ConversationStreamEvent =
-    | ConversationTurnUpsertEventResponse
-    | ConversationSegmentUpsertEventResponse
-    | ConversationSegmentTombstoneEventResponse
+export type { ConversationSummaryResponse } from '@/lib/workspaceClient'
 
 export type ConversationStreamDelta = ConversationStreamDeltaEventResponse
 
-export type NormalizedConversationRecord = {
-    model_settings_view?: ConversationSnapshotResponse['model_settings_view']
-    schema_version: ConversationSnapshotResponse['schema_version']
-    revision: ConversationSnapshotResponse['revision']
+/** What a conversation's loaded rows hold: its live cursor, loaded pages and stream overlay. */
+type ConversationWindowState = {
+    generation: string
+    /**
+     * The project path the client opened the conversation under. The server may spell a
+     * project's path differently (its normalized form); the client keeps its own.
+     */
+    projectPath: string | null
+    /** Live catch-up cursor, advanced only by windows and live batches; null before either. */
+    watermark: string | null
+    /** A live reset is pending: live batches are ignored until the next window. */
+    resetting: boolean
+    olderCursor: string | null
+    /** The oldest loaded page's first turn position; older turns that a delta brings stay hidden. */
+    windowStart: string | null
+    pinnedTurnIds: string[]
+    rows: ConversationRows
+    /** Uncommitted stream content shown over committed rows, until the row commits. */
+    streamTurnsById: Record<string, ConversationTurnResponse>
+    streamSegmentsById: Record<string, ConversationSegmentResponse>
+}
+
+/** The normalized rows and the transcript view derived from them. */
+export type NormalizedConversationRecord = ConversationWindowState & {
+    /** The conversation row's revision. */
+    revision: string
+    /** The last committed settings change's revision: what a settings write expects. */
+    settingsRevision: string
+    /** The newest applied row revision. */
+    latestRevision: string
+    deleted: boolean
+    model_settings_view?: ConversationRowPayload['model_settings_view']
     conversation_id: string
     conversation_handle: string | null
     project_path: string
-    chat_mode: ConversationSnapshotResponse['chat_mode']
+    chat_mode: ConversationRowPayload['chat_mode']
     provider?: string | null
     model: string | null
     reasoning_effort: string | null
@@ -56,7 +81,6 @@ export type NormalizedConversationRecord = {
     turnsById: Record<string, ConversationTurnResponse>
     orderedSegmentIdsByTurnId: Record<string, string[]>
     segmentsById: Record<string, ConversationSegmentResponse>
-    event_log: ConversationSnapshotResponse['event_log']
     flowRunRequestIds: string[]
     flowRunRequestsById: Record<string, FlowRunRequestResponse>
     flowLaunchIds: string[]
@@ -71,25 +95,15 @@ export type NormalizedConversationRecord = {
 export type ProjectConversationCacheState = {
     conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
+    /** Deleted conversations' tombstone revisions, so an older summary cannot bring one back. */
+    summaryTombstones?: Record<string, string>
+    /** The all-projects summary feed's catch-up cursor. */
+    summaryCursor?: { generation: string; watermark: string } | null
+    /** Conversations that were deleted or are gone after a reset. */
+    unavailableConversationIds?: Record<string, true>
     // Last applied live update's stream_sequence, by turn id.
     streamSequenceByTurnId?: Record<string, number>
 }
-
-export type ApplyConversationStreamEventResult =
-    | {
-        status: 'applied'
-        record: NormalizedConversationRecord
-        cache: ProjectConversationCacheState
-    }
-    | {
-        status: 'stale'
-        record: NormalizedConversationRecord
-        cache: ProjectConversationCacheState
-    }
-    | {
-        status: 'missing_record'
-        cache: ProjectConversationCacheState
-    }
 
 export const EMPTY_PROJECT_CONVERSATION_CACHE_STATE: ProjectConversationCacheState = {
     conversationsById: {},
@@ -226,64 +240,474 @@ export function resolveProjectPathValidation(
     }
 }
 
-function indexById<T extends { id: string }>(items: T[]): Record<string, T> {
-    return Object.fromEntries(items.map((item) => [item.id, item]))
+type RowOf<K extends ConversationRow['kind']> = Extract<ConversationRow, { kind: K }>
+
+/** Orders optional decimal strings; a missing one sorts last. */
+function compareOptionalDecimals(left: string | undefined, right: string | undefined): number {
+    if (left === undefined || right === undefined) {
+        return left === right ? 0 : left === undefined ? 1 : -1
+    }
+    return compareRevisions(left, right)
 }
 
-function mergeArtifactList<T extends { id: string }>(
-    currentIds: string[],
-    currentById: Record<string, T>,
-    incoming: T[] | undefined,
-): { ids: string[]; byId: Record<string, T> } {
-    if (!incoming || incoming.length === 0) {
-        return { ids: currentIds, byId: currentById }
+const turnKey = (conversationId: string, id: string) => conversationRowKey({ kind: 'turn', conversation_id: conversationId, id })
+const segmentKey = (conversationId: string, id: string) => conversationRowKey({ kind: 'segment', conversation_id: conversationId, id })
+
+function emptyWindow(generation: string, projectPath: string | null): ConversationWindowState {
+    return {
+        generation,
+        projectPath,
+        watermark: null,
+        resetting: false,
+        olderCursor: null,
+        windowStart: null,
+        pinnedTurnIds: [],
+        rows: {},
+        streamTurnsById: {},
+        streamSegmentsById: {},
     }
-    const nextIds = [...currentIds]
-    const nextById = { ...currentById }
-    incoming.forEach((item) => {
-        if (!nextById[item.id]) {
-            nextIds.push(item.id)
-        }
-        nextById[item.id] = item
-    })
-    return { ids: nextIds, byId: nextById }
+}
+
+function windowOf(record: NormalizedConversationRecord): ConversationWindowState {
+    const { generation, projectPath, watermark, resetting, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById } = record
+    return { generation, projectPath, watermark, resetting, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById }
+}
+
+/** A deleted conversation keeps only its tombstone: every child it had is invalid. */
+function dropChildrenOfDeletedConversation(conversationId: string, state: ConversationWindowState): ConversationWindowState {
+    const key = conversationRowKey({ kind: 'conversation', conversation_id: conversationId, id: conversationId })
+    const conversation = state.rows[key]
+    if (!conversation?.deleted || Object.keys(state.rows).length === 1) {
+        return state
+    }
+    return { ...state, rows: { [key]: conversation }, streamTurnsById: {}, streamSegmentsById: {} }
+}
+
+function sameTurnSegments(previous: NormalizedConversationRecord, turnId: string, segments: ConversationSegmentResponse[]) {
+    const previousIds = previous.orderedSegmentIdsByTurnId[turnId] ?? []
+    return previousIds.length === segments.length
+        && segments.every((segment, index) => previous.segmentsById[previousIds[index]] === segment)
 }
 
 /**
- * Snapshots don't carry a standing role, so its row keeps the role and title the server listed.
- * A summary the server published at a newer revision than the record outranks it.
+ * The visible transcript from normalized rows: turns by position, segments by turn then order,
+ * artifacts by collection then position, and each proposed plan linked to its source segment.
+ * A turn whose turn and segments are unchanged reuses `previous`'s timeline entries.
  */
-function upsertRecordSummary(
-    items: ConversationSummaryResponse[],
-    record: NormalizedConversationRecord,
-): ConversationSummaryResponse[] {
-    const existing = items.find((item) => item.conversation_id === record.conversation_id)
-    if (existing && existing.revision > record.revision) {
-        return items
+function deriveConversationRecord(
+    conversationId: string,
+    state: ConversationWindowState,
+    previous?: NormalizedConversationRecord,
+): NormalizedConversationRecord {
+    let conversation: RowOf<'conversation'> | undefined
+    const turnRows: RowOf<'turn'>[] = []
+    const segmentRows: RowOf<'segment'>[] = []
+    const artifactRows: Partial<Record<string, RowOf<'artifact'>[]>> = {}
+    let latestRevision = '0'
+    for (const row of Object.values(state.rows)) {
+        if (compareRevisions(row.revision, latestRevision) > 0) latestRevision = row.revision
+        if (row.kind === 'conversation') conversation = row
+        if (row.deleted) continue
+        if (row.kind === 'turn') turnRows.push(row)
+        else if (row.kind === 'segment') segmentRows.push(row)
+        else if (row.kind === 'artifact') (artifactRows[row.collection] ??= []).push(row)
     }
-    const summary = buildConversationSummaryFromRecord(record)
-    const role = existing?.standing_role
-    return upsertConversationSummary(items, role ? { ...summary, title: role.title, standing_role: role } : summary)
+    const artifacts = <T>(collection: string): T[] => (artifactRows[collection] ?? [])
+        .sort((left, right) => compareOptionalDecimals(left.position, right.position) || left.id.localeCompare(right.id))
+        .map((row) => row.payload as T)
+    const flowRunRequests = artifacts<FlowRunRequestResponse>('flow_run_requests')
+    const flowLaunches = artifacts<FlowLaunchResponse>('flow_launches')
+    const proposedPlans = artifacts<ProposedPlanArtifactResponse>('proposed_plans')
+
+    // Turns before the oldest loaded page stay hidden until that page loads; pinned ones show.
+    const pinned = new Set(state.pinnedTurnIds)
+    const isVisible = (row: RowOf<'turn'>) => state.olderCursor === null
+        || state.windowStart === null
+        || pinned.has(row.id)
+        || (row.position !== undefined && compareRevisions(row.position, state.windowStart) >= 0)
+    const turnsById: Record<string, ConversationTurnResponse> = {}
+    const orderedTurnIds = turnRows
+        .filter(isVisible)
+        .sort((left, right) => compareOptionalDecimals(left.position, right.position) || left.id.localeCompare(right.id))
+        .map((row) => {
+            turnsById[row.id] = state.streamTurnsById[row.id] ?? row.payload!
+            return row.id
+        })
+    Object.values(state.streamTurnsById).forEach((turn) => {
+        if (!state.rows[turnKey(conversationId, turn.id)]) {
+            turnsById[turn.id] = turn
+            orderedTurnIds.push(turn.id)
+        }
+    })
+
+    const planIdBySegmentId = new Map(proposedPlans.flatMap((plan) => plan.source_segment_id ? [[plan.source_segment_id, plan.id]] : []))
+    const ordered: Array<{ segment: ConversationSegmentResponse; order: string }> = segmentRows
+        .map((row) => ({ segment: state.streamSegmentsById[row.id] ?? row.payload!, order: row.order ?? '0' }))
+    Object.values(state.streamSegmentsById).forEach((segment) => {
+        if (!state.rows[segmentKey(conversationId, segment.id)]) {
+            ordered.push({ segment, order: Number.isSafeInteger(segment.order) && segment.order >= 0 ? String(segment.order) : '0' })
+        }
+    })
+    ordered.sort((left, right) => compareRevisions(left.order, right.order)
+        || left.segment.timestamp.localeCompare(right.segment.timestamp)
+        || left.segment.id.localeCompare(right.segment.id))
+    const segmentsById: Record<string, ConversationSegmentResponse> = {}
+    const orderedSegmentIdsByTurnId: Record<string, string[]> = {}
+    const segmentsByTurnId: Record<string, ConversationSegmentResponse[]> = {}
+    ordered.forEach(({ segment: committed }) => {
+        if (!turnsById[committed.turn_id]) return
+        const linkedPlanId = committed.artifact_id ? undefined : planIdBySegmentId.get(committed.id)
+        const segment = linkedPlanId ? { ...committed, artifact_id: linkedPlanId } : committed
+        segmentsById[segment.id] = segment
+        ;(orderedSegmentIdsByTurnId[segment.turn_id] ??= []).push(segment.id)
+        ;(segmentsByTurnId[segment.turn_id] ??= []).push(segment)
+    })
+
+    const timelineEntryIds: string[] = []
+    const timelineEntriesById: Record<string, ConversationTimelineEntry> = {}
+    const timelineEntryIdsByTurnId: Record<string, string[]> = {}
+    orderedTurnIds.forEach((turnId) => {
+        const turn = turnsById[turnId]
+        const segments = segmentsByTurnId[turnId] ?? []
+        const previousIds = previous?.timelineEntryIdsByTurnId[turnId]
+        const entries = previous && previousIds && previous.turnsById[turnId] === turn && sameTurnSegments(previous, turnId, segments)
+            ? previousIds.map((id) => previous.timelineEntriesById[id])
+            : buildConversationTimelineEntriesForTurn(turn, segments)
+        timelineEntryIdsByTurnId[turnId] = entries.map((entry) => {
+            timelineEntriesById[entry.id] = entry
+            timelineEntryIds.push(entry.id)
+            return entry.id
+        })
+    })
+
+    const payload = conversation?.payload ?? null
+    return {
+        ...state,
+        revision: conversation?.revision ?? '0',
+        settingsRevision: payload?.settings_revision ?? '0',
+        latestRevision,
+        deleted: conversation?.deleted === true,
+        model_settings_view: payload?.model_settings_view,
+        conversation_id: conversationId,
+        conversation_handle: payload?.handle ?? null,
+        project_path: state.projectPath ?? payload?.project_path ?? previous?.project_path ?? '',
+        chat_mode: payload?.chat_mode ?? 'chat',
+        provider: payload?.provider ?? null,
+        model: payload?.model ?? null,
+        reasoning_effort: payload?.reasoning_effort ?? null,
+        title: payload?.title ?? 'New thread',
+        created_at: payload?.created_at ?? '',
+        updated_at: payload?.updated_at ?? '',
+        orderedTurnIds,
+        turnsById,
+        orderedSegmentIdsByTurnId,
+        segmentsById,
+        flowRunRequestIds: flowRunRequests.map((request) => request.id),
+        flowRunRequestsById: Object.fromEntries(flowRunRequests.map((request) => [request.id, request])),
+        flowLaunchIds: flowLaunches.map((launch) => launch.id),
+        flowLaunchesById: Object.fromEntries(flowLaunches.map((launch) => [launch.id, launch])),
+        proposedPlanIds: proposedPlans.map((plan) => plan.id),
+        proposedPlansById: Object.fromEntries(proposedPlans.map((plan) => [plan.id, plan])),
+        timelineEntryIds,
+        timelineEntriesById,
+        timelineEntryIdsByTurnId,
+    }
 }
 
-function buildConversationSummaryFromRecord(record: NormalizedConversationRecord): ConversationSummaryResponse {
-    const lastMessageTurn = record.orderedTurnIds
-        .map((turnId) => record.turnsById[turnId])
-        .filter((turn) => turn?.kind === 'message' && typeof turn.content === 'string' && turn.content.trim().length > 0)
-        .slice(-1)[0]
+function pageStart(page: ConversationPage): string | null {
+    const pageTurnIds = new Set(page.turn_ids)
+    return page.rows.reduce<string | null>((start, row) => (
+        row.kind === 'turn' && row.position !== undefined && pageTurnIds.has(row.id)
+            && (start === null || compareRevisions(row.position, start) < 0)
+            ? row.position
+            : start
+    ), null)
+}
+
+/**
+ * A `window` page replaces the loaded window: history and cursors go, but rows a live batch
+ * applied after the page's read survive it. An `older` page only adds rows, by revision, and
+ * never moves the live cursor.
+ */
+export function applyConversationPage(
+    record: NormalizedConversationRecord | undefined,
+    page: ConversationPage,
+    mode: 'window' | 'older',
+    projectPath?: string,
+): NormalizedConversationRecord | undefined {
+    const sameGeneration = record?.generation === page.generation
+    if (mode === 'older') {
+        if (!record || !sameGeneration || record.deleted) {
+            return record
+        }
+        const start = pageStart(page)
+        return deriveConversationRecord(page.conversation_id, {
+            ...windowOf(record),
+            rows: mergeConversationRows(record.rows, page.rows),
+            olderCursor: page.older_cursor,
+            windowStart: record.windowStart === null || (start !== null && compareRevisions(start, record.windowStart) < 0)
+                ? start
+                : record.windowStart,
+        }, record)
+    }
+    const newer = record && sameGeneration
+        ? Object.values(record.rows).filter((row) => compareRevisions(row.revision, page.watermark) > 0)
+        : []
+    const rows = mergeConversationRows(mergeConversationRows({}, page.rows), newer)
+    const keepsWatermark = record && sameGeneration && !record.resetting && record.watermark !== null
+        && compareRevisions(record.watermark, page.watermark) > 0
+    return deriveConversationRecord(page.conversation_id, dropChildrenOfDeletedConversation(page.conversation_id, {
+        generation: page.generation,
+        projectPath: projectPath ?? record?.projectPath ?? null,
+        watermark: keepsWatermark ? record.watermark : page.watermark,
+        resetting: false,
+        olderCursor: page.older_cursor,
+        windowStart: pageStart(page),
+        pinnedTurnIds: page.pinned_turn_ids,
+        rows,
+        ...(sameGeneration ? settleStreamOverlay(record!, rows, page.rows) : { streamTurnsById: {}, streamSegmentsById: {} }),
+    }), sameGeneration ? record : undefined)
+}
+
+/**
+ * The stream overlay once committed rows land: a committed segment replaces its streamed copy,
+ * a finished turn drops everything it streamed, and a running turn's commit without its text
+ * keeps the text it showed.
+ */
+function settleStreamOverlay(
+    record: NormalizedConversationRecord,
+    rows: ConversationRows,
+    incoming: ConversationRow[],
+): Pick<ConversationWindowState, 'streamTurnsById' | 'streamSegmentsById'> {
+    let streamTurnsById = record.streamTurnsById
+    let streamSegmentsById = record.streamSegmentsById
+    incoming.forEach((row) => {
+        if (rows[conversationRowKey(row)] !== row) return
+        if (row.kind === 'segment' && streamSegmentsById[row.id]) {
+            streamSegmentsById = { ...streamSegmentsById }
+            delete streamSegmentsById[row.id]
+        }
+        if (row.kind === 'turn') {
+            // A finished turn's committed segments replace everything it streamed.
+            if (row.deleted || (row.payload?.status !== 'pending' && row.payload?.status !== 'streaming')) {
+                const kept = Object.values(streamSegmentsById).filter((segment) => segment.turn_id !== row.id)
+                if (kept.length !== Object.keys(streamSegmentsById).length) {
+                    streamSegmentsById = Object.fromEntries(kept.map((segment) => [segment.id, segment]))
+                }
+            }
+            // A running turn's commit without its streamed text keeps the text it showed.
+            const shown = streamTurnsById[row.id] ?? record.turnsById[row.id]
+            const kept = row.payload && shown ? sanitizeStreamingTurnUpsert(shown, row.payload) : row.payload
+            if (kept !== row.payload || streamTurnsById[row.id]) {
+                streamTurnsById = { ...streamTurnsById }
+                if (kept && kept !== row.payload) streamTurnsById[row.id] = kept
+                else delete streamTurnsById[row.id]
+            }
+        }
+    })
+    return { streamTurnsById, streamSegmentsById }
+}
+
+/**
+ * Applies a whole batch by row revision. Only a `live` batch advances the catch-up cursor; a
+ * `mutation` result may omit concurrent changes. A mutation can start a conversation the client
+ * has not loaded, such as a new thread.
+ */
+export function applyConversationBatch(
+    record: NormalizedConversationRecord | undefined,
+    conversationId: string,
+    batch: ConversationBatch,
+    kind: 'live' | 'mutation',
+    projectPath?: string,
+): NormalizedConversationRecord | undefined {
+    if (!record) {
+        return kind === 'mutation'
+            ? deriveConversationRecord(conversationId, dropChildrenOfDeletedConversation(conversationId, {
+                ...emptyWindow(batch.generation, projectPath ?? null),
+                rows: mergeConversationRows({}, batch.rows),
+            }))
+            : undefined
+    }
+    if (record.generation !== batch.generation || (kind === 'live' && record.resetting)) {
+        return record
+    }
+    const rows = mergeConversationRows(record.rows, batch.rows)
+    const watermark = kind === 'live' && (record.watermark === null || compareRevisions(batch.watermark, record.watermark) > 0)
+        ? batch.watermark
+        : record.watermark
+    if (rows === record.rows && watermark === record.watermark) {
+        return record
+    }
+    const { streamTurnsById, streamSegmentsById } = settleStreamOverlay(record, rows, batch.rows)
+    return deriveConversationRecord(conversationId, dropChildrenOfDeletedConversation(conversationId, {
+        ...windowOf(record),
+        rows,
+        watermark,
+        streamTurnsById,
+        streamSegmentsById,
+    }), record)
+}
+
+/**
+ * The thread-list summaries a batch of conversation rows changes, by revision; tombstones remove.
+ * A summary is filed under `scopePath` when the rows answer a request for that project, else
+ * where it is already listed, and only otherwise under the row's own project path.
+ */
+function mergeSummaryRows(current: ProjectConversationCacheState, rows: ConversationRow[], scopePath?: string): ProjectConversationCacheState {
+    let lists = current.summariesByProjectPath
+    let tombstones = current.summaryTombstones ?? {}
+    const pathById = new Map<string, string>()
+    Object.entries(lists).forEach(([path, items]) => items.forEach((item) => pathById.set(item.conversation_id, path)))
+    rows.forEach((row) => {
+        if (row.kind !== 'conversation') return
+        const tombstone = tombstones[row.id]
+        const path = pathById.get(row.id)
+        const existing = path === undefined ? undefined : lists[path].find((item) => item.conversation_id === row.id)
+        if (
+            (tombstone !== undefined && compareRevisions(row.revision, tombstone) <= 0)
+            || (existing && compareRevisions(row.revision, existing.revision) <= 0)
+        ) {
+            return
+        }
+        if (lists === current.summariesByProjectPath) lists = { ...lists }
+        if (path !== undefined) {
+            lists[path] = lists[path].filter((item) => item.conversation_id !== row.id)
+            pathById.delete(row.id)
+        }
+        if (row.deleted || !row.payload) {
+            tombstones = { ...tombstones, [row.id]: row.revision }
+            return
+        }
+        const filedPath = scopePath ?? path ?? row.payload.project_path
+        let summary = { ...conversationSummaryFromRow({ ...row, payload: row.payload }), project_path: filedPath }
+        // A conversation-scope row doesn't carry the standing role the summary feed listed.
+        const role = row.payload.standing_role === undefined ? existing?.standing_role : null
+        if (role) summary = { ...summary, title: role.title, standing_role: role }
+        lists[summary.project_path] = upsertConversationSummary(lists[summary.project_path] ?? [], summary)
+        pathById.set(row.id, summary.project_path)
+    })
+    return lists === current.summariesByProjectPath && tombstones === (current.summaryTombstones ?? {})
+        ? current
+        : { ...current, summariesByProjectPath: lists, summaryTombstones: tombstones }
+}
+
+function withConversationRecord(
+    current: ProjectConversationCacheState,
+    record: NormalizedConversationRecord | undefined,
+    rows: ConversationRow[],
+): ProjectConversationCacheState {
+    if (!record || current.conversationsById[record.conversation_id] === record) {
+        return current
+    }
+    // An empty window doesn't show that a conversation gone after a reset exists again.
+    if (current.unavailableConversationIds?.[record.conversation_id] && !current.conversationsById[record.conversation_id]
+        && !rows.some((row) => row.kind === 'conversation' && !row.deleted)) {
+        return current
+    }
+    const unavailable = { ...current.unavailableConversationIds }
+    if (record.deleted) unavailable[record.conversation_id] = true
+    else delete unavailable[record.conversation_id]
+    return mergeSummaryRows({
+        ...current,
+        conversationsById: { ...current.conversationsById, [record.conversation_id]: record },
+        unavailableConversationIds: unavailable,
+    }, rows, record.projectPath ?? undefined)
+}
+
+export function applyConversationPageToCache(
+    current: ProjectConversationCacheState,
+    page: ConversationPage,
+    mode: 'window' | 'older',
+    projectPath?: string,
+): ProjectConversationCacheState {
+    return withConversationRecord(
+        current,
+        applyConversationPage(current.conversationsById[page.conversation_id], page, mode, projectPath),
+        page.rows,
+    )
+}
+
+export function applyConversationBatchToCache(
+    current: ProjectConversationCacheState,
+    conversationId: string,
+    batch: ConversationBatch,
+    kind: 'live' | 'mutation',
+    projectPath?: string,
+): ProjectConversationCacheState {
+    return withConversationRecord(
+        current,
+        applyConversationBatch(current.conversationsById[conversationId], conversationId, batch, kind, projectPath),
+        batch.rows,
+    )
+}
+
+/** After a live reset: stop applying live batches and forget the cursor until the next window. */
+export function resetConversationInCache(current: ProjectConversationCacheState, conversationId: string): ProjectConversationCacheState {
+    const record = current.conversationsById[conversationId]
+    return record
+        ? { ...current, conversationsById: { ...current.conversationsById, [conversationId]: { ...record, resetting: true, watermark: null } } }
+        : current
+}
+
+/** A conversation gone after a reset: its cache is discarded and it shows as unavailable. */
+export function markConversationUnavailableInCache(current: ProjectConversationCacheState, conversationId: string): ProjectConversationCacheState {
     return {
-        conversation_id: record.conversation_id,
-        conversation_handle: record.conversation_handle,
-        project_path: record.project_path,
-        title: record.title,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-        revision: record.revision,
-        last_message_preview: lastMessageTurn?.content || null,
-        launched_run_ids: getConversationFlowLaunches(record).flatMap((launch) => launch.run_id ? [launch.run_id] : []),
-        running: Object.values(record.turnsById).some((turn) => (
-            turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming')
-        )),
+        ...removeConversationFromCache(current, conversationId),
+        unavailableConversationIds: { ...current.unavailableConversationIds, [conversationId]: true },
+    }
+}
+
+/**
+ * Replaces the summaries in the snapshot's scope (one project, or every project) atomically.
+ * A summary missing from it is dropped unless a live row newer than its read put it there, and
+ * other scopes and open transcripts are untouched. An HTTP snapshot only lowers the live cursor,
+ * so the feed still catches up from it. `projectPath` is the project the client asked for, which
+ * scopes and files the list whatever spelling of it the server returns.
+ */
+export function applySummarySnapshotToCache(
+    current: ProjectConversationCacheState,
+    snapshot: ConversationSummarySnapshot,
+    source: 'live' | 'http',
+    projectPath: string | null = snapshot.project_path,
+): ProjectConversationCacheState {
+    const inScope = (path: string) => projectPath === null || path === projectPath
+    const cursor = current.summaryCursor
+    // Revisions from another store generation say nothing about this one.
+    const base = cursor && cursor.generation !== snapshot.generation
+        ? {
+            ...current,
+            summaryTombstones: {},
+            summariesByProjectPath: Object.fromEntries(Object.entries(current.summariesByProjectPath).filter(([path]) => !inScope(path))),
+        }
+        : current
+    const merged = mergeSummaryRows(base, snapshot.rows, projectPath ?? undefined)
+    const listed = new Set(snapshot.rows.map((row) => row.id))
+    const lists = { ...merged.summariesByProjectPath }
+    Object.keys(lists).forEach((path) => {
+        if (inScope(path)) {
+            lists[path] = lists[path].filter((item) => (
+                listed.has(item.conversation_id) || compareRevisions(item.revision, snapshot.watermark) > 0
+            ))
+        }
+    })
+    if (projectPath !== null) {
+        lists[projectPath] ??= []
+    }
+    const keepsCursor = source === 'http' && cursor && cursor.generation === snapshot.generation
+        && compareRevisions(cursor.watermark, snapshot.watermark) <= 0
+    return {
+        ...merged,
+        summariesByProjectPath: lists,
+        summaryCursor: keepsCursor ? cursor : { generation: snapshot.generation, watermark: snapshot.watermark },
+    }
+}
+
+export function applySummaryBatchToCache(current: ProjectConversationCacheState, batch: ConversationBatch): ProjectConversationCacheState {
+    const cursor = current.summaryCursor
+    const advances = !cursor || cursor.generation !== batch.generation || compareRevisions(batch.watermark, cursor.watermark) > 0
+    return {
+        ...mergeSummaryRows(current, batch.rows),
+        summaryCursor: advances ? { generation: batch.generation, watermark: batch.watermark } : cursor,
     }
 }
 
@@ -308,389 +732,6 @@ export function getConversationProposedPlans(record: NormalizedConversationRecor
     return record ? record.proposedPlanIds.map((id) => record.proposedPlansById[id]).filter(Boolean) : []
 }
 
-function rebuildTurnTimelineEntries(
-    record: NormalizedConversationRecord,
-    turnId: string,
-): NormalizedConversationRecord {
-    const turn = record.turnsById[turnId]
-    const previousTurnEntryIds = record.timelineEntryIdsByTurnId[turnId] || []
-    const previousTurnEntryIdSet = new Set(previousTurnEntryIds)
-    const nextTurnEntries = turn
-        ? buildConversationTimelineEntriesForTurn(
-            turn,
-            (record.orderedSegmentIdsByTurnId[turnId] || [])
-                .map((segmentId) => record.segmentsById[segmentId])
-                .filter(Boolean),
-        )
-        : []
-    const nextTurnEntryIds = nextTurnEntries.map((entry) => entry.id)
-    const nextTimelineEntriesById = { ...record.timelineEntriesById }
-    previousTurnEntryIds.forEach((entryId) => {
-        delete nextTimelineEntriesById[entryId]
-    })
-    nextTurnEntries.forEach((entry) => {
-        nextTimelineEntriesById[entry.id] = entry
-    })
-
-    let inserted = false
-    const nextTimelineEntryIds = record.timelineEntryIds.flatMap((entryId) => {
-        if (!previousTurnEntryIdSet.has(entryId)) {
-            return [entryId]
-        }
-        if (inserted) {
-            return []
-        }
-        inserted = true
-        return nextTurnEntryIds
-    })
-    if (!inserted && nextTurnEntryIds.length > 0) {
-        const turnIndex = record.orderedTurnIds.indexOf(turnId)
-        let insertAt = nextTimelineEntryIds.length
-        for (let index = turnIndex + 1; index < record.orderedTurnIds.length; index += 1) {
-            const followingEntryId = record.timelineEntryIdsByTurnId[record.orderedTurnIds[index]]?.[0]
-            if (followingEntryId) {
-                const followingIndex = nextTimelineEntryIds.indexOf(followingEntryId)
-                if (followingIndex >= 0) {
-                    insertAt = followingIndex
-                    break
-                }
-            }
-        }
-        nextTimelineEntryIds.splice(insertAt, 0, ...nextTurnEntryIds)
-    }
-
-    return {
-        ...record,
-        timelineEntryIds: nextTimelineEntryIds,
-        timelineEntriesById: nextTimelineEntriesById,
-        timelineEntryIdsByTurnId: {
-            ...record.timelineEntryIdsByTurnId,
-            [turnId]: nextTurnEntryIds,
-        },
-    }
-}
-
-function buildTimelineEntriesForOrderedTurns(record: Pick<
-    NormalizedConversationRecord,
-    'orderedTurnIds' | 'turnsById' | 'orderedSegmentIdsByTurnId' | 'segmentsById'
->): Pick<
-    NormalizedConversationRecord,
-    'timelineEntryIds' | 'timelineEntriesById' | 'timelineEntryIdsByTurnId'
-> {
-    const timelineEntryIds: string[] = []
-    const timelineEntriesById: Record<string, ConversationTimelineEntry> = {}
-    const timelineEntryIdsByTurnId: Record<string, string[]> = {}
-
-    record.orderedTurnIds.forEach((turnId) => {
-        const turn = record.turnsById[turnId]
-        if (!turn) {
-            timelineEntryIdsByTurnId[turnId] = []
-            return
-        }
-        const entries = buildConversationTimelineEntriesForTurn(
-            turn,
-            (record.orderedSegmentIdsByTurnId[turnId] || [])
-                .map((segmentId) => record.segmentsById[segmentId])
-                .filter(Boolean),
-        )
-        const entryIds = entries.map((entry) => entry.id)
-        timelineEntryIds.push(...entryIds)
-        timelineEntryIdsByTurnId[turnId] = entryIds
-        entries.forEach((entry) => {
-            timelineEntriesById[entry.id] = entry
-        })
-    })
-
-    return {
-        timelineEntryIds,
-        timelineEntriesById,
-        timelineEntryIdsByTurnId,
-    }
-}
-
-export function hydrateConversationRecordFromSnapshot(
-    snapshot: ConversationSnapshotResponse,
-): NormalizedConversationRecord {
-    const orderedSegmentIdsByTurnId: Record<string, string[]> = {}
-    const segmentsById = indexById(snapshot.segments)
-    snapshot.segments.forEach((segment) => {
-        if (!orderedSegmentIdsByTurnId[segment.turn_id]) {
-            orderedSegmentIdsByTurnId[segment.turn_id] = []
-        }
-        orderedSegmentIdsByTurnId[segment.turn_id].push(segment.id)
-    })
-    Object.keys(orderedSegmentIdsByTurnId).forEach((turnId) => {
-        orderedSegmentIdsByTurnId[turnId].sort((leftId, rightId) => {
-            const left = segmentsById[leftId]
-            const right = segmentsById[rightId]
-            if (!left || !right) {
-                return leftId.localeCompare(rightId)
-            }
-            const orderDelta = left.order - right.order
-            if (orderDelta !== 0) {
-                return orderDelta
-            }
-            const timestampDelta = left.timestamp.localeCompare(right.timestamp)
-            return timestampDelta !== 0 ? timestampDelta : left.id.localeCompare(right.id)
-        })
-    })
-
-    const recordBase: NormalizedConversationRecord = {
-        model_settings_view: snapshot.model_settings_view,
-        schema_version: snapshot.schema_version,
-        revision: snapshot.revision,
-        conversation_id: snapshot.conversation_id,
-        conversation_handle: snapshot.conversation_handle ?? null,
-        project_path: snapshot.project_path,
-        chat_mode: snapshot.chat_mode,
-        provider: snapshot.provider ?? null,
-        model: snapshot.model ?? null,
-        reasoning_effort: snapshot.reasoning_effort ?? null,
-        title: snapshot.title,
-        created_at: snapshot.created_at,
-        updated_at: snapshot.updated_at,
-        orderedTurnIds: snapshot.turns.map((turn) => turn.id),
-        turnsById: indexById(snapshot.turns),
-        orderedSegmentIdsByTurnId,
-        segmentsById,
-        event_log: snapshot.event_log,
-        flowRunRequestIds: snapshot.flow_run_requests.map((request) => request.id),
-        flowRunRequestsById: indexById(snapshot.flow_run_requests),
-        flowLaunchIds: snapshot.flow_launches.map((launch) => launch.id),
-        flowLaunchesById: indexById(snapshot.flow_launches),
-        proposedPlanIds: (snapshot.proposed_plans || []).map((plan) => plan.id),
-        proposedPlansById: indexById(snapshot.proposed_plans || []),
-        timelineEntryIds: [],
-        timelineEntriesById: {},
-        timelineEntryIdsByTurnId: {},
-    }
-    return {
-        ...recordBase,
-        ...buildTimelineEntriesForOrderedTurns(recordBase),
-    }
-}
-
-function isConversationRecordAtLeastAsFreshAsSnapshot(
-    record: NormalizedConversationRecord,
-    snapshot: ConversationSnapshotResponse,
-): boolean {
-    return record.revision >= snapshot.revision
-}
-
-// A mid-turn commit (title, artifacts) publishes a snapshot without a running
-// turn's uncommitted live segments. Keep them until the turn's terminal commit,
-// which is authoritative.
-// ponytail: a segment dropped mid-turn by a snapshot lingers until that commit.
-function withLiveTurnContent(
-    snapshot: ConversationSnapshotResponse,
-    record: NormalizedConversationRecord,
-): ConversationSnapshotResponse {
-    const activeTurnIds = snapshot.turns
-        .filter((turn) => turn.status === 'pending' || turn.status === 'streaming')
-        .map((turn) => turn.id)
-    if (activeTurnIds.length === 0) {
-        return snapshot
-    }
-    const snapshotSegmentIds = new Set(snapshot.segments.map((segment) => segment.id))
-    const liveSegments = activeTurnIds.flatMap((turnId) => (record.orderedSegmentIdsByTurnId[turnId] || [])
-        .map((segmentId) => record.segmentsById[segmentId])
-        .filter((segment) => segment && !snapshotSegmentIds.has(segment.id)))
-    return {
-        ...snapshot,
-        turns: snapshot.turns.map((turn) => (activeTurnIds.includes(turn.id)
-            ? sanitizeStreamingTurnUpsert(record.turnsById[turn.id] || null, turn)
-            : turn)),
-        segments: [...snapshot.segments, ...liveSegments],
-    }
-}
-
-export function setProjectConversationSummaryList(
-    current: ProjectConversationCacheState,
-    projectPath: string,
-    summaries: ConversationSummaryResponse[],
-): ProjectConversationCacheState {
-    return {
-        ...current,
-        summariesByProjectPath: {
-            ...current.summariesByProjectPath,
-            [projectPath]: sortConversationSummaries(summaries),
-        },
-    }
-}
-
-export function applyConversationSnapshotToCache(
-    current: ProjectConversationCacheState,
-    projectPath: string,
-    snapshot: ConversationSnapshotResponse,
-) {
-    const scopedSnapshot = snapshot.project_path === projectPath
-        ? snapshot
-        : {
-            ...snapshot,
-            project_path: projectPath,
-        }
-    const existingRecord = current.conversationsById[scopedSnapshot.conversation_id]
-    if (existingRecord && isConversationRecordAtLeastAsFreshAsSnapshot(existingRecord, scopedSnapshot)) {
-        return {
-            applied: false,
-            cache: current,
-        }
-    }
-    const record = hydrateConversationRecordFromSnapshot(
-        existingRecord ? withLiveTurnContent(scopedSnapshot, existingRecord) : scopedSnapshot,
-    )
-
-    return {
-        applied: true,
-        record,
-        cache: {
-            ...current,
-            conversationsById: {
-                ...current.conversationsById,
-                [scopedSnapshot.conversation_id]: record,
-            },
-            summariesByProjectPath: {
-                ...current.summariesByProjectPath,
-                [projectPath]: upsertRecordSummary(current.summariesByProjectPath[projectPath] || [], record),
-            },
-        },
-    }
-}
-
-export function applyConversationStreamEventToCache(
-    current: ProjectConversationCacheState,
-    projectPath: string,
-    event: ConversationStreamEvent,
-): ApplyConversationStreamEventResult {
-    const cachedRecord = current.conversationsById[event.conversation_id]
-    if (cachedRecord && event.revision < cachedRecord.revision) {
-        return {
-            status: 'stale',
-            record: cachedRecord,
-            cache: current,
-        }
-    }
-    if (!cachedRecord) {
-        return {
-            status: 'missing_record',
-            cache: current,
-        }
-    }
-    const existingRecord = cachedRecord
-    let mergedRecord: NormalizedConversationRecord = {
-        ...existingRecord,
-        project_path: projectPath,
-        title: event.title,
-        updated_at: event.updated_at,
-        revision: event.revision,
-    }
-    if (event.type === 'turn_upsert') {
-        const currentTurn = existingRecord.turnsById[event.turn.id] || null
-        const turn = sanitizeStreamingTurnUpsert(currentTurn, event.turn)
-        // Like the server, a queued message moves to the end whenever it is rewritten.
-        const moves = currentTurn?.status === 'queued'
-        mergedRecord = {
-            ...mergedRecord,
-            chat_mode: event.turn.kind === 'mode_change'
-                ? (event.turn.content === 'plan' ? 'plan' : 'chat')
-                : existingRecord.chat_mode,
-            orderedTurnIds: !currentTurn
-                ? [...existingRecord.orderedTurnIds, turn.id]
-                : moves
-                    ? [...existingRecord.orderedTurnIds.filter((id) => id !== turn.id), turn.id]
-                    : existingRecord.orderedTurnIds,
-            turnsById: {
-                ...existingRecord.turnsById,
-                [turn.id]: turn,
-            },
-        }
-        mergedRecord = moves
-            ? { ...mergedRecord, ...buildTimelineEntriesForOrderedTurns(mergedRecord) }
-            : rebuildTurnTimelineEntries(mergedRecord, turn.id)
-    } else if (event.type === 'segment_upsert') {
-        const segment = event.segment
-        const flowRunRequests = mergeArtifactList(
-            existingRecord.flowRunRequestIds,
-            existingRecord.flowRunRequestsById,
-            event.flow_run_requests,
-        )
-        const flowLaunches = mergeArtifactList(
-            existingRecord.flowLaunchIds,
-            existingRecord.flowLaunchesById,
-            event.flow_launches,
-        )
-        const proposedPlans = mergeArtifactList(
-            existingRecord.proposedPlanIds,
-            existingRecord.proposedPlansById,
-            event.proposed_plans,
-        )
-        const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[segment.turn_id] || []
-        const nextTurnSegmentIds = turnSegmentIds.includes(segment.id)
-            ? turnSegmentIds
-            : [...turnSegmentIds, segment.id]
-        const nextSegmentsById = {
-            ...existingRecord.segmentsById,
-            [segment.id]: segment,
-        }
-        nextTurnSegmentIds.sort((leftId, rightId) => {
-            const left = nextSegmentsById[leftId]
-            const right = nextSegmentsById[rightId]
-            if (!left || !right) {
-                return leftId.localeCompare(rightId)
-            }
-            const orderDelta = left.order - right.order
-            if (orderDelta !== 0) {
-                return orderDelta
-            }
-            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
-        })
-        mergedRecord = {
-            ...mergedRecord,
-            segmentsById: nextSegmentsById,
-            orderedSegmentIdsByTurnId: {
-                ...existingRecord.orderedSegmentIdsByTurnId,
-                [segment.turn_id]: nextTurnSegmentIds,
-            },
-            flowRunRequestIds: flowRunRequests.ids,
-            flowRunRequestsById: flowRunRequests.byId,
-            flowLaunchIds: flowLaunches.ids,
-            flowLaunchesById: flowLaunches.byId,
-            proposedPlanIds: proposedPlans.ids,
-            proposedPlansById: proposedPlans.byId,
-        }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, segment.turn_id)
-    } else if (event.type === 'segment_tombstone') {
-        const remainingSegmentsById = { ...existingRecord.segmentsById }
-        delete remainingSegmentsById[event.segment_id]
-        const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[event.turn_id] || []
-        mergedRecord = {
-            ...mergedRecord,
-            segmentsById: remainingSegmentsById,
-            orderedSegmentIdsByTurnId: {
-                ...existingRecord.orderedSegmentIdsByTurnId,
-                [event.turn_id]: turnSegmentIds.filter((id) => id !== event.segment_id),
-            },
-        }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, event.turn_id)
-    }
-
-    return {
-        status: 'applied',
-        record: mergedRecord,
-        cache: {
-            ...current,
-            conversationsById: {
-                ...current.conversationsById,
-                [event.conversation_id]: mergedRecord,
-            },
-            summariesByProjectPath: {
-                ...current.summariesByProjectPath,
-                [projectPath]: upsertRecordSummary(current.summariesByProjectPath[projectPath] || [], mergedRecord),
-            },
-        },
-    }
-}
-
 export type ApplyTransientConversationEventResult =
     | {
         status: 'applied'
@@ -703,95 +744,42 @@ export type ApplyTransientConversationEventResult =
     }
 
 /**
- * Apply a transient stream delta to the render cache. Transients update the
- * visible turn/segment state but never advance the committed revision, never
- * touch summaries or artifact records, and are simply dropped when stale or
- * when no committed record exists yet — the next committed event or snapshot
- * restores durable state.
+ * Apply a transient stream delta over the committed rows. Transients update the visible
+ * turn/segment state but never change a row or a revision, never touch summaries or artifacts,
+ * and are simply dropped when stale or when no committed record exists yet; the turn's
+ * committed rows restore durable state.
  */
 export function applyTransientConversationEventToCache(
     current: ProjectConversationCacheState,
     event: ConversationStreamDeltaEventResponse,
 ): ApplyTransientConversationEventResult {
-    // Staleness is per turn: other commits during the turn raise the revision
+    // Staleness is per turn: other commits during the turn raise revisions
     // but don't make its live updates stale.
-    const existingRecord = current.conversationsById[event.conversation_id]
-    const turnStatus = existingRecord?.turnsById[event.turn_id]?.status
+    const record = current.conversationsById[event.conversation_id]
+    const turnStatus = record?.turnsById[event.turn_id]?.status
     const lastSequence = current.streamSequenceByTurnId?.[event.turn_id] ?? 0
     if (
-        !existingRecord
+        !record
+        || record.deleted
         || turnStatus === 'complete'
         || turnStatus === 'failed'
         || event.stream_sequence <= lastSequence
     ) {
         return { status: 'dropped', cache: current }
     }
-    let mergedRecord: NormalizedConversationRecord = existingRecord
+    let state = windowOf(record)
     if (event.delta_kind === 'turn_delta' && event.turn) {
-        const currentTurn = existingRecord.turnsById[event.turn.id] || null
-        const turn = sanitizeStreamingTurnUpsert(currentTurn, event.turn)
-        mergedRecord = {
-            ...existingRecord,
-            orderedTurnIds: existingRecord.turnsById[turn.id]
-                ? existingRecord.orderedTurnIds
-                : [...existingRecord.orderedTurnIds, turn.id],
-            turnsById: {
-                ...existingRecord.turnsById,
-                [turn.id]: turn,
-            },
-        }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, turn.id)
-    } else if (event.delta_kind === 'segment_delta' && event.segment) {
-        const segment = event.segment
-        const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[segment.turn_id] || []
-        const nextTurnSegmentIds = turnSegmentIds.includes(segment.id)
-            ? turnSegmentIds
-            : [...turnSegmentIds, segment.id]
-        const nextSegmentsById = {
-            ...existingRecord.segmentsById,
-            [segment.id]: segment,
-        }
-        nextTurnSegmentIds.sort((leftId, rightId) => {
-            const left = nextSegmentsById[leftId]
-            const right = nextSegmentsById[rightId]
-            if (!left || !right) {
-                return leftId.localeCompare(rightId)
-            }
-            const orderDelta = left.order - right.order
-            if (orderDelta !== 0) {
-                return orderDelta
-            }
-            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
-        })
-        mergedRecord = {
-            ...existingRecord,
-            segmentsById: nextSegmentsById,
-            orderedSegmentIdsByTurnId: {
-                ...existingRecord.orderedSegmentIdsByTurnId,
-                [segment.turn_id]: nextTurnSegmentIds,
-            },
-        }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, segment.turn_id)
-    } else if (event.delta_kind === 'token_usage' && event.token_usage) {
-        const turn = existingRecord.turnsById[event.turn_id]
-        if (!turn) {
-            return { status: 'dropped', cache: current }
-        }
-        mergedRecord = {
-            ...existingRecord,
-            turnsById: {
-                ...existingRecord.turnsById,
-                [event.turn_id]: {
-                    ...turn,
-                    token_usage: event.token_usage,
-                },
-            },
-        }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, event.turn_id)
+        const turn = sanitizeStreamingTurnUpsert(record.turnsById[event.turn.id] || null, event.turn)
+        state = { ...state, streamTurnsById: { ...state.streamTurnsById, [turn.id]: turn } }
+    } else if (event.delta_kind === 'segment_delta' && event.segment && !record.rows[segmentKey(record.conversation_id, event.segment.id)]?.deleted) {
+        state = { ...state, streamSegmentsById: { ...state.streamSegmentsById, [event.segment.id]: event.segment } }
+    } else if (event.delta_kind === 'token_usage' && event.token_usage && record.turnsById[event.turn_id]) {
+        const turn = { ...record.turnsById[event.turn_id], token_usage: event.token_usage }
+        state = { ...state, streamTurnsById: { ...state.streamTurnsById, [turn.id]: turn } }
     } else {
         return { status: 'dropped', cache: current }
     }
-
+    const mergedRecord = deriveConversationRecord(record.conversation_id, state, record)
     return {
         status: 'applied',
         record: mergedRecord,

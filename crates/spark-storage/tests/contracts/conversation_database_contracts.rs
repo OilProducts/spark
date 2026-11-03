@@ -466,7 +466,13 @@ fn pages_use_keyset_order_and_reset_only_when_existing_turns_move() {
     let newest = page(&database, None);
     assert_eq!(newest.turn_ids, ["t3", "t4"]);
     let ids: Vec<_> = newest.rows.iter().map(|row| row.id.as_str()).collect();
-    assert_eq!(ids, ["t3", "t4", "s3a", "s3b", "s4a", "s4b", "a4"]);
+    // a0 awaits review, so the window pins it although t0 is outside the page.
+    assert_eq!(ids, ["t3", "t4", "s3a", "s3b", "s4a", "s4b", "a4", "a0"]);
+    assert_eq!(
+        newest.pinned_artifact_ids,
+        [("proposed_plans".to_string(), "a0".to_string())]
+    );
+    assert!(newest.pinned_turn_ids.is_empty());
     let cursor = newest.older_cursor.clone().expect("older cursor");
     assert_eq!(cursor.opening_revision, newest.watermark);
 
@@ -501,6 +507,42 @@ fn pages_use_keyset_order_and_reset_only_when_existing_turns_move() {
             .unwrap(),
         PageRead::Page(_)
     ));
+}
+
+#[test]
+fn windows_pin_in_flight_turns_with_their_segments_outside_the_page() {
+    let (_temp, database) = open();
+    database
+        .write(|write| {
+            write.put_conversation(&conversation("c1", "/p", "t1"))?;
+            for position in 0..4 {
+                let id = format!("t{position}");
+                let mut row = turn("c1", &id, position);
+                if position == 0 {
+                    row.status = "queued".to_string();
+                }
+                if position == 1 {
+                    row.status = "streaming".to_string();
+                }
+                write.put_turn(&row)?;
+                write.put_segment(&segment("c1", &format!("s{position}"), &id, 0))?;
+            }
+            write.put_artifact(&ArtifactRow {
+                status: "complete".to_string(),
+                ..artifact("c1", "done", Some("t0"))
+            })
+        })
+        .unwrap();
+    let newest = page(&database, None);
+    assert_eq!(newest.turn_ids, ["t2", "t3"]);
+    assert_eq!(newest.pinned_turn_ids, ["t0", "t1"]);
+    let ids: Vec<_> = newest.rows.iter().map(|row| row.id.as_str()).collect();
+    // Settled artifacts of turns outside the page stay out of the window.
+    assert_eq!(ids, ["t2", "t3", "s2", "s3", "t0", "s0", "t1", "s1"]);
+    // An older page still returns a pinned turn in its place, and pins nothing twice.
+    let older = page(&database, newest.older_cursor.as_ref());
+    assert_eq!(older.turn_ids, ["t0", "t1"]);
+    assert!(older.pinned_turn_ids.is_empty());
 }
 
 #[test]
@@ -584,6 +626,8 @@ fn read_query_plans_use_page_change_and_summary_indexes() {
         ("page_turns", &["turns_page"]),
         ("page_segments", &["segments_page"]),
         ("page_artifacts", &["artifacts_owner"]),
+        ("pinned_turns", &["turns_status"]),
+        ("pinned_artifacts", &["artifacts_pending"]),
     ];
     let plans = database.read_query_plans().expect("plans");
     assert_eq!(plans.len(), expected.len());

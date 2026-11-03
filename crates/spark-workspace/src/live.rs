@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
-use spark_storage::conversation::TRANSIENT_STREAM_EVENT_TYPE;
 use spark_storage::ConversationStore;
 use std::sync::Arc;
 
-use crate::conversations::WorkspaceConversationService;
+use spark_storage::conversation::{
+    CatchUp, ChangeBatch, ChangeScope, EntityKind, EntityRow, PageCursor, PageRead, ResetReason,
+    TurnPage,
+};
+
+use crate::conversations::{MutationAck, TurnAcceptance, WorkspaceConversationService};
 use crate::triggers::WorkspaceTriggerService;
 use crate::{WorkspaceError, WorkspaceResult};
 
@@ -19,6 +23,7 @@ pub struct RawLiveQuery {
     pub conversation_id: Option<String>,
     pub conversation_project_path: Option<String>,
     pub conversation_revision: Option<String>,
+    pub conversation_generation: Option<String>,
     pub run_id: Option<String>,
     pub run_sequence: Option<String>,
     pub include_runs_overview: Option<String>,
@@ -30,6 +35,9 @@ pub struct RawLiveQuery {
     pub include_missions: Option<String>,
     pub missions_project_path: Option<String>,
     pub include_conversations: Option<String>,
+    pub conversations_project_path: Option<String>,
+    pub conversations_generation: Option<String>,
+    pub conversations_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +45,8 @@ pub struct LiveQuery {
     pub project_path: Option<String>,
     pub conversation_id: Option<String>,
     pub conversation_project_path: Option<String>,
-    pub conversation_revision: Option<i64>,
+    /// Catch-up cursor (generation, revision R) for the conversation scope.
+    pub conversation_cursor: Option<(String, i64)>,
     pub run_id: Option<String>,
     pub run_sequence: Option<u64>,
     pub include_runs_overview: bool,
@@ -48,8 +57,11 @@ pub struct LiveQuery {
     pub include_settings: bool,
     pub include_missions: bool,
     pub missions_project_path: Option<String>,
-    /// Thread-list changes for every conversation, in every project.
+    /// Thread-list summaries, of one project or of every project.
     pub include_conversations: bool,
+    pub conversations_project_path: Option<String>,
+    /// Catch-up cursor (generation, revision R) for the summary scope.
+    pub conversations_cursor: Option<(String, i64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -81,9 +93,15 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
     let conversation_id = trimmed(raw.conversation_id.as_deref());
     let conversation_project_path =
         normalize_project_path_opt(raw.conversation_project_path.as_deref())?;
-    let conversation_revision = parse_non_negative_i64(
+    let conversation_cursor = live_cursor(
+        raw.conversation_generation.as_deref(),
         raw.conversation_revision.as_deref(),
-        "conversation_revision",
+        "conversation",
+    )?;
+    let conversations_cursor = live_cursor(
+        raw.conversations_generation.as_deref(),
+        raw.conversations_revision.as_deref(),
+        "conversations",
     )?;
     let run_id = trimmed(raw.run_id.as_deref());
     let run_sequence = parse_non_negative_i64(raw.run_sequence.as_deref(), "run_sequence")?
@@ -131,7 +149,7 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
         project_path,
         conversation_id,
         conversation_project_path,
-        conversation_revision,
+        conversation_cursor,
         run_id,
         run_sequence,
         include_runs_overview,
@@ -143,7 +161,27 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
         include_missions: parse_bool(raw.include_missions.as_deref()),
         missions_project_path: normalize_project_path_opt(raw.missions_project_path.as_deref())?,
         include_conversations: parse_bool(raw.include_conversations.as_deref()),
+        conversations_project_path: normalize_project_path_opt(
+            raw.conversations_project_path.as_deref(),
+        )?,
+        conversations_cursor,
     })
+}
+
+/// A scope's catch-up cursor: its generation and revision come together.
+fn live_cursor(
+    generation: Option<&str>,
+    revision: Option<&str>,
+    scope: &str,
+) -> WorkspaceResult<Option<(String, i64)>> {
+    let revision = parse_non_negative_i64(revision, &format!("{scope}_revision"))?;
+    match (trimmed(generation), revision) {
+        (Some(generation), Some(revision)) => Ok(Some((generation, revision))),
+        (None, None) => Ok(None),
+        _ => Err(WorkspaceError::Validation(format!(
+            "{scope}_generation and {scope}_revision must be sent together."
+        ))),
+    }
 }
 
 pub fn initial_live_envelopes(
@@ -151,22 +189,8 @@ pub fn initial_live_envelopes(
     store: &Arc<ConversationStore>,
     query: &LiveQuery,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
+    // Conversation scopes initialize in the stream itself, after it subscribed.
     let mut envelopes = Vec::new();
-    if let Some(conversation_id) = query.conversation_id.as_deref() {
-        let project_path = query.conversation_project_path.as_deref().ok_or_else(|| {
-            WorkspaceError::Validation(
-                "conversation_project_path is required when conversation_id is provided."
-                    .to_string(),
-            )
-        })?;
-        envelopes.extend(conversation_envelopes(
-            settings,
-            store,
-            conversation_id,
-            project_path,
-            query.conversation_revision,
-        )?);
-    }
     if let Some(run_id) = query.run_id.as_deref() {
         envelopes.extend(run_envelopes(settings, run_id, query.run_sequence)?);
     }
@@ -190,37 +214,6 @@ pub fn initial_live_envelopes(
         )?);
     }
     Ok(envelopes)
-}
-
-pub fn conversation_envelopes_after(
-    settings: &SparkSettings,
-    store: &Arc<ConversationStore>,
-    conversation_id: &str,
-    project_path: &str,
-    revision: i64,
-) -> WorkspaceResult<Vec<LiveEnvelope>> {
-    conversation_envelopes(
-        settings,
-        store,
-        conversation_id,
-        project_path,
-        Some(revision),
-    )
-}
-
-pub fn conversation_snapshot_envelope(
-    settings: &SparkSettings,
-    store: &Arc<ConversationStore>,
-    conversation_id: &str,
-    project_path: &str,
-) -> WorkspaceResult<LiveEnvelope> {
-    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
-    let snapshot = service.get_snapshot(conversation_id, Some(project_path))?;
-    Ok(conversation_snapshot_envelope_from_state(
-        conversation_id,
-        project_path,
-        snapshot,
-    ))
 }
 
 pub fn run_envelopes_after(
@@ -471,114 +464,35 @@ pub fn envelope_matches_query(envelope: &LiveEnvelope, query: &LiveQuery) -> boo
                     .as_deref()
                     .is_none_or(|expected| envelope.project_path.as_deref() == Some(expected))
         }
-        "conversation_summary" => query.include_conversations,
         // The workflow log is a global, all-project feed by design.
         "workflow_log" => query.include_workflow_log,
         _ => false,
     }
 }
 
-/// A conversation's current snapshot when it is newer than the client's
-/// `revision` (or the client has none). Committed state is replayed as one
-/// snapshot rather than from a journal.
-fn conversation_envelopes(
-    settings: &SparkSettings,
-    store: &Arc<ConversationStore>,
-    conversation_id: &str,
-    project_path: &str,
-    revision: Option<i64>,
-) -> WorkspaceResult<Vec<LiveEnvelope>> {
-    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
-    let snapshot = service.get_snapshot(conversation_id, Some(project_path))?;
-    let snapshot_revision = value_revision(&snapshot).unwrap_or(0);
-    if revision.is_some_and(|revision| snapshot_revision <= revision) {
-        return Ok(Vec::new());
-    }
-    Ok(vec![conversation_snapshot_envelope_from_state(
-        conversation_id,
-        project_path,
-        snapshot,
-    )])
-}
-
-pub(crate) fn conversation_snapshot_envelope_from_state(
-    conversation_id: &str,
-    project_path: &str,
-    snapshot: Value,
-) -> LiveEnvelope {
-    let snapshot_revision = value_revision(&snapshot).unwrap_or(0);
-    LiveEnvelope {
-        event_type: "conversation.snapshot".to_string(),
-        project_path: Some(project_path.to_string()),
-        resource: LiveResource {
-            kind: "conversation".to_string(),
-            id: Some(conversation_id.to_string()),
-        },
-        cursor: Some(LiveCursor {
-            kind: "conversation_revision".to_string(),
-            value: snapshot_revision,
-        }),
-        payload: json!({ "state": snapshot }),
-        reason: None,
-    }
-}
-
+/// A transient stream delta as a live envelope: stream-local, carrying a
+/// stream-sequence cursor instead of a committed revision, never journaled.
 pub fn conversation_event_envelope(
     conversation_id: &str,
     project_path: &str,
     event: Value,
-    revision: i64,
 ) -> LiveEnvelope {
-    let raw_type = event.get("type").and_then(Value::as_str).unwrap_or("");
-    if raw_type == TRANSIENT_STREAM_EVENT_TYPE {
-        // Transient deltas are stream-local: they carry a stream-sequence
-        // cursor instead of a committed revision and are never journaled.
-        let stream_sequence = event
-            .get("stream_sequence")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        return LiveEnvelope {
-            event_type: "conversation.stream_delta".to_string(),
-            project_path: Some(project_path.to_string()),
-            resource: LiveResource {
-                kind: "conversation".to_string(),
-                id: Some(conversation_id.to_string()),
-            },
-            cursor: Some(LiveCursor {
-                kind: "conversation_stream_sequence".to_string(),
-                value: stream_sequence,
-            }),
-            payload: event,
-            reason: None,
-        };
-    }
-    let event_type = match raw_type {
-        "turn_upsert" => "conversation.turn_upsert".to_string(),
-        "segment_upsert" => "conversation.segment_upsert".to_string(),
-        "conversation_snapshot" => "conversation.snapshot".to_string(),
-        "" => "conversation.event".to_string(),
-        other => format!("conversation.{other}"),
-    };
-    let payload = if raw_type == "conversation_snapshot" {
-        event
-            .get("state")
-            .cloned()
-            .map_or_else(|| event.clone(), |state| json!({ "state": state }))
-    } else {
-        event
-    };
+    let stream_sequence = event
+        .get("stream_sequence")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     LiveEnvelope {
-        event_type,
+        event_type: "conversation.stream_delta".to_string(),
         project_path: Some(project_path.to_string()),
         resource: LiveResource {
             kind: "conversation".to_string(),
             id: Some(conversation_id.to_string()),
         },
         cursor: Some(LiveCursor {
-            kind: "conversation_revision".to_string(),
-            value: revision,
+            kind: "conversation_stream_sequence".to_string(),
+            value: stream_sequence,
         }),
-        payload,
+        payload: event,
         reason: None,
     }
 }
@@ -905,14 +819,6 @@ pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
             REASON,
         ));
     }
-    if let Some(conversation_id) = query.conversation_id.as_deref() {
-        envelopes.push(resync_required(
-            "conversation",
-            Some(conversation_id.to_string()),
-            query.conversation_project_path.clone(),
-            REASON,
-        ));
-    }
     if let Some(run_id) = query.run_id.as_deref() {
         envelopes.push(resync_required(
             "run",
@@ -945,42 +851,7 @@ pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
             REASON,
         ));
     }
-    if query.include_conversations {
-        envelopes.push(resync_required("conversation_summary", None, None, REASON));
-    }
     envelopes
-}
-
-pub fn conversation_summary_envelope(
-    summary: &crate::conversations::ConversationSummary,
-) -> LiveEnvelope {
-    LiveEnvelope {
-        event_type: "conversation.summary_upsert".to_string(),
-        project_path: Some(summary.project_path.clone()),
-        resource: LiveResource {
-            kind: "conversation_summary".to_string(),
-            id: Some(summary.conversation_id.clone()),
-        },
-        cursor: None,
-        payload: json!({ "conversation": summary }),
-        reason: None,
-    }
-}
-
-/// The thread-list summary of a stored conversation, for clients outside it.
-pub fn conversation_summary_envelope_for(
-    settings: &SparkSettings,
-    store: &Arc<ConversationStore>,
-    conversation_id: &str,
-    project_path: &str,
-) -> WorkspaceResult<Option<LiveEnvelope>> {
-    // Launch responses can carry a handle record's unresolved spelling of the path.
-    let project_path = normalized_record_path(project_path).unwrap_or_else(|| project_path.into());
-    Ok(
-        WorkspaceConversationService::new(settings.clone(), store.clone())
-            .thread_list_summary(conversation_id, &project_path)?
-            .map(|summary| conversation_summary_envelope(&summary)),
-    )
 }
 
 pub fn mission_upsert_envelope(mission: &crate::missions::MissionRecord) -> LiveEnvelope {
@@ -1014,13 +885,6 @@ fn resync_required(
         payload: json!({ "reason": reason }),
         reason: Some(reason.to_string()),
     }
-}
-
-fn value_revision(value: &Value) -> Option<i64> {
-    value
-        .get("revision")
-        .and_then(Value::as_i64)
-        .or_else(|| value.get("state")?.get("revision")?.as_i64())
 }
 
 fn public_run_record(record: attractor_core::RunRecord) -> Value {
@@ -1137,4 +1001,661 @@ impl EmptyStringFallback for String {
             self
         }
     }
+}
+
+// Conversation rows on the wire: revisions, positions and orders are
+// canonical decimal strings, since JSON numbers cannot hold every SQLite
+// integer. Envelopes for conversation scopes carry `cursor: null`; their
+// payload watermark is authoritative.
+
+/// Turns in a window when the browser does not ask for a size.
+pub const DEFAULT_PAGE_LIMIT: usize = 50;
+/// The largest window a browser may ask for.
+pub const MAX_PAGE_LIMIT: usize = 100;
+const MAX_PAGE_CURSOR_BYTES: usize = 2048;
+
+pub fn row_wire(row: &EntityRow) -> Value {
+    let mut wire = json!({
+        "kind": row.kind,
+        "conversation_id": row.conversation_id,
+        "id": row.id,
+        "revision": row.revision.to_string(),
+        "deleted": row.deleted,
+        "payload": row.payload,
+    });
+    if let Some(collection) = &row.collection {
+        wire["collection"] = json!(collection);
+    }
+    if let Some(turn_id) = &row.turn_id {
+        wire["turn_id"] = json!(turn_id);
+    }
+    if let Some(position) = row.position {
+        wire["position"] = json!(position.to_string());
+    }
+    if let Some(order) = row.order {
+        wire["order"] = json!(order.to_string());
+    }
+    wire
+}
+
+pub fn batch_wire(generation: &str, batch: &ChangeBatch) -> Value {
+    json!({
+        "generation": generation,
+        "from_revision": batch.from_revision.to_string(),
+        "watermark": batch.watermark.to_string(),
+        "rows": batch.rows.iter().map(row_wire).collect::<Vec<_>>(),
+    })
+}
+
+pub fn reset_wire(code: &str, reason: ResetReason, generation: &str, watermark: i64) -> Value {
+    json!({
+        "code": code,
+        "reason": reason,
+        "generation": generation,
+        "watermark": watermark.to_string(),
+    })
+}
+
+/// A settings, answer or review result for the browser, its conversation
+/// row decorated with the model-settings view.
+pub fn mutation_ack_wire(
+    service: &WorkspaceConversationService,
+    ack: MutationAck,
+) -> WorkspaceResult<Value> {
+    let generation = service.store().database().generation().to_string();
+    let changes = decorated_batch(service, ack.changes)?;
+    Ok(json!({
+        "generation": generation,
+        "revision": ack.revision.to_string(),
+        "changes": batch_wire(&generation, &changes),
+    }))
+}
+
+/// A send's acceptance for the browser. `client_turn_id` repeats the
+/// browser's id under the name it sent.
+pub fn acceptance_wire(
+    service: &WorkspaceConversationService,
+    acceptance: TurnAcceptance,
+) -> WorkspaceResult<Value> {
+    let generation = service.store().database().generation().to_string();
+    let changes = decorated_batch(service, acceptance.changes)?;
+    Ok(json!({
+        "generation": generation,
+        "revision": acceptance.revision.to_string(),
+        "user_turn_id": acceptance.user_turn_id,
+        "client_turn_id": acceptance.user_turn_id,
+        "assistant_turn_id": acceptance.assistant_turn_id,
+        "status": acceptance.status,
+        "changes": batch_wire(&generation, &changes),
+    }))
+}
+
+fn decorated_batch(
+    service: &WorkspaceConversationService,
+    mut batch: ChangeBatch,
+) -> WorkspaceResult<ChangeBatch> {
+    for row in &mut batch.rows {
+        if row.kind == EntityKind::Conversation {
+            service.decorate_conversation_row(row)?;
+        }
+    }
+    Ok(batch)
+}
+
+/// Why a conversation read did not return its rows.
+pub enum ConversationReadOutcome {
+    /// The rows, as wire JSON.
+    Rows(Value),
+    /// A `Reset` the browser answers by reloading the scope.
+    Reset(Value),
+}
+
+/// `GET /conversations/{id}`: the newest window, or the window older than
+/// `before`. Unknown and deleted conversations are not found.
+pub fn read_conversation_page(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    conversation_id: &str,
+    project_path: &str,
+    limit: usize,
+    before: Option<&str>,
+) -> WorkspaceResult<ConversationReadOutcome> {
+    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
+    let project_path = conversation_scope_project(store, conversation_id, project_path)?;
+    let database = store.database();
+    let generation = database.generation();
+    let cursor = match before {
+        Some(before) => {
+            let (cursor_generation, cursor) = decode_page_cursor(before, conversation_id)?;
+            if cursor_generation != generation {
+                let watermark = database.read(|read| Ok(read.watermark()))?;
+                return Ok(ConversationReadOutcome::Reset(reset_wire(
+                    "window_reset",
+                    ResetReason::GenerationChanged,
+                    generation,
+                    watermark,
+                )));
+            }
+            Some(cursor)
+        }
+        None => None,
+    };
+    let (watermark, page) = database.read(|read| {
+        Ok((
+            read.watermark(),
+            read.page(conversation_id, limit, cursor.as_ref())?,
+        ))
+    })?;
+    match page {
+        PageRead::Page(page) => {
+            if page
+                .conversation
+                .payload
+                .as_ref()
+                .and_then(|payload| payload["project_path"].as_str())
+                != Some(project_path.as_str())
+            {
+                return Err(WorkspaceError::NotFound(format!(
+                    "Unknown conversation: {conversation_id}"
+                )));
+            }
+            Ok(ConversationReadOutcome::Rows(page_wire(
+                &service,
+                generation,
+                conversation_id,
+                page,
+            )?))
+        }
+        PageRead::Missing => Err(WorkspaceError::NotFound(format!(
+            "Unknown conversation: {conversation_id}"
+        ))),
+        PageRead::Reset(reason) => Ok(ConversationReadOutcome::Reset(reset_wire(
+            "window_reset",
+            reason,
+            generation,
+            watermark,
+        ))),
+    }
+}
+
+/// `GET /conversations/{id}/changes`: the rows changed after `since`. A
+/// deleted conversation still answers with its tombstones.
+pub fn read_conversation_changes(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    conversation_id: &str,
+    project_path: &str,
+    generation: &str,
+    since: i64,
+) -> WorkspaceResult<ConversationReadOutcome> {
+    conversation_scope_project(store, conversation_id, project_path)?;
+    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
+    let (envelope, _) =
+        conversation_changes_envelope(&service, conversation_id, project_path, generation, since)?;
+    Ok(if envelope.event_type == "conversation.reset" {
+        ConversationReadOutcome::Reset(envelope.payload)
+    } else {
+        ConversationReadOutcome::Rows(envelope.payload)
+    })
+}
+
+/// `GET /projects/conversations`: every live summary row of one project, or
+/// of every project, at one watermark.
+pub fn read_conversation_summaries(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    project_path: Option<&str>,
+) -> WorkspaceResult<Value> {
+    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
+    Ok(conversations_snapshot_envelope(&service, project_path)?
+        .0
+        .payload)
+}
+
+/// The project path of a conversation scope, checked against the
+/// conversation's own binding (also for tombstones), never registering it.
+fn conversation_scope_project(
+    store: &Arc<ConversationStore>,
+    conversation_id: &str,
+    project_path: &str,
+) -> WorkspaceResult<String> {
+    let project_path = normalize_project_path_opt(Some(project_path))?
+        .ok_or_else(|| WorkspaceError::Validation("project_path is required.".to_string()))?;
+    let location = store
+        .database()
+        .read(|read| read.conversation_location(conversation_id))?;
+    if let Some((actual, _)) = location {
+        if actual != project_path {
+            return Err(WorkspaceError::Validation(
+                "Conversation is already bound to a different project path.".to_string(),
+            ));
+        }
+    }
+    Ok(project_path)
+}
+
+fn page_wire(
+    service: &WorkspaceConversationService,
+    generation: &str,
+    conversation_id: &str,
+    page: TurnPage,
+) -> WorkspaceResult<Value> {
+    let mut conversation = page.conversation;
+    service.decorate_conversation_row(&mut conversation)?;
+    let mut rows = vec![row_wire(&conversation)];
+    rows.extend(page.rows.iter().map(row_wire));
+    Ok(json!({
+        "generation": generation,
+        "watermark": page.watermark.to_string(),
+        "conversation_id": conversation_id,
+        "rows": rows,
+        "turn_ids": page.turn_ids,
+        "pinned_turn_ids": page.pinned_turn_ids,
+        "pinned_artifact_ids": page
+            .pinned_artifact_ids
+            .iter()
+            .map(|(collection, id)| json!({"collection": collection, "id": id}))
+            .collect::<Vec<_>>(),
+        "older_cursor": page
+            .older_cursor
+            .as_ref()
+            .map(|cursor| encode_page_cursor(generation, conversation_id, cursor)),
+    }))
+}
+
+/// An empty window: the conversation has no rows yet (or no longer).
+fn empty_page_wire(generation: &str, conversation_id: &str, watermark: i64) -> Value {
+    json!({
+        "generation": generation,
+        "watermark": watermark.to_string(),
+        "conversation_id": conversation_id,
+        "rows": [],
+        "turn_ids": [],
+        "pinned_turn_ids": [],
+        "pinned_artifact_ids": [],
+        "older_cursor": null,
+    })
+}
+
+/// Opaque but not secret: unpadded base64url of the keyset position JSON.
+pub fn encode_page_cursor(generation: &str, conversation_id: &str, cursor: &PageCursor) -> String {
+    let json = json!({
+        "v": 1,
+        "generation": generation,
+        "conversation_id": conversation_id,
+        "opening_revision": cursor.opening_revision.to_string(),
+        "before_position": cursor.before_position.to_string(),
+        "before_turn_id": cursor.before_turn_id,
+    });
+    base64url_encode(json.to_string().as_bytes())
+}
+
+/// The generation and keyset position of an older-page cursor issued for
+/// `conversation_id`; anything else is a validation error.
+pub fn decode_page_cursor(
+    value: &str,
+    conversation_id: &str,
+) -> WorkspaceResult<(String, PageCursor)> {
+    let invalid = || WorkspaceError::Validation("Invalid conversation page cursor.".to_string());
+    if value.len() > MAX_PAGE_CURSOR_BYTES {
+        return Err(invalid());
+    }
+    let bytes = base64url_decode(value).ok_or_else(invalid)?;
+    let json: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let decimal = |key: &str| -> WorkspaceResult<i64> {
+        let text = json[key].as_str().ok_or_else(invalid)?;
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        text.parse().map_err(|_| invalid())
+    };
+    if json["v"] != json!(1) || json["conversation_id"] != json!(conversation_id) {
+        return Err(invalid());
+    }
+    let generation = json["generation"].as_str().ok_or_else(invalid)?.to_string();
+    let before_turn_id = json["before_turn_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(invalid)?
+        .to_string();
+    Ok((
+        generation,
+        PageCursor {
+            opening_revision: decimal("opening_revision")?,
+            before_position: decimal("before_position")?,
+            before_turn_id,
+        },
+    ))
+}
+
+const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn base64url_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (index, byte)| {
+            n | (u32::from(*byte) << (16 - 8 * index))
+        });
+        for index in 0..=chunk.len() {
+            out.push(BASE64URL[(n >> (18 - 6 * index) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    for chunk in text.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (index, byte) in chunk.iter().enumerate() {
+            let value = BASE64URL.iter().position(|candidate| candidate == byte)? as u32;
+            n |= value << (18 - 6 * index);
+        }
+        for index in 0..chunk.len() - 1 {
+            out.push((n >> (16 - 8 * index)) as u8);
+        }
+    }
+    Some(out)
+}
+
+fn conversation_envelope(
+    event_type: &str,
+    conversation_id: &str,
+    project_path: &str,
+    payload: Value,
+) -> LiveEnvelope {
+    LiveEnvelope {
+        event_type: event_type.to_string(),
+        project_path: Some(project_path.to_string()),
+        resource: LiveResource {
+            kind: "conversation".to_string(),
+            id: Some(conversation_id.to_string()),
+        },
+        cursor: None,
+        payload,
+        reason: None,
+    }
+}
+
+fn conversations_envelope(
+    event_type: &str,
+    project_path: Option<&str>,
+    payload: Value,
+) -> LiveEnvelope {
+    LiveEnvelope {
+        event_type: event_type.to_string(),
+        project_path: project_path.map(str::to_string),
+        resource: LiveResource {
+            kind: "conversations".to_string(),
+            id: None,
+        },
+        cursor: None,
+        payload,
+        reason: None,
+    }
+}
+
+/// A single-conversation scope's newest window and its watermark. A
+/// conversation without rows gets an empty window.
+pub fn conversation_window_envelope(
+    service: &WorkspaceConversationService,
+    conversation_id: &str,
+    project_path: &str,
+) -> WorkspaceResult<(LiveEnvelope, i64)> {
+    let project_path = conversation_scope_project(service.store(), conversation_id, project_path)?;
+    let database = service.store().database();
+    let generation = database.generation();
+    let (watermark, page) = database.read(|read| {
+        Ok((
+            read.watermark(),
+            read.page(conversation_id, DEFAULT_PAGE_LIMIT, None)?,
+        ))
+    })?;
+    let payload = match page {
+        PageRead::Page(page) => page_wire(service, generation, conversation_id, page)?,
+        PageRead::Missing | PageRead::Reset(_) => {
+            empty_page_wire(generation, conversation_id, watermark)
+        }
+    };
+    Ok((
+        conversation_envelope(
+            "conversation.window",
+            conversation_id,
+            &project_path,
+            payload,
+        ),
+        watermark,
+    ))
+}
+
+/// A single-conversation scope's changed rows after `since`, and the new
+/// cursor; a reset ends the scope's cursor (`None`).
+pub fn conversation_changes_envelope(
+    service: &WorkspaceConversationService,
+    conversation_id: &str,
+    project_path: &str,
+    generation: &str,
+    since: i64,
+) -> WorkspaceResult<(LiveEnvelope, Option<i64>)> {
+    let database = service.store().database();
+    let (watermark, catch_up) = database.read(|read| {
+        Ok((
+            read.watermark(),
+            read.changes(
+                ChangeScope::Conversation(conversation_id),
+                generation,
+                since,
+            )?,
+        ))
+    })?;
+    Ok(match catch_up {
+        CatchUp::Batch(batch) => {
+            let watermark = batch.watermark;
+            let batch = decorated_batch(service, batch)?;
+            (
+                conversation_envelope(
+                    "conversation.changes",
+                    conversation_id,
+                    project_path,
+                    batch_wire(database.generation(), &batch),
+                ),
+                Some(watermark),
+            )
+        }
+        CatchUp::Reset(reason) => (
+            conversation_envelope(
+                "conversation.reset",
+                conversation_id,
+                project_path,
+                reset_wire("resync_required", reason, database.generation(), watermark),
+            ),
+            None,
+        ),
+    })
+}
+
+/// A summary scope's complete membership at one watermark: every live,
+/// listed conversation of the project (or of every project), decorated with
+/// standing roles, plus placeholder rows (revision 0) for roles without a
+/// conversation yet. Mission conversations and draft-only conversations are
+/// not listed.
+pub fn conversations_snapshot_envelope(
+    service: &WorkspaceConversationService,
+    project_path: Option<&str>,
+) -> WorkspaceResult<(LiveEnvelope, i64)> {
+    let project_path = normalize_project_path_opt(project_path)?;
+    let database = service.store().database();
+    let (watermark, rows) =
+        database.read(|read| Ok((read.watermark(), read.summaries(project_path.as_deref())?)))?;
+    let mut rows = listed_summary_rows(service, rows);
+    let projects = match project_path.as_deref() {
+        Some(project_path) => vec![project_path.to_string()],
+        None => spark_storage::ProjectRegistry::new(service.settings().data_dir.clone())
+            .list_project_records()?
+            .into_iter()
+            .map(|project| project.project_path)
+            .collect(),
+    };
+    let roles = crate::roles::WorkspaceRoleService::new(
+        service.settings().clone(),
+        service.store().clone(),
+    );
+    for project in projects {
+        for role in roles.list(&project).unwrap_or_default() {
+            if rows.iter().any(|row| row.id == role.conversation_id) {
+                continue;
+            }
+            // A change after this snapshot's watermark arrives as a change.
+            let revision = service
+                .store()
+                .placeholder_revision(&role.conversation_id)
+                .filter(|revision| *revision <= watermark)
+                .unwrap_or(0);
+            rows.push(placeholder_row(&role, &project, revision));
+        }
+    }
+    let generation = database.generation();
+    let payload = json!({
+        "generation": generation,
+        "watermark": watermark.to_string(),
+        "project_path": project_path,
+        "rows": rows.iter().map(row_wire).collect::<Vec<_>>(),
+    });
+    Ok((
+        conversations_envelope("conversations.snapshot", project_path.as_deref(), payload),
+        watermark,
+    ))
+}
+
+/// A standing role's summary row before its conversation exists.
+fn placeholder_row(
+    role: &crate::roles::RoleRecord,
+    project_path: &str,
+    revision: i64,
+) -> EntityRow {
+    EntityRow {
+        kind: EntityKind::Conversation,
+        conversation_id: role.conversation_id.clone(),
+        id: role.conversation_id.clone(),
+        collection: None,
+        turn_id: None,
+        position: None,
+        order: None,
+        revision,
+        deleted: false,
+        payload: Some(json!({
+            "placeholder": true,
+            "handle": "",
+            "project_path": project_path,
+            "created_at": "",
+            "updated_at": "",
+            "title": role.title,
+            "preview": "",
+            "running": false,
+            "needs_attention": false,
+            "launched_run_ids": [],
+            "standing_role": {"name": role.name, "title": role.title, "state": role.state},
+        })),
+    }
+}
+
+/// A summary scope's changed conversation rows after `since`, and the new
+/// cursor; a reset ends the scope's cursor (`None`).
+pub fn conversations_changes_envelope(
+    service: &WorkspaceConversationService,
+    project_path: Option<&str>,
+    generation: &str,
+    since: i64,
+) -> WorkspaceResult<(LiveEnvelope, Option<i64>)> {
+    let database = service.store().database();
+    let (watermark, catch_up) = database.read(|read| {
+        Ok((
+            read.watermark(),
+            read.changes(ChangeScope::Summaries { project_path }, generation, since)?,
+        ))
+    })?;
+    Ok(match catch_up {
+        CatchUp::Batch(mut batch) => {
+            batch.rows = listed_summary_rows(service, batch.rows);
+            // Placeholder rows changed in range, while still without a conversation.
+            let roles = crate::roles::WorkspaceRoleService::new(
+                service.settings().clone(),
+                service.store().clone(),
+            );
+            for (id, project, revision) in
+                service.store().placeholder_changes(since, batch.watermark)
+            {
+                if project_path.is_some_and(|filter| filter != project)
+                    || batch.rows.iter().any(|row| row.id == id)
+                    || database
+                        .read(|read| read.conversation_location(&id))?
+                        .is_some()
+                {
+                    continue;
+                }
+                if let Some(role) = roles.conversation_role(&project, &id) {
+                    batch.rows.push(placeholder_row(&role, &project, revision));
+                }
+            }
+            (
+                conversations_envelope(
+                    "conversations.changes",
+                    project_path,
+                    batch_wire(database.generation(), &batch),
+                ),
+                Some(batch.watermark),
+            )
+        }
+        CatchUp::Reset(reason) => (
+            conversations_envelope(
+                "conversations.reset",
+                project_path,
+                reset_wire("resync_required", reason, database.generation(), watermark),
+            ),
+            None,
+        ),
+    })
+}
+
+/// Summary rows as thread lists show them: tombstones pass through, mission
+/// and draft-only conversations are left out, standing roles are marked and
+/// titled after the role.
+fn listed_summary_rows(
+    service: &WorkspaceConversationService,
+    rows: Vec<EntityRow>,
+) -> Vec<EntityRow> {
+    let roles = crate::roles::WorkspaceRoleService::new(
+        service.settings().clone(),
+        service.store().clone(),
+    );
+    rows.into_iter()
+        .filter_map(|mut row| {
+            let Some(payload) = row.payload.as_mut() else {
+                return Some(row);
+            };
+            // A conversation with only draft uploads has never been committed.
+            if payload["metadata"]["revision"].as_i64().unwrap_or(0) == 0 {
+                return None;
+            }
+            let project_path = payload["project_path"].as_str()?.to_string();
+            let missions = spark_storage::ProjectRegistry::new(service.settings().data_dir.clone())
+                .project_paths(&project_path)
+                .ok()
+                .map(|paths| {
+                    spark_storage::workspace_records::RecordRepository::missions(&paths.root)
+                });
+            if missions.is_some_and(|missions| matches!(missions.read(&row.id), Ok(Some(_)))) {
+                return None;
+            }
+            if let Some(role) = roles.conversation_role(&project_path, &row.id) {
+                payload["title"] = json!(role.title);
+                payload["standing_role"] =
+                    json!({"name": role.name, "title": role.title, "state": role.state});
+            }
+            Some(row)
+        })
+        .collect()
 }

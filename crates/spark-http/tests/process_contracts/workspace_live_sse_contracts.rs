@@ -75,50 +75,78 @@ async fn live_route_replays_conversation_snapshots_and_events_from_storage() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-live");
-    let app = crate::store_app_default(settings);
+    let app = crate::store_app_default(settings.clone());
 
-    let snapshot = request(
+    // Without a cursor: the newest window and its watermark.
+    let open = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live&conversation_project_path={}",
-            url_encode(&project_path.to_string_lossy())
-        ),
+        &conversation_live_uri("conversation-live", &project_path, None),
         None,
     )
     .await;
-    assert_eq!(snapshot.status(), StatusCode::OK);
-    let mut snapshot_stream = snapshot.into_body().into_data_stream();
-    let snapshot_envelope = sse_data_json(&next_sse_chunk(&mut snapshot_stream).await);
-    assert_eq!(snapshot_envelope["type"], "conversation.snapshot");
+    assert_eq!(open.status(), StatusCode::OK);
+    let mut open_stream = open.into_body().into_data_stream();
+    let window = next_envelope(&mut open_stream).await;
+    assert_eq!(window["type"], "conversation.window");
+    assert_eq!(window["cursor"], Value::Null);
     assert_eq!(
-        snapshot_envelope["cursor"],
-        json!({"kind": "conversation_revision", "value": 2})
+        window["resource"],
+        json!({"kind": "conversation", "id": "conversation-live"})
     );
+    let page = &window["payload"];
+    assert_eq!(page["conversation_id"], "conversation-live");
+    assert_eq!(page["turn_ids"], json!(["turn-live"]));
+    assert_eq!(page["older_cursor"], Value::Null);
+    let (generation, high) = store_cursor(&settings);
+    assert_eq!(page["generation"], generation.as_str());
+    assert_eq!(watermark(&window), high);
     assert_eq!(
-        snapshot_envelope["payload"]["state"]["conversation_id"],
-        "conversation-live"
+        carried(std::slice::from_ref(&window), "segment")[0]["id"],
+        "segment-live"
     );
 
+    // An older cursor gets the rows changed after it, never a snapshot.
     let replay = request(
-        app,
+        app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live&conversation_project_path={}&conversation_revision=0",
-            url_encode(&project_path.to_string_lossy())
-        ),
+        &conversation_live_uri("conversation-live", &project_path, Some((&generation, 0))),
         None,
     )
     .await;
-    // An older cursor gets the committed state as one fresh snapshot.
     let mut replay_stream = replay.into_body().into_data_stream();
-    let replayed = sse_data_json(&next_sse_chunk(&mut replay_stream).await);
-    assert_eq!(replayed["type"], "conversation.snapshot");
-    assert_eq!(replayed["cursor"]["value"], 2);
+    let replayed = next_envelope(&mut replay_stream).await;
+    assert_eq!(replayed["type"], "conversation.changes");
+    assert_eq!(replayed["payload"]["from_revision"], "0");
+    assert_eq!(watermark(&replayed), high);
     assert_eq!(
-        replayed["payload"]["state"],
-        snapshot_envelope["payload"]["state"]
+        carried(std::slice::from_ref(&replayed), "turn"),
+        carried(std::slice::from_ref(&window), "turn")
     );
+
+    // A cursor from another generation, or ahead of the store, resets.
+    for (cursor_generation, revision, reason) in [
+        ("another-generation", 0, "generation_changed"),
+        (generation.as_str(), high + 5, "cursor_ahead"),
+    ] {
+        let reset = request(
+            app.clone(),
+            "GET",
+            &conversation_live_uri(
+                "conversation-live",
+                &project_path,
+                Some((cursor_generation, revision)),
+            ),
+            None,
+        )
+        .await;
+        let mut reset_stream = reset.into_body().into_data_stream();
+        let envelope = next_envelope(&mut reset_stream).await;
+        assert_eq!(envelope["type"], "conversation.reset");
+        assert_eq!(envelope["payload"]["code"], "resync_required");
+        assert_eq!(envelope["payload"]["reason"], reason);
+        assert_eq!(envelope["payload"]["generation"], generation.as_str());
+    }
 }
 
 #[tokio::test]
@@ -129,23 +157,29 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-live");
     let app = crate::store_app(
-        settings,
+        settings.clone(),
         Arc::new(StaticAgentTurnBackend::new("Live route answer.")),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-live",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    // Caught up already: an empty batch at the same watermark.
+    let caught_up = next_envelope(&mut live_stream).await;
+    assert_eq!(caught_up["type"], "conversation.changes");
+    assert_eq!(caught_up["payload"]["rows"], json!([]));
+    assert_eq!(watermark(&caught_up), high);
 
     let posted = request(
         app,
@@ -158,20 +192,22 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
     )
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
+    let acceptance = json_body(posted).await;
 
-    // The accepted turn publishes as a snapshot of the committed state.
-    let accepted = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-    assert_eq!(accepted["type"], "conversation.snapshot");
-    assert_eq!(
-        accepted["cursor"],
-        json!({"kind": "conversation_revision", "value": 4})
-    );
-    let turns = accepted["payload"]["state"]["turns"]
-        .as_array()
-        .expect("turns");
-    assert_eq!(turns[1]["role"], "user");
-    assert_eq!(turns[1]["content"], "Please run this live.");
-    assert_eq!(turns[2]["role"], "assistant");
+    // The accepted turn arrives as the rows its commit changed.
+    let accepted = next_of_type(&mut live_stream, "conversation.changes").await;
+    assert_eq!(accepted["cursor"], Value::Null);
+    assert!(watermark(&accepted) > high);
+    assert_eq!(accepted["payload"]["from_revision"], high.to_string());
+    let turns = carried(std::slice::from_ref(&accepted), "turn");
+    assert!(turns
+        .iter()
+        .any(|turn| turn["role"] == "user" && turn["content"] == "Please run this live."));
+    assert!(turns
+        .iter()
+        .any(|turn| turn["id"] == acceptance["assistant_turn_id"]));
+    // History stays out of the batch: the seeded turn did not change.
+    assert!(turns.iter().all(|turn| turn["id"] != "turn-live"));
 }
 
 #[tokio::test]
@@ -239,19 +275,24 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live-ingested&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-live-ingested",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["payload"]["rows"],
+        json!([])
+    );
 
     let posted = request(
         app.clone(),
@@ -264,21 +305,22 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     )
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
-    let posted_snapshot = json_body(posted).await;
-    assert!(posted_snapshot["turns"]
+    let acceptance = json_body(posted).await;
+    assert!(acceptance["changes"]["rows"]
         .as_array()
-        .expect("turns")
+        .expect("rows")
         .iter()
-        .any(|turn| turn["role"] == "assistant"
-            && turn["status"] == "pending"
-            && turn["content"] == ""));
+        .any(|row| row["kind"] == "turn"
+            && row["payload"]["role"] == "assistant"
+            && row["payload"]["status"] == "pending"
+            && row["payload"]["content"] == ""));
 
-    // Committed progress arrives as upserts and snapshots; the completed
-    // assistant turn signals the turn finished durably.
+    // Committed progress arrives as changed rows after each commit; the
+    // completed assistant turn signals the turn finished durably.
     let mut envelopes = Vec::new();
     let mut turn_completed = false;
     for _ in 0..40 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let envelope = next_envelope(&mut live_stream).await;
         if carried(std::slice::from_ref(&envelope), "turn")
             .iter()
             .any(|turn| {
@@ -294,41 +336,38 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             break;
         }
     }
-    assert!(turn_completed, "completed assistant turn upsert");
-    let hydrated = request(
-        app,
-        "GET",
-        &format!(
-            "/workspace/api/conversations/conversation-live-ingested?project_path={}",
-            url_encode(&project_path.to_string_lossy())
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(hydrated.status(), StatusCode::OK);
-    let hydrated_snapshot = json_body(hydrated).await;
-    let final_snapshot = &hydrated_snapshot;
-    let final_revision = final_snapshot["revision"].as_i64().expect("final revision");
-    assert!(final_revision > 4);
+    assert!(turn_completed, "completed assistant turn row");
+    let final_snapshot = &stored_snapshot(&settings, "conversation-live-ingested");
+    let final_revision = final_snapshot["revision"].as_u64().expect("final revision");
+    assert!(final_revision > high + 1);
     for _ in 0..40 {
-        let last_cursor = envelopes
-            .last()
-            .and_then(|envelope| envelope["cursor"]["value"].as_i64())
+        let last = envelopes
+            .iter()
+            .rev()
+            .find(|envelope| envelope["type"] == "conversation.changes")
+            .map(watermark)
             .unwrap_or(0);
-        if last_cursor >= final_revision {
+        if last >= final_revision {
             break;
         }
-        envelopes.push(sse_data_json(&next_sse_chunk(&mut live_stream).await));
+        envelopes.push(next_envelope(&mut live_stream).await);
     }
-    let cursors = envelopes
+    // Each batch starts where the previous one ended.
+    let batches: Vec<&Value> = envelopes
         .iter()
-        .filter(|envelope| envelope["cursor"]["kind"] == "conversation_revision")
-        .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
-        .collect::<Vec<_>>();
+        .filter(|envelope| envelope["type"] == "conversation.changes")
+        .collect();
+    let watermarks: Vec<u64> = batches.iter().map(|envelope| watermark(envelope)).collect();
     assert!(
-        cursors.windows(2).all(|pair| pair[0] < pair[1]),
-        "{cursors:?}"
+        watermarks.windows(2).all(|pair| pair[0] < pair[1]),
+        "{watermarks:?}"
     );
+    for pair in batches.windows(2) {
+        assert_eq!(
+            pair[1]["payload"]["from_revision"],
+            pair[0]["payload"]["watermark"]
+        );
+    }
     assert!(final_snapshot["turns"]
         .as_array()
         .expect("turns")
@@ -429,10 +468,7 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && segment["event_kind"] == "processing_end"
             && segment["event_status"] == "idle"
     }));
-    assert_eq!(
-        envelopes.last().expect("final envelope")["cursor"]["value"],
-        json!(final_revision)
-    );
+    assert!(watermarks.last().copied().unwrap_or(0) >= final_revision);
 
     let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_codex_jsonrpc_trace(
@@ -478,19 +514,24 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
         Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live-failure&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-live-failure",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["payload"]["rows"],
+        json!([])
+    );
 
     let posted = request(
         app,
@@ -504,31 +545,26 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
     let posted_snapshot = json_body(posted).await;
-    assert!(posted_snapshot["turns"]
-        .as_array()
-        .expect("turns")
+    assert!(rows_of(&posted_snapshot["changes"], "turn")
         .iter()
         .any(|turn| turn["role"] == "assistant" && turn["status"] == "pending"));
 
     let mut envelopes = Vec::new();
-    let mut snapshot_envelope = None;
+    let mut failed_envelope = None;
     for _ in 0..20 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.snapshot"
-            && envelope["payload"]["state"]["turns"]
-                .as_array()
-                .expect("turns")
-                .iter()
-                .any(|turn| {
-                    turn["role"] == "assistant"
-                        && turn["status"] == "failed"
-                        && turn["error"] == "live thread resume failed"
-                })
+        let envelope = next_envelope(&mut live_stream).await;
+        if carried(std::slice::from_ref(&envelope), "turn")
+            .iter()
+            .any(|turn| {
+                turn["role"] == "assistant"
+                    && turn["status"] == "failed"
+                    && turn["error"] == "live thread resume failed"
+            })
         {
-            snapshot_envelope = Some(envelope.clone());
+            failed_envelope = Some(envelope.clone());
         }
         envelopes.push(envelope);
-        if snapshot_envelope.is_some() {
+        if failed_envelope.is_some() {
             break;
         }
     }
@@ -542,10 +578,12 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
             && turn["token_usage"]["total"]["inputTokens"] == json!(6)
             && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(0)
     }));
-    let snapshot_envelope = snapshot_envelope.expect("snapshot envelope");
-    assert_eq!(snapshot_envelope["type"], "conversation.snapshot");
+    // The failure's workflow event is a row of the same batch.
+    let failed_envelope = failed_envelope.expect("failed turn batch");
+    assert_eq!(failed_envelope["type"], "conversation.changes");
     assert_eq!(
-        snapshot_envelope["payload"]["state"]["event_log"][0]["details"]["thread_id"],
+        carried_artifacts(std::slice::from_ref(&failed_envelope), "event_log")[0]["details"]
+            ["thread_id"],
         "thread-live-resume"
     );
     let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
@@ -610,22 +648,23 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
         )
         .expect("pending input");
     let before_revision = pending_snapshot["revision"]
-        .as_i64()
+        .as_u64()
         .expect("pending revision");
+    let (generation, _) = store_cursor(&settings);
 
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live-answer&conversation_project_path={}&conversation_revision={before_revision}",
-            url_encode(&project_path_text)
+        &conversation_live_uri(
+            "conversation-live-answer",
+            &project_path,
+            Some((&generation, before_revision)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
 
     let posted = request(
         app.clone(),
@@ -638,31 +677,34 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     )
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
-    let posted_snapshot = json_body(posted).await;
-    let final_revision = posted_snapshot["revision"]
-        .as_i64()
-        .expect("final snapshot revision");
+    // A MutationAck whose rows cover every commit the answer made.
+    let ack = json_body(posted).await;
+    let final_revision: u64 = ack["changes"]["watermark"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(final_revision > before_revision);
+    assert!(rows_of(&ack["changes"], "turn")
+        .iter()
+        .any(|turn| { turn["id"] == prepared.assistant_turn_id && turn["status"] == "complete" }));
 
     let mut envelopes = Vec::new();
     for _ in 0..20 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        let cursor = envelope["cursor"]["value"].as_i64().expect("cursor");
+        let envelope = next_of_type(&mut live_stream, "conversation.changes").await;
+        let reached = watermark(&envelope);
         envelopes.push(envelope);
-        if cursor >= final_revision {
+        if reached >= final_revision {
             break;
         }
     }
-    // Committed state arrives in increasing revisions up to the final one.
-    let cursors = envelopes
-        .iter()
-        .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
-        .collect::<Vec<_>>();
+    // Committed state arrives in increasing watermarks up to the final one.
+    let watermarks = envelopes.iter().map(watermark).collect::<Vec<_>>();
     assert!(
-        cursors.windows(2).all(|pair| pair[0] < pair[1]),
-        "{cursors:?}"
+        watermarks.windows(2).all(|pair| pair[0] < pair[1]),
+        "{watermarks:?}"
     );
-    assert_eq!(cursors.last(), Some(&final_revision));
+    assert!(watermarks.last().copied().unwrap() >= final_revision);
 
     assert!(carried(&envelopes, "segment").iter().any(|segment| {
         segment["kind"] == "request_user_input"
@@ -681,8 +723,8 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
         turn["id"] == prepared.assistant_turn_id
             && turn["token_usage"]["total"]["outputTokens"] == json!(3)
     }));
-    // Hydration after the committed replay returns the same durable state the
-    // answer route reported.
+    // A fresh window after the replay holds the same durable rows the answer
+    // route reported.
     let hydrated = request(
         app,
         "GET",
@@ -694,9 +736,10 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     )
     .await;
     assert_eq!(hydrated.status(), StatusCode::OK);
-    let hydrated_snapshot = json_body(hydrated).await;
-    assert_eq!(hydrated_snapshot["revision"], json!(final_revision));
-    assert_eq!(hydrated_snapshot["turns"], posted_snapshot["turns"]);
+    let window = json_body(hydrated).await;
+    for turn in rows_of(&ack["changes"], "turn") {
+        assert!(rows_of(&window, "turn").contains(&turn), "{turn}");
+    }
 
     let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_codex_jsonrpc_trace("conversation-live-answer", &project_path.to_string_lossy())
@@ -818,7 +861,7 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
     );
     let events = vec![narration, text_completion, final_answer];
     let app = crate::store_app(
-        settings,
+        settings.clone(),
         Arc::new(StreamingAgentTurnBackend {
             stream_events: events.clone(),
             output: AgentTurnOutput {
@@ -829,19 +872,24 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
         }),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-live-plan-claude&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-live-plan-claude",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["payload"]["rows"],
+        json!([])
+    );
 
     let posted = request(
         app,
@@ -858,20 +906,22 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
 
     let mut promoted = None;
     for _ in 0..20 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        // A finished segment arrives committed; a transient delta would also do.
-        let carries_segment = envelope["type"] == "conversation.segment_upsert"
-            || (envelope["type"] == "conversation.stream_delta"
-                && envelope["payload"]["delta_kind"] == "segment_delta");
-        if carries_segment
-            && envelope["payload"]["segment"]["source"]["item_id"] == "block-2"
-            && envelope["payload"]["segment"]["phase"] == "final_answer"
+        let envelope = next_envelope(&mut live_stream).await;
+        // A finished segment arrives as a committed row; a transient delta would also do.
+        let mut segments = carried(std::slice::from_ref(&envelope), "segment");
+        if envelope["type"] == "conversation.stream_delta"
+            && envelope["payload"]["delta_kind"] == "segment_delta"
         {
-            promoted = Some(envelope);
+            segments.push(envelope["payload"]["segment"].clone());
+        }
+        promoted = segments.into_iter().find(|segment| {
+            segment["source"]["item_id"] == "block-2" && segment["phase"] == "final_answer"
+        });
+        if promoted.is_some() {
             break;
         }
     }
-    let segment = &promoted.expect("live final-answer promotion")["payload"]["segment"];
+    let segment = &promoted.expect("live final-answer promotion");
     assert_eq!(segment["content"], "Final answer.");
     assert_eq!(segment["status"], "complete");
     assert_eq!(segment["phase"], "final_answer");
@@ -905,19 +955,24 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
         }),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-transient&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-transient",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(live.status(), StatusCode::OK);
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["payload"]["rows"],
+        json!([])
+    );
 
     let posted = request(
         app.clone(),
@@ -934,7 +989,7 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     let mut envelopes = Vec::new();
     let mut turn_completed = false;
     for _ in 0..60 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let envelope = next_envelope(&mut live_stream).await;
         if carried(std::slice::from_ref(&envelope), "turn")
             .iter()
             .any(|turn| turn["status"] == "complete" && turn["content"] == "Streaming.")
@@ -991,40 +1046,29 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     }));
 
     // Reconnect hydration restores committed state without any stream deltas.
-    let hydrated = request(
-        app.clone(),
-        "GET",
-        &format!(
-            "/workspace/api/conversations/conversation-transient?project_path={}",
-            url_encode(&project_path.to_string_lossy())
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(hydrated.status(), StatusCode::OK);
-    let hydrated_snapshot = json_body(hydrated).await;
+    let hydrated_snapshot = stored_snapshot(&settings, "conversation-transient");
     let final_revision = hydrated_snapshot["revision"]
-        .as_i64()
+        .as_u64()
         .expect("final revision");
 
-    // A reconnect replays committed state only: one snapshot at the final
+    // A reconnect catches up on committed rows only, up to the final
     // revision, never stream deltas.
     let replay = request(
         app,
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id=conversation-transient&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project_path.to_string_lossy())
+        &conversation_live_uri(
+            "conversation-transient",
+            &project_path,
+            Some((&generation, high)),
         ),
         None,
     )
     .await;
     assert_eq!(replay.status(), StatusCode::OK);
     let mut replay_stream = replay.into_body().into_data_stream();
-    let replayed = vec![sse_data_json(&next_sse_chunk(&mut replay_stream).await)];
-    assert_eq!(replayed[0]["type"], "conversation.snapshot");
-    assert_eq!(replayed[0]["cursor"]["kind"], "conversation_revision");
-    assert_eq!(replayed[0]["cursor"]["value"], json!(final_revision));
+    let replayed = vec![next_envelope(&mut replay_stream).await];
+    assert_eq!(replayed[0]["type"], "conversation.changes");
+    assert!(watermark(&replayed[0]) >= final_revision);
     assert!(carried(&replayed, "turn")
         .iter()
         .any(|turn| { turn["content"] == "Streaming." && turn["status"] == "complete" }));
@@ -1122,18 +1166,19 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         }),
     );
 
+    let (generation, high) = store_cursor(&settings);
     let live = request(
         app.clone(),
         "GET",
-        &format!(
-            "/workspace/api/live/events?conversation_id={conversation_id}&conversation_project_path={}&conversation_revision=2",
-            url_encode(&project)
-        ),
+        &conversation_live_uri(conversation_id, &project_path, Some((&generation, high))),
         None,
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["payload"]["rows"],
+        json!([])
+    );
 
     let posted = request(
         app.clone(),
@@ -1144,20 +1189,16 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
     let started = json_body(posted).await;
-    let turn_id = started["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
-        .find(|turn| turn["role"] == "assistant" && turn["status"] == "pending")
-        .and_then(|turn| turn["id"].as_str())
+    let turn_id = started["assistant_turn_id"]
+        .as_str()
         .expect("assistant turn")
         .to_string();
-    let started_revision = started["revision"].as_i64().expect("revision");
+    let started_revision: i64 = started["revision"].as_str().unwrap().parse().unwrap();
 
     // Wait until the gated backend has streamed its first half.
     let mut last_sequence = 0;
     loop {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let envelope = next_envelope(&mut live_stream).await;
         if envelope["type"] != "conversation.stream_delta" {
             continue;
         }
@@ -1187,12 +1228,11 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     for _ in 0..2 {
         let snapshot = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
         // Reads leave the revision where the turn's own commits put it...
-        let revision = snapshot["revision"].as_i64().expect("revision");
+        let revision = page_revision(&snapshot);
         assert_eq!(*read_revision.get_or_insert(revision), revision);
-        // ...and show what the turn has finished so far.
-        assert!(snapshot["segments"]
-            .as_array()
-            .expect("segments")
+        // ...and show what the turn has finished so far: a running turn is
+        // in the window even before its page would reach it.
+        assert!(rows_of(&snapshot, "segment")
             .iter()
             .any(|segment| segment["turn_id"] == turn_id.as_str()
                 && segment["content"] == "Looking around."
@@ -1212,8 +1252,10 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     assert_eq!(stored(), stored_before);
 
     // The agent launches a flow and the thread title is stored mid-turn.
-    let handle = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await
-        ["conversation_handle"]
+    let handle = rows_of(
+        &json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await,
+        "conversation",
+    )[0]["handle"]
         .as_str()
         .expect("handle")
         .to_string();
@@ -1246,11 +1288,9 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         )
         .expect("store title");
     let mid_turn = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
-    let mid_turn_revision = mid_turn["revision"].as_i64().expect("revision");
+    let mid_turn_revision = page_revision(&mid_turn);
     assert!(mid_turn_revision > started_revision);
-    let mid_turn_status = mid_turn["turns"]
-        .as_array()
-        .expect("turns")
+    let mid_turn_status = rows_of(&mid_turn, "turn")
         .iter()
         .find(|turn| turn["id"] == turn_id.as_str())
         .expect("assistant turn")["status"]
@@ -1262,20 +1302,14 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     open_gate.send(()).expect("open gate");
     let mut late_deltas = Vec::new();
     loop {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let envelope = next_envelope(&mut live_stream).await;
         if envelope["type"] == "conversation.stream_delta"
             && envelope["payload"]["turn_id"] == turn_id.as_str()
         {
             late_deltas.push(envelope["payload"].clone());
         }
-        let payload = &envelope["payload"];
-        let turns = payload["state"]["turns"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if turns
+        if carried(std::slice::from_ref(&envelope), "turn")
             .iter()
-            .chain(std::iter::once(&payload["turn"]))
             .any(|turn| turn["id"] == turn_id.as_str() && turn["status"] == "complete")
         {
             break;
@@ -1308,24 +1342,28 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
     seed_conversation(&settings, &project_path, conversation_id);
     write_flow(&settings, "ops/live");
     let app = crate::store_app_default(settings.clone());
-    let handle = json_body(
-        request(
-            app.clone(),
-            "GET",
-            &format!(
-                "/workspace/api/conversations/{conversation_id}?project_path={}",
-                url_encode(&project)
-            ),
-            None,
+    let handle = rows_of(
+        &json_body(
+            request(
+                app.clone(),
+                "GET",
+                &format!(
+                    "/workspace/api/conversations/{conversation_id}?project_path={}",
+                    url_encode(&project)
+                ),
+                None,
+            )
+            .await,
         )
         .await,
-    )
-    .await["conversation_handle"]
+        "conversation",
+    )[0]["handle"]
         .as_str()
         .expect("handle")
         .to_string();
 
-    // A client following thread lists, not this conversation.
+    // A client following thread lists, not this conversation: it starts
+    // from a summary snapshot of every project's threads.
     let live = request(
         app.clone(),
         "GET",
@@ -1334,7 +1372,16 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    let snapshot = next_envelope(&mut live_stream).await;
+    assert_eq!(snapshot["type"], "conversations.snapshot");
+    assert_eq!(
+        snapshot["resource"],
+        json!({"kind": "conversations", "id": null})
+    );
+    assert_eq!(snapshot["payload"]["project_path"], Value::Null);
+    assert!(carried(std::slice::from_ref(&snapshot), "conversation")
+        .iter()
+        .any(|row| row["handle"] == handle.as_str()));
 
     let launched = request(
         app.clone(),
@@ -1353,16 +1400,20 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
         .expect("run id")
         .to_string();
 
-    let summary = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-    assert_eq!(summary["type"], "conversation.summary_upsert");
-    assert_eq!(
-        summary["payload"]["conversation"]["conversation_id"],
-        conversation_id
-    );
-    assert_eq!(
-        summary["payload"]["conversation"]["launched_run_ids"],
-        json!([run_id])
-    );
+    // The launch's commit arrives as the conversation's summary row.
+    loop {
+        let changes = next_of_type(&mut live_stream, "conversations.changes").await;
+        assert_eq!(
+            changes["payload"]["from_revision"],
+            snapshot["payload"]["watermark"]
+        );
+        let rows = changes["payload"]["rows"].as_array().expect("rows");
+        assert!(rows.iter().all(|row| row["kind"] == "conversation"));
+        if let Some(row) = rows.iter().find(|row| row["id"] == conversation_id) {
+            assert_eq!(row["payload"]["launched_run_ids"], json!([run_id]));
+            break;
+        }
+    }
 }
 
 #[tokio::test]
@@ -1377,12 +1428,18 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
     let live = request(
         app.clone(),
         "GET",
-        "/workspace/api/live/events?include_conversations=true",
+        &format!(
+            "/workspace/api/live/events?include_conversations=true&conversations_project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ),
         None,
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["type"],
+        "conversations.snapshot"
+    );
 
     let posted = request(
         app,
@@ -1398,18 +1455,20 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         assert!(tokio::time::Instant::now() < deadline, "started: {started}");
-        let frame = next_sse_chunk(&mut live_stream).await;
-        if !frame.contains("data: ") {
+        let envelope = next_envelope(&mut live_stream).await;
+        if envelope["type"] != "conversations.changes" {
             continue;
         }
-        let envelope = sse_data_json(&frame);
-        let conversation = &envelope["payload"]["conversation"];
-        if envelope["type"] != "conversation.summary_upsert"
-            || conversation["conversation_id"] != conversation_id
-        {
+        let Some(row) = envelope["payload"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| row["id"] == conversation_id)
+            .cloned()
+        else {
             continue;
-        }
-        match conversation["running"].as_bool().expect("running") {
+        };
+        match row["payload"]["running"].as_bool().expect("running") {
             true => started = true,
             false if started => break,
             false => {}
@@ -1677,7 +1736,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    let snapshot = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    let snapshot = next_envelope(&mut live_stream).await;
     assert_eq!(snapshot["type"], "trigger.snapshot");
     assert_eq!(snapshot["payload"], json!({"triggers": []}));
 
@@ -1717,7 +1776,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let settings_event = sse_data_json(&next_sse_chunk(&mut settings_stream).await);
     assert_eq!(settings_event["type"], "settings.changed");
     assert_eq!(settings_event["payload"]["section"], "triggers");
-    let upsert = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    let upsert = next_envelope(&mut live_stream).await;
     assert_eq!(upsert["type"], "trigger.upsert");
     assert_eq!(
         upsert["resource"],
@@ -1741,7 +1800,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let settings_event = sse_data_json(&next_sse_chunk(&mut settings_stream).await);
     assert_eq!(settings_event["type"], "settings.changed");
     assert_eq!(settings_event["payload"]["section"], "triggers");
-    let delete = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    let delete = next_envelope(&mut live_stream).await;
     assert_eq!(delete["type"], "trigger.delete");
     assert_eq!(
         delete["resource"],
@@ -1831,7 +1890,7 @@ async fn live_route_delivers_a_change_made_while_it_reads_initial_state() {
         }
         types.push(envelope["type"].clone());
     }
-    assert_eq!(types, ["conversation.snapshot", "trigger.snapshot"]);
+    assert_eq!(types, ["conversation.window", "trigger.snapshot"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1872,7 +1931,7 @@ async fn live_route_streams_mission_upserts_through_turn_delivery() {
     )
     .await;
     let id = created["id"].as_str().expect("mission id").to_string();
-    let upsert = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    let upsert = next_envelope(&mut live_stream).await;
     assert_eq!(upsert["type"], "mission.upsert");
     assert_eq!(upsert["resource"], json!({"kind": "mission", "id": id}));
     assert_eq!(
@@ -1946,29 +2005,33 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    assert_eq!(
+        next_envelope(&mut live_stream).await["type"],
+        "conversations.snapshot"
+    );
     let control = |control: &str| {
         format!(
             "/workspace/api/roles/chief-of-staff/{control}?project_path={}",
             url_encode(&project)
         )
     };
-    // The role's summary reaching `state`, skipping other frames.
+    // The role's summary row reaching `state`, skipping other frames.
     async fn summary_state(stream: &mut axum::body::BodyDataStream, state: &str) -> Value {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             assert!(tokio::time::Instant::now() < deadline, "role never {state}");
-            let frame = next_sse_chunk(stream).await;
-            if !frame.contains("data: ") {
+            let envelope = next_envelope(stream).await;
+            if envelope["type"] != "conversations.changes" {
                 continue;
             }
-            let envelope = sse_data_json(&frame);
-            let conversation = &envelope["payload"]["conversation"];
-            if envelope["type"] == "conversation.summary_upsert"
-                && conversation["standing_role"]["name"] == "chief-of-staff"
-                && conversation["standing_role"]["state"] == state
+            if let Some(conversation) = carried(std::slice::from_ref(&envelope), "conversation")
+                .into_iter()
+                .find(|conversation| {
+                    conversation["standing_role"]["name"] == "chief-of-staff"
+                        && conversation["standing_role"]["state"] == state
+                })
             {
-                return conversation.clone();
+                return conversation;
             }
         }
     }
@@ -2014,7 +2077,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
     )
     .await;
     let mut live_stream = live.into_body().into_data_stream();
-    let snapshot = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    let snapshot = next_envelope(&mut live_stream).await;
     assert_eq!(snapshot["type"], "trigger.snapshot");
     assert_eq!(snapshot["payload"], json!({"triggers": []}));
 
@@ -2043,7 +2106,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
 
     let mut activation = None;
     for _ in 0..6 {
-        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        let envelope = next_envelope(&mut live_stream).await;
         if envelope["type"] == "trigger.upsert"
             && envelope["resource"] == json!({"kind": "trigger", "id": trigger_id})
             && envelope["payload"]["trigger"]["state"]["last_result"] == "success"
@@ -3339,7 +3402,7 @@ async fn settings_only_stream_receives_conversation_resource_changes() {
     assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
     for (path, payload, section) in [(
         "/workspace/api/conversations/settings-live/settings",
-        json!({"project_path":project_path, "expected_revision":conversation["settings"]["models"]["revision"], "model_settings":{"provider":"claude-code"}}),
+        json!({"project_path":project_path, "expected_revision":rows_of(&conversation, "conversation")[0]["settings"]["models"]["revision"], "model_settings":{"provider":"claude-code"}}),
         "models",
     )] {
         let saved = request(app.clone(), "PUT", path, Some(payload)).await;
@@ -3352,23 +3415,851 @@ async fn settings_only_stream_receives_conversation_resource_changes() {
     }
 }
 
-/// The turns or segments live envelopes carry, as upserts or inside
-/// snapshots of the committed state.
+/// One conversation's full committed state, for assertions only.
+fn stored_snapshot(settings: &SparkSettings, conversation_id: &str) -> Value {
+    ConversationRepository::new(crate::shared_store(&settings.data_dir))
+        .read_snapshot(conversation_id, None)
+        .expect("read")
+        .expect("stored conversation")
+}
+
+/// The live payloads of one row kind that conversation envelopes carry:
+/// rows of windows, change batches and summary snapshots.
 fn carried(envelopes: &[Value], kind: &str) -> Vec<Value> {
-    let mut entities = Vec::new();
-    for envelope in envelopes {
-        match envelope["type"].as_str() {
-            Some(event) if event == format!("conversation.{kind}_upsert") => {
-                entities.push(envelope["payload"][kind].clone());
-            }
-            Some("conversation.snapshot") => entities.extend(
-                envelope["payload"]["state"][format!("{kind}s")]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            _ => {}
+    envelopes
+        .iter()
+        .filter(|envelope| {
+            matches!(
+                envelope["type"].as_str(),
+                Some(
+                    "conversation.window"
+                        | "conversation.changes"
+                        | "conversations.snapshot"
+                        | "conversations.changes"
+                )
+            )
+        })
+        .flat_map(|envelope| {
+            envelope["payload"]["rows"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|row| row["kind"] == kind && row["deleted"] == false)
+        .map(|row| row["payload"].clone())
+        .collect()
+}
+
+/// A Page's conversation row revision.
+fn page_revision(page: &Value) -> i64 {
+    page["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["kind"] == "conversation")
+        .and_then(|row| row["revision"].as_str())
+        .expect("conversation row")
+        .parse()
+        .expect("decimal revision")
+}
+
+/// The payloads of one row kind in a Batch (an acceptance's `changes`).
+fn rows_of(batch: &Value, kind: &str) -> Vec<Value> {
+    batch["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["kind"] == kind && row["deleted"] == false)
+        .map(|row| row["payload"].clone())
+        .collect()
+}
+
+/// The artifact payloads of one collection that conversation envelopes carry.
+fn carried_artifacts(envelopes: &[Value], collection: &str) -> Vec<Value> {
+    envelopes
+        .iter()
+        .flat_map(|envelope| {
+            envelope["payload"]["rows"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|row| row["kind"] == "artifact" && row["collection"] == collection)
+        .map(|row| row["payload"].clone())
+        .collect()
+}
+
+/// The next data envelope, skipping keepalives.
+async fn next_envelope(stream: &mut axum::body::BodyDataStream) -> Value {
+    loop {
+        let chunk = next_sse_chunk(stream).await;
+        if !chunk.starts_with(':') {
+            return sse_data_json(&chunk);
         }
     }
-    entities
+}
+
+/// The next envelope of `event_type`, skipping others and keepalives.
+async fn next_of_type(stream: &mut axum::body::BodyDataStream, event_type: &str) -> Value {
+    loop {
+        let envelope = next_envelope(stream).await;
+        if envelope["type"] == event_type {
+            return envelope;
+        }
+    }
+}
+
+/// A conversation envelope's decimal-string watermark.
+fn watermark(envelope: &Value) -> u64 {
+    envelope["payload"]["watermark"]
+        .as_str()
+        .expect("watermark")
+        .parse()
+        .expect("decimal watermark")
+}
+
+/// The live route for one conversation, with an optional catch-up cursor.
+fn conversation_live_uri(
+    conversation_id: &str,
+    project_path: &Path,
+    cursor: Option<(&str, u64)>,
+) -> String {
+    let mut uri = format!(
+        "/workspace/api/live/events?conversation_id={conversation_id}&conversation_project_path={}",
+        url_encode(&project_path.to_string_lossy())
+    );
+    if let Some((generation, revision)) = cursor {
+        uri.push_str(&format!(
+            "&conversation_generation={generation}&conversation_revision={revision}"
+        ));
+    }
+    uri
+}
+
+/// The store's generation and current watermark.
+fn store_cursor(settings: &SparkSettings) -> (String, u64) {
+    let store = crate::shared_store(&settings.data_dir);
+    let database = store.database();
+    let watermark = database.read(|read| Ok(read.watermark())).unwrap();
+    (database.generation().to_string(), watermark as u64)
+}
+
+/// Appends one complete user turn to a conversation, returning its revision.
+fn append_turn(
+    settings: &SparkSettings,
+    project_path: &Path,
+    conversation_id: &str,
+    id: &str,
+) -> u64 {
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
+    let base = repository
+        .read_snapshot(conversation_id, None)
+        .expect("read")
+        .map_or(0, |snapshot| snapshot["revision"].as_i64().unwrap());
+    let turn: TranscriptTurn = serde_json::from_value(json!({
+        "id": id, "role": "user", "content": id, "kind": "message",
+        "status": "complete", "timestamp": "2026-01-01T00:00:03Z",
+    }))
+    .expect("turn");
+    repository
+        .commit_conversation(
+            conversation_id,
+            &project_path.to_string_lossy(),
+            base,
+            vec![ConversationMutation::TurnUpserted { turn }],
+        )
+        .expect("append turn")
+        .revision as u64
+}
+
+/// The live route for summary rows, optionally filtered and with a cursor.
+fn summaries_live_uri(project_path: Option<&Path>, cursor: Option<(&str, u64)>) -> String {
+    let mut uri = "/workspace/api/live/events?include_conversations=true".to_string();
+    if let Some(project_path) = project_path {
+        uri.push_str(&format!(
+            "&conversations_project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ));
+    }
+    if let Some((generation, revision)) = cursor {
+        uri.push_str(&format!(
+            "&conversations_generation={generation}&conversations_revision={revision}"
+        ));
+    }
+    uri
+}
+
+/// Rows of one id across envelopes, tombstones included.
+fn rows_with_id(envelopes: &[Value], id: &str) -> Vec<Value> {
+    envelopes
+        .iter()
+        .flat_map(|envelope| {
+            envelope["payload"]["rows"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|row| row["id"] == id)
+        .collect()
+}
+
+/// A commit racing the subscription's initial read reaches the browser
+/// exactly once: in the window when it committed first, otherwise as a
+/// change after the window's watermark. Same for a summary scope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn initial_windows_and_snapshots_hand_off_to_catch_up_without_gaps_or_duplicates() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-handoff");
+    let app = crate::store_app_default(settings.clone());
+    let store = crate::shared_store(&settings.data_dir);
+    for (uri, raced_id) in [
+        (
+            conversation_live_uri("conversation-handoff", &project_path, None),
+            "turn-raced",
+        ),
+        (
+            summaries_live_uri(Some(&project_path), None),
+            "conversation-raced",
+        ),
+    ] {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn({
+            let store = store.clone();
+            move || {
+                store
+                    .database()
+                    .read(|_| {
+                        held_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        });
+        held_rx.recv().unwrap();
+        // The subscriber registers, then blocks reading its initial state;
+        // the commit blocks on the same database.
+        let live = tokio::spawn({
+            let app = app.clone();
+            async move { request(app, "GET", &uri, None).await }
+        });
+        let committer = std::thread::spawn({
+            let (settings, project_path) = (settings.clone(), project_path.clone());
+            let raced_id = raced_id.to_string();
+            move || {
+                std::thread::sleep(Duration::from_millis(100));
+                if raced_id.starts_with("turn") {
+                    append_turn(&settings, &project_path, "conversation-handoff", &raced_id);
+                } else {
+                    seed_conversation(&settings, &project_path, &raced_id);
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        committer.join().unwrap();
+        let mut stream = live.await.unwrap().into_body().into_data_stream();
+        let mut envelopes = vec![next_envelope(&mut stream).await];
+        // A marker commit after the race bounds what the stream may still send.
+        let marker = append_turn(
+            &settings,
+            &project_path,
+            "conversation-handoff",
+            &format!("marker-{raced_id}"),
+        );
+        loop {
+            let reached = envelopes.last().map(watermark).unwrap_or(0);
+            if reached >= marker {
+                break;
+            }
+            envelopes.push(next_envelope(&mut stream).await);
+        }
+        assert_eq!(
+            rows_with_id(&envelopes, raced_id).len(),
+            1,
+            "{envelopes:#?}"
+        );
+    }
+}
+
+/// A client that was away catches up from its cursor with every row that
+/// changed meanwhile, tombstones included, and a deleted conversation
+/// answers an old cursor with its tombstone.
+#[tokio::test]
+async fn disconnected_clients_catch_up_with_changed_rows_and_tombstones() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-away");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, away_at) = store_cursor(&settings);
+    let window = {
+        let live = request(
+            app.clone(),
+            "GET",
+            &conversation_live_uri("conversation-away", &project_path, None),
+            None,
+        )
+        .await;
+        let mut stream = live.into_body().into_data_stream();
+        next_envelope(&mut stream).await
+    };
+    assert_eq!(watermark(&window), away_at);
+
+    // While away: a new turn, and the seeded segment removed.
+    append_turn(
+        &settings,
+        &project_path,
+        "conversation-away",
+        "turn-while-away",
+    );
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
+    let base = repository
+        .read_snapshot("conversation-away", None)
+        .unwrap()
+        .unwrap()["revision"]
+        .as_i64()
+        .unwrap();
+    repository
+        .commit_conversation(
+            "conversation-away",
+            &project_path.to_string_lossy(),
+            base,
+            vec![ConversationMutation::SegmentTombstoned {
+                turn_id: "turn-live".to_string(),
+                segment_id: "segment-live".to_string(),
+            }],
+        )
+        .unwrap();
+    let back = request(
+        app.clone(),
+        "GET",
+        &conversation_live_uri(
+            "conversation-away",
+            &project_path,
+            Some((&generation, away_at)),
+        ),
+        None,
+    )
+    .await;
+    let mut stream = back.into_body().into_data_stream();
+    let caught_up = next_envelope(&mut stream).await;
+    assert_eq!(caught_up["type"], "conversation.changes");
+    assert_eq!(caught_up["payload"]["from_revision"], away_at.to_string());
+    let rows = caught_up["payload"]["rows"].as_array().unwrap();
+    assert!(rows
+        .iter()
+        .any(|row| row["id"] == "turn-while-away" && row["deleted"] == false));
+    let tombstone = rows
+        .iter()
+        .find(|row| row["id"] == "segment-live")
+        .expect("tombstone");
+    assert_eq!(tombstone["deleted"], true);
+    assert_eq!(tombstone["payload"], Value::Null);
+    assert_eq!(tombstone["turn_id"], "turn-live");
+    // Unchanged history is not resent.
+    assert!(rows.iter().all(|row| row["id"] != "turn-live"));
+    let tombstone_revision: u64 = tombstone["revision"].as_str().unwrap().parse().unwrap();
+    assert!(tombstone_revision > away_at && tombstone_revision <= watermark(&caught_up));
+
+    // Deleted: an old cursor still gets the conversation's tombstone, in
+    // both its own scope and the summary scope; a fresh open is not found.
+    let deleted = request(
+        app.clone(),
+        "DELETE",
+        &format!(
+            "/workspace/api/conversations/conversation-away?project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    for uri in [
+        conversation_live_uri(
+            "conversation-away",
+            &project_path,
+            Some((&generation, away_at)),
+        ),
+        summaries_live_uri(Some(&project_path), Some((&generation, away_at))),
+    ] {
+        let live = request(app.clone(), "GET", &uri, None).await;
+        let mut stream = live.into_body().into_data_stream();
+        let envelope = next_envelope(&mut stream).await;
+        let conversation = rows_with_id(std::slice::from_ref(&envelope), "conversation-away");
+        assert_eq!(conversation.len(), 1, "{envelope}");
+        assert_eq!(conversation[0]["kind"], "conversation");
+        assert_eq!(conversation[0]["deleted"], true);
+    }
+    let reopened = request(
+        app,
+        "GET",
+        &format!(
+            "/workspace/api/conversations/conversation-away?project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(reopened.status(), StatusCode::NOT_FOUND);
+}
+
+/// Notifications are wakeups, not truth: a commit whose notice never
+/// arrives still reaches the subscriber, at its next heartbeat.
+#[tokio::test]
+async fn a_commit_without_a_notice_arrives_at_the_next_heartbeat() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-quiet");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, high) = store_cursor(&settings);
+    let live = request(
+        app,
+        "GET",
+        &conversation_live_uri(
+            "conversation-quiet",
+            &project_path,
+            Some((&generation, high)),
+        ),
+        None,
+    )
+    .await;
+    let mut stream = live.into_body().into_data_stream();
+    assert_eq!(
+        next_envelope(&mut stream).await["payload"]["rows"],
+        json!([])
+    );
+    // Committed behind the store's back: no notice is published.
+    let (revision, ()) = crate::shared_store(&settings.data_dir)
+        .database()
+        .write(|tx| tx.touch("conversation-quiet"))
+        .unwrap();
+    let arrived = next_envelope(&mut stream).await;
+    assert_eq!(arrived["type"], "conversation.changes");
+    assert_eq!(watermark(&arrived), revision as u64);
+    assert_eq!(
+        rows_with_id(std::slice::from_ref(&arrived), "conversation-quiet")[0]["revision"],
+        revision.to_string()
+    );
+}
+
+/// A filtered stream advances over revisions of conversations it does not
+/// follow: gaps are valid, and only its own rows arrive.
+#[tokio::test]
+async fn filtered_streams_advance_over_other_scopes_revisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_a = temp.path().join("project-a");
+    let project_b = temp.path().join("project-b");
+    fs::create_dir_all(&project_a).expect("project");
+    fs::create_dir_all(&project_b).expect("project");
+    seed_conversation(&settings, &project_a, "conversation-a");
+    seed_conversation(&settings, &project_b, "conversation-b");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, high) = store_cursor(&settings);
+    let mut conversation_stream = request(
+        app.clone(),
+        "GET",
+        &conversation_live_uri("conversation-a", &project_a, Some((&generation, high))),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    let mut summary_stream = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_a), Some((&generation, high))),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    assert_eq!(
+        next_envelope(&mut conversation_stream).await["payload"]["rows"],
+        json!([])
+    );
+    assert_eq!(
+        next_envelope(&mut summary_stream).await["payload"]["rows"],
+        json!([])
+    );
+
+    let other = append_turn(&settings, &project_b, "conversation-b", "turn-b");
+    let own = append_turn(&settings, &project_a, "conversation-a", "turn-a");
+    assert!(own > other && other > high);
+    for (stream, kinds) in [
+        (&mut conversation_stream, vec!["conversation", "turn"]),
+        (&mut summary_stream, vec!["conversation"]),
+    ] {
+        let batch = next_envelope(stream).await;
+        assert_eq!(batch["payload"]["from_revision"], high.to_string());
+        assert_eq!(watermark(&batch), own);
+        let rows = batch["payload"]["rows"].as_array().unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row["conversation_id"] == "conversation-a"
+                && row["revision"] == own.to_string()));
+        let mut seen: Vec<&str> = rows
+            .iter()
+            .map(|row| row["kind"].as_str().unwrap())
+            .collect();
+        seen.sort();
+        assert_eq!(seen, kinds);
+    }
+}
+
+/// Summary snapshots: complete membership of one project or all, empty
+/// lists included, at one watermark.
+#[tokio::test]
+async fn summary_snapshots_list_empty_one_and_every_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_a = temp.path().join("project-a");
+    let project_b = temp.path().join("project-b");
+    let project_empty = temp.path().join("project-empty");
+    for project in [&project_a, &project_b, &project_empty] {
+        fs::create_dir_all(project).expect("project");
+    }
+    seed_conversation(&settings, &project_a, "conversation-a");
+    seed_conversation(&settings, &project_b, "conversation-b");
+    let app = crate::store_app_default(settings.clone());
+    let (_, high) = store_cursor(&settings);
+    let listed = |envelope: &Value| {
+        let mut ids: Vec<String> = envelope["payload"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["payload"]["standing_role"].is_null())
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    for (filter, expected) in [
+        (Some(&project_empty), vec![]),
+        (Some(&project_a), vec!["conversation-a".to_string()]),
+        (
+            None,
+            vec!["conversation-a".to_string(), "conversation-b".to_string()],
+        ),
+    ] {
+        let mut stream = request(
+            app.clone(),
+            "GET",
+            &summaries_live_uri(filter.map(|path| path.as_path()), None),
+            None,
+        )
+        .await
+        .into_body()
+        .into_data_stream();
+        let snapshot = next_envelope(&mut stream).await;
+        assert_eq!(snapshot["type"], "conversations.snapshot");
+        assert_eq!(watermark(&snapshot), high);
+        assert_eq!(listed(&snapshot), expected);
+        // The HTTP list is the same SummarySnapshot.
+        let uri = match filter {
+            Some(path) => format!(
+                "/workspace/api/projects/conversations?project_path={}",
+                url_encode(&path.to_string_lossy())
+            ),
+            None => "/workspace/api/projects/conversations".to_string(),
+        };
+        let http = json_body(request(app.clone(), "GET", &uri, None).await).await;
+        assert_eq!(http["watermark"], snapshot["payload"]["watermark"]);
+        assert_eq!(listed(&json!({"payload": http})), expected);
+    }
+}
+
+/// A summary catch-up over the limits resets, and the cursorless
+/// reconnect gets a complete snapshot, which no limit caps.
+#[tokio::test]
+async fn summary_catch_up_over_the_limit_resets_to_a_cursorless_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-first");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, high) = store_cursor(&settings);
+    let project = registered_path(&settings, &project_path);
+    let count = spark_storage::conversation::CATCH_UP_MAX_ROWS + 1;
+    crate::shared_store(&settings.data_dir)
+        .database()
+        .write(|tx| {
+            for index in 0..count {
+                tx.put_conversation(&spark_storage::conversation::ConversationRow {
+                    id: format!("bulk-{index:04}"),
+                    project_path: project.clone(),
+                    handle: format!("bulk-{index:04}"),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    updated_at: "2026-01-01T00:00:00Z".into(),
+                    title: "Bulk".into(),
+                    preview: String::new(),
+                    running: false,
+                    needs_attention: false,
+                    launched_run_ids: Vec::new(),
+                    metadata: json!({"revision": 1, "conversation_id": format!("bulk-{index:04}")}),
+                })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut stream = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_path), Some((&generation, high))),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    let reset = next_envelope(&mut stream).await;
+    assert_eq!(reset["type"], "conversations.reset");
+    assert_eq!(reset["payload"]["code"], "resync_required");
+    assert_eq!(reset["payload"]["reason"], "catchup_limit");
+    let mut stream = request(
+        app,
+        "GET",
+        &summaries_live_uri(Some(&project_path), None),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    let snapshot = next_envelope(&mut stream).await;
+    assert_eq!(snapshot["type"], "conversations.snapshot");
+    let rows = snapshot["payload"]["rows"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .filter(|row| row["id"].as_str().unwrap().starts_with("bulk-"))
+            .count()
+            == count
+    );
+    assert!(rows.iter().any(|row| row["id"] == "conversation-first"));
+}
+
+/// Deleting a conversation removes it from its own project's summary scope
+/// only; another project's filtered scope never hears of it.
+#[tokio::test]
+async fn deletions_reach_only_the_affected_summary_membership() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_a = temp.path().join("project-a");
+    let project_b = temp.path().join("project-b");
+    fs::create_dir_all(&project_a).expect("project");
+    fs::create_dir_all(&project_b).expect("project");
+    seed_conversation(&settings, &project_a, "conversation-a");
+    seed_conversation(&settings, &project_b, "conversation-b");
+    let app = crate::store_app_default(settings.clone());
+    let mut stream_a = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_a), None),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    let mut stream_b = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_b), None),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    assert_eq!(
+        next_envelope(&mut stream_a).await["type"],
+        "conversations.snapshot"
+    );
+    assert_eq!(
+        next_envelope(&mut stream_b).await["type"],
+        "conversations.snapshot"
+    );
+    let deleted = request(
+        app.clone(),
+        "DELETE",
+        &format!(
+            "/workspace/api/conversations/conversation-a?project_path={}",
+            url_encode(&project_a.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let removal = next_envelope(&mut stream_a).await;
+    let rows = removal["payload"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0]["id"].as_str(), rows[0]["deleted"].as_bool()),
+        (Some("conversation-a"), Some(true))
+    );
+    // Project B's next batch is its own change, without A's tombstone.
+    let marker = append_turn(&settings, &project_b, "conversation-b", "turn-marker");
+    let next = next_envelope(&mut stream_b).await;
+    assert_eq!(watermark(&next), marker);
+    assert!(rows_with_id(std::slice::from_ref(&next), "conversation-a").is_empty());
+    assert_eq!(
+        rows_with_id(std::slice::from_ref(&next), "conversation-b").len(),
+        1
+    );
+}
+
+/// The compat SSE fixtures document the conversation envelopes the server
+/// sends: same types, resources and payload and row fields.
+#[tokio::test]
+async fn conversation_sse_fixtures_match_the_live_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-compat");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, _) = store_cursor(&settings);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-fixtures/compat/sse");
+    let keys = |value: &Value| {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
+        keys.sort();
+        keys
+    };
+    for (name, uri) in [
+        (
+            "live-conversation-snapshot.json",
+            conversation_live_uri("conversation-compat", &project_path, None),
+        ),
+        (
+            "live-conversation-replay.json",
+            conversation_live_uri("conversation-compat", &project_path, Some((&generation, 0))),
+        ),
+        (
+            "live-conversation-resync-unavailable.json",
+            conversation_live_uri(
+                "missing-conversation",
+                &project_path,
+                Some(("previous-generation", 0)),
+            ),
+        ),
+    ] {
+        let fixture: Value =
+            serde_json::from_str(&fs::read_to_string(fixtures.join(name)).unwrap()).unwrap();
+        let expected = &fixture["frames"][0]["data"];
+        assert_eq!(
+            serde_json::from_str::<Value>(fixture["frames"][0]["data_text"].as_str().unwrap())
+                .unwrap(),
+            *expected,
+            "{name}"
+        );
+        let mut stream = request(app.clone(), "GET", &uri, None)
+            .await
+            .into_body()
+            .into_data_stream();
+        let actual = next_envelope(&mut stream).await;
+        assert_eq!(actual["type"], expected["type"], "{name}");
+        assert_eq!(
+            actual["resource"]["kind"], expected["resource"]["kind"],
+            "{name}"
+        );
+        assert_eq!(actual["cursor"], expected["cursor"], "{name}");
+        assert_eq!(
+            keys(&actual["payload"]),
+            keys(&expected["payload"]),
+            "{name}"
+        );
+        for (actual_row, expected_row) in actual["payload"]["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(expected["payload"]["rows"].as_array().into_iter().flatten())
+        {
+            assert_eq!(keys(actual_row), keys(expected_row), "{name}");
+            assert_eq!(
+                keys(&actual_row["payload"]),
+                keys(&expected_row["payload"]),
+                "{name}"
+            );
+        }
+    }
+}
+
+/// A project's registered path, as the store records it.
+fn registered_path(settings: &SparkSettings, project_path: &Path) -> String {
+    spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .project_paths(&project_path.to_string_lossy())
+        .unwrap()
+        .project_path
+}
+
+/// A standing role with no conversation yet still follows its state live:
+/// each change re-delivers its placeholder row at a new revision.
+#[tokio::test]
+async fn placeholder_role_rows_follow_role_state_changes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let app = crate::store_app_default(settings.clone());
+    let registered = request(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_path})),
+    )
+    .await;
+    assert_eq!(registered.status(), StatusCode::OK);
+    let mut stream = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_path), None),
+        None,
+    )
+    .await
+    .into_body()
+    .into_data_stream();
+    let snapshot = next_envelope(&mut stream).await;
+    let coordinator = carried(std::slice::from_ref(&snapshot), "conversation")
+        .into_iter()
+        .find(|row| row["standing_role"]["name"] == "coordinator")
+        .expect("coordinator placeholder");
+    assert_eq!(coordinator["placeholder"], true);
+    let mut last = watermark(&snapshot);
+    for (action, state) in [("stop", "stopped"), ("start", "idle")] {
+        let response = request(
+            app.clone(),
+            "POST",
+            &format!(
+                "/workspace/api/roles/coordinator/{action}?project_path={}",
+                url_encode(&project_path.to_string_lossy())
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        loop {
+            let changes = next_of_type(&mut stream, "conversations.changes").await;
+            assert_eq!(changes["payload"]["from_revision"], last.to_string());
+            last = watermark(&changes);
+            let rows = changes["payload"]["rows"].as_array().unwrap();
+            if let Some(row) = rows
+                .iter()
+                .find(|row| row["payload"]["standing_role"]["state"] == state)
+            {
+                assert_eq!(row["payload"]["placeholder"], true);
+                let revision: u64 = row["revision"].as_str().unwrap().parse().unwrap();
+                assert!(revision > 0 && revision <= last);
+                break;
+            }
+        }
+    }
 }

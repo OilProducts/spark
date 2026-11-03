@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { conversationPage, summarySnapshot } from '../fixtures/smoke-helpers'
 
 const projectPath = '/tmp/markdown-smoke'
 const timestamp = '2026-09-10T00:00:00Z'
@@ -16,15 +17,15 @@ test('real chat math and Mermaid render while streaming and contain wide content
         last_opened_at: timestamp, last_accessed_at: timestamp, is_favorite: false, active_conversation_id: 'markdown',
     }] }))
     await page.route('**/workspace/api/projects/metadata**', (route) => route.fulfill({ json: { name: 'Markdown', directory: projectPath, branch: 'main', commit: 'smoke' } }))
-    await page.route('**/workspace/api/projects/conversations**', (route) => route.fulfill({ json: [{
+    await page.route('**/workspace/api/projects/conversations**', (route) => route.fulfill({ json: summarySnapshot([{
         conversation_id: 'markdown', project_path: projectPath, title: 'Markdown smoke', created_at: timestamp, updated_at: timestamp, revision: 1,
-    }] }))
-    await page.route('**/workspace/api/conversations/markdown?**', (route) => route.fulfill({ json: {
-        schema_version: 4, revision: 1, conversation_id: 'markdown', project_path: projectPath, title: 'Markdown smoke',
+    }], new URL(route.request().url()).searchParams.get('project_path')) }))
+    await page.route('**/workspace/api/conversations/markdown?**', (route) => route.fulfill({ json: conversationPage({
+        revision: 1, conversation_id: 'markdown', project_path: projectPath, title: 'Markdown smoke',
         created_at: timestamp, updated_at: timestamp, chat_mode: 'chat',
         turns: [{ id: 'assistant', role: 'assistant', content: '', timestamp, status: 'streaming', kind: 'message' }],
-        segments: [segment], event_log: [], flow_run_requests: [], flow_launches: [],
-    } }))
+        segments: [segment],
+    }) }))
     await page.route('**/workspace/api/live/events**', (route) => route.fulfill({ contentType: 'text/event-stream', body: ': smoke\n\n' }))
     await page.goto('/')
     await page.getByTestId('activity-chats').click()

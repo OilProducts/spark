@@ -2,7 +2,9 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import type { ConversationSummaryResponse } from '@/lib/workspaceClient'
-import { hydrateConversationRecordFromSnapshot } from '../../model/projectsHomeState'
+import { parseConversationBatchResponse, parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationBatch, conversationPage, conversationRow, summarySnapshot } from '@/test/conversationWire'
+import { applyConversationPageToCache, applySummaryBatchToCache } from '../../model/projectsHomeState'
 import { useChatRunning } from '../useChatRunning'
 import { useProjectConversationCache } from '../useProjectConversationCache'
 
@@ -39,16 +41,16 @@ it('lights for a running summary in any project, a send in flight, or the open c
     expect(result.current).toBe(false)
 
     // An open chat outside any Threads list (such as a mission's) follows its own turns.
-    const record = hydrateConversationRecordFromSnapshot({
-        schema_version: 5, revision: 2, conversation_id: 'mission-chat', conversation_handle: '', project_path: '/p',
+    const { conversationsById } = applyConversationPageToCache(useStore.getState().homeConversationCache, parseConversationPageResponse(conversationPage({
+        revision: 2, conversation_id: 'mission-chat', conversation_handle: '', project_path: '/p',
         chat_mode: 'chat', title: 'Mission', created_at: '', updated_at: '',
         turns: [{ id: 't', role: 'assistant', content: '', timestamp: '', kind: 'message', status: 'streaming', artifact_id: null }],
-        segments: [], event_log: [], flow_run_requests: [], flow_launches: [],
-    })
+        segments: [], flow_run_requests: [], flow_launches: [],
+    })), 'window')
     act(() => useStore.setState((state) => ({
         activeProjectPath: '/p',
         projectSessionsByPath: { '/p': { ...state.projectSessionsByPath['/p'], conversationId: 'mission-chat' } },
-        homeConversationCache: { ...state.homeConversationCache, conversationsById: { 'mission-chat': record } },
+        homeConversationCache: { ...state.homeConversationCache, conversationsById },
     })))
     expect(result.current).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -67,12 +69,15 @@ it('keeps a newer upsert that arrived while the startup list was loading', async
     const running = renderHook(() => useChatRunning())
     let loaded!: Promise<ConversationSummaryResponse[]>
     act(() => { loaded = cache.result.current.loadProjectConversationSummaries('/p') })
-    act(() => useStore.getState().upsertHomeConversationSummary(summary({ revision: 5, running: true })))
+    act(() => useStore.getState().commitHomeConversationCache((current) => applySummaryBatchToCache(
+        current,
+        parseConversationBatchResponse(conversationBatch([conversationRow(summary({ revision: 5, running: true }))])),
+    )))
     await act(async () => {
-        respond([summary({ revision: 4, running: false }), summary({ conversation_id: 'listed', revision: 1 })])
+        respond(summarySnapshot([summary({ revision: 4, running: false }), summary({ conversation_id: 'listed', revision: 1 })], { project_path: '/p' }))
         await loaded
     })
     expect(running.result.current).toBe(true)
     expect(useStore.getState().homeConversationCache.summariesByProjectPath['/p'].map((entry) => [entry.conversation_id, entry.revision]))
-        .toEqual(expect.arrayContaining([['chat', 5], ['listed', 1]]))
+        .toEqual(expect.arrayContaining([['chat', '5'], ['listed', '1']]))
 })

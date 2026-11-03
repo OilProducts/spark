@@ -94,16 +94,16 @@ impl ConversationRepository {
         let gate = store.project_gate(&project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
         store.admit_project(&project_path)?;
-        store.with_conversation(conversation_id, |slot| {
-            let mut loaded = match slot.as_ref() {
-                Some(loaded) if loaded.record.meta.project_path != project_path => {
+        let revision = store.with_conversation(conversation_id, |slot| {
+            let mut created = match slot.as_ref() {
+                Some(loaded) if loaded.meta.project_path != project_path => {
                     return Err(StorageError::ConversationCommitRejected {
                         conversation_id: conversation_id.to_string(),
                         reason: "Conversation is already bound to a different project path."
                             .to_string(),
                     })
                 }
-                Some(loaded) => loaded.clone(),
+                Some(_) => None,
                 None => {
                     if store
                         .database()
@@ -117,18 +117,17 @@ impl ConversationRepository {
                     }
                     let mut loaded = LoadedConversation::new(conversation_id, &project_path);
                     let now = super::commit::iso_now();
-                    loaded.record.meta.created_at = now.clone();
-                    loaded.record.meta.updated_at = now;
-                    loaded.record.meta.conversation_handle =
-                        crate::workspace_conversations::free_handle(
-                            &store,
-                            conversation_id,
-                            store.reserved_handle(conversation_id).as_deref(),
-                        )?;
-                    loaded
+                    loaded.meta.created_at = now.clone();
+                    loaded.meta.updated_at = now;
+                    loaded.meta.conversation_handle = crate::workspace_conversations::free_handle(
+                        &store,
+                        conversation_id,
+                        store.reserved_handle(conversation_id).as_deref(),
+                    )?;
+                    Some(loaded)
                 }
             };
-            let is_new = slot.is_none();
+            let is_new = created.is_some();
             // Admitted: register a new conversation's project, then publish the
             // blob before the transaction that references it, all under the
             // project gate and conversation lock.
@@ -136,7 +135,11 @@ impl ConversationRepository {
                 store.registry().ensure_project_paths(&project_path)?;
             }
             write_atomic(&blob, bytes)?;
-            let meta = &loaded.record.meta;
+            let loaded = match created.as_mut() {
+                Some(loaded) => loaded,
+                None => slot.as_mut().expect("checked above"),
+            };
+            let meta = &loaded.meta;
             let payload =
                 serde_json::to_value(&record).map_err(|source| StorageError::JsonWrite {
                     path: blob.clone(),
@@ -155,7 +158,7 @@ impl ConversationRepository {
                 launched_run_ids: Vec::new(),
                 metadata: serde_json::to_value(meta).unwrap_or_default(),
             });
-            store.database().write(|tx| {
+            let (revision, ()) = store.database().write(|tx| {
                 if let Some(row) = &conversation_row {
                     tx.put_conversation(row)?;
                 }
@@ -177,12 +180,14 @@ impl ConversationRepository {
                     attached: false,
                 },
             );
-            if is_new {
+            loaded.revision = revision;
+            if let Some(loaded) = created {
                 store.release_handle(conversation_id);
+                *slot = Some(loaded);
             }
-            *slot = Some(loaded);
-            Ok(())
+            Ok(revision)
         })?;
+        store.notify_commit(revision, vec![(conversation_id.to_string(), project_path)]);
         Ok(record)
     }
 
@@ -204,7 +209,7 @@ impl ConversationRepository {
         self.store().with_conversation(conversation_id, |slot| {
             Ok(slot
                 .as_ref()
-                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .filter(|loaded| loaded.meta.project_path == project_path)
                 .and_then(|loaded| loaded.attachments.get(attachment_id))
                 .filter(|attachment| attachment.readable(&home_dir))
                 .map(|attachment| (attachment.record.clone(), attachment.path(&home_dir))))
@@ -228,7 +233,7 @@ impl ConversationRepository {
         store.with_conversation(conversation_id, |slot| {
             let Some(attachment) = slot
                 .as_ref()
-                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .filter(|loaded| loaded.meta.project_path == project_path)
                 .and_then(|loaded| loaded.attachments.get(attachment_id))
                 .filter(|attachment| attachment.readable(&home_dir))
             else {
@@ -254,7 +259,7 @@ impl ConversationRepository {
         self.store().with_conversation(conversation_id, |slot| {
             Ok(slot
                 .as_ref()
-                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .filter(|loaded| loaded.meta.project_path == project_path)
                 .map(|loaded| {
                     loaded
                         .attachments
@@ -330,7 +335,7 @@ impl ConversationRepository {
         store.with_conversation(conversation_id, |slot| {
             let Some(loaded) = slot
                 .as_mut()
-                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .filter(|loaded| loaded.meta.project_path == project_path)
             else {
                 return Ok(Vec::new());
             };
@@ -341,7 +346,7 @@ impl ConversationRepository {
                 }
             }
             if !selected.is_empty() {
-                store.database().write(|tx| {
+                let (revision, ()) = store.database().write(|tx| {
                     for id in &selected {
                         let attachment = &loaded.attachments[id];
                         tx.delete_attachment(conversation_id, id)?;
@@ -357,6 +362,11 @@ impl ConversationRepository {
                 for id in &selected {
                     loaded.attachments.remove(id);
                 }
+                loaded.revision = revision;
+                store.notify_commit(
+                    revision,
+                    vec![(conversation_id.to_string(), project_path.clone())],
+                );
             }
             let mut candidates: Vec<PathBuf> = selected.iter().map(|id| dir.join(id)).collect();
             if let Some(cutoff) = orphans_before {

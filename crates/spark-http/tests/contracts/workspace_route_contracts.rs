@@ -523,14 +523,24 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     .await;
 
     assert_eq!(listed.0, StatusCode::OK);
-    // Registration starts the project's coordinator, pinned first.
-    assert_eq!(listed.1.as_array().expect("summaries").len(), 2);
-    assert_eq!(listed.1[0]["standing_role"]["name"], "coordinator");
-    assert_eq!(listed.1[1]["conversation_id"], "conversation-a");
-    assert_eq!(listed.1[1]["conversation_handle"], "amber-anchor");
-    assert_eq!(listed.1[1]["title"], "Design thread");
-    assert_eq!(listed.1[1]["last_message_preview"], "Design thread preview");
-    assert!(listed.1[1].get("turns").is_none());
+    // A SummarySnapshot. Registration starts the project's coordinator,
+    // listed as a placeholder until its first message; clients pin it.
+    let entries = crate::summary_entries(&listed.1);
+    assert_eq!(entries.len(), 2);
+    let coordinator = entries
+        .iter()
+        .find(|entry| entry["standing_role"]["name"] == "coordinator")
+        .expect("coordinator");
+    assert_eq!(coordinator["placeholder"], true);
+    let thread = entries
+        .iter()
+        .find(|entry| entry["conversation_id"] == "conversation-a")
+        .expect("thread");
+    assert_eq!(thread["handle"], "amber-anchor");
+    assert_eq!(thread["title"], "Design thread");
+    assert_eq!(thread["preview"], "Design thread preview");
+    assert!(thread.get("turns").is_none());
+    assert!(listed.1["watermark"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -775,6 +785,7 @@ async fn home_project_is_default_and_lists_span_projects() {
         assert_eq!(registered.1["is_default"], false);
         let project_path = registered.1["project_path"].as_str().unwrap().to_string();
         let conversation = format!("/workspace/api/conversations/conversation-{name}");
+        // A conversation without rows is not found; its revision is 0.
         let snapshot = request_json(
             app.clone(),
             "GET",
@@ -785,11 +796,12 @@ async fn home_project_is_default_and_lists_span_projects() {
             None,
         )
         .await;
+        assert_eq!(snapshot.0, StatusCode::NOT_FOUND);
         let saved = request_json(
             app.clone(),
             "PUT",
             &format!("{conversation}/settings"),
-            Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": snapshot.1["revision"].to_string()})),
+            Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": "0"})),
         )
         .await;
         assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
@@ -807,10 +819,14 @@ async fn home_project_is_default_and_lists_span_projects() {
         assert!(mission.1.get("source_conversation_id").is_none());
         paths.push(project_path);
     }
+    // Thread lists are SummarySnapshots; missions are a plain list.
     let project_paths = |items: &Value| {
-        let mut paths: Vec<String> = items
-            .as_array()
-            .unwrap()
+        let entries = if items.is_array() {
+            items.as_array().unwrap().clone()
+        } else {
+            crate::summary_entries(items)
+        };
+        let mut paths: Vec<String> = entries
             .iter()
             .filter(|item| item.get("standing_role").is_none())
             .map(|item| item["project_path"].as_str().unwrap().to_string())
@@ -845,7 +861,11 @@ async fn home_project_is_default_and_lists_span_projects() {
     let one = request_json(app.clone(), "GET", &scoped, None).await;
     assert_eq!(project_paths(&one.1["missions"]), [paths[1].clone()]);
 
-    let handle = chats.1[1]["conversation_handle"]
+    assert_eq!(chats.1["project_path"], paths[0].as_str());
+    let handle = crate::summary_entries(&chats.1)
+        .iter()
+        .find(|entry| entry.get("standing_role").is_none())
+        .expect("chat")["handle"]
         .as_str()
         .unwrap()
         .to_string();
@@ -920,7 +940,10 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     )
     .await;
     assert_eq!(settings_chat.0, StatusCode::OK, "{}", settings_chat.1);
-    assert_eq!(settings_chat.1["project_path"], home.as_str());
+    assert_eq!(
+        crate::conversation_payload(&settings_chat.1["changes"])["project_path"],
+        home.as_str()
+    );
     let turn_chat = request_json(
         app.clone(),
         "POST",
@@ -929,7 +952,8 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     )
     .await;
     assert_eq!(turn_chat.0, StatusCode::OK, "{}", turn_chat.1);
-    assert_eq!(turn_chat.1["project_path"], home.as_str());
+    let turn_chat_row = crate::conversation_payload(&turn_chat.1["changes"]);
+    assert_eq!(turn_chat_row["project_path"], home.as_str());
 
     // An explicit project still binds, and later writes keep that binding.
     let bound = request_json(
@@ -939,18 +963,26 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
         Some(json!({"project_path": project})),
     )
     .await;
-    assert_eq!(bound.1["project_path"], project.as_str(), "{}", bound.1);
+    assert_eq!(
+        crate::conversation_payload(&bound.1["changes"])["project_path"],
+        project.as_str(),
+        "{}",
+        bound.1
+    );
     let rebound = request_json(
         app.clone(),
         "PUT",
         "/workspace/api/conversations/bound-chat/settings",
-        Some(json!({"chat_mode": "plan", "expected_revision": bound.1["revision"].to_string()})),
+        Some(json!({"chat_mode": "plan", "expected_revision": bound.1["revision"]})),
     )
     .await;
     assert_eq!(rebound.0, StatusCode::OK, "{}", rebound.1);
-    assert_eq!(rebound.1["project_path"], project.as_str());
+    assert_eq!(
+        crate::conversation_payload(&rebound.1["changes"])["project_path"],
+        project.as_str()
+    );
 
-    let handle = turn_chat.1["conversation_handle"].as_str().unwrap();
+    let handle = turn_chat_row["handle"].as_str().unwrap();
     let mission = request_json(
         app.clone(),
         "POST",
@@ -1224,18 +1256,13 @@ async fn role_routes_list_start_send_and_stop_standing_roles() {
         .map(|role| role["name"].clone())
         .collect();
     assert_eq!(names, [json!("coordinator"), json!("chief-of-staff")]);
-    let conversation = request_json(
+    let conversation = crate::conversation_view(
         app.clone(),
-        "GET",
-        &format!(
-            "/workspace/api/conversations/{}?project_path={}",
-            started.1["conversation_id"].as_str().unwrap(),
-            crate::encode_query(&project)
-        ),
-        None,
+        started.1["conversation_id"].as_str().unwrap(),
+        &project,
     )
     .await;
-    let handle = conversation.1["conversation_handle"].as_str().unwrap();
+    let handle = conversation["conversation_handle"].as_str().unwrap();
     assert!(!handle.is_empty());
     let sent = request_json(
         app.clone(),
@@ -1304,17 +1331,11 @@ async fn a_stopped_role_holds_user_messages_until_it_is_started_again() {
             .iter()
             .all(|turn| turn["status"] == "complete")
     };
-    let get = |id: &str| {
-        format!(
-            "/workspace/api/conversations/{id}?project_path={}",
-            crate::encode_query(&project)
-        )
-    };
     let wait_settled = |id: String| {
-        let (app, uri) = (app.clone(), get(&id));
+        let (app, project) = (app.clone(), project.clone());
         async move {
             for _ in 0..600 {
-                let conversation = request_json(app.clone(), "GET", &uri, None).await.1;
+                let conversation = crate::conversation_view(app.clone(), &id, &project).await;
                 if settled(conversation.clone()) {
                     return conversation;
                 }
@@ -1342,8 +1363,10 @@ async fn a_stopped_role_holds_user_messages_until_it_is_started_again() {
 
     // Held: recorded as queued, no assistant turn, nothing reaches the backend.
     for message in ["First held", "Second held"] {
-        let (status, snapshot, _) = send(&role_chat, message).await;
-        assert_eq!(status, StatusCode::OK, "{snapshot}");
+        let (status, acceptance, _) = send(&role_chat, message).await;
+        assert_eq!(status, StatusCode::OK, "{acceptance}");
+        assert_eq!(acceptance["status"], "queued");
+        let snapshot = crate::conversation_view(app.clone(), &role_chat, &project).await;
         let turns = snapshot["turns"].as_array().unwrap();
         let last = turns.last().unwrap();
         assert_eq!(
@@ -1434,17 +1457,7 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     // The agent closed the mission inside its turn; let that turn finish.
     let mut transcript = Value::Null;
     for _ in 0..600 {
-        transcript = request_json(
-            app.clone(),
-            "GET",
-            &format!(
-                "/workspace/api/conversations/{id}?project_path={}",
-                crate::encode_query(&project)
-            ),
-            None,
-        )
-        .await
-        .1;
+        transcript = crate::conversation_view(app.clone(), &id, &project).await;
         if !transcript["turns"]
             .as_array()
             .unwrap()
@@ -1863,10 +1876,11 @@ async fn conversation_resource_requires_revisions_for_every_model_selector() {
     let config = settings(temp.path());
     let app = build_app(config.clone()).expect("app");
     let uri = "/workspace/api/conversations/revision-chat/settings";
-    let read_uri = "/workspace/api/conversations/revision-chat?project_path=/projects/revisions";
+    let read_uri =
+        "/workspace/api/settings?conversation_id=revision-chat&project_path=/projects/revisions";
     let initial = request_json(app.clone(), "GET", read_uri, None).await;
     assert_eq!(initial.0, StatusCode::OK);
-    let initial_revision = initial.1["settings"]["models"]["revision"].clone();
+    let initial_revision = initial.1["models"]["revision"].clone();
     let selectors = [
         json!({"provider": "openai"}),
         json!({"model": "new-model"}),
@@ -1906,7 +1920,10 @@ async fn conversation_resource_requires_revisions_for_every_model_selector() {
         assert_eq!(stored().await.1, before);
     }
     let read = request_json(app, "GET", read_uri, None).await;
-    assert_eq!(read.1["settings"], saved.1["settings"]);
+    assert_eq!(
+        read.1,
+        crate::conversation_payload(&saved.1["changes"])["settings"]
+    );
 }
 
 #[tokio::test]

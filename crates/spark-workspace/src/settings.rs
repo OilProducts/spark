@@ -482,26 +482,24 @@ pub fn update_workspace_settings(
         } => {
             let service = crate::WorkspaceConversationService::new(settings.clone(), store.clone());
             if model_settings.is_none() {
-                let snapshot = service.get_snapshot(&conversation_id, Some(&project_path))?;
-                if snapshot["settings"]["models"]["revision"].as_str()
-                    != Some(request.expected_revision.as_str())
-                {
+                let view = service.conversation_settings_view(&conversation_id, &project_path)?;
+                if view["models"]["revision"].as_str() != Some(request.expected_revision.as_str()) {
                     return Err(WorkspaceError::Conflict(
                         "Conversation settings changed; reload before saving.".into(),
                     ));
                 }
-                return Ok(snapshot["settings"].clone());
+                return Ok(view);
             }
-            let snapshot = service.update_conversation_settings(
+            service.update_conversation_settings(
                 &conversation_id,
                 crate::ConversationSettingsUpdate {
-                    project_path,
+                    project_path: project_path.clone(),
                     model_settings,
                     expected_revision: Some(request.expected_revision),
                     ..Default::default()
                 },
             )?;
-            return Ok(snapshot["settings"].clone());
+            return service.conversation_settings_view(&conversation_id, &project_path);
         }
         WorkspaceSettingsSection::ProjectModels {
             project_path,

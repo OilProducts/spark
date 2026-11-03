@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -21,27 +20,29 @@ use spark_workspace::conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
     FlowRunRequestReviewRequest, PreparedConversationTurn, ProposedPlanReviewRequest,
-    RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
+    RunContinueRequest, RunLaunchRequest, RunRetryRequest, TurnAcceptance,
+    WorkspaceConversationService,
 };
 use spark_workspace::live::{
-    conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
-    conversation_summary_envelope_for, envelope_matches_query, initial_live_envelopes,
-    lagged_resync_envelopes, latest_run_sequence, trigger_delete_envelope, trigger_upsert_envelope,
-    validate_live_query, RawLiveQuery,
+    acceptance_wire, conversation_changes_envelope, conversation_event_envelope,
+    conversation_window_envelope, conversations_changes_envelope, conversations_snapshot_envelope,
+    initial_live_envelopes, lagged_resync_envelopes, latest_run_sequence, mutation_ack_wire,
+    read_conversation_changes, read_conversation_page, read_conversation_summaries,
+    trigger_delete_envelope, trigger_upsert_envelope, validate_live_query, ConversationReadOutcome,
+    LiveEnvelope, RawLiveQuery,
 };
 use spark_workspace::missions::{MissionMutation, MissionRecord};
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
 use spark_workspace::WorkspaceError;
 use spark_workspace::{
-    workspace_settings, BrowseResponse, ConversationSummary, ProjectMetadata, SerializedTrigger,
-    TriggerCreateRequest, TriggerDeleteResponse, TriggerUpdateRequest, WebhookHandleRequest,
-    WorkspaceFlowService, WorkspaceFlowSummary, WorkspaceProjectService, WorkspaceTriggerService,
+    workspace_settings, BrowseResponse, ProjectMetadata, SerializedTrigger, TriggerCreateRequest,
+    TriggerDeleteResponse, TriggerUpdateRequest, WebhookHandleRequest, WorkspaceFlowService,
+    WorkspaceFlowSummary, WorkspaceProjectService, WorkspaceTriggerService,
 };
-use tokio::sync::broadcast;
 use tokio::time::{self, Duration};
 
 use crate::{
-    publish_live_run_after, publish_trigger_activation_outcomes, HttpAppState,
+    publish_live_run_after, publish_trigger_activation_outcomes, HttpAppState, Received,
     RunEventObserverHandle, WorkspaceApiError, WorkspaceLiveHub,
 };
 
@@ -165,6 +166,10 @@ pub fn router() -> Router<HttpAppState> {
             "/conversations/{conversation_id}",
             get(get_conversation).delete(delete_conversation),
         )
+        .route(
+            "/conversations/{conversation_id}/changes",
+            get(get_conversation_changes),
+        )
         .route("/settings", get(settings).patch(patch_settings))
         .route("/settings/validate", post(validate_settings_update))
 }
@@ -182,6 +187,20 @@ struct ProjectConversationsQuery {
 #[derive(Debug, Default, Deserialize)]
 struct ConversationQuery {
     project_path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ConversationPageQuery {
+    project_path: Option<String>,
+    limit: Option<String>,
+    before: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ConversationChangesQuery {
+    project_path: Option<String>,
+    generation: Option<String>,
+    since: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,26 +339,105 @@ async fn list_project_conversations(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
-) -> ApiResult<Vec<ConversationSummary>> {
+) -> ApiResult<Value> {
     let query = optional_query_payload(payload)?;
-    let conversations = WorkspaceConversationService::new((*settings).clone(), store);
-    WorkspaceProjectService::new((*settings).clone())
-        .list_project_conversations(&conversations, query.project_path.as_deref())
-        .map(Json)
-        .map_err(Into::into)
+    tokio::task::spawn_blocking(move || {
+        read_conversation_summaries(&settings, &store, query.project_path.as_deref())
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("conversation list task failed: {error}")))?
+    .map(Json)
+    .map_err(Into::into)
+}
+
+/// A conversation read's rows, or the 409 `Reset` that invalidates the
+/// browser's window or cursor.
+fn conversation_read_response(outcome: ConversationReadOutcome) -> Response {
+    match outcome {
+        ConversationReadOutcome::Rows(rows) => Json(rows).into_response(),
+        ConversationReadOutcome::Reset(reset) => {
+            (StatusCode::CONFLICT, Json(reset)).into_response()
+        }
+    }
+}
+
+fn required_project_path(project_path: Option<String>) -> Result<String, WorkspaceError> {
+    project_path
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| WorkspaceError::Validation("project_path is required.".to_string()))
+}
+
+/// A decimal revision query parameter.
+fn decimal_param(value: Option<&str>, field: &str) -> Result<i64, WorkspaceError> {
+    value
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(|| WorkspaceError::Validation(format!("{field} must be a decimal revision.")))
 }
 
 async fn get_conversation(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
     AxumPath(conversation_id): AxumPath<String>,
-    payload: Result<Query<ConversationQuery>, QueryRejection>,
-) -> ApiResult<Value> {
+    payload: Result<Query<ConversationPageQuery>, QueryRejection>,
+) -> Result<Response, WorkspaceApiError> {
     let query = optional_query_payload(payload)?;
-    WorkspaceConversationService::new((*settings).clone(), store.clone())
-        .get_snapshot(&conversation_id, query.project_path.as_deref())
-        .map(Json)
-        .map_err(Into::into)
+    let project_path = required_project_path(query.project_path)?;
+    let limit = match query.limit.as_deref() {
+        None => spark_workspace::live::DEFAULT_PAGE_LIMIT,
+        Some(limit) => limit
+            .parse::<usize>()
+            .ok()
+            .filter(|limit| (1..=spark_workspace::live::MAX_PAGE_LIMIT).contains(limit))
+            .ok_or_else(|| {
+                WorkspaceError::Validation("limit must be an integer from 1 to 100.".to_string())
+            })?,
+    };
+    let outcome = tokio::task::spawn_blocking(move || {
+        read_conversation_page(
+            &settings,
+            &store,
+            &conversation_id,
+            &project_path,
+            limit,
+            query.before.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceError::Internal(format!("conversation read task failed: {error}"))
+    })??;
+    Ok(conversation_read_response(outcome))
+}
+
+async fn get_conversation_changes(
+    State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
+    AxumPath(conversation_id): AxumPath<String>,
+    payload: Result<Query<ConversationChangesQuery>, QueryRejection>,
+) -> Result<Response, WorkspaceApiError> {
+    let query = optional_query_payload(payload)?;
+    let project_path = required_project_path(query.project_path)?;
+    let generation = query
+        .generation
+        .filter(|generation| !generation.is_empty())
+        .ok_or_else(|| WorkspaceError::Validation("generation is required.".to_string()))?;
+    let since = decimal_param(query.since.as_deref(), "since")?;
+    let outcome = tokio::task::spawn_blocking(move || {
+        read_conversation_changes(
+            &settings,
+            &store,
+            &conversation_id,
+            &project_path,
+            &generation,
+            since,
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceError::Internal(format!("conversation read task failed: {error}"))
+    })??;
+    Ok(conversation_read_response(outcome))
 }
 
 async fn update_conversation_settings(
@@ -356,21 +454,30 @@ async fn update_conversation_settings(
         || request.model.is_some()
         || request.reasoning_effort.is_some();
     let service = WorkspaceConversationService::new((*settings).clone(), store.clone());
-    let updated = service.update_conversation_settings(&conversation_id, request)?;
-    let project_path = updated["project_path"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    publish_conversation_snapshot(&settings, &live_hub, &conversation_id, &project_path);
+    let ack = tokio::task::spawn_blocking(move || {
+        let ack = service.update_conversation_settings(&conversation_id, request)?;
+        mutation_ack_wire(&service, ack)
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("settings update task failed: {error}")))??;
     if changes_models {
-        live_hub.publish_settings_change(
-            "conversation",
-            "models",
-            Some(project_path),
-            updated["settings"]["models"]["revision"].clone(),
-        );
+        if let Some(conversation) = ack["changes"]["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["kind"] == "conversation" && !row["payload"].is_null())
+        {
+            live_hub.publish_settings_change(
+                "conversation",
+                "models",
+                conversation["payload"]["project_path"]
+                    .as_str()
+                    .map(str::to_string),
+                conversation["payload"]["settings"]["models"]["revision"].clone(),
+            );
+        }
     }
-    Ok(Json(updated))
+    Ok(Json(ack))
 }
 
 async fn send_conversation_turn(
@@ -431,15 +538,18 @@ async fn retry_conversation_turn(
         move |service, conversation_id| {
             service
                 .retry_turn(conversation_id, &project_path_for_start, &turn_id)
-                .map(|(prepared, snapshot)| (Some(prepared), snapshot))
+                .map(|(prepared, acceptance)| (Some(prepared), acceptance))
         },
     )
     .await
 }
 
-/// Starts a turn, answers with the started snapshot, and completes the turn in
-/// the background while publishing its progress. A message delivered into or
-/// queued behind a running turn starts nothing here.
+/// Accepts a message, answers with its acceptance once committed, and
+/// completes a started turn in the background. History, frame and provider
+/// startup follow the acceptance. Committed progress reaches live clients as
+/// revisions through the store's commit notices; only transient stream deltas
+/// are published here. A message delivered into or queued behind a running
+/// turn starts nothing.
 async fn run_conversation_turn(
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
@@ -449,135 +559,68 @@ async fn run_conversation_turn(
     start: impl FnOnce(
             &WorkspaceConversationService,
             &str,
-        ) -> Result<(Option<PreparedConversationTurn>, Value), WorkspaceError>
+        )
+            -> Result<(Option<PreparedConversationTurn>, TurnAcceptance), WorkspaceError>
         + Send
         + 'static,
 ) -> ApiResult<Value> {
+    let _ = project_path;
     let service = service.with_live_publisher(live_publisher(&live_hub));
-    let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let conversation_id_for_start = conversation_id.clone();
     let service_for_start = service.clone();
-    let (prepared, started_snapshot) =
-        tokio::task::spawn_blocking(move || start(&service_for_start, &conversation_id_for_start))
-            .await
-            .map_err(|error| {
-                WorkspaceApiError(WorkspaceError::Internal(format!(
-                    "conversation turn start task failed: {error}"
-                )))
-            })??;
+    let (prepared, acceptance) = tokio::task::spawn_blocking(move || {
+        let (prepared, acceptance) = start(&service_for_start, &conversation_id)?;
+        Ok::<_, WorkspaceError>((prepared, acceptance_wire(&service_for_start, acceptance)?))
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "conversation turn start task failed: {error}"
+        )))
+    })??;
     let Some(prepared) = prepared else {
-        publish_conversation_after(
-            &settings,
-            &live_hub,
-            &conversation_id,
-            started_snapshot["project_path"]
-                .as_str()
-                .unwrap_or(&project_path),
-            before_revision,
-        );
-        return Ok(Json(started_snapshot));
+        return Ok(Json(acceptance));
     };
-    publish_conversation_after(
-        &settings,
-        &live_hub,
-        &conversation_id,
-        &prepared.project_path,
-        before_revision,
-    );
-
-    let started_revision = started_snapshot
-        .get("revision")
-        .and_then(Value::as_i64)
-        .unwrap_or(before_revision);
-    let published_revision = Arc::new(AtomicI64::new(started_revision));
-    let conversation_id_for_progress = conversation_id.clone();
-    let project_path_for_progress = prepared.project_path.clone();
-    let live_hub_for_progress = live_hub.clone();
-    let published_revision_for_progress = Arc::clone(&published_revision);
-    let settings_for_completion = settings.clone();
-    let live_hub_for_completion = live_hub.clone();
-    let service_for_completion = service.clone();
-    let prepared_for_completion = prepared.clone();
-    let started_snapshot_for_completion = started_snapshot.clone();
+    let completion_conversation_id = prepared.conversation_id.clone();
+    let completion_project_path = prepared.project_path.clone();
     tokio::spawn(async move {
-        let completion_conversation_id = prepared_for_completion.conversation_id.clone();
-        let completion_project_path = prepared_for_completion.project_path.clone();
         // The running turn keeps the app's store open through its final
-        // publication, even if the app itself is dropped meanwhile.
-        let store = service_for_completion.store().clone();
-        let missions = mission_service(&settings_for_completion, &store);
-        let roles = spark_workspace::roles::WorkspaceRoleService::new(
-            (*settings_for_completion).clone(),
-            store.clone(),
-        );
-        let (mission_project, mission_id) = (
-            completion_project_path.clone(),
+        // commit, even if the app itself is dropped meanwhile.
+        let store = service.store().clone();
+        let missions = mission_service(&settings, &store);
+        let roles =
+            spark_workspace::roles::WorkspaceRoleService::new((*settings).clone(), store.clone());
+        let (progress_conversation, progress_project) = (
             completion_conversation_id.clone(),
+            completion_project_path.clone(),
         );
-        let completion_result = tokio::task::spawn_blocking(move || {
-            let completed = service_for_completion.complete_started_turn_with_progress_payloads(
-                prepared_for_completion,
-                started_snapshot_for_completion,
-                move |payload| {
-                    let revision = payload
-                        .get("revision")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(started_revision);
-                    published_revision_for_progress.fetch_max(revision, Ordering::Relaxed);
-                    live_hub_for_progress.publish(conversation_event_envelope(
-                        &conversation_id_for_progress,
-                        &project_path_for_progress,
+        let _ = tokio::task::spawn_blocking(move || {
+            let completed =
+                service.complete_started_turn_with_progress_payloads(prepared, move |payload| {
+                    live_hub.publish(conversation_event_envelope(
+                        &progress_conversation,
+                        &progress_project,
                         payload,
-                        revision,
                     ));
-                },
-            );
+                });
             // A mission's inbox may have filled while this turn ran.
             if missions
-                .conversation_mission(&mission_project, &mission_id)
+                .conversation_mission(&completion_project_path, &completion_conversation_id)
                 .is_some()
             {
-                let _ = missions.process(&mission_project, &mission_id);
+                let _ = missions.process(&completion_project_path, &completion_conversation_id);
             }
             // So is a standing role's.
-            if let Some(role) = roles.conversation_role(&mission_project, &mission_id) {
-                let _ = roles.process(&mission_project, &role.name);
+            if let Some(role) =
+                roles.conversation_role(&completion_project_path, &completion_conversation_id)
+            {
+                let _ = roles.process(&completion_project_path, &role.name);
             }
             completed
         })
         .await;
-
-        let after_revision = published_revision.load(Ordering::Relaxed);
-        match completion_result {
-            Ok(Ok(_)) => publish_conversation_after(
-                &settings_for_completion,
-                &live_hub_for_completion,
-                &completion_conversation_id,
-                &completion_project_path,
-                after_revision,
-            ),
-            Ok(Err(_error)) => {
-                publish_conversation_after(
-                    &settings_for_completion,
-                    &live_hub_for_completion,
-                    &completion_conversation_id,
-                    &completion_project_path,
-                    after_revision,
-                );
-            }
-            Err(_error) => {
-                publish_conversation_after(
-                    &settings_for_completion,
-                    &live_hub_for_completion,
-                    &completion_conversation_id,
-                    &completion_project_path,
-                    after_revision,
-                );
-            }
-        }
         drop(store);
     });
-    Ok(Json(started_snapshot))
+    Ok(Json(acceptance))
 }
 
 #[derive(Deserialize)]
@@ -625,7 +668,6 @@ async fn answer_conversation_request_user_input(
     payload: Result<Json<ConversationRequestUserInputAnswerRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
         &store,
@@ -634,15 +676,10 @@ async fn answer_conversation_request_user_input(
         &run_event_observer,
     )
     .with_live_publisher(live_publisher(&live_hub));
-    let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let conversation_id_for_answer = conversation_id.clone();
-    let request_id_for_answer = request_id.clone();
-    let updated = tokio::task::spawn_blocking(move || {
-        service.submit_request_user_input_answer(
-            &conversation_id_for_answer,
-            &request_id_for_answer,
-            request,
-        )
+    let ack = tokio::task::spawn_blocking(move || {
+        let ack =
+            service.submit_request_user_input_answer(&conversation_id, &request_id, request)?;
+        mutation_ack_wire(&service, ack)
     })
     .await
     .map_err(|error| {
@@ -650,14 +687,7 @@ async fn answer_conversation_request_user_input(
             "request-user-input answer task failed: {error}"
         )))
     })??;
-    publish_conversation_after(
-        &settings,
-        &live_hub,
-        &conversation_id,
-        &project_path,
-        before_revision,
-    );
-    Ok(Json(updated))
+    Ok(Json(ack))
 }
 
 async fn create_flow_run_request_by_handle(
@@ -679,7 +709,6 @@ async fn create_flow_run_request_by_handle(
         &run_event_observer,
     )
     .create_flow_run_request_by_handle(&conversation_handle, request)?;
-    publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_run_ids_from_value(&settings, &live_hub, &payload);
     Ok(Json(payload))
 }
@@ -695,7 +724,6 @@ async fn review_flow_run_request(
     payload: Result<Json<FlowRunRequestReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
         &store,
@@ -703,18 +731,11 @@ async fn review_flow_run_request(
         &agent_turn_backend,
         &run_event_observer,
     );
-    let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
-    let updated = service.review_flow_run_request(&conversation_id, &request_id, request)?;
-    publish_conversation_after(
-        &settings,
-        &live_hub,
-        &conversation_id,
-        &project_path,
-        before_revision,
-    );
-    publish_new_run_ids_from_value(&settings, &live_hub, &updated, &before_run_ids);
-    Ok(Json(updated))
+    let ack = service.review_flow_run_request(&conversation_id, &request_id, request)?;
+    let ack = mutation_ack_wire(&service, ack)?;
+    // Runs the review launched follow from its changed artifact rows.
+    publish_run_ids_from_value(&settings, &live_hub, &ack["changes"]);
+    Ok(Json(ack))
 }
 
 async fn review_proposed_plan(
@@ -728,7 +749,6 @@ async fn review_proposed_plan(
     payload: Result<Json<ProposedPlanReviewRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
         &store,
@@ -736,18 +756,10 @@ async fn review_proposed_plan(
         &agent_turn_backend,
         &run_event_observer,
     );
-    let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
-    let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
-    let updated = service.review_proposed_plan(&conversation_id, &plan_id, request)?;
-    publish_conversation_after(
-        &settings,
-        &live_hub,
-        &conversation_id,
-        &project_path,
-        before_revision,
-    );
-    publish_new_run_ids_from_value(&settings, &live_hub, &updated, &before_run_ids);
-    Ok(Json(updated))
+    let ack = service.review_proposed_plan(&conversation_id, &plan_id, request)?;
+    let ack = mutation_ack_wire(&service, ack)?;
+    publish_run_ids_from_value(&settings, &live_hub, &ack["changes"]);
+    Ok(Json(ack))
 }
 
 async fn launch_workspace_run(
@@ -771,7 +783,6 @@ async fn launch_workspace_run(
         &run_event_observer,
     )
     .launch_workspace_run(request)?;
-    publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_run_ids_from_value(&settings, &live_hub, &payload);
     Ok(Json(payload).into_response())
 }
@@ -799,7 +810,6 @@ async fn retry_workspace_run(
         &run_event_observer,
     )
     .retry_workspace_run(&run_id, request)?;
-    publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);
     publish_run_ids_from_value_except(&settings, &live_hub, &payload, Some(&run_id));
     Ok(Json(payload).into_response())
@@ -828,7 +838,6 @@ async fn continue_workspace_run(
         &run_event_observer,
     )
     .continue_workspace_run(&run_id, request)?;
-    publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
     publish_live_run_after(&settings, &live_hub, &run_id, before_sequence);
     publish_run_ids_from_value_except(&settings, &live_hub, &payload, Some(&run_id));
     Ok(Json(payload).into_response())
@@ -957,6 +966,112 @@ async fn get_conversation_segment_tool_output(
         .map_err(Into::into)
 }
 
+/// A subscriber's conversation scopes and their catch-up cursors. A scope
+/// whose cursor is `None` was reset and waits for the browser to reconnect.
+struct LiveScopes {
+    conversation: Option<(String, String, Option<i64>)>,
+    summaries: Option<(Option<String>, Option<i64>)>,
+}
+
+/// Initialize a subscriber's conversation scopes after it subscribed: a
+/// newest window or summary snapshot without a cursor, else the rows changed
+/// after the browser's cursor.
+fn initialize_live_scopes(
+    service: &WorkspaceConversationService,
+    query: &spark_workspace::live::LiveQuery,
+) -> Result<(Vec<LiveEnvelope>, LiveScopes), WorkspaceError> {
+    let mut envelopes = Vec::new();
+    let mut scopes = LiveScopes {
+        conversation: None,
+        summaries: None,
+    };
+    if let Some(conversation_id) = query.conversation_id.clone() {
+        let project_path = query.conversation_project_path.clone().ok_or_else(|| {
+            WorkspaceError::Validation(
+                "conversation_project_path is required when conversation_id is provided."
+                    .to_string(),
+            )
+        })?;
+        let (envelope, cursor) = match &query.conversation_cursor {
+            None => {
+                let (envelope, watermark) =
+                    conversation_window_envelope(service, &conversation_id, &project_path)?;
+                (envelope, Some(watermark))
+            }
+            Some((generation, since)) => conversation_changes_envelope(
+                service,
+                &conversation_id,
+                &project_path,
+                generation,
+                *since,
+            )?,
+        };
+        envelopes.push(envelope);
+        scopes.conversation = Some((conversation_id, project_path, cursor));
+    }
+    if query.include_conversations {
+        let project_path = query.conversations_project_path.clone();
+        let (envelope, cursor) = match &query.conversations_cursor {
+            None => {
+                let (envelope, watermark) =
+                    conversations_snapshot_envelope(service, project_path.as_deref())?;
+                (envelope, Some(watermark))
+            }
+            Some((generation, since)) => conversations_changes_envelope(
+                service,
+                project_path.as_deref(),
+                generation,
+                *since,
+            )?,
+        };
+        envelopes.push(envelope);
+        scopes.summaries = Some((project_path, cursor));
+    }
+    Ok((envelopes, scopes))
+}
+
+/// The rows each live scope's subscriber has not seen yet, from its last
+/// emitted watermark: after a wakeup, an overflow, or a heartbeat that finds
+/// the database ahead of the cursor. Notifications are wakeups; this read is
+/// the truth. An empty batch still advances a filtered scope's watermark.
+fn catch_up_live_scopes(
+    service: &WorkspaceConversationService,
+    scopes: &mut LiveScopes,
+) -> Result<Vec<LiveEnvelope>, WorkspaceError> {
+    let generation = service.store().database().generation().to_string();
+    let mut envelopes = Vec::new();
+    if let Some((conversation_id, project_path, cursor)) = scopes.conversation.as_mut() {
+        if let Some(since) = *cursor {
+            let (envelope, next) = conversation_changes_envelope(
+                service,
+                conversation_id,
+                project_path,
+                &generation,
+                since,
+            )?;
+            if next != Some(since) {
+                envelopes.push(envelope);
+            }
+            *cursor = next;
+        }
+    }
+    if let Some((project_path, cursor)) = scopes.summaries.as_mut() {
+        if let Some(since) = *cursor {
+            let (envelope, next) = conversations_changes_envelope(
+                service,
+                project_path.as_deref(),
+                &generation,
+                since,
+            )?;
+            if next != Some(since) {
+                envelopes.push(envelope);
+            }
+            *cursor = next;
+        }
+    }
+    Ok(envelopes)
+}
+
 async fn workspace_live_events(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
@@ -965,12 +1080,28 @@ async fn workspace_live_events(
 ) -> Result<Response, WorkspaceApiError> {
     let raw_query = optional_query_payload(payload)?;
     let query = validate_live_query(raw_query)?;
-    // Subscribe before reading initial state so a commit in between is
-    // delivered live; the browser drops the resulting stale duplicates.
-    let mut live_receiver = live_query_subscribes(&query).then(|| live_hub.subscribe());
-    let initial = initial_live_envelopes(&settings, &store, &query)?;
+    // Subscribe before reading initial state: a commit in between wakes this
+    // subscriber, and its catch-up selects only rows after the initial
+    // watermark, so nothing is missed or applied twice.
+    let subscriber =
+        live_query_subscribes(&query).then(|| live_hub.subscribe_with(Some(query.clone())));
+    let service = WorkspaceConversationService::new((*settings).clone(), store.clone());
+    let (initial, scopes) = {
+        let (service, query) = (service.clone(), query.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut envelopes = initial_live_envelopes(&settings, service.store(), &query)?;
+            let (conversation, scopes) = initialize_live_scopes(&service, &query)?;
+            envelopes.splice(0..0, conversation);
+            Ok::<_, WorkspaceError>((envelopes, scopes))
+        })
+        .await
+        .map_err(|error| {
+            WorkspaceError::Internal(format!("live initialization failed: {error}"))
+        })??
+    };
     let has_initial = !initial.is_empty();
     let stream = async_stream::stream! {
+        let mut scopes = scopes;
         for envelope in initial {
             yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
         }
@@ -982,33 +1113,54 @@ async fn workspace_live_events(
         }
 
         loop {
-            if let Some(receiver) = live_receiver.as_mut() {
-                tokio::select! {
-                    received = receiver.recv() => {
-                        match received {
-                            Ok(envelope) if envelope_matches_query(&envelope, &query) => {
-                                yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
-                            }
-                            Ok(_) => {}
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                // The ring overwrote frames this subscriber
-                                // never read; a silent gap would leave stale
-                                // state rendered (e.g. node statuses), so
-                                // tell it to refetch.
-                                for envelope in lagged_resync_envelopes(&query) {
-                                    yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                    _ = interval.tick() => {
-                        yield Ok::<Bytes, Infallible>(Bytes::from_static(b": keepalive\n\n"));
-                    }
-                }
-            } else {
+            let Some(subscriber) = subscriber.as_ref() else {
                 interval.tick().await;
                 yield Ok::<Bytes, Infallible>(Bytes::from_static(b": keepalive\n\n"));
+                continue;
+            };
+            let catch_up = tokio::select! {
+                received = subscriber.recv() => match received {
+                    Received::Envelope(envelope) => {
+                        yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+                        false
+                    }
+                    Received::Lagged(_) => {
+                        // This subscriber's queue overflowed: other resources
+                        // refetch, conversation scopes catch up from rows.
+                        for envelope in lagged_resync_envelopes(&query) {
+                            yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+                        }
+                        true
+                    }
+                    Received::Changed => true,
+                },
+                _ = interval.tick() => {
+                    yield Ok::<Bytes, Infallible>(Bytes::from_static(b": keepalive\n\n"));
+                    // Closes a commit-to-notification gap.
+                    true
+                }
+            };
+            if !catch_up || (scopes.conversation.is_none() && scopes.summaries.is_none()) {
+                continue;
+            }
+            let service = service.clone();
+            let caught_up = tokio::task::spawn_blocking(move || {
+                let envelopes = catch_up_live_scopes(&service, &mut scopes);
+                (scopes, envelopes)
+            })
+            .await;
+            let Ok((returned, envelopes)) = caught_up else {
+                break;
+            };
+            scopes = returned;
+            match envelopes {
+                Ok(envelopes) => {
+                    for envelope in envelopes {
+                        yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+                    }
+                }
+                // A failed read retries at the next wakeup or heartbeat.
+                Err(error) => eprintln!("Live conversation catch-up failed: {error}"),
             }
         }
     };
@@ -1292,8 +1444,7 @@ async fn settings(
     match (query.project_path, query.conversation_id) {
         (project_path, Some(id)) => {
             WorkspaceConversationService::new((*settings).clone(), store.clone())
-                .get_snapshot(&id, project_path.as_deref())
-                .map(|snapshot| snapshot["settings"].clone())
+                .conversation_settings_view(&id, project_path.as_deref().unwrap_or_default())
         }
         (Some(path), None) => {
             spark_workspace::settings::project_model_settings_view(&settings, &path)
@@ -1366,22 +1517,12 @@ async fn patch_settings(
             ..
         } => ("conversation", "models", Some(project_path.clone())),
     };
-    let conversation = match &request.section {
-        spark_workspace::settings::WorkspaceSettingsSection::ConversationModels {
-            conversation_id,
-            project_path,
-            ..
-        } => Some((conversation_id.clone(), project_path.clone())),
-        _ => None,
-    };
     let store = live_hub
         .conversation_store()
         .ok_or_else(|| WorkspaceError::ServiceUnavailable("Spark is shutting down.".to_string()))?;
+    // A conversation's settings commit reaches its live clients as a revision.
     let response =
         spark_workspace::settings::update_workspace_settings(&settings, &store, request)?;
-    if let Some((id, project)) = conversation {
-        publish_conversation_snapshot(&settings, &live_hub, &id, &project);
-    }
     live_hub.publish_settings_change(
         scope,
         section,
@@ -1612,116 +1753,6 @@ fn live_query_subscribes(query: &spark_workspace::live::LiveQuery) -> bool {
         || query.include_conversations
 }
 
-fn current_conversation_revision(
-    service: &WorkspaceConversationService,
-    conversation_id: &str,
-    project_path: &str,
-) -> i64 {
-    service
-        .get_snapshot(conversation_id, Some(project_path))
-        .ok()
-        .and_then(|snapshot| snapshot.get("revision").and_then(Value::as_i64))
-        .unwrap_or(0)
-}
-
-fn current_conversation_run_ids(
-    service: &WorkspaceConversationService,
-    conversation_id: &str,
-    project_path: &str,
-) -> BTreeSet<String> {
-    let mut run_ids = BTreeSet::new();
-    if let Ok(snapshot) = service.get_snapshot(conversation_id, Some(project_path)) {
-        collect_run_ids_from_value(&snapshot, &mut run_ids);
-    }
-    run_ids
-}
-
-fn publish_conversation_after(
-    settings: &SparkSettings,
-    live_hub: &WorkspaceLiveHub,
-    conversation_id: &str,
-    project_path: &str,
-    before_revision: i64,
-) {
-    let Some(store) = live_hub.conversation_store() else {
-        return;
-    };
-    match conversation_envelopes_after(
-        settings,
-        &store,
-        conversation_id,
-        project_path,
-        before_revision,
-    ) {
-        Ok(envelopes) if !envelopes.is_empty() => {
-            for envelope in envelopes {
-                live_hub.publish(envelope);
-            }
-        }
-        _ => {
-            return publish_conversation_snapshot(settings, live_hub, conversation_id, project_path)
-        }
-    }
-    publish_conversation_summary(settings, live_hub, conversation_id, project_path);
-}
-
-/// Thread lists outside the conversation, such as the Overview, follow its
-/// activity and launches through its summary; streamed deltas do not send one.
-fn publish_conversation_summary(
-    settings: &SparkSettings,
-    live_hub: &WorkspaceLiveHub,
-    conversation_id: &str,
-    project_path: &str,
-) {
-    let Some(store) = live_hub.conversation_store() else {
-        return;
-    };
-    if let Ok(Some(envelope)) =
-        conversation_summary_envelope_for(settings, &store, conversation_id, project_path)
-    {
-        live_hub.publish(envelope);
-    }
-}
-
-fn publish_conversation_snapshot(
-    settings: &SparkSettings,
-    live_hub: &WorkspaceLiveHub,
-    conversation_id: &str,
-    project_path: &str,
-) {
-    let Some(store) = live_hub.conversation_store() else {
-        return;
-    };
-    if let Ok(envelope) =
-        conversation_snapshot_envelope(settings, &store, conversation_id, project_path)
-    {
-        live_hub.publish(envelope);
-    }
-    publish_conversation_summary(settings, live_hub, conversation_id, project_path);
-}
-
-fn publish_optional_conversation_snapshot_from_value(
-    settings: &SparkSettings,
-    live_hub: &WorkspaceLiveHub,
-    value: &Value,
-) {
-    let Some(conversation_id) = value
-        .get("conversation_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return;
-    };
-    let Some(project_path) = value
-        .get("project_path")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return;
-    };
-    publish_conversation_snapshot(settings, live_hub, conversation_id, project_path);
-}
-
 fn publish_run_ids_from_value(
     settings: &SparkSettings,
     live_hub: &WorkspaceLiveHub,
@@ -1743,19 +1774,6 @@ fn publish_run_ids_from_value_except(
             continue;
         }
         publish_live_run_after(settings, live_hub, &run_id, None);
-    }
-}
-
-fn publish_new_run_ids_from_value(
-    settings: &SparkSettings,
-    live_hub: &WorkspaceLiveHub,
-    value: &Value,
-    before_run_ids: &BTreeSet<String>,
-) {
-    let mut after_run_ids = BTreeSet::new();
-    collect_run_ids_from_value(value, &mut after_run_ids);
-    for run_id in after_run_ids.difference(before_run_ids) {
-        publish_live_run_after(settings, live_hub, run_id, None);
     }
 }
 

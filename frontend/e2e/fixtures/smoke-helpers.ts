@@ -93,7 +93,7 @@ export async function stubProjectRegistration(page: Page, projectPath: string) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([]),
+      body: JSON.stringify(summarySnapshot([], new URL(route.request().url()).searchParams.get('project_path'))),
     })
   })
 
@@ -217,3 +217,73 @@ export async function cleanupSmokeFlowsForPage(page: Page): Promise<void> {
   }
   smokeFlowRegistry.delete(page)
 }
+
+// Conversation wire fixtures (see src/test/conversationWire.ts, which e2e cannot import).
+// Revisions, positions and orders are decimal strings, as on the wire.
+type Json = Record<string, any>
+export const SMOKE_GENERATION = 'generation-smoke'
+const revisionOf = (fixture: Json) => String(fixture.revision ?? 1)
+const maxRevision = (rows: Json[]) => String(rows.reduce((max, row) => (BigInt(row.revision) > max ? BigInt(row.revision) : max), 0n))
+
+/** A conversation row from a summary or transcript-shaped fixture. */
+export function conversationRow(fixture: Json, revision = revisionOf(fixture)): Json {
+  const meta = { provider: fixture.provider ?? null, model: fixture.model ?? null, reasoning_effort: fixture.reasoning_effort ?? null }
+  return {
+    kind: 'conversation', conversation_id: fixture.conversation_id, id: fixture.conversation_id, revision, deleted: false,
+    payload: {
+      handle: fixture.conversation_handle ?? null, project_path: fixture.project_path, title: fixture.title ?? 'New thread',
+      created_at: fixture.created_at ?? '', updated_at: fixture.updated_at ?? fixture.created_at ?? '',
+      preview: fixture.last_message_preview ?? null, running: fixture.running ?? (fixture.turns ?? []).some((turn: Json) => turn.role === 'assistant' && ['pending', 'streaming'].includes(turn.status)), needs_attention: false,
+      launched_run_ids: fixture.launched_run_ids ?? [],
+      metadata: { conversation_id: fixture.conversation_id, project_path: fixture.project_path, chat_mode: fixture.chat_mode ?? 'chat', revision, ...meta },
+      effective: { ...meta, llm_profile: null },
+      ...(fixture.settings ? { settings: { ...fixture.settings, models: { ...fixture.settings.models, revision } } } : {}),
+      ...(fixture.standing_role !== undefined ? { standing_role: fixture.standing_role } : {}),
+    },
+  }
+}
+
+/** The newest-window Page for a transcript-shaped fixture; a turn's position defaults to its timestamp in ms. */
+export function conversationPage(fixture: Json): Json {
+  const id = fixture.conversation_id
+  const revision = revisionOf(fixture)
+  const row = (kind: string, payload: Json, extra: Json) => ({ kind, conversation_id: id, id: payload.id, ...extra, revision, deleted: false, payload })
+  const turns = (fixture.turns ?? []).map((turn: Json) => row('turn', turn, { position: String(turn.position ?? Date.parse(turn.timestamp)) }))
+  const segments = (fixture.segments ?? []).map((segment: Json) => row('segment', segment, { turn_id: segment.turn_id, order: String(segment.order ?? 0) }))
+  const artifacts = ['flow_run_requests', 'flow_launches', 'proposed_plans'].flatMap((collection) => (fixture[collection] ?? [])
+    .map((artifact: Json, index: number) => row('artifact', artifact, { collection, position: String(index + 1) })))
+  return {
+    generation: SMOKE_GENERATION, watermark: revision, conversation_id: id,
+    rows: [conversationRow(fixture, revision), ...turns, ...segments, ...artifacts],
+    turn_ids: turns.map((turn: Json) => turn.id), pinned_turn_ids: [], pinned_artifact_ids: [], older_cursor: null,
+  }
+}
+
+/** A thread-list response (`GET /projects/conversations`); each summary fixture becomes a conversation row. */
+export function summarySnapshot(summaries: Json[], projectPath: string | null = null): Json {
+  const rows = summaries.map((summary) => conversationRow(summary))
+  return { generation: SMOKE_GENERATION, watermark: maxRevision(rows), project_path: projectPath, rows }
+}
+
+/** A revision batch of `rows`, starting just below its newest row unless `fromRevision` is given. */
+export function conversationBatch(rows: Json[], fromRevision?: string): Json {
+  const watermark = maxRevision(rows)
+  return { generation: SMOKE_GENERATION, from_revision: fromRevision ?? String(BigInt(watermark) - 1n), watermark, rows }
+}
+
+/** One SSE frame for a conversation (`conversation.*`) or, without an id, the summary feed (`conversations.*`). */
+export function liveFrame(type: string, payload: Json, scope: { conversationId?: string; projectPath?: string | null } = {}): string {
+  const resource = scope.conversationId ? { kind: 'conversation', id: scope.conversationId } : { kind: 'conversations', id: null }
+  return `data: ${JSON.stringify({ type, project_path: scope.projectPath ?? null, resource, cursor: null, payload })}\n\n`
+}
+
+/** The conversation row of a Page, SummarySnapshot or MutationAck from the server. */
+export const conversationRowOf = (body: Json, id?: string): Json | undefined => (body.rows ?? body.changes?.rows ?? [])
+  .find((row: Json) => row.kind === 'conversation' && (id === undefined || row.id === id))
+
+/** The revision a settings PUT must expect for this conversation row. */
+export const settingsRevisionOf = (row: Json): string => String(row.payload.settings?.models?.revision ?? row.payload.metadata.revision)
+
+/** A Page's turn payloads in page order (oldest first); empty for an error body. */
+export const pageTurns = (page: Json): Json[] => (page.turn_ids ?? [])
+  .map((id: string) => page.rows.find((row: Json) => row.kind === 'turn' && row.id === id)?.payload)

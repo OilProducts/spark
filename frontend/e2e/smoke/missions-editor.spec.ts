@@ -1,6 +1,6 @@
 import { customModel } from '../fixtures/model-picker'
 import { expect, test, type Page } from '@playwright/test'
-import { gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
+import { conversationPage, gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
 
 const project = '/tmp/missions-editor-smoke'
 const at = (day: number) => `2026-09-${String(day).padStart(2, "0")} 12:00:00.0 +00:00:00`
@@ -27,7 +27,7 @@ const run = (run_id: string, title: string, flow_name: string, status: string, t
 })
 const turn = (id: string, role: string, content: string, kind = 'message') => ({ id, role, content, kind, status: 'complete', timestamp: '2026-09-12T12:00:00Z' })
 const transcript = (id: string) => ({
-  schema_version: 5, revision: 5, conversation_id: id, project_path: project, segments: [], event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [],
+  revision: 5, conversation_id: id, project_path: project,
   turns: [
     // Older missions opened by repeating the objective; the start line replaces it either way.
     turn('u1', 'user', id === 'mission-gate' ? `Objective:\n${longObjective}\n\nBegin work on this mission.` : 'Begin work on this mission.'),
@@ -37,6 +37,8 @@ const transcript = (id: string) => ({
     ...(id === 'mission-closed' ? [turn('n1', 'system', `Closed as done: ${closingSummary}`, 'mission_notice')] : []),
   ],
 })
+// The turns share a timestamp, so each takes its listed position.
+const transcriptPage = (fixture: ReturnType<typeof transcript>) => conversationPage({ ...fixture, turns: fixture.turns.map((entry, index) => ({ ...entry, position: index + 1 })) })
 
 async function stubMissions(page: Page, draft: Record<string, unknown> = {}, gate: Record<string, unknown> = {}, running: Record<string, unknown> = {}) {
   const missions = initialMissions(draft, gate, running)
@@ -45,7 +47,7 @@ async function stubMissions(page: Page, draft: Record<string, unknown> = {}, gat
   await stubProjectMetadata(page)
   await page.route('**/attractor/runs**', route => route.fulfill({ json: { runs: [run('run-build', 'Rank search results by relevance', 'software-development/implement-change.yaml', 'completed', 193_000), run('run-review', 'Review the ranking diff', 'software-development/review-change.yaml', 'waiting', 12_000)] } }))
   await page.route('**/workspace/api/conversations/mission-*', route => route.request().method() === 'GET'
-    ? route.fulfill({ json: transcript(new URL(route.request().url()).pathname.split('/').pop()!) })
+    ? route.fulfill({ json: transcriptPage(transcript(new URL(route.request().url()).pathname.split('/').pop()!)) })
     : route.fallback())
   await page.route('**/workspace/api/playbooks/bug-report?*', route => route.fulfill({ json: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }))
   await page.route('**/workspace/api/playbooks?*', route => route.fulfill({ json: [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }))
@@ -183,10 +185,10 @@ test('missions event lines stay one line for long titles, errors and questions',
   const long = 'Rebuild the search index for every project and verify that ranking stays stable across all of them '.repeat(3)
   const longQuestion = { ...question, prompt: `${long}Ship it?`, options: [{ label: `Ship it now ${long}` }, { label: 'Hold' }] }
   await stubMissions(page, {}, { question: longQuestion })
-  await page.route('**/workspace/api/conversations/mission-gate?*', route => route.fulfill({ json: { ...transcript('mission-gate'), turns: [
+  await page.route('**/workspace/api/conversations/mission-gate?*', route => route.fulfill({ json: transcriptPage({ ...transcript('mission-gate'), turns: [
     turn('u1', 'user', `Run run-build (software-development/implement-change.yaml, "${long}") ended failed: ${long}\n\nstack trace follows.`),
     turn('u2', 'user', `Run question: ${JSON.stringify(longQuestion)}`),
-  ] } }))
+  ] }) }))
   await page.route('**/attractor/runs**', route => route.fulfill({ json: { runs: [] } }))
   await gotoWithRegisteredProject(page, project)
   await page.getByTestId('activity-missions').click()

@@ -148,7 +148,13 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
                     ..FlowRunRequestReviewRequest::default()
                 },
             )
-            .expect("reviewed")
+            .expect("reviewed");
+        service
+            .get_snapshot(
+                "conversation-launch",
+                Some(project_path.to_str().expect("utf-8")),
+            )
+            .expect("snapshot")
     };
 
     let rejected = review("request-reject", "rejected");
@@ -254,6 +260,10 @@ fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
                 },
             )
             .expect("start turn");
+        let prompt = service
+            .prepare_agent_turn_request(&prepared)
+            .expect("agent turn request")
+            .prompt;
         let snapshot = service
             .ingest_agent_turn_output(
                 "conversation-plan",
@@ -266,7 +276,7 @@ fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
                 },
             )
             .expect("ingest");
-        (prepared.agent_turn_request.prompt, snapshot)
+        (prompt, snapshot)
     };
     let reject = |plan_id: &str, note: &str| {
         service
@@ -329,7 +339,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     );
     let service = crate::conversations(settings);
 
-    let rejected = service
+    service
         .review_proposed_plan(
             "conversation-plan",
             "proposed-plan-inline",
@@ -340,6 +350,12 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
             },
         )
         .expect("rejected");
+    let rejected = service
+        .get_snapshot(
+            "conversation-plan",
+            Some(project_path.to_str().expect("utf-8")),
+        )
+        .expect("snapshot");
     assert_eq!(rejected["proposed_plans"][0]["status"], "rejected");
     assert_eq!(
         rejected["proposed_plans"][0]["review_note"],
@@ -352,7 +368,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
         "conversation-plan-approved",
     );
     let service = crate::conversations(settings_for_project(&project_path, temp.path()));
-    let approved = service
+    service
         .review_proposed_plan(
             "conversation-plan-approved",
             "proposed-plan-inline",
@@ -363,6 +379,12 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
             },
         )
         .expect("approved");
+    let approved = service
+        .get_snapshot(
+            "conversation-plan-approved",
+            Some(project_path.to_str().expect("utf-8")),
+        )
+        .expect("snapshot");
     let plan = &approved["proposed_plans"][0];
     assert_eq!(plan["status"], "approved");
     assert_eq!(plan["review_note"], "Ready.");
@@ -976,7 +998,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let service = crate::conversations(settings.clone());
-    let (prepared, snapshot) = service
+    let (prepared, _) = service
         .start_turn(
             "conversation-frame",
             ConversationTurnRequest {
@@ -987,13 +1009,12 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
             },
         )
         .expect("start turn");
+    let request = service
+        .prepare_agent_turn_request(&prepared)
+        .expect("agent turn request");
 
-    assert_eq!(
-        prepared.agent_turn_request.prompt,
-        "Kick off the implement-spec workflow."
-    );
-    let frame = prepared.agent_turn_request.metadata
-        [spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
+    assert_eq!(request.prompt, "Kick off the implement-spec workflow.");
+    let frame = request.metadata[spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
         .as_str()
         .expect("pinned frame");
     for expected in [
@@ -1011,6 +1032,9 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     assert!(!frame.contains("approve"), "{frame}");
 
     // The stored conversation turn keeps the raw user message, not the frame.
+    let snapshot = service
+        .get_snapshot("conversation-frame", Some(&project_path.to_string_lossy()))
+        .expect("snapshot");
     let stored = snapshot["turns"]
         .as_array()
         .expect("turns")
@@ -1058,7 +1082,8 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
         .expect("seed runtime session");
     let _ = &project;
 
-    let (prepared, _) = crate::conversations(settings.clone())
+    let service = crate::conversations(settings.clone());
+    let (prepared, _) = service
         .start_turn(
             "conversation-resume",
             ConversationTurnRequest {
@@ -1069,9 +1094,11 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
             },
         )
         .expect("start turn");
-    assert_eq!(prepared.agent_turn_request.prompt, "Follow-up question.");
-    assert!(prepared
-        .agent_turn_request
+    let request = service
+        .prepare_agent_turn_request(&prepared)
+        .expect("agent turn request");
+    assert_eq!(request.prompt, "Follow-up question.");
+    assert!(request
         .metadata
         .contains_key(spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY));
 }

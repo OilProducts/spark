@@ -158,7 +158,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
     let project_path = "/projects/settings-app";
     let service = crate::conversations(settings.clone());
 
-    let snapshot = service
+    let ack = service
         .update_conversation_settings(
             "conversation-settings",
             ConversationSettingsUpdate {
@@ -172,8 +172,14 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
             },
         )
         .expect("settings update");
-    // One mode-change turn entry plus one settings journal entry.
-    assert_eq!(snapshot["revision"], 2);
+    let snapshot = service
+        .get_snapshot("conversation-settings", Some(project_path))
+        .expect("snapshot");
+    // The mode-change turn and the settings write commit together.
+    assert_eq!(snapshot["revision"], ack.revision);
+    assert!(ack.changes.rows.iter().any(|row| row.kind
+        == spark_storage::conversation::EntityKind::Conversation
+        && row.id == "conversation-settings"));
     assert_eq!(snapshot["chat_mode"], "plan");
     assert_eq!(snapshot["provider"], "openai");
     assert_eq!(snapshot["model"], "gpt-5");
@@ -190,7 +196,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
         2
     );
 
-    let second = service
+    let second_ack = service
         .update_conversation_settings(
             "conversation-settings",
             ConversationSettingsUpdate {
@@ -201,8 +207,11 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
             },
         )
         .expect("same mode update");
-    // Same-mode update journals the settings write without a new mode turn.
-    assert_eq!(second["revision"], 3);
+    let second = service
+        .get_snapshot("conversation-settings", Some(project_path))
+        .expect("snapshot");
+    // A same-mode update adds no mode turn.
+    assert_eq!(second["revision"], second_ack.revision);
     assert_eq!(second["turns"].as_array().expect("turns").len(), 1);
 
     let project = ProjectRegistry::new(&settings.data_dir)

@@ -419,7 +419,7 @@ test('chats beyond the recent five can be deleted from the project page', async 
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(5)
     await expect.poll(async () => (await (await page.request.get(`/workspace/api/projects/conversations?project_path=${encodeURIComponent(alpha)}`)).json())
-        .map((chat: { conversation_id: string }) => chat.conversation_id)).not.toContain(hidden)
+        .rows.filter((row: { deleted: boolean }) => !row.deleted).map((row: { id: string }) => row.id)).not.toContain(hidden)
 })
 
 test('removing a project while one of its missions is selected drops it from Missions', async ({ page }, testInfo) => {

@@ -633,7 +633,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         .json()
         .await
         .unwrap();
-    let handle = snapshot["conversation_handle"].as_str().unwrap();
+    // A Page: the handle is on its conversation row.
+    let handle = page_handle(&snapshot);
+    let handle = handle.as_str();
     let output = run_spark(
         temp.path(),
         [
@@ -1017,10 +1019,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         .json()
         .await
         .unwrap();
-    let handle = conversation["conversation_handle"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let handle = page_handle(&conversation);
     let sent = json_of(role_cli(&[
         "send",
         "--role",
@@ -1067,4 +1066,16 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         "{}",
         stdout(&listed)
     );
+}
+
+/// The conversation handle a conversation Page's conversation row carries.
+fn page_handle(page: &Value) -> String {
+    page["rows"]
+        .as_array()
+        .expect("page rows")
+        .iter()
+        .find(|row| row["kind"] == "conversation")
+        .and_then(|row| row["payload"]["handle"].as_str())
+        .expect("conversation handle")
+        .to_string()
 }

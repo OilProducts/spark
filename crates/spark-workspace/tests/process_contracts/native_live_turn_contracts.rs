@@ -89,8 +89,12 @@ fn turn(message: &str) -> ConversationTurnRequest {
 
 /// Sends `message` while the turn runs; it must join the turn, not queue.
 fn send_mid_turn(service: &WorkspaceConversationService, conversation_id: &str, message: &str) {
-    let (started, snapshot) = service.send_turn(conversation_id, turn(message)).unwrap();
+    let (started, acceptance) = service.send_turn(conversation_id, turn(message)).unwrap();
     assert!(started.is_none(), "the message started a new turn");
+    assert_ne!(acceptance.status, "queued");
+    let snapshot = service
+        .get_snapshot(conversation_id, Some(PROJECT))
+        .unwrap();
     let turns = snapshot["turns"].as_array().unwrap();
     assert!(
         !turns.iter().any(|turn| turn["status"] == "queued"),
@@ -160,7 +164,7 @@ fn a_message_sent_while_a_native_turn_runs_joins_it_in_order() {
 #[test]
 fn a_resent_mid_turn_message_is_delivered_once() {
     let resend = |service: &WorkspaceConversationService| {
-        let (started, snapshot) = service
+        let (started, acceptance) = service
             .send_turn(
                 "native-resend",
                 ConversationTurnRequest {
@@ -170,7 +174,13 @@ fn a_resent_mid_turn_message_is_delivered_once() {
             )
             .unwrap();
         assert!(started.is_none(), "the resend started a turn");
-        snapshot
+        // Every resend answers with the original acceptance's ids.
+        assert_eq!(acceptance.user_turn_id, "turn-steer1");
+        assert_ne!(acceptance.status, "queued");
+        let snapshot = service
+            .get_snapshot("native-resend", Some(PROJECT))
+            .unwrap();
+        (acceptance, snapshot)
     };
     let reported = |snapshot: &Value| {
         user_messages(snapshot)
@@ -179,11 +189,15 @@ fn a_resent_mid_turn_message_is_delivered_once() {
     };
     let (_temp, service, calls) = native_chat(move |service, index, _| {
         if index == 0 {
-            let first = resend(service);
+            let (first_acceptance, first) = resend(service);
             assert!(reported(&first), "accepted before delivery: {first}");
             // Before the turn reports the delivery.
-            let again = resend(service);
+            let (again_acceptance, again) = resend(service);
             assert!(reported(&again));
+            assert_eq!(
+                again_acceptance.assistant_turn_id,
+                first_acceptance.assistant_turn_id
+            );
             let conflict = service
                 .send_turn(
                     "native-resend",
@@ -212,7 +226,7 @@ fn a_resent_mid_turn_message_is_delivered_once() {
     service
         .execute_turn("native-resend", turn("Do the work"))
         .unwrap();
-    let snapshot = resend(service);
+    let (_, snapshot) = resend(service);
 
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2, "a resend reached the model as a new turn");
@@ -312,7 +326,7 @@ fn uploads_delivered_into_a_running_turn_are_owned_by_the_message() {
             let upload = service
                 .upload_attachment("native-attach", PROJECT, "notes.txt", b"delivered notes")
                 .unwrap();
-            let (started, snapshot) = service
+            let (started, _) = service
                 .send_turn(
                     "native-attach",
                     ConversationTurnRequest {
@@ -322,6 +336,9 @@ fn uploads_delivered_into_a_running_turn_are_owned_by_the_message() {
                 )
                 .unwrap();
             assert!(started.is_none(), "the message started a new turn");
+            let snapshot = service
+                .get_snapshot("native-attach", Some(PROJECT))
+                .unwrap();
             assert_eq!(
                 user_messages(&snapshot)[0]["attachments"][0]["id"],
                 json!(upload.id)

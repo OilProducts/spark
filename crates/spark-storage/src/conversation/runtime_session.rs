@@ -63,7 +63,7 @@ impl ConversationRepository {
         store.with_conversation(conversation_id, |loaded| {
             if loaded
                 .as_ref()
-                .is_none_or(|loaded| loaded.record.meta.project_path != project_path)
+                .is_none_or(|loaded| loaded.meta.project_path != project_path)
             {
                 return Err(StorageError::ConversationCommitRejected {
                     conversation_id: conversation_id.to_string(),

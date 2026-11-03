@@ -1,8 +1,8 @@
-import { getConversationTimelineEntries, hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
-import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { applyConversationPage, getConversationTimelineEntries } from '@/features/projects/model/projectsHomeState'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationPage } from '@/test/conversationWire'
 
-const baseSnapshot: ConversationSnapshotResponse = {
-  schema_version: 5,
+const baseSnapshot = {
   revision: 0,
   conversation_id: 'conversation-1',
   conversation_handle: 'thread-1',
@@ -73,19 +73,25 @@ const baseSnapshot: ConversationSnapshotResponse = {
       tool_call: null,
     },
   ],
-  event_log: [],
   flow_run_requests: [],
   flow_launches: [],
   proposed_plans: [],
 }
 
-function buildTimeline(snapshot: ConversationSnapshotResponse) {
-  const record = hydrateConversationRecordFromSnapshot(snapshot)
-  return getConversationTimelineEntries(record)
+type Snapshot = typeof baseSnapshot
+
+// Turns keep their array order as positions; segment orders become integers, as on the wire.
+function buildTimeline(snapshot: Snapshot) {
+  const page = parseConversationPageResponse(conversationPage({
+    ...snapshot,
+    turns: snapshot.turns.map((turn, index) => ({ ...turn, position: index + 1 })),
+    segments: snapshot.segments.map((segment) => ({ ...segment, order: Math.round(segment.order * 10) })),
+  }))
+  return getConversationTimelineEntries(applyConversationPage(undefined, page, 'window') ?? null)
 }
 
 describe('conversation timeline normalization', () => {
-  it('preserves tool row, worked separator, and assistant message ordering from a hydrated snapshot', () => {
+  it('preserves tool row, worked separator, and assistant message ordering from a hydrated page', () => {
     const timeline = buildTimeline(baseSnapshot)
 
     expect(timeline.map((entry) => entry.kind)).toEqual(['message', 'tool_call', 'final_separator', 'message'])
@@ -201,7 +207,7 @@ describe('conversation timeline normalization', () => {
     expect(timeline[timeline.length - 1]).toMatchObject({ kind: 'message', content: 'Done.' })
   })
 
-  it('keeps mode-change entries in chronological order when hydrated from a snapshot', () => {
+  it('keeps mode-change entries in chronological order when hydrated from a page', () => {
     const timeline = buildTimeline({
       ...baseSnapshot,
       chat_mode: 'plan',

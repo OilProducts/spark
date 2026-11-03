@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
+import { conversationBatch, conversationRow, conversationRowOf, liveFrame, summarySnapshot } from '../fixtures/smoke-helpers'
 
 // The smoke server runs chat turns on the fake Codex app-server in gated mode
 // (see scripts/run-rust-smoke-server.mjs); this test opens its gates.
@@ -48,7 +49,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     // The Chats icon shows the turn running, and clears when it ends.
     await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
 
-    // From here on, content must arrive over the live stream, not by refetching the snapshot.
+    // From here on, content must arrive over the live stream, not by refetching the conversation page.
     let snapshotFetches = 0
     page.on('request', (request) => {
         if (request.method() === 'GET' && request.url().includes(`/workspace/api/conversations/${conversationId}?`)) {
@@ -56,10 +57,10 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
         }
     })
 
-    // The agent launches a flow mid-turn, as the spark CLI does: a real artifact commit that publishes a full snapshot.
-    const snapshot = await (await page.request.get(`/workspace/api/conversations/${conversationId}?project_path=${encodeURIComponent(projectPath)}`)).json()
+    // The agent launches a flow mid-turn, as the spark CLI does: a real artifact commit published as live row changes.
+    const opened = await (await page.request.get(`/workspace/api/conversations/${conversationId}?project_path=${encodeURIComponent(projectPath)}`)).json()
     const launched = await page.request.post('/workspace/api/runs/launch', {
-        data: { flow_name: 'live-turn-smoke', summary: 'Launch the live turn smoke flow.', conversation_handle: snapshot.conversation_handle },
+        data: { flow_name: 'live-turn-smoke', summary: 'Launch the live turn smoke flow.', conversation_handle: conversationRowOf(opened)!.payload.handle },
     })
     expect(launched.ok()).toBe(true)
     await expect(history).toContainText('live-turn-smoke')
@@ -179,14 +180,17 @@ test('reopening on Runs shows a running chat behind three newer finished ones, a
         last_opened_at: timestamp, last_accessed_at: timestamp, is_favorite: false, active_conversation_id: null,
     }] }) : route.continue())
     await page.route('**/workspace/api/projects/metadata**', (route) => route.fulfill({ json: { name: 'Older running', directory: projectPath, branch: 'main', commit: 'smoke' } }))
-    await page.route('**/workspace/api/projects/conversations**', (route) => route.fulfill({ json: [1, 2, 3, 4].map(chat) }))
-    // The live stream stays silent until the chat ends, then publishes its summary; the reconnect's resync agrees.
+    await page.route('**/workspace/api/projects/conversations**', (route) => route.fulfill({
+        json: summarySnapshot([1, 2, 3, 4].map(chat), new URL(route.request().url()).searchParams.get('project_path')),
+    }))
+    // The live stream stays silent until the chat ends, then publishes its summary at a higher revision.
+    // A cursorless connection opens with the summary snapshot it catches up from; a reconnect resumes after its cursor.
     await page.route('**/workspace/api/live/events**', async (route) => {
         await chatFinished
-        await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify({
-            type: 'conversation.summary_upsert', project_path: projectPath,
-            resource: { kind: 'conversation_summary', id: 'older-running-4' }, payload: { conversation: chat(4) },
-        })}\n\n` })
+        const cursor = new URL(route.request().url()).searchParams.get('conversations_revision')
+        const opening = cursor ? '' : liveFrame('conversations.snapshot', summarySnapshot([1, 2, 3].map(chat).concat({ ...chat(4), revision: 2, running: true })))
+        const caughtUp = cursor !== null && BigInt(cursor) >= 3n
+        await route.fulfill({ contentType: 'text/event-stream', body: caughtUp ? '' : opening + liveFrame('conversations.changes', conversationBatch([conversationRow(chat(4))], cursor ?? '2')) })
     })
     const snapshotRequests: string[] = []
     page.on('request', (request) => {

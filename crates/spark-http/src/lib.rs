@@ -21,7 +21,7 @@ use spark_workspace::live::{
     ExecutionTranscriptCursor, LiveEnvelope, RunUsageAccumulator,
 };
 use spark_workspace::{WorkspaceError, WorkspaceTriggerService};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
@@ -162,6 +162,13 @@ fn build_app_on_store(
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
 ) -> (Router, Arc<WorkspaceLiveHub>) {
     let live_hub = Arc::new(WorkspaceLiveHub::new(&conversation_store));
+    // Every committed conversation write wakes the subscribers it concerns.
+    let notified_hub = Arc::downgrade(&live_hub);
+    conversation_store.set_commit_listener(Arc::new(move |notice| {
+        if let Some(hub) = notified_hub.upgrade() {
+            hub.notify_commit(notice);
+        }
+    }));
     let settings = Arc::new(settings);
     let (run_event_observer, run_event_publisher) =
         RunEventPublisher::spawn(settings.clone(), live_hub.clone());
@@ -302,34 +309,197 @@ impl FromRef<HttpAppState> for Arc<dyn AgentTurnBackend> {
     }
 }
 
-/// The app's live transport. It carries the app's conversation store so
+/// Notifications a subscriber's queue holds before it overflows.
+const SUBSCRIBER_QUEUE_ENVELOPES: usize = 256;
+/// Serialized bytes a subscriber's queue holds before it overflows.
+const SUBSCRIBER_QUEUE_BYTES: usize = 2 * 1024 * 1024;
+
+/// The app's live transport: one bounded, filtered queue per subscriber, so a
+/// slow subscriber overflows alone. It carries the app's conversation store so
 /// run-event publication can hand terminal runs to their owning
 /// conversations without opening another.
 pub(crate) struct WorkspaceLiveHub {
-    sender: broadcast::Sender<LiveEnvelope>,
+    subscribers: Mutex<Vec<std::sync::Weak<LiveSubscriber>>>,
     execution_cursors: Mutex<HashMap<String, ExecutionTranscriptCursor>>,
     /// Not owned: background tasks and installed runtimes hold the hub, and
     /// must not keep the home locked after the app is dropped.
     conversation_store: std::sync::Weak<spark_storage::ConversationStore>,
 }
 
+/// What a subscriber reads next.
+#[derive(Debug)]
+pub(crate) enum Received {
+    Envelope(LiveEnvelope),
+    /// The queue overflowed and these many queued notifications were dropped;
+    /// the subscriber resynchronizes from durable state.
+    Lagged(#[cfg_attr(not(test), allow(dead_code))] u64),
+    /// Committed conversation rows changed in its scopes: a wakeup to read
+    /// them, not the rows themselves.
+    Changed,
+}
+
+/// One subscriber's queue. Publication never blocks: a full queue drops a
+/// transient token frame first, and otherwise drains itself and raises the
+/// out-of-band overflow count, which no queued item can displace.
+pub(crate) struct LiveSubscriber {
+    /// `None` receives every envelope.
+    query: Option<spark_workspace::live::LiveQuery>,
+    queue: Mutex<(std::collections::VecDeque<(LiveEnvelope, usize)>, usize)>,
+    lagged: std::sync::atomic::AtomicU64,
+    changed: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl LiveSubscriber {
+    fn push(&self, envelope: LiveEnvelope) {
+        let transient = envelope.event_type == "conversation.stream_delta";
+        let bytes = serde_json::to_vec(&envelope).map_or(0, |bytes| bytes.len());
+        {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let full = |queue: &(std::collections::VecDeque<(LiveEnvelope, usize)>, usize)| {
+                queue.0.len() >= SUBSCRIBER_QUEUE_ENVELOPES
+                    || queue.1 + bytes > SUBSCRIBER_QUEUE_BYTES
+            };
+            while full(&queue) {
+                if transient {
+                    return;
+                }
+                let Some(index) = queue
+                    .0
+                    .iter()
+                    .position(|(queued, _)| queued.event_type == "conversation.stream_delta")
+                else {
+                    let dropped = queue.0.len() as u64 + 1;
+                    queue.0.clear();
+                    queue.1 = 0;
+                    self.lagged
+                        .fetch_add(dropped, std::sync::atomic::Ordering::SeqCst);
+                    drop(queue);
+                    self.notify.notify_one();
+                    return;
+                };
+                if let Some((_, dropped)) = queue.0.remove(index) {
+                    queue.1 -= dropped;
+                }
+            }
+            queue.0.push_back((envelope, bytes));
+            queue.1 += bytes;
+        }
+        self.notify.notify_one();
+    }
+
+    fn wake_changed(&self) {
+        self.changed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+
+    pub(crate) fn try_recv(&self) -> Option<Received> {
+        let lagged = self.lagged.swap(0, std::sync::atomic::Ordering::SeqCst);
+        if lagged > 0 {
+            return Some(Received::Lagged(lagged));
+        }
+        let next = {
+            let mut queue = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let next = queue.0.pop_front();
+            if let Some((_, bytes)) = &next {
+                queue.1 -= bytes;
+            }
+            next
+        };
+        if let Some((envelope, _)) = next {
+            return Some(Received::Envelope(envelope));
+        }
+        self.changed
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then_some(Received::Changed)
+    }
+
+    pub(crate) async fn recv(&self) -> Received {
+        loop {
+            let notified = self.notify.notified();
+            if let Some(received) = self.try_recv() {
+                return received;
+            }
+            notified.await;
+        }
+    }
+}
+
 impl WorkspaceLiveHub {
     fn new(conversation_store: &Arc<spark_storage::ConversationStore>) -> Self {
-        let (sender, _receiver) = broadcast::channel(256);
         Self {
-            sender,
+            subscribers: Mutex::new(Vec::new()),
             execution_cursors: Mutex::new(HashMap::new()),
             conversation_store: Arc::downgrade(conversation_store),
         }
     }
 
-    /// The app's store while the app is alive.
     pub(crate) fn conversation_store(&self) -> Option<Arc<spark_storage::ConversationStore>> {
         self.conversation_store.upgrade()
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<LiveEnvelope> {
-        self.sender.subscribe()
+    /// A queue receiving every envelope.
+    #[cfg(test)]
+    pub(crate) fn subscribe(&self) -> Arc<LiveSubscriber> {
+        self.subscribe_with(None)
+    }
+
+    /// A queue receiving the envelopes and conversation wakeups `query` follows.
+    pub(crate) fn subscribe_with(
+        &self,
+        query: Option<spark_workspace::live::LiveQuery>,
+    ) -> Arc<LiveSubscriber> {
+        let subscriber = Arc::new(LiveSubscriber {
+            query,
+            queue: Mutex::new((std::collections::VecDeque::new(), 0)),
+            lagged: Default::default(),
+            changed: Default::default(),
+            notify: tokio::sync::Notify::new(),
+        });
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        subscribers.retain(|subscriber| subscriber.strong_count() > 0);
+        subscribers.push(Arc::downgrade(&subscriber));
+        subscriber
+    }
+
+    fn live_subscribers(&self) -> Vec<Arc<LiveSubscriber>> {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect()
+    }
+
+    /// Wake the subscribers whose conversation scopes a committed write
+    /// touched. They read the changed rows from the database themselves.
+    pub(crate) fn notify_commit(&self, notice: &spark_storage::conversation::CommitNotice) {
+        for subscriber in self.live_subscribers() {
+            let Some(query) = subscriber.query.as_ref() else {
+                continue;
+            };
+            let relevant = notice.conversations.iter().any(|(id, project_path)| {
+                query.conversation_id.as_deref() == Some(id.as_str())
+                    || (query.include_conversations
+                        && query
+                            .conversations_project_path
+                            .as_deref()
+                            .is_none_or(|filter| filter == project_path))
+            });
+            if relevant {
+                subscriber.wake_changed();
+            }
+        }
     }
 
     pub(crate) fn publish_settings_change(
@@ -356,7 +526,14 @@ impl WorkspaceLiveHub {
     }
 
     pub(crate) fn publish(&self, envelope: LiveEnvelope) {
-        let _ = self.sender.send(envelope);
+        for subscriber in self.live_subscribers() {
+            let matches = subscriber.query.as_ref().is_none_or(|query| {
+                spark_workspace::live::envelope_matches_query(&envelope, query)
+            });
+            if matches {
+                subscriber.push(envelope.clone());
+            }
+        }
     }
 
     fn publish_execution_transcripts(&self, settings: &SparkSettings, run_id: &str) {
@@ -817,6 +994,132 @@ fn publish_live_run_after_incremental_with(
 }
 
 #[cfg(test)]
+mod live_queue_tests {
+    use super::*;
+
+    fn envelope(event_type: &str) -> LiveEnvelope {
+        LiveEnvelope {
+            event_type: event_type.to_string(),
+            project_path: None,
+            resource: spark_workspace::LiveResource {
+                kind: "conversation".to_string(),
+                id: Some("chat".to_string()),
+            },
+            cursor: None,
+            payload: json!({}),
+            reason: None,
+        }
+    }
+
+    fn hub() -> (tempfile::TempDir, WorkspaceLiveHub) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = spark_storage::ConversationStore::open(temp.path()).unwrap();
+        let hub = WorkspaceLiveHub::new(&store);
+        (temp, hub)
+    }
+
+    /// One slow tab overflows alone: its queue drains and it is told to
+    /// resynchronize, while a tab that keeps up loses nothing.
+    #[test]
+    fn a_slow_subscriber_overflows_alone() {
+        let (_temp, hub) = hub();
+        let slow = hub.subscribe();
+        let fast = hub.subscribe();
+        let total = SUBSCRIBER_QUEUE_ENVELOPES + 10;
+        let mut fast_received = 0;
+        for _ in 0..total {
+            hub.publish(envelope("run.journal_entry"));
+            while let Some(Received::Envelope(_)) = fast.try_recv() {
+                fast_received += 1;
+            }
+        }
+        assert_eq!(fast_received, total);
+        let mut lagged = 0;
+        let mut received = 0;
+        while let Some(item) = slow.try_recv() {
+            match item {
+                Received::Lagged(count) => lagged += count,
+                Received::Envelope(_) => received += 1,
+                Received::Changed => {}
+            }
+        }
+        assert!(lagged > 0);
+        // The overflow signal comes first and no frame is both dropped and kept.
+        assert_eq!(lagged as usize + received, total);
+    }
+
+    /// A full queue drops transient token frames before durable ones, and
+    /// drops an incoming token frame rather than overflowing.
+    #[test]
+    fn transient_frames_are_dropped_first() {
+        let (_temp, hub) = hub();
+        let subscriber = hub.subscribe();
+        for _ in 0..SUBSCRIBER_QUEUE_ENVELOPES {
+            hub.publish(envelope("conversation.stream_delta"));
+        }
+        hub.publish(envelope("conversation.stream_delta"));
+        hub.publish(envelope("run.upsert"));
+        let mut types = Vec::new();
+        while let Some(item) = subscriber.try_recv() {
+            match item {
+                Received::Envelope(envelope) => types.push(envelope.event_type),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(types.len(), SUBSCRIBER_QUEUE_ENVELOPES);
+        assert_eq!(types.last().map(String::as_str), Some("run.upsert"));
+    }
+
+    /// Commit wakeups are out of band: they coalesce, survive a full queue,
+    /// and reach only subscribers whose scopes the commit touched.
+    #[test]
+    fn commit_wakeups_coalesce_and_follow_scopes() {
+        let (_temp, hub) = hub();
+        let query = |raw: spark_workspace::live::RawLiveQuery| {
+            Some(spark_workspace::live::validate_live_query(raw).unwrap())
+        };
+        let chat = hub.subscribe_with(query(spark_workspace::live::RawLiveQuery {
+            conversation_id: Some("chat".into()),
+            conversation_project_path: Some("/p".into()),
+            include_runs_overview: Some("true".into()),
+            ..Default::default()
+        }));
+        let other_project = hub.subscribe_with(query(spark_workspace::live::RawLiveQuery {
+            include_conversations: Some("true".into()),
+            conversations_project_path: Some("/q".into()),
+            ..Default::default()
+        }));
+        for _ in 0..SUBSCRIBER_QUEUE_ENVELOPES + 5 {
+            hub.publish(LiveEnvelope {
+                resource: spark_workspace::LiveResource {
+                    kind: "runs_overview".into(),
+                    id: None,
+                },
+                ..envelope("run.upsert")
+            });
+        }
+        for revision in 1..=3 {
+            hub.notify_commit(&spark_storage::conversation::CommitNotice {
+                revision,
+                conversations: vec![("chat".into(), "/p".into())],
+            });
+        }
+        let mut changed = 0;
+        let mut lagged = false;
+        while let Some(item) = chat.try_recv() {
+            match item {
+                Received::Changed => changed += 1,
+                Received::Lagged(_) => lagged = true,
+                Received::Envelope(_) => {}
+            }
+        }
+        assert!(lagged);
+        assert_eq!(changed, 1);
+        assert!(other_project.try_recv().is_none());
+    }
+}
+
+#[cfg(test)]
 mod incremental_usage_tests {
     use super::*;
     use attractor_core::{RawRuntimeEvent, RunRecord};
@@ -855,11 +1158,14 @@ mod incremental_usage_tests {
         event
     }
 
-    fn upsert(receiver: &mut broadcast::Receiver<LiveEnvelope>) -> Value {
+    fn upsert(receiver: &LiveSubscriber) -> Value {
         loop {
-            let envelope = receiver.try_recv().expect("published envelope");
-            if envelope.event_type == "run.upsert" {
-                return envelope.payload["run"].clone();
+            if let Some(Received::Envelope(envelope)) = receiver.try_recv() {
+                if envelope.event_type == "run.upsert" {
+                    return envelope.payload["run"].clone();
+                }
+            } else {
+                panic!("published envelope");
             }
         }
     }
@@ -897,7 +1203,7 @@ mod incremental_usage_tests {
         let hub = Arc::new(WorkspaceLiveHub::new(
             &spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
         ));
-        let mut receiver = hub.subscribe();
+        let receiver = hub.subscribe();
         let (sender, notifications) = mpsc::unbounded_channel();
         let cancellation = CancellationToken::new();
         let task = tokio::spawn(run_event_publisher_loop(
@@ -907,25 +1213,28 @@ mod incremental_usage_tests {
             cancellation.clone(),
             Arc::new(|_| {}),
         ));
-        // Count dropped broadcast entries too: the initial history exceeds the live buffer.
-        async fn batch(receiver: &mut broadcast::Receiver<LiveEnvelope>) -> u64 {
+        // Count dropped queue entries too: the initial history exceeds the live queue.
+        async fn batch(receiver: &LiveSubscriber) -> u64 {
             let mut count = 0;
             loop {
                 match time::timeout(Duration::from_secs(5), receiver.recv())
                     .await
                     .unwrap()
                 {
-                    Ok(envelope) if envelope.event_type == "run.upsert" => return count,
-                    Ok(envelope) if envelope.event_type == "run.journal_entry" => count += 1,
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(n)) => count += n,
-                    Err(error) => panic!("{error}"),
+                    Received::Envelope(envelope) if envelope.event_type == "run.upsert" => {
+                        return count
+                    }
+                    Received::Envelope(envelope) if envelope.event_type == "run.journal_entry" => {
+                        count += 1
+                    }
+                    Received::Lagged(n) => count += n,
+                    _ => {}
                 }
             }
         }
         sender.send("failed-live".into()).unwrap();
         assert_eq!(
-            batch(&mut receiver).await,
+            batch(&receiver).await,
             latest_run_sequence(&settings, "failed-live")
                 .unwrap()
                 .unwrap()
@@ -933,7 +1242,7 @@ mod incremental_usage_tests {
         for _ in 0..3 {
             sender.send("failed-live".into()).unwrap();
             assert_eq!(
-                batch(&mut receiver).await,
+                batch(&receiver).await,
                 0,
                 "terminal usage eviction must retain publication progress"
             );
@@ -948,11 +1257,11 @@ mod incremental_usage_tests {
                 .and_then(|publication| publication.latest_sequence)
                 .is_none());
             sender.send("failed-live".into()).unwrap();
-            assert_eq!(batch(&mut receiver).await, 0);
+            assert_eq!(batch(&receiver).await, 0);
             fs::write(paths.events_jsonl(), &history).unwrap();
             sender.send("failed-live".into()).unwrap();
             assert_eq!(
-                batch(&mut receiver).await,
+                batch(&receiver).await,
                 0,
                 "publication failure must preserve cursor"
             );
@@ -961,9 +1270,9 @@ mod incremental_usage_tests {
             .append_event(&paths, RawRuntimeEvent::new("Log", "failed-live"))
             .unwrap();
         sender.send("failed-live".into()).unwrap();
-        assert_eq!(batch(&mut receiver).await, 1);
+        assert_eq!(batch(&receiver).await, 1);
         sender.send("failed-live".into()).unwrap();
-        assert_eq!(batch(&mut receiver).await, 0);
+        assert_eq!(batch(&receiver).await, 0);
         cancellation.cancel();
         task.await.unwrap();
     }
@@ -987,7 +1296,7 @@ mod incremental_usage_tests {
         let hub = WorkspaceLiveHub::new(
             &spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
         );
-        let mut receiver = hub.subscribe();
+        let receiver = hub.subscribe();
         let mut usage = None;
 
         append_execution_usage(
@@ -996,7 +1305,7 @@ mod incremental_usage_tests {
         );
         let cursor =
             publish_live_run_after_incremental(&settings, &hub, "live-usage", None, &mut usage);
-        let first = upsert(&mut receiver);
+        let first = upsert(&receiver);
         assert_eq!(first["token_usage"], 10);
         assert_eq!(
             first["token_usage_breakdown"]["by_model"]["gpt-5"]["total_tokens"],
@@ -1011,19 +1320,19 @@ mod incremental_usage_tests {
 
         // Re-publishing the same cursor applies no entry twice.
         publish_live_run_after_incremental(&settings, &hub, "live-usage", cursor, &mut usage);
-        assert_eq!(upsert(&mut receiver)["token_usage"], 10);
+        assert_eq!(upsert(&receiver)["token_usage"], 10);
         append_execution_usage(
             &paths,
             event("live-usage", "work", "codex_app_server_session_event", 20),
         );
         let cursor =
             publish_live_run_after_incremental(&settings, &hub, "live-usage", cursor, &mut usage);
-        assert_eq!(upsert(&mut receiver)["token_usage"], 20);
+        assert_eq!(upsert(&receiver)["token_usage"], 20);
 
         // A fresh publisher (reconnect/restart) reconstructs the same full projection.
         let mut restarted = None;
         publish_live_run_after_incremental(&settings, &hub, "live-usage", None, &mut restarted);
-        assert_eq!(upsert(&mut receiver)["token_usage"], 20);
+        assert_eq!(upsert(&receiver)["token_usage"], 20);
 
         store
             .update_run_record("live-usage", |record| {

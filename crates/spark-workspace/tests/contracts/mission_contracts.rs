@@ -952,7 +952,7 @@ fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
     let mission = harness.create(json!({"title":"Reasoning"}));
     let conversations = crate::conversations(harness.settings.clone());
     let group = json!({"provider":"openai", "model":"future", "thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"pro", "reasoning_summary":"detailed"});
-    let saved = conversations
+    conversations
         .update_conversation_settings(
             &mission.id,
             serde_json::from_value(json!({
@@ -960,6 +960,9 @@ fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
             }))
             .unwrap(),
         )
+        .unwrap();
+    let saved = conversations
+        .get_snapshot(&mission.id, Some(&harness.project))
         .unwrap();
     for field in [
         "thinking",

@@ -18,7 +18,8 @@ import { useMissionConversation } from './hooks/useMissionConversation'
 import { formatMissionDate, joinRuns, missionTone, readQuestion, runKinds, runStatusLabel, shortLine, totalTokens, type MissionRun } from './model/missionModel'
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { ApiHttpError } from '@/lib/api/shared'
-import { fetchConversationSnapshotValidated, updateConversationSettingsValidated } from '@/lib/api/conversationsApi'
+import { fetchConversationPageValidated, updateConversationSettingsValidated } from '@/lib/api/conversationsApi'
+import { applyConversationPage } from '@/features/projects/model/projectsHomeState'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { flowTitle, formatCompactCount } from '@/features/runs/model/runOverviewModel'
@@ -60,7 +61,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [actionError, setActionError] = useState('')
     const [reply, setReply] = useState('')
     const [budget, setBudget] = useState<Budget | null>(null)
-    const [model, setModel] = useState<{ revision: number; draft: ModelSettings | null } | null>(null)
+    const [model, setModel] = useState<{ revision: string; draft: ModelSettings | null } | null>(null)
     const [objectiveOpen, setObjectiveOpen] = useState(false)
     const [objectiveClipped, setObjectiveClipped] = useState(false)
     const objectiveText = useRef<HTMLParagraphElement>(null)
@@ -92,14 +93,14 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const runsById = new Map(runs.map(run => [run.runId, run]))
     const tokens = totalTokens(runs)
     // Like project chats, the conversation follows new content while the operator sits at the bottom of whichever element scrolls.
-    const follow = useScrollFollow(conversationId, conversation.snapshot !== null)
+    const follow = useScrollFollow(conversationId, conversation.record !== null)
     async function openModel() {
         setActionError('')
         try {
-            const snapshot = await fetchConversationSnapshotValidated(conversationId, project)
-            setModel({ revision: snapshot.revision, draft: snapshot.model_settings_view?.effective ?? inheritedModel })
+            const record = applyConversationPage(undefined, await fetchConversationPageValidated(conversationId, project), 'window')
+            setModel({ revision: record?.settingsRevision ?? '0', draft: record?.model_settings_view?.effective ?? inheritedModel })
         } catch (e) {
-            if (e instanceof ApiHttpError && e.status === 404) setModel({ revision: 0, draft: inheritedModel })
+            if (e instanceof ApiHttpError && e.status === 404) setModel({ revision: '0', draft: inheritedModel })
             else setActionError((e as Error).message)
         }
     }
@@ -107,7 +108,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         if (!model || disabled) return
         setPending(true); setActionError('')
         try {
-            await updateConversationSettingsValidated(conversationId, { project_path: project, expected_revision: String(model.revision), model_settings: model.draft })
+            await updateConversationSettingsValidated(conversationId, { project_path: project, expected_revision: model.revision, model_settings: model.draft })
             setModel(null); conversation.reload()
         } catch (e) { setActionError((e as Error).message) } finally { setPending(false) }
     }
@@ -137,7 +138,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const question = status === 'needs_you' ? readQuestion(mission.question) : null
     const used = mission.runs?.length ?? 0
     const limits = mission.fields.budget ?? defaultBudget
-    const stored = conversation.snapshot?.model_settings_view?.stored
+    const stored = conversation.record?.model_settings_view?.stored
     const modelLabel = [stored?.model || stored?.llm_profile || stored?.provider, stored?.reasoning_effort].filter(Boolean).join(' · ') || 'Project default'
     const objective = mission.fields.description || 'No objective'
     const closedActor = mission.closed?.actor ? closedActors[mission.closed.actor] ?? mission.closed.actor : ''

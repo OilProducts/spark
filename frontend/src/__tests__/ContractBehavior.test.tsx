@@ -17,7 +17,7 @@ import { ValidationPanel } from '@/features/editor/components/ValidationPanel'
 import {
   ApiHttpError,
   ApiSchemaError,
-  fetchConversationSnapshotValidated,
+  fetchConversationPageValidated,
   fetchFlowListValidated,
   fetchFlowPayloadValidated,
   fetchPipelineGraphValidated,
@@ -26,7 +26,7 @@ import {
   fetchProjectBrowseValidated,
   fetchWorkspaceFlowListValidated,
   fetchWorkspaceFlowValidated,
-  parseConversationSnapshotResponse,
+  parseConversationPageResponse,
   parseFlowListResponse,
   parseFlowPayloadResponse,
   parseWorkspaceFlowListResponse,
@@ -41,6 +41,7 @@ import {
   parseWorkspaceSettingsResponse,
 } from '@/lib/apiClient'
 import { buildPipelineStartPayload } from '@/lib/pipelineStartPayload'
+import { conversationPage, summarySnapshot } from '@/test/conversationWire'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -60,9 +61,8 @@ const jsonResponse = (payload: unknown, init?: ResponseInit) =>
     ...init,
   })
 
-const conversationSnapshot = <T extends Record<string, unknown>>(payload: T) => ({
-  schema_version: 5,
-  revision: 0,
+const conversationSnapshot = <T extends Record<string, unknown>>(payload: T) => conversationPage({
+  revision: 1,
   ...payload,
 })
 
@@ -537,7 +537,7 @@ describe('Frontend contract behavior', () => {
     expect(() => parsePipelineStatusResponse({ status: 'running' })).toThrow(ApiSchemaError)
     expect(parseRuntimeStatusResponse({ status: 'idle' }).status).toBe('idle')
     expect(() => parseRuntimeStatusResponse({})).toThrow(ApiSchemaError)
-    expect(parseConversationSnapshotResponse(conversationSnapshot({
+    expect(parseConversationPageResponse(conversationSnapshot({
       conversation_id: 'conversation-1',
       project_path: '/tmp/project',
       turns: [
@@ -549,17 +549,8 @@ describe('Frontend contract behavior', () => {
           kind: 'message',
         },
       ],
-      event_log: [
-        {
-          message: 'Execution planning started.',
-          timestamp: '2026-03-06T15:01:00Z',
-        },
-      ],
-
-
-
     })).conversation_id).toBe('conversation-1')
-    expect(() => parseConversationSnapshotResponse({ conversation_id: 'conversation-1' })).toThrow(ApiSchemaError)
+    expect(() => parseConversationPageResponse({ conversation_id: 'conversation-1' })).toThrow(ApiSchemaError)
     expect(parseProjectBrowseResponse({
       current_path: '/tmp/project',
       parent_path: '/tmp',
@@ -616,13 +607,12 @@ describe('Frontend contract behavior', () => {
             execution_lock: null,
           })
         }
-        if (url === '/workspace/api/conversations/conversation%201?project_path=%2Ftmp%2Fproject%20one') {
+        if (url === '/workspace/api/conversations/conversation%201?project_path=%2Ftmp%2Fproject%20one&limit=50') {
           return jsonResponse(conversationSnapshot({
             conversation_id: 'conversation 1',
             project_path: '/tmp/project one',
             turns: [],
             segments: [],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
           }))
@@ -652,10 +642,11 @@ describe('Frontend contract behavior', () => {
       name: 'alpha flow.yaml',
       execution_lock: null,
     })
-    await expect(fetchConversationSnapshotValidated('conversation 1', '/tmp/project one')).resolves.toMatchObject({
+    await expect(fetchConversationPageValidated('conversation 1', '/tmp/project one')).resolves.toMatchObject({
       conversation_id: 'conversation 1',
-      flow_run_requests: [],
-      flow_launches: [],
+      turn_ids: [],
+      older_cursor: null,
+      rows: [expect.objectContaining({ kind: 'conversation', id: 'conversation 1' })],
     })
 
     vi.stubGlobal(
@@ -2092,24 +2083,24 @@ useStore.getState().setRunsSelectedRunId(runId);
       if (url.includes('/workspace/api/projects/conversations')) {
         const projectPath = new URL(url, 'http://localhost').searchParams.get('project_path')
         if (projectPath === '/tmp/project-alpha') {
-          return jsonResponse([
+          return jsonResponse(summarySnapshot([
             buildConversationSummary({
               conversationId: 'conversation-alpha',
               projectPath: '/tmp/project-alpha',
               title: 'Alpha thread',
             }),
-          ])
+          ], { project_path: projectPath }))
         }
         if (projectPath === '/tmp/project-beta') {
-          return jsonResponse([
+          return jsonResponse(summarySnapshot([
             buildConversationSummary({
               conversationId: 'conversation-beta',
               projectPath: '/tmp/project-beta',
               title: 'Beta thread',
             }),
-          ])
+          ], { project_path: projectPath }))
         }
-        return jsonResponse([])
+        return jsonResponse(summarySnapshot([], { project_path: projectPath }))
       }
       if (url.includes('/workspace/api/conversations/') && method === 'GET') {
         return jsonResponse({ detail: 'Unknown conversation' }, { status: 404 })

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { fetchConversationSnapshotValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { fetchConversationPageValidated } from '@/lib/api/conversationsApi'
 import { ApiHttpError } from '@/lib/api/shared'
+import { applyConversationPage, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import type { Mission } from '../MissionsPanel'
 
-type Loaded = { id: string; snapshot: ConversationSnapshotResponse | null; error: string }
+type Loaded = { id: string; record: NormalizedConversationRecord | null; error: string }
 
 /** Loads the mission's conversation and reloads it as the mission moves. */
 export function useMissionConversation(mission: Mission, project: string) {
@@ -24,11 +25,16 @@ export function useMissionConversation(mission: Mission, project: string) {
                 applied = seq
                 setLoaded(next)
             }
-            return fetchConversationSnapshotValidated(conversationId, project).then(
-                snapshot => apply(() => ({ id: conversationId, snapshot, error: '' })),
+            // ponytail: the mission log shows its newest page; load older pages like project chats if missions run long.
+            return fetchConversationPageValidated(conversationId, project).then(
+                page => apply(current => ({
+                    id: conversationId,
+                    record: applyConversationPage(current?.id === conversationId ? current.record ?? undefined : undefined, page, 'window') ?? null,
+                    error: '',
+                })),
                 (e: unknown) => apply(current => e instanceof ApiHttpError && e.status === 404
-                    ? { id: conversationId, snapshot: null, error: '' }
-                    : { id: conversationId, snapshot: current?.id === conversationId ? current.snapshot : null, error: e instanceof Error ? e.message : String(e) }),
+                    ? { id: conversationId, record: null, error: '' }
+                    : { id: conversationId, record: current?.id === conversationId ? current.record : null, error: e instanceof Error ? e.message : String(e) }),
             )
         }
         void load()
@@ -42,5 +48,5 @@ export function useMissionConversation(mission: Mission, project: string) {
     }, [conversationId, project, running, reloads, mission.revision, mission.event_seq, mission.cursor, mission.runs?.length])
     // State from another conversation never shows here.
     const current = loaded && loaded.id === conversationId ? loaded : null
-    return { conversationId, snapshot: current?.snapshot ?? null, loading: !current, error: current?.error ?? '', reload: () => setReloads(value => value + 1) }
+    return { conversationId, record: current?.record ?? null, loading: !current, error: current?.error ?? '', reload: () => setReloads(value => value + 1) }
 }

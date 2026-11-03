@@ -10,10 +10,14 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::{resolve_settings_with_env, SettingsOverrides, SparkSettings};
+use spark_storage::conversation::CommitNotice;
 use spark_storage::conversation::{ConversationMetadataPatch, ConversationMutation};
 use spark_storage::settings::{load_core_settings, read_settings_document};
 use spark_storage::ConversationRepository;
-use spark_workspace::live::{envelope_matches_query, lagged_resync_envelopes, validate_live_query};
+use spark_workspace::live::{
+    conversation_changes_envelope, conversations_changes_envelope, lagged_resync_envelopes,
+    validate_live_query,
+};
 use spark_workspace::settings::{update_workspace_settings, workspace_settings};
 use spark_workspace::utility::utility_complete;
 use spark_workspace::{
@@ -146,15 +150,40 @@ impl AgentTurnBackend for ReplyBackend {
     }
 }
 
-/// A service whose live updates (generated titles) arrive on the receiver.
+/// A service whose title changes arrive on the receiver: the commit notice
+/// of each write that changed a conversation's stored title after the
+/// conversation first appeared.
 fn service_with_updates(
     settings: SparkSettings,
-) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
+) -> (WorkspaceConversationService, mpsc::Receiver<CommitNotice>) {
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
-    let service = crate::conversations_with_backend(settings, Arc::new(ReplyBackend))
-        .with_live_publisher(Arc::new(move |envelope| {
-            let _ = sender.lock().unwrap().send(envelope);
+    let service = crate::conversations_with_backend(settings, Arc::new(ReplyBackend));
+    let store = Arc::downgrade(service.store());
+    let titles = std::sync::Mutex::new(std::collections::HashMap::<String, Value>::new());
+    service
+        .store()
+        .set_commit_listener(Arc::new(move |notice: &CommitNotice| {
+            let Some(store) = store.upgrade() else {
+                return;
+            };
+            for (conversation_id, _) in &notice.conversations {
+                let Ok(Some(row)) = store
+                    .database()
+                    .read(|read| read.conversation_row(conversation_id))
+                else {
+                    continue;
+                };
+                let title = row.payload.map(|payload| payload["title"].clone());
+                let title = title.unwrap_or(Value::Null);
+                let previous = titles
+                    .lock()
+                    .unwrap()
+                    .insert(conversation_id.clone(), title.clone());
+                if previous.is_some_and(|previous| previous != title) {
+                    let _ = sender.lock().unwrap().send(notice.clone());
+                }
+            }
         }));
     (service, receiver)
 }
@@ -174,27 +203,48 @@ fn turn(service: &WorkspaceConversationService, id: &str, message: &str) -> Valu
         .unwrap()
 }
 
-/// The thread-list and conversation updates a generated title publishes.
-fn title_updates(updates: &mpsc::Receiver<LiveEnvelope>, wait: Duration) -> Option<(Value, Value)> {
-    let summary = updates.recv_timeout(wait).ok()?;
-    let snapshot = updates.recv_timeout(Duration::from_secs(1)).ok()?;
-    assert_eq!(summary.event_type, "conversation.summary_upsert");
-    assert_eq!(summary.resource.kind, "conversation_summary");
-    // Only clients that ask for the thread-list feed receive it.
-    let query = |include: Option<&str>| {
-        validate_live_query(RawLiveQuery {
-            include_conversations: include.map(str::to_string),
-            ..Default::default()
-        })
-        .unwrap()
+/// The thread-list row and the conversation row a live client catching up
+/// past a generated title's commit receives, each with its id and revision.
+fn title_updates(
+    service: &WorkspaceConversationService,
+    updates: &mpsc::Receiver<CommitNotice>,
+    wait: Duration,
+) -> Option<(Value, Value)> {
+    let notice = updates.recv_timeout(wait).ok()?;
+    let (conversation_id, project_path) = notice.conversations[0].clone();
+    let generation = service.store().database().generation().to_string();
+    let row = |envelope: spark_workspace::LiveEnvelope| {
+        let row = envelope.payload["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == conversation_id.as_str())
+            .unwrap_or_else(|| panic!("{conversation_id} row in {}", envelope.payload))
+            .clone();
+        let mut view = row["payload"].clone();
+        view["conversation_id"] = row["id"].clone();
+        view["revision"] = row["revision"].clone();
+        view
     };
-    assert!(envelope_matches_query(&summary, &query(Some("true"))));
-    assert!(!envelope_matches_query(&summary, &query(None)));
-    assert_eq!(snapshot.event_type, "conversation.snapshot");
-    Some((
-        summary.payload["conversation"].clone(),
-        snapshot.payload["state"].clone(),
-    ))
+    let (summary, _) = conversations_changes_envelope(
+        service,
+        Some(&project_path),
+        &generation,
+        notice.revision - 1,
+    )
+    .unwrap();
+    assert_eq!(summary.event_type, "conversations.changes");
+    assert_eq!(summary.resource.kind, "conversations");
+    let (conversation, _) = conversation_changes_envelope(
+        service,
+        &conversation_id,
+        &project_path,
+        &generation,
+        notice.revision - 1,
+    )
+    .unwrap();
+    assert_eq!(conversation.event_type, "conversation.changes");
+    Some((row(summary), row(conversation)))
 }
 
 #[test]
@@ -206,20 +256,32 @@ fn lagged_thread_list_subscriber_is_told_to_resync_conversation_summaries() {
         })
         .unwrap()
     };
-    let kinds = |include| {
-        lagged_resync_envelopes(&query(include))
-            .into_iter()
-            .map(|envelope| (envelope.event_type, envelope.resource.kind))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        kinds(Some("true")),
-        vec![(
-            "resync_required".to_string(),
-            "conversation_summary".to_string()
-        )]
-    );
-    assert!(kinds(None).is_empty());
+    // Summary scopes catch up from their row cursor, not a resync frame.
+    for include in [Some("true"), None] {
+        assert!(lagged_resync_envelopes(&query(include))
+            .iter()
+            .all(|envelope| !envelope.resource.kind.starts_with("conversation")));
+    }
+
+    let (_temp, settings) = fixture();
+    let service = crate::conversations_with_backend(settings, Arc::new(ReplyBackend));
+    turn(&service, "lagged", "first question");
+    let generation = service.store().database().generation().to_string();
+    // Behind its cursor, it receives the changed summary rows.
+    let (caught_up, cursor) =
+        conversations_changes_envelope(&service, Some(PROJECT), &generation, 0).unwrap();
+    assert_eq!(caught_up.event_type, "conversations.changes");
+    assert!(caught_up.payload["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == "lagged"));
+    assert_eq!(cursor, Some(service.watermark().unwrap()));
+    // A cursor from another generation is told to reload.
+    let (reset, cursor) =
+        conversations_changes_envelope(&service, Some(PROJECT), "another-generation", 0).unwrap();
+    assert_eq!(reset.event_type, "conversations.reset");
+    assert_eq!(cursor, None);
 }
 
 fn stored_title(service: &WorkspaceConversationService, id: &str) -> String {
@@ -360,7 +422,7 @@ fn first_completed_turn_gets_one_generated_title_in_the_background() {
     assert_eq!(snapshot["title"], "please fix the deploy pipeline");
 
     // Every client's thread list and the thread's own view get the title.
-    let (summary, state) = title_updates(&updates, Duration::from_secs(10)).unwrap();
+    let (summary, state) = title_updates(&service, &updates, Duration::from_secs(10)).unwrap();
     assert_eq!(summary["conversation_id"], "titled");
     assert_eq!(summary["project_path"], PROJECT);
     assert_eq!(summary["title"], "Deploy pipeline repair");
@@ -390,7 +452,7 @@ fn a_first_turn_resumed_after_a_question_gets_a_generated_title() {
         .start_turn("asked", request("which deploy should I fix?"))
         .unwrap();
     let output = ReplyBackend
-        .run_turn(prepared.agent_turn_request.clone())
+        .run_turn(service.prepare_agent_turn_request(&prepared).unwrap())
         .unwrap();
     service
         .ingest_agent_turn_output(
@@ -402,7 +464,7 @@ fn a_first_turn_resumed_after_a_question_gets_a_generated_title() {
         )
         .unwrap();
 
-    let (summary, _) = title_updates(&updates, Duration::from_secs(10)).unwrap();
+    let (summary, _) = title_updates(&service, &updates, Duration::from_secs(10)).unwrap();
     assert_eq!(summary["title"], "Deploy question");
     assert_eq!(stored_title(&service, "asked"), "Deploy question");
 }

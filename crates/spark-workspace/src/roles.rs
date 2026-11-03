@@ -207,6 +207,7 @@ impl WorkspaceRoleService {
         work: impl FnOnce(&RecordRepository, &mut RoleRecord) -> WorkspaceResult<()>,
     ) -> WorkspaceResult<RoleRecord> {
         let scope = self.scope(project)?;
+        let mut written = false;
         let role = RecordRepository::roles(&scope.root).locked::<_, WorkspaceError>(|repo| {
             let saved = repo.read(name)?;
             let default = Self::default_record(&scope, name);
@@ -243,20 +244,18 @@ impl WorkspaceRoleService {
                 && (saved.is_some() || create || after != stored(&default))
             {
                 repo.write(name, &after)?;
+                written = true;
             }
             Ok(role)
         })?;
         let role = self.with_derived(role);
-        // Thread lists follow the role's state and turns through its summary.
-        if let Some(runtime) = inbox::runtime(&self.settings) {
-            if let Ok(Some(envelope)) = crate::live::conversation_summary_envelope_for(
-                &self.settings,
-                &self.store,
-                &role.conversation_id,
-                &role.project_path,
-            ) {
-                (runtime.publish)(envelope);
-            }
+        // Thread lists follow the role's state through its conversation row,
+        // which summary subscribers re-read and decorate with the role.
+        // A turn's own commits carry its working and idle states; a changed
+        // record (started, stopped, inbox) is re-delivered here. Reads write nothing.
+        if written {
+            let _ = spark_storage::ConversationRepository::new(self.store.clone())
+                .touch_conversation(&role.conversation_id, &role.project_path);
         }
         Ok(role)
     }

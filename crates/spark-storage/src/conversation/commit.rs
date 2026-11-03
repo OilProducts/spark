@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -7,30 +6,34 @@ use time::OffsetDateTime;
 use crate::error::{Result, StorageError};
 use crate::ConversationRepository;
 
-use super::database::{ArtifactRow, AttachmentRow, ConversationRow, SegmentRow, TurnRow};
-use super::journal::{JournalEntry, JournalEntryKind};
+use super::database::{
+    ArtifactRow, AttachmentRow, ChangeBatch, ConversationRow, SegmentRow, TurnRow,
+};
+use super::loaded::{is_active_status, LoadedConversation, StoredArtifact};
 use super::mutations::{ConversationMetadataPatch, ConversationMutation};
-use super::projection::snapshot_from_record;
 use super::provider_trace::{read_trace, replace_trace, sync_trace};
-use super::records::{ConversationRecord, TranscriptSegment};
-use super::store::{LoadedConversation, EVENT_LOG_COLLECTION};
+use super::records::{ConversationMeta, ConversationRecord, TranscriptSegment, TranscriptTurn};
+use super::store::EVENT_LOG_COLLECTION;
 use super::tool_output::{externalize_conversation_segment_tool_output, safe_tool_output_artifact};
 
-/// The result of one committed conversation mutation batch.
+/// The result of one committed conversation mutation batch: its revision and
+/// the rows it changed, never the conversation's full state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationCommit {
-    pub record: ConversationRecord,
-    /// Stamped journal entries, in commit order. Publish these verbatim.
-    pub journal_entries: Vec<JournalEntry>,
-    /// The live wire payloads for each entry.
-    pub journal_payloads: Vec<Value>,
-    /// Legacy full-snapshot projection of the committed state.
-    pub snapshot: Value,
-    /// Final committed (per-conversation, legacy wire) revision.
+    /// The transaction's home-global revision, now the conversation's.
     pub revision: i64,
+    /// Every row this commit changed, at `revision`.
+    pub changes: ChangeBatch,
     /// True when `base_revision` was stale and mutations were applied onto a
     /// newer committed state.
     pub rebased: bool,
+}
+
+/// What applying a mutation replaced, to restore if its transaction fails.
+enum Undo {
+    Turn(String, Option<(i64, TranscriptTurn)>),
+    Segment(String, Option<TranscriptSegment>),
+    Artifact(String, String, Option<StoredArtifact>),
 }
 
 impl ConversationRepository {
@@ -39,8 +42,9 @@ impl ConversationRepository {
     /// Under the project gate and conversation lock, applies identity-keyed
     /// mutations onto the loaded committed state (operational mutations
     /// rebase; stale settings updates conflict), writes only the changed rows
-    /// and summary in one SQLite transaction, and publishes the new state to
-    /// memory only after that transaction commits.
+    /// and summary in one SQLite transaction, and keeps the new state in
+    /// memory only once that transaction commits; a failed transaction
+    /// restores exactly the entities it replaced.
     pub fn commit_conversation(
         &self,
         conversation_id: &str,
@@ -79,338 +83,114 @@ impl ConversationRepository {
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
         store.admit_project(&project_path)?;
         let root = project_paths.conversations_dir.join(conversation_id);
-        store.with_conversation(conversation_id, |slot| {
-            let mut loaded = match slot.as_ref() {
-                Some(existing) if existing.record.meta.project_path != project_path => {
+        let commit = store.with_conversation(conversation_id, |slot| {
+            if slot
+                .as_ref()
+                .is_some_and(|existing| existing.meta.project_path != project_path)
+            {
+                return Err(commit_rejected(
+                    conversation_id,
+                    "Conversation is already bound to a different project path.",
+                ));
+            }
+            let is_new = slot.is_none();
+            if is_new {
+                // A deleted conversation's id is never reused.
+                if store
+                    .database()
+                    .read(|read| read.conversation_location(conversation_id))?
+                    .is_some()
+                {
                     return Err(commit_rejected(
                         conversation_id,
-                        "Conversation is already bound to a different project path.",
+                        "conversation does not exist or was deleted",
                     ));
                 }
-                Some(existing) => existing.clone(),
-                None => {
-                    // A deleted conversation's id is never reused.
-                    if store
-                        .database()
-                        .read(|read| read.conversation_location(conversation_id))?
-                        .is_some()
-                    {
-                        return Err(commit_rejected(
-                            conversation_id,
-                            "conversation does not exist or was deleted",
-                        ));
-                    }
-                    if base_revision != 0 {
-                        return Err(commit_rejected(
-                            conversation_id,
-                            "Unknown conversation for a non-zero base revision.",
-                        ));
-                    }
-                    store.registry().ensure_project_paths(&project_path)?;
-                    LoadedConversation::new(conversation_id, &project_path)
+                if base_revision != 0 {
+                    return Err(commit_rejected(
+                        conversation_id,
+                        "Unknown conversation for a non-zero base revision.",
+                    ));
                 }
-            };
-            let is_new = slot.is_none();
-            let latest_revision = loaded.record.meta.revision;
-            let rebased = latest_revision != base_revision;
-            if rebased
+                store.registry().ensure_project_paths(&project_path)?;
+                *slot = Some(LoadedConversation::new(conversation_id, &project_path));
+            }
+            let loaded = slot.as_mut().expect("loaded above");
+            let rebased = loaded.revision != base_revision;
+            // Settings conflict only with a committed change made after the
+            // caller read; draft uploads and summary touches commit none.
+            if loaded.meta.revision > base_revision
                 && mutations.iter().any(|mutation| {
                     matches!(mutation,
                 ConversationMutation::MetadataUpdated { patch } if patch.model_settings.is_some() || patch.chat_mode.is_some())
                 })
             {
+                if is_new {
+                    *slot = None;
+                }
                 return Err(StorageError::SettingsConflict {
                     path: root.join("conversation.json"),
                 });
             }
-            validate_segment_targets(conversation_id, &loaded.record, &mutations)?;
-            validate_new_turn_attachments(store.home_dir(), conversation_id, &loaded, &mutations)?;
-
-            let previous_outputs: HashMap<String, String> = loaded
-                .record
-                .transcript
-                .segments
-                .iter()
-                .filter_map(|segment| Some((segment.id.clone(), tool_output_artifact(segment)?)))
-                .collect();
-            let now = iso_now();
-            let mut entry_kinds = Vec::new();
-            let mut snapshot_level_change = false;
-            let mut changed_turns = Vec::new();
-            let mut new_turns = Vec::new();
-            let mut new_segment_attachments = Vec::new();
-            let mut changed_segments = Vec::new();
-            let mut tombstoned_segments = Vec::new();
-            let mut changed_artifacts = Vec::new();
-            let mut appended_events = Vec::new();
-            for mutation in mutations {
-                let record = &mut loaded.record;
-                match mutation {
-                    ConversationMutation::MetadataUpdated { patch } => {
-                        apply_metadata_patch(record, patch);
-                        snapshot_level_change = true;
-                    }
-                    ConversationMutation::TurnUpserted { mut turn } => {
-                        let existing = record.transcript.find_turn(&turn.id);
-                        keep_acceptance(
-                            &mut turn.extra,
-                            existing.map(|existing| &existing.extra),
-                        );
-                        // A queued turn moves to the end whenever it is written.
-                        let moves = existing.is_none_or(|existing| existing.status == "queued");
-                        if existing.is_none() {
-                            new_turns.push(turn.clone());
-                        }
-                        if moves {
-                            loaded.positions.insert(turn.id.clone(), loaded.next_position);
-                            loaded.next_position += 1;
-                        }
-                        record.transcript.upsert_turn(turn.clone());
-                        changed_turns.push(turn.id.clone());
-                        entry_kinds.push(JournalEntryKind::TurnUpserted { turn });
-                    }
-                    ConversationMutation::SegmentUpserted { mut segment }
-                    | ConversationMutation::RecoveredSegmentUpserted { mut segment, .. } => {
-                        resolve_segment_order(record, &mut segment);
-                        let existing = record.transcript.find_segment(&segment.id);
-                        if existing.is_none() {
-                            // A message accepted into a running turn owns its uploads.
-                            new_segment_attachments.extend(
-                                super::attachments::turn_attachment_ids(
-                                    segment.extra.get("attachments"),
-                                ),
-                            );
-                        }
-                        keep_acceptance(&mut segment.extra, existing.map(|existing| &existing.extra));
-                        // An echoed preview keeps referencing the stored output.
-                        if let (Some(previous), Some(tool_call)) = (
-                            previous_outputs.get(&segment.id),
-                            segment.tool_call.as_mut().and_then(Value::as_object_mut),
-                        ) {
-                            if tool_call.get("output_truncated") == Some(&json!(true))
-                                && !tool_call.contains_key("output_artifact")
-                            {
-                                tool_call.insert("output_artifact".into(), json!(previous));
-                            }
-                        }
-                        externalize_conversation_segment_tool_output(&root, &mut segment)?;
-                        record.transcript.upsert_segment(segment.clone());
-                        changed_segments.push(segment.id.clone());
-                        entry_kinds.push(JournalEntryKind::SegmentUpserted { segment });
-                    }
-                    ConversationMutation::SegmentTombstoned {
-                        turn_id,
-                        segment_id,
-                    } => {
-                        record.transcript.remove_segment(&segment_id);
-                        tombstoned_segments.push(segment_id.clone());
-                        entry_kinds.push(JournalEntryKind::SegmentTombstoned {
-                            turn_id,
-                            segment_id,
-                        });
-                    }
-                    ConversationMutation::ArtifactUpserted {
-                        collection,
-                        mut artifact,
-                    } => {
-                        if !artifact.is_object() {
-                            return Err(commit_rejected(
-                                conversation_id,
-                                "Artifact records must be JSON objects.",
-                            ));
-                        }
-                        // Every artifact row needs an identity.
-                        let id = match artifact.get("id").and_then(Value::as_str) {
-                            Some(id) if !id.is_empty() => id.to_string(),
-                            _ => {
-                                let id = format!("artifact-{}", uuid::Uuid::new_v4().simple());
-                                artifact["id"] = json!(id);
-                                id
-                            }
-                        };
-                        upsert_artifact(record.artifacts.collection_mut(collection), artifact);
-                        changed_artifacts.push((collection, id));
-                        snapshot_level_change = true;
-                    }
-                    ConversationMutation::WorkflowEventAppended { event } => {
-                        record.artifacts.event_log.push(event.clone());
-                        appended_events.push(event);
-                        snapshot_level_change = true;
-                    }
-                }
-            }
-            if snapshot_level_change {
-                entry_kinds.push(JournalEntryKind::SnapshotCommitted);
-            }
-
-            let record = &mut loaded.record;
-            maintain_metadata(record, &now);
-            if is_new || record.meta.conversation_handle.is_empty() {
-                let preferred = store.reserved_handle(conversation_id).or_else(|| {
-                    (!record.meta.conversation_handle.is_empty())
-                        .then(|| record.meta.conversation_handle.clone())
-                });
-                record.meta.conversation_handle = crate::workspace_conversations::free_handle(
+            let previous_meta = loaded.meta.clone();
+            let previous_next_position = loaded.next_position;
+            let mut undo = Vec::new();
+            let applied = apply_mutations(
+                &store,
+                conversation_id,
+                &root,
+                loaded,
+                mutations,
+                &mut undo,
+            )
+            .and_then(|changed| {
+                write_changes(
                     &store,
                     conversation_id,
-                    preferred.as_deref(),
-                )?;
-            }
-            let final_revision = latest_revision + entry_kinds.len() as i64;
-            record.meta.revision = final_revision;
-            let journal_entries: Vec<JournalEntry> = entry_kinds
-                .into_iter()
-                .enumerate()
-                .map(|(index, kind)| JournalEntry {
-                    revision: latest_revision + 1 + index as i64,
-                    committed_at: now.clone(),
-                    kind,
-                })
-                .collect();
-            let snapshot = snapshot_from_record(record);
-            let journal_payloads = journal_entries
-                .iter()
-                .map(|entry| match entry.kind {
-                    JournalEntryKind::SnapshotCommitted => {
-                        entry.live_event_payload(&record.meta, &snapshot)
-                    }
-                    _ => entry.journal_line_payload(&record.meta),
-                })
-                .collect();
-
-            let newly_attached: Vec<String> = new_turns
-                .iter()
-                .flat_map(|turn| super::attachments::turn_attachment_ids(turn.extra.get("attachments")))
-                .chain(new_segment_attachments)
-                .collect();
-            let projected = projected_turn.and_then(|turn_id| {
-                let sequence = *loaded.trace_last_by_turn.get(turn_id)?;
-                let settled = loaded
-                    .record
-                    .transcript
-                    .find_turn(turn_id)
-                    .is_some_and(|turn| !is_active_status(&turn.status));
-                Some((turn_id.to_string(), sequence, settled))
+                    &root,
+                    loaded,
+                    &changed,
+                    projected_turn,
+                )
+                .map(|written| (changed, written))
             });
-            let allocated = loaded.next_trace_sequence.saturating_sub(1);
-            if projected.is_some() {
-                // The applied cursor may only cover durable trace records.
-                sync_trace(&root)?;
-            }
-            let conversation_row = summary_row(conversation_id, &loaded.record)?;
-            let loaded_ref = &loaded;
-            store.database().write(|tx| {
-                tx.put_conversation(&conversation_row)?;
-                for turn_id in dedup(&changed_turns) {
-                    let Some(turn) = loaded_ref.record.transcript.find_turn(turn_id) else {
-                        continue;
-                    };
-                    tx.put_turn(&TurnRow {
-                        conversation_id: conversation_id.to_string(),
-                        id: turn_id.clone(),
-                        position: loaded_ref.positions[turn_id],
-                        status: turn.status.clone(),
-                        updated_at: now.clone(),
-                        payload: to_object(turn)?,
-                    })?;
-                }
-                for segment_id in dedup(&tombstoned_segments) {
-                    tx.delete_segment(conversation_id, segment_id)?;
-                }
-                for segment_id in dedup(&changed_segments) {
-                    let Some(segment) = loaded_ref.record.transcript.find_segment(segment_id)
-                    else {
-                        continue;
-                    };
-                    tx.put_segment(&SegmentRow {
-                        conversation_id: conversation_id.to_string(),
-                        id: segment.id.clone(),
-                        turn_id: segment.turn_id.clone(),
-                        order: segment.order,
-                        status: segment.status.clone(),
-                        updated_at: now.clone(),
-                        payload: to_object(segment)?,
-                    })?;
-                    let current = tool_output_artifact(segment);
-                    let previous = previous_outputs.get(segment_id);
-                    if let Some(previous) = previous.filter(|previous| Some(*previous) != current.as_ref()) {
-                        tx.delete_blob_reference(
-                            conversation_id,
-                            "tool_output",
-                            segment_id,
-                            &store.home_relative(&root.join(previous)),
-                        )?;
+            let ((changed, (revision, rows, projected)), loaded) = match applied {
+                Ok(applied) => (applied, loaded),
+                Err(error) => {
+                    // Readers never saw the staged state: restore it.
+                    for entry in undo.into_iter().rev() {
+                        match entry {
+                            Undo::Turn(_, Some((position, turn))) => {
+                                loaded.put_turn(turn, position);
+                            }
+                            Undo::Turn(id, None) => {
+                                loaded.remove_turn(&id);
+                            }
+                            Undo::Segment(_, Some(segment)) => {
+                                loaded.put_segment(segment);
+                            }
+                            Undo::Segment(id, None) => {
+                                loaded.remove_segment(&id);
+                            }
+                            Undo::Artifact(collection, id, Some(artifact)) => {
+                                loaded.put_artifact(&collection, &id, artifact);
+                            }
+                            Undo::Artifact(collection, id, None) => {
+                                loaded.remove_artifact(&collection, &id);
+                            }
+                        }
                     }
-                    if let Some(current) = current {
-                        tx.put_blob_reference(
-                            conversation_id,
-                            "tool_output",
-                            segment_id,
-                            &store.home_relative(&root.join(current)),
-                        )?;
+                    loaded.meta = previous_meta;
+                    loaded.next_position = previous_next_position;
+                    if is_new {
+                        *slot = None;
                     }
+                    return Err(error);
                 }
-                for (collection, id) in dedup(&changed_artifacts) {
-                    let Some(artifact) = loaded_ref
-                        .record
-                        .artifacts
-                        .collection(*collection)
-                        .iter()
-                        .find(|artifact| artifact.get("id").and_then(Value::as_str) == Some(id))
-                    else {
-                        continue;
-                    };
-                    tx.put_artifact(&ArtifactRow {
-                        conversation_id: conversation_id.to_string(),
-                        collection: collection.key().to_string(),
-                        id: id.clone(),
-                        turn_id: artifact
-                            .get("source_turn_id")
-                            .and_then(Value::as_str)
-                            .filter(|turn_id| loaded_ref.positions.contains_key(*turn_id))
-                            .map(str::to_string),
-                        status: artifact
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        updated_at: now.clone(),
-                        payload: artifact.clone(),
-                    })?;
-                }
-                for event in &appended_events {
-                    tx.put_artifact(&ArtifactRow {
-                        conversation_id: conversation_id.to_string(),
-                        collection: EVENT_LOG_COLLECTION.to_string(),
-                        id: format!("event-{}", uuid::Uuid::new_v4().simple()),
-                        turn_id: None,
-                        status: String::new(),
-                        updated_at: now.clone(),
-                        payload: event.clone(),
-                    })?;
-                }
-                for id in &newly_attached {
-                    let attachment = &loaded_ref.attachments[id];
-                    tx.put_attachment(&AttachmentRow {
-                        conversation_id: conversation_id.to_string(),
-                        id: id.clone(),
-                        blob_path: attachment.blob_path.clone(),
-                        status: "attached".to_string(),
-                        updated_at: now.clone(),
-                        payload: to_object(&attachment.record)?,
-                    })?;
-                }
-                if let Some((turn_id, sequence, settled)) = &projected {
-                    tx.set_applied_trace(conversation_id, turn_id, *sequence)?;
-                    if *settled {
-                        // Pruning may drop any allocated record; stay above all of them.
-                        tx.raise_trace_high_water(conversation_id, allocated)?;
-                    }
-                }
-                Ok(())
-            })?;
-
-            for id in &newly_attached {
+            };
+            loaded.revision = revision;
+            loaded.meta.revision = revision;
+            for id in &changed.newly_attached {
                 if let Some(attachment) = loaded.attachments.get_mut(id) {
                     attachment.attached = true;
                 }
@@ -419,87 +199,453 @@ impl ConversationRepository {
                 let applied = loaded.applied_trace.entry(turn_id.clone()).or_default();
                 *applied = (*applied).max(*sequence);
             }
-            let commit = ConversationCommit {
-                record: loaded.record.clone(),
-                journal_entries,
-                journal_payloads,
-                snapshot,
-                revision: final_revision,
-                rebased,
-            };
-            let prune = projected.as_ref().is_some_and(|(_, _, settled)| *settled);
             if is_new {
                 store.release_handle(conversation_id);
             }
-            *slot = Some(loaded);
-            if prune {
-                if let Some(loaded) = slot.as_ref() {
-                    prune_settled_trace(&store, &root, loaded);
-                }
+            if projected.as_ref().is_some_and(|(_, _, settled)| *settled) {
+                prune_settled_trace(&store, &root, loaded);
             }
-            Ok(commit)
-        })
+            Ok(ConversationCommit {
+                revision,
+                changes: ChangeBatch {
+                    from_revision: revision - 1,
+                    watermark: revision,
+                    rows,
+                },
+                rebased,
+            })
+        })?;
+        store.notify_commit(
+            commit.revision,
+            vec![(conversation_id.to_string(), project_path)],
+        );
+        Ok(commit)
     }
+}
+
+/// The entities one batch changed, by identity.
+#[derive(Default)]
+struct Changed {
+    turns: Vec<String>,
+    segments: Vec<String>,
+    tombstoned_segments: Vec<String>,
+    artifacts: Vec<(String, String)>,
+    /// (segment id, previous tool-output artifact), for reference changes.
+    previous_outputs: Vec<(String, Option<String>)>,
+    newly_attached: Vec<String>,
+}
+
+fn apply_mutations(
+    store: &super::ConversationStore,
+    conversation_id: &str,
+    root: &Path,
+    loaded: &mut LoadedConversation,
+    mutations: Vec<ConversationMutation>,
+    undo: &mut Vec<Undo>,
+) -> Result<Changed> {
+    validate_segment_targets(conversation_id, loaded, &mutations)?;
+    validate_new_turn_attachments(store.home_dir(), conversation_id, loaded, &mutations)?;
+    let now = iso_now();
+    let mut changed = Changed::default();
+    for mutation in mutations {
+        match mutation {
+            ConversationMutation::MetadataUpdated { patch } => {
+                apply_metadata_patch(&mut loaded.meta, patch);
+            }
+            ConversationMutation::TurnUpserted { mut turn } => {
+                let existing = loaded.turn(&turn.id);
+                keep_acceptance(&mut turn.extra, existing.map(|existing| &existing.extra));
+                if existing.is_none() {
+                    changed
+                        .newly_attached
+                        .extend(super::attachments::turn_attachment_ids(
+                            turn.extra.get("attachments"),
+                        ));
+                }
+                // A queued turn moves to the end whenever it is written.
+                let position = match existing {
+                    Some(existing) if existing.status != "queued" => {
+                        loaded.position(&turn.id).expect("indexed turn")
+                    }
+                    _ => loaded.next_position,
+                };
+                let id = turn.id.clone();
+                let previous = loaded.put_turn(turn, position);
+                undo.push(Undo::Turn(id.clone(), previous));
+                changed.turns.push(id);
+            }
+            ConversationMutation::SegmentUpserted { mut segment }
+            | ConversationMutation::RecoveredSegmentUpserted { mut segment, .. } => {
+                let existing = loaded.segment(&segment.id);
+                if segment.has_unassigned_order() {
+                    segment.order = existing.map_or_else(
+                        || loaded.next_segment_order(&segment.turn_id),
+                        |existing| existing.order,
+                    );
+                }
+                if existing.is_none() {
+                    // A message accepted into a running turn owns its uploads.
+                    changed
+                        .newly_attached
+                        .extend(super::attachments::turn_attachment_ids(
+                            segment.extra.get("attachments"),
+                        ));
+                }
+                keep_acceptance(&mut segment.extra, existing.map(|existing| &existing.extra));
+                let previous_output = existing.and_then(tool_output_artifact);
+                // An echoed preview keeps referencing the stored output.
+                if let (Some(previous), Some(tool_call)) = (
+                    previous_output.as_ref(),
+                    segment.tool_call.as_mut().and_then(Value::as_object_mut),
+                ) {
+                    if tool_call.get("output_truncated") == Some(&json!(true))
+                        && !tool_call.contains_key("output_artifact")
+                    {
+                        tool_call.insert("output_artifact".into(), json!(previous));
+                    }
+                }
+                externalize_conversation_segment_tool_output(root, &mut segment)?;
+                let id = segment.id.clone();
+                if !changed
+                    .previous_outputs
+                    .iter()
+                    .any(|(segment_id, _)| segment_id == &id)
+                {
+                    changed.previous_outputs.push((id.clone(), previous_output));
+                }
+                // The artifact this segment anchors may now have an owner.
+                if let Some(artifact_id) = segment.artifact_id.clone() {
+                    for collection in super::store::ALL_COLLECTIONS {
+                        if loaded
+                            .artifact(collection.key(), &artifact_id)
+                            .is_some_and(|artifact| artifact.owner.is_none())
+                        {
+                            changed
+                                .artifacts
+                                .push((collection.key().to_string(), artifact_id.clone()));
+                        }
+                    }
+                }
+                let previous = loaded.put_segment(segment);
+                undo.push(Undo::Segment(id.clone(), previous));
+                changed
+                    .tombstoned_segments
+                    .retain(|segment_id| segment_id != &id);
+                changed.segments.push(id);
+            }
+            ConversationMutation::SegmentTombstoned { segment_id, .. } => {
+                let previous = loaded.remove_segment(&segment_id);
+                undo.push(Undo::Segment(segment_id.clone(), previous));
+                changed.segments.retain(|id| id != &segment_id);
+                changed.tombstoned_segments.push(segment_id);
+            }
+            ConversationMutation::ArtifactUpserted {
+                collection,
+                mut artifact,
+            } => {
+                if !artifact.is_object() {
+                    return Err(commit_rejected(
+                        conversation_id,
+                        "Artifact records must be JSON objects.",
+                    ));
+                }
+                // Every artifact row needs an identity.
+                let id = match artifact.get("id").and_then(Value::as_str) {
+                    Some(id) if !id.is_empty() => id.to_string(),
+                    _ => {
+                        let id = format!("artifact-{}", uuid::Uuid::new_v4().simple());
+                        artifact["id"] = json!(id);
+                        id
+                    }
+                };
+                let collection = collection.key().to_string();
+                let (position, owner) = match loaded.artifact(&collection, &id) {
+                    Some(existing) => (existing.position, existing.owner.clone()),
+                    None => (loaded.next_artifact_position(&collection), None),
+                };
+                let previous = loaded.put_artifact(
+                    &collection,
+                    &id,
+                    StoredArtifact {
+                        position,
+                        owner,
+                        payload: artifact,
+                    },
+                );
+                undo.push(Undo::Artifact(collection.clone(), id.clone(), previous));
+                changed.artifacts.push((collection, id));
+            }
+            ConversationMutation::WorkflowEventAppended { event } => {
+                let id = format!("event-{}", uuid::Uuid::new_v4().simple());
+                let position = loaded.next_artifact_position(EVENT_LOG_COLLECTION);
+                let previous = loaded.put_artifact(
+                    EVENT_LOG_COLLECTION,
+                    &id,
+                    StoredArtifact {
+                        position,
+                        owner: None,
+                        payload: event,
+                    },
+                );
+                undo.push(Undo::Artifact(
+                    EVENT_LOG_COLLECTION.into(),
+                    id.clone(),
+                    previous,
+                ));
+                changed
+                    .artifacts
+                    .push((EVENT_LOG_COLLECTION.to_string(), id));
+            }
+        }
+    }
+    // Owners resolve once every turn and anchor of the batch is in place.
+    for (collection, id) in dedup(&changed.artifacts) {
+        let Some(artifact) = loaded.artifact(collection, id) else {
+            continue;
+        };
+        if artifact.owner.is_some() || collection == EVENT_LOG_COLLECTION {
+            continue;
+        }
+        let owner = artifact
+            .payload
+            .get("source_turn_id")
+            .and_then(Value::as_str)
+            .or_else(|| loaded.anchor_turn(id))
+            .filter(|turn_id| loaded.turn(turn_id).is_some())
+            .map(str::to_string);
+        if owner.is_some() {
+            let mut artifact = artifact.clone();
+            artifact.owner = owner;
+            let previous = loaded.put_artifact(collection, id, artifact);
+            undo.push(Undo::Artifact(collection.clone(), id.clone(), previous));
+        }
+    }
+    maintain_metadata(loaded, &now);
+    if loaded.meta.conversation_handle.is_empty() {
+        let preferred = store.reserved_handle(conversation_id);
+        loaded.meta.conversation_handle = crate::workspace_conversations::free_handle(
+            store,
+            conversation_id,
+            preferred.as_deref(),
+        )?;
+    }
+    Ok(changed)
+}
+
+/// One transaction writing the changed rows, their references and the
+/// summary. Returns its revision, the changed rows, and the projected trace
+/// cursor: (turn id, sequence, settled).
+fn write_changes(
+    store: &super::ConversationStore,
+    conversation_id: &str,
+    root: &Path,
+    loaded: &LoadedConversation,
+    changed: &Changed,
+    projected_turn: Option<&str>,
+) -> Result<(i64, Vec<super::EntityRow>, Option<(String, u64, bool)>)> {
+    let now = loaded.meta.updated_at.clone();
+    let projected = projected_turn.and_then(|turn_id| {
+        let sequence = *loaded.trace_last_by_turn.get(turn_id)?;
+        let settled = loaded
+            .turn(turn_id)
+            .is_some_and(|turn| !is_active_status(&turn.status));
+        Some((turn_id.to_string(), sequence, settled))
+    });
+    let allocated = loaded.next_trace_sequence.saturating_sub(1);
+    if projected.is_some() {
+        // The applied cursor may only cover durable trace records.
+        sync_trace(root)?;
+    }
+    let conversation_row = summary_row(conversation_id, loaded)?;
+    let (revision, rows) = store.database().write(|tx| {
+        let mut conversation_row = conversation_row.clone();
+        conversation_row.metadata["revision"] = json!(tx.revision());
+        tx.put_conversation(&conversation_row)?;
+        for turn_id in dedup(&changed.turns) {
+            let Some(turn) = loaded.turn(turn_id) else {
+                continue;
+            };
+            tx.put_turn(&TurnRow {
+                conversation_id: conversation_id.to_string(),
+                id: turn_id.clone(),
+                position: loaded.position(turn_id).expect("indexed turn"),
+                status: turn.status.clone(),
+                updated_at: now.clone(),
+                payload: to_object(turn)?,
+            })?;
+        }
+        for segment_id in dedup(&changed.tombstoned_segments) {
+            tx.delete_segment(conversation_id, segment_id)?;
+        }
+        for (segment_id, previous) in &changed.previous_outputs {
+            let Some(segment) = loaded.segment(segment_id) else {
+                continue;
+            };
+            tx.put_segment(&SegmentRow {
+                conversation_id: conversation_id.to_string(),
+                id: segment.id.clone(),
+                turn_id: segment.turn_id.clone(),
+                order: segment.order,
+                status: segment.status.clone(),
+                updated_at: now.clone(),
+                payload: to_object(segment)?,
+            })?;
+            let current = tool_output_artifact(segment);
+            if let Some(previous) = previous
+                .as_ref()
+                .filter(|previous| Some(*previous) != current.as_ref())
+            {
+                tx.delete_blob_reference(
+                    conversation_id,
+                    "tool_output",
+                    segment_id,
+                    &store.home_relative(&root.join(previous)),
+                )?;
+            }
+            if let Some(current) = current {
+                tx.put_blob_reference(
+                    conversation_id,
+                    "tool_output",
+                    segment_id,
+                    &store.home_relative(&root.join(current)),
+                )?;
+            }
+        }
+        for (collection, id) in dedup(&changed.artifacts) {
+            let Some(artifact) = loaded.artifact(collection, id) else {
+                continue;
+            };
+            tx.put_artifact(&ArtifactRow {
+                conversation_id: conversation_id.to_string(),
+                collection: collection.clone(),
+                id: id.clone(),
+                turn_id: artifact.owner.clone(),
+                status: artifact
+                    .payload
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                updated_at: now.clone(),
+                payload: artifact.payload.clone(),
+            })?;
+        }
+        for id in &changed.newly_attached {
+            let Some(attachment) = loaded.attachments.get(id) else {
+                continue;
+            };
+            tx.put_attachment(&AttachmentRow {
+                conversation_id: conversation_id.to_string(),
+                id: id.clone(),
+                blob_path: attachment.blob_path.clone(),
+                status: "attached".to_string(),
+                updated_at: now.clone(),
+                payload: to_object(&attachment.record)?,
+            })?;
+        }
+        if let Some((turn_id, sequence, settled)) = &projected {
+            tx.set_applied_trace(conversation_id, turn_id, *sequence)?;
+            if *settled {
+                // Pruning may drop any allocated record; stay above all of them.
+                tx.raise_trace_high_water(conversation_id, allocated)?;
+            }
+        }
+        tx.changed_rows(conversation_id)
+    })?;
+    Ok((revision, rows, projected))
 }
 
 impl ConversationRepository {
     /// Test fixtures: store a complete record's rows exactly as given
-    /// (revision, timestamps, handle), replacing any loaded state. A missing
-    /// handle or title is derived as a commit would.
+    /// (timestamps, handle), replacing any loaded state. A missing handle or
+    /// title is derived as a commit would.
     #[doc(hidden)]
     pub fn seed_record(&self, record: &ConversationRecord) -> Result<()> {
         let store = self.store().clone();
-        let mut record = record.clone();
         let conversation_id = record.meta.conversation_id.clone();
-        record.meta.project_path = store
+        let project_path = store
             .registry()
             .ensure_project_paths(&record.meta.project_path)?
             .project_path;
-        if record.meta.conversation_handle.is_empty() {
-            record.meta.conversation_handle =
+        let mut loaded = LoadedConversation::new(&conversation_id, &project_path);
+        loaded.meta = record.meta.clone();
+        loaded.meta.project_path = project_path.clone();
+        for (position, turn) in record.transcript.turns.iter().enumerate() {
+            loaded.put_turn(turn.clone(), position as i64);
+        }
+        for segment in &record.transcript.segments {
+            loaded.put_segment(segment.clone());
+        }
+        let collections = super::store::ALL_COLLECTIONS
+            .iter()
+            .map(|collection| (collection.key(), record.artifacts.collection(*collection)))
+            .chain([(EVENT_LOG_COLLECTION, &record.artifacts.event_log)]);
+        for (collection, artifacts) in collections {
+            for artifact in artifacts {
+                let mut artifact = artifact.clone();
+                let id = match artifact.get("id").and_then(Value::as_str) {
+                    Some(id) if collection != EVENT_LOG_COLLECTION => id.to_string(),
+                    _ => {
+                        let id = format!("artifact-{}", uuid::Uuid::new_v4().simple());
+                        if collection != EVENT_LOG_COLLECTION {
+                            artifact["id"] = json!(id);
+                        }
+                        id
+                    }
+                };
+                let owner = artifact
+                    .get("source_turn_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| loaded.anchor_turn(&id))
+                    .filter(|turn_id| loaded.turn(turn_id).is_some())
+                    .map(str::to_string);
+                let position = loaded.next_artifact_position(collection);
+                loaded.put_artifact(
+                    collection,
+                    &id,
+                    StoredArtifact {
+                        position,
+                        owner,
+                        payload: artifact,
+                    },
+                );
+            }
+        }
+        if loaded.meta.conversation_handle.is_empty() {
+            loaded.meta.conversation_handle =
                 crate::workspace_conversations::free_handle(&store, &conversation_id, None)?;
         }
         // Every committed row carries a title; derive a missing one the same way.
-        if record.meta.title.trim().is_empty() {
-            record.meta.title = derive_title(&record);
+        if loaded.meta.title.trim().is_empty() {
+            loaded.meta.title = loaded.derived_title();
         }
-        for collection in super::store::ALL_COLLECTIONS {
-            for artifact in record.artifacts.collection_mut(collection) {
-                if artifact.get("id").and_then(Value::as_str).is_none() {
-                    artifact["id"] = json!(format!("artifact-{}", uuid::Uuid::new_v4().simple()));
-                }
-            }
-        }
-        let mut loaded = LoadedConversation::new(&conversation_id, &record.meta.project_path);
-        for (position, turn) in record.transcript.turns.iter().enumerate() {
-            loaded.positions.insert(turn.id.clone(), position as i64);
-        }
-        loaded.next_position = record.transcript.turns.len() as i64;
-        loaded.record = record;
-        let row = summary_row(&conversation_id, &loaded.record)?;
-        let root = store.conversation_root(&loaded.record.meta.project_path, &conversation_id)?;
+        let row = summary_row(&conversation_id, &loaded)?;
+        let root = store.conversation_root(&project_path, &conversation_id)?;
+        let updated_at = loaded.meta.updated_at.clone();
+        let full = loaded.record();
         store.with_conversation(&conversation_id, |slot| {
-            let record = &loaded.record;
-            store.database().write(|tx| {
+            let (revision, ()) = store.database().write(|tx| {
+                let mut row = row.clone();
+                row.metadata["revision"] = json!(tx.revision());
                 tx.put_conversation(&row)?;
-                for turn in &record.transcript.turns {
+                for turn in &full.transcript.turns {
                     tx.put_turn(&TurnRow {
                         conversation_id: conversation_id.clone(),
                         id: turn.id.clone(),
-                        position: loaded.positions[&turn.id],
+                        position: loaded.position(&turn.id).expect("indexed turn"),
                         status: turn.status.clone(),
-                        updated_at: record.meta.updated_at.clone(),
+                        updated_at: updated_at.clone(),
                         payload: to_object(turn)?,
                     })?;
                 }
-                for segment in &record.transcript.segments {
+                for segment in &full.transcript.segments {
                     tx.put_segment(&SegmentRow {
                         conversation_id: conversation_id.clone(),
                         id: segment.id.clone(),
                         turn_id: segment.turn_id.clone(),
                         order: segment.order,
                         status: segment.status.clone(),
-                        updated_at: record.meta.updated_at.clone(),
+                        updated_at: updated_at.clone(),
                         payload: to_object(segment)?,
                     })?;
                     if let Some(output) = tool_output_artifact(segment) {
@@ -511,33 +657,32 @@ impl ConversationRepository {
                         )?;
                     }
                 }
-                for collection in super::store::ALL_COLLECTIONS {
-                    for artifact in record.artifacts.collection(collection) {
+                let collections = super::store::ALL_COLLECTIONS
+                    .iter()
+                    .map(|collection| collection.key())
+                    .chain([EVENT_LOG_COLLECTION]);
+                for collection in collections {
+                    for (id, artifact) in loaded.artifacts_in(collection) {
                         tx.put_artifact(&ArtifactRow {
                             conversation_id: conversation_id.clone(),
-                            collection: collection.key().to_string(),
-                            id: artifact["id"].as_str().unwrap_or_default().to_string(),
-                            turn_id: None,
-                            status: artifact["status"].as_str().unwrap_or_default().to_string(),
-                            updated_at: record.meta.updated_at.clone(),
-                            payload: artifact.clone(),
+                            collection: collection.to_string(),
+                            id: id.to_string(),
+                            turn_id: artifact.owner.clone(),
+                            status: artifact.payload["status"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                            updated_at: updated_at.clone(),
+                            payload: artifact.payload.clone(),
                         })?;
                     }
                 }
-                for event in &record.artifacts.event_log {
-                    tx.put_artifact(&ArtifactRow {
-                        conversation_id: conversation_id.clone(),
-                        collection: EVENT_LOG_COLLECTION.to_string(),
-                        id: format!("event-{}", uuid::Uuid::new_v4().simple()),
-                        turn_id: None,
-                        status: String::new(),
-                        updated_at: record.meta.updated_at.clone(),
-                        payload: event.clone(),
-                    })?;
-                }
                 Ok(())
             })?;
+            loaded.revision = revision;
+            loaded.meta.revision = revision;
             *slot = Some(loaded);
+            store.notify_commit(revision, vec![(conversation_id.clone(), project_path)]);
             Ok(())
         })
     }
@@ -553,9 +698,7 @@ fn prune_settled_trace(store: &super::ConversationStore, root: &Path, loaded: &L
             .into_iter()
             .filter(|record| {
                 loaded
-                    .record
-                    .transcript
-                    .find_turn(&record.turn_id)
+                    .turn(&record.turn_id)
                     .is_some_and(|turn| is_active_status(&turn.status))
                     && record.sequence
                         > loaded
@@ -575,54 +718,22 @@ fn prune_settled_trace(store: &super::ConversationStore, root: &Path, loaded: &L
     }
 }
 
-pub(crate) fn is_active_status(status: &str) -> bool {
-    matches!(status, "pending" | "streaming")
-}
-
-/// Metadata and summary columns, derived from the committed record.
-fn summary_row(conversation_id: &str, record: &ConversationRecord) -> Result<ConversationRow> {
-    let preview = record
-        .transcript
-        .turns
-        .iter()
-        .rev()
-        .filter(|turn| turn.turn_kind() == "message")
-        .map(|turn| truncate_text(&turn.content, 120))
-        .find(|preview| !preview.is_empty())
-        .unwrap_or_default();
-    let running = record
-        .transcript
-        .turns
-        .iter()
-        .any(|turn| turn.role == "assistant" && is_active_status(&turn.status));
-    let pending = |artifacts: &[Value], status: &str| {
-        artifacts
-            .iter()
-            .any(|artifact| artifact.get("status").and_then(Value::as_str) == Some(status))
-    };
-    let needs_attention = pending(&record.artifacts.flow_run_requests, "pending")
-        || pending(&record.artifacts.proposed_plans, "pending_review");
-    let launched_run_ids = record
-        .artifacts
-        .flow_launches
-        .iter()
-        .filter_map(|launch| launch.get("run_id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|run_id| !run_id.is_empty())
-        .map(str::to_string)
-        .collect();
+/// Metadata and summary columns, from the loaded indexes.
+fn summary_row(conversation_id: &str, loaded: &LoadedConversation) -> Result<ConversationRow> {
+    let summary = loaded.summary();
+    let meta = &loaded.meta;
     Ok(ConversationRow {
         id: conversation_id.to_string(),
-        project_path: record.meta.project_path.clone(),
-        handle: record.meta.conversation_handle.clone(),
-        created_at: record.meta.created_at.clone(),
-        updated_at: record.meta.updated_at.clone(),
-        title: record.meta.title.clone(),
-        preview,
-        running,
-        needs_attention,
-        launched_run_ids,
-        metadata: to_object(&record.meta)?,
+        project_path: meta.project_path.clone(),
+        handle: meta.conversation_handle.clone(),
+        created_at: meta.created_at.clone(),
+        updated_at: meta.updated_at.clone(),
+        title: meta.title.clone(),
+        preview: summary.preview,
+        running: summary.running,
+        needs_attention: summary.needs_attention,
+        launched_run_ids: summary.launched_run_ids,
+        metadata: to_object(meta)?,
     })
 }
 
@@ -681,14 +792,12 @@ fn validate_new_turn_attachments(
 ) -> Result<()> {
     for mutation in mutations {
         let references = match mutation {
-            ConversationMutation::TurnUpserted { turn }
-                if loaded.record.transcript.find_turn(&turn.id).is_none() =>
-            {
+            ConversationMutation::TurnUpserted { turn } if loaded.turn(&turn.id).is_none() => {
                 turn.extra.get("attachments")
             }
             ConversationMutation::SegmentUpserted { segment }
             | ConversationMutation::RecoveredSegmentUpserted { segment, .. }
-                if loaded.record.transcript.find_segment(&segment.id).is_none() =>
+                if loaded.segment(&segment.id).is_none() =>
             {
                 segment.extra.get("attachments")
             }
@@ -712,7 +821,7 @@ fn validate_new_turn_attachments(
 
 fn validate_segment_targets(
     conversation_id: &str,
-    record: &ConversationRecord,
+    loaded: &LoadedConversation,
     mutations: &[ConversationMutation],
 ) -> Result<()> {
     for mutation in mutations {
@@ -721,7 +830,7 @@ fn validate_segment_targets(
             | ConversationMutation::RecoveredSegmentUpserted { segment, .. } => segment,
             _ => continue,
         };
-        let turn_known = record.transcript.find_turn(&segment.turn_id).is_some()
+        let turn_known = loaded.turn(&segment.turn_id).is_some()
             || mutations.iter().any(|candidate| {
                 matches!(candidate, ConversationMutation::TurnUpserted { turn } if turn.id == segment.turn_id)
             });
@@ -738,19 +847,7 @@ fn validate_segment_targets(
     Ok(())
 }
 
-fn resolve_segment_order(record: &ConversationRecord, segment: &mut TranscriptSegment) {
-    if !segment.has_unassigned_order() {
-        return;
-    }
-    if let Some(existing) = record.transcript.find_segment(&segment.id) {
-        segment.order = existing.order;
-        return;
-    }
-    segment.order = record.transcript.next_segment_order(&segment.turn_id);
-}
-
-fn apply_metadata_patch(record: &mut ConversationRecord, patch: ConversationMetadataPatch) {
-    let meta = &mut record.meta;
+fn apply_metadata_patch(meta: &mut ConversationMeta, patch: ConversationMetadataPatch) {
     if let Some(group) = patch.model_settings {
         meta.model_settings = group;
     }
@@ -774,31 +871,18 @@ fn apply_metadata_patch(record: &mut ConversationRecord, patch: ConversationMeta
     }
 }
 
-fn maintain_metadata(record: &mut ConversationRecord, now: &str) {
-    if record.meta.created_at.trim().is_empty() {
-        record.meta.created_at = now.to_string();
+fn maintain_metadata(loaded: &mut LoadedConversation, now: &str) {
+    if loaded.meta.created_at.trim().is_empty() {
+        loaded.meta.created_at = now.to_string();
     }
-    record.meta.updated_at = now.to_string();
-    let title = record.meta.title.trim();
+    loaded.meta.updated_at = now.to_string();
+    let title = loaded.meta.title.trim();
     if title.is_empty() || title == "New thread" {
-        record.meta.title = derive_title(record);
+        loaded.meta.title = loaded.derived_title();
     }
 }
 
-fn derive_title(record: &ConversationRecord) -> String {
-    record
-        .transcript
-        .turns
-        .iter()
-        .find_map(|turn| {
-            (turn.turn_kind() == "message" && turn.role == "user")
-                .then(|| truncate_text(&turn.content, 64))
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "New thread".to_string())
-}
-
-fn truncate_text(value: &str, limit: usize) -> String {
+pub(crate) fn truncate_text(value: &str, limit: usize) -> String {
     let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= limit {
         return collapsed;
@@ -810,22 +894,6 @@ fn truncate_text(value: &str, limit: usize) -> String {
     truncated = truncated.trim_end().to_string();
     truncated.push('\u{2026}');
     truncated
-}
-
-fn upsert_artifact(collection: &mut Vec<Value>, artifact: Value) {
-    let artifact_id = artifact
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if let Some(existing) = collection
-        .iter_mut()
-        .find(|existing| existing.get("id").and_then(Value::as_str) == Some(artifact_id.as_str()))
-    {
-        *existing = artifact;
-    } else {
-        collection.push(artifact);
-    }
 }
 
 fn commit_rejected(conversation_id: &str, reason: &str) -> StorageError {

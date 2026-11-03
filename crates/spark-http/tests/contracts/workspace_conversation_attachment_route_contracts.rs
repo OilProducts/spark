@@ -141,7 +141,11 @@ async fn attachments_upload_send_download_and_restore_into_history() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{snapshot}");
-    let user_turn = &snapshot["turns"][0];
+    let accepted = crate::row_payloads(&snapshot["changes"], "turn");
+    let user_turn = accepted
+        .into_iter()
+        .find(|turn| turn["role"] == "user")
+        .expect("user turn");
     assert_eq!(user_turn["content"], "");
     assert_eq!(
         user_turn["attachments"],
@@ -355,7 +359,12 @@ async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(snapshot["turns"][0]["attachments"][0]["id"], image["id"]);
+    let user_turn = crate::row_payloads(&snapshot["changes"], "turn")
+        .into_iter()
+        .find(|turn| turn["role"] == "user")
+        .expect("user turn")
+        .clone();
+    assert_eq!(user_turn["attachments"][0]["id"], image["id"]);
     wait_for_answers(&settings, "chat-b", 1).await;
 }
 
@@ -553,6 +562,29 @@ fn user_turn_mutation(attachment: &Value) -> ConversationMutation {
     ConversationMutation::TurnUpserted { turn }
 }
 
+/// The assistant turn once it settled as failed.
+async fn wait_for_failed_turn(
+    settings: &SparkSettings,
+    conversation_id: &str,
+    assistant_turn_id: &str,
+) -> Value {
+    let snapshot = wait_for_conversation_snapshot(settings, conversation_id, PROJECT, |snapshot| {
+        snapshot["turns"]
+            .as_array()
+            .expect("turns")
+            .iter()
+            .any(|turn| turn["id"] == assistant_turn_id && turn["status"] == "failed")
+    })
+    .await;
+    snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == assistant_turn_id)
+        .unwrap()
+        .clone()
+}
+
 fn turn_count(settings: &SparkSettings, conversation_id: &str) -> usize {
     ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_snapshot(conversation_id, Some(PROJECT))
@@ -623,6 +655,8 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
     let image_bytes = content_path(&settings, "chat-e", &image);
     let notes_bytes = content_path(&settings, "chat-e", &notes);
 
+    // History is built after acceptance: the message is accepted, and its
+    // turn then fails visibly without reaching the provider.
     std::fs::remove_file(&image_bytes).expect("remove bytes");
     let (status, body) = send(
         &app,
@@ -630,9 +664,16 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
         json!({"project_path": PROJECT, "message": "Again", "provider": "claude-code"}),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "accepted");
+    let failed = wait_for_failed_turn(
+        &settings,
+        "chat-e",
+        body["assistant_turn_id"].as_str().unwrap(),
+    )
+    .await;
     assert_eq!(
-        body["detail"],
+        failed["error"],
         format!(
             "Attachment {} from an earlier message is missing or unreadable, so the conversation history cannot be sent.",
             image["id"].as_str().unwrap()
@@ -648,12 +689,18 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
         json!({"project_path": PROJECT, "message": "Again", "provider": "codex"}),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body["detail"]
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let failed = wait_for_failed_turn(
+        &settings,
+        "chat-e",
+        body["assistant_turn_id"].as_str().unwrap(),
+    )
+    .await;
+    assert!(failed["error"]
         .as_str()
         .unwrap()
         .contains(notes["id"].as_str().unwrap()));
-    assert_eq!(turn_count(&settings, "chat-e"), 2);
+    assert_eq!(turn_count(&settings, "chat-e"), 6);
     assert_eq!(requests.lock().expect("requests").len(), 1);
 
     std::fs::write(&notes_bytes, b"notes").expect("restore bytes");
