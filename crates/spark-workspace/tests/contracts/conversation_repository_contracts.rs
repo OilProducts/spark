@@ -380,7 +380,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
     crate::write_conversation_snapshot(data_dir, &payload);
 }
 
-fn settings(root: &Path) -> SparkSettings {
+pub(super) fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),
