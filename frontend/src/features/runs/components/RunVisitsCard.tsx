@@ -2,10 +2,12 @@ import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'r
 import { ArrowRight, ChevronRight, CircleHelp, Minus, Undo2, Workflow, X, type LucideIcon } from 'lucide-react'
 
 import type { RunExecutionPrompt, RunTranscriptSegment } from '@/lib/api/attractorApi'
+import { useStore } from '@/store'
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { StatusDot, StatusPill, statusTextClassName, type StatusTone } from '@/components/app/status'
+import { LiveThinkingIndicator } from '@/components/app/transcript/liveThinking'
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { Transcript } from '@/components/app/transcript/Transcript'
 import { isThinkingEntry } from '@/features/projects/model/conversationTimeline'
@@ -22,6 +24,7 @@ import {
     formatVisitErrorKind,
     parallelBranchResults,
     visitContextWrites,
+    visitKey,
     visitDurationMs,
     visitMark,
     visitPrompt,
@@ -385,7 +388,8 @@ function RunVisitView({
     onOpenContextKey: (key: string) => void
     onOpenRun: (runId: string) => void
 }) {
-    const [showThinking, setShowThinking] = useState(false)
+    const showThinking = useStore((state) => state.preferredShowThinking)
+    const setShowThinking = useStore((state) => state.setPreferredShowThinking)
     const nodeVisits = visits.filter((candidate) => candidate.nodeId === visit.nodeId)
     const next = visits.find((candidate) => candidate.key === visit.next?.key) ?? null
     const prompt = visitPrompt(visit, prompts)
@@ -601,6 +605,12 @@ function RunVisitView({
                         className="max-w-[80ch]"
                     />
                 )}
+                {visit.kind === 'agent_task' && visit.outcome === 'running' ? (
+                    <LiveThinkingIndicator
+                        thinkingKey={visitKey(visit.runId, visit.nodeId, visit.stageIndex, visit.attempt)}
+                        testId="run-visit-thinking"
+                    />
+                ) : null}
                 {visit.kind === 'agent_task' ? (
                     <RunSteerForm runId={visit.runId} nodeId={visit.nodeId} running={visit.outcome === 'running'} />
                 ) : null}

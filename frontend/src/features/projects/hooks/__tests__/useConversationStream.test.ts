@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { useStore } from '@/store'
 import { TEST_GENERATION, conversationPage } from '@/test/conversationWire'
 import { useConversationStream } from '../useConversationStream'
@@ -43,7 +44,7 @@ function openChat() {
         projectSessionsByPath: {},
         updateProjectSessionState: () => {},
     }))
-    renderHook(() => useConversationStream({
+    return renderHook(() => useConversationStream({
         activeConversationId: 'chat',
         activeProjectPath: '/p',
         getConversationRecord: (id) => useStore.getState().homeConversationCache.conversationsById[id],
@@ -122,4 +123,30 @@ it('a newer stream window, even from a new store generation, survives a page req
     })
     expect(cache().conversationsById.chat.watermark).toBe('3')
     expect(Object.keys(cache().conversationsById.chat.rows).some((key) => key.includes('turn-2'))).toBe(true)
+})
+
+it('shows live thinking from a transient delta and clears it when thinking ends, the turn settles or the chat closes', async () => {
+    fetchMock.mockImplementation(async () => json(200, conversationPage(chat)))
+    const { unmount } = openChat()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    await waitFor(() => expect(useStore.getState().homeConversationCache.conversationsById.chat?.turnsById['turn-1']?.status).toBe('complete'))
+    const delta = (active: boolean, estimated_tokens?: number, stream_sequence = 1, turn_id = 'turn-2') => ({
+        type: 'stream_delta', conversation_id: 'chat', turn_id, stream_sequence, base_revision: 3,
+        delta_kind: 'thinking', active, estimated_tokens,
+    })
+    const key = conversationThinkingKey('chat')
+    const thinking = () => useLiveThinkingStore.getState().byKey[key]
+    live('conversation.stream_delta', delta(true))
+    expect(thinking()).toMatchObject({ estimatedTokens: null, turnId: 'turn-2' })
+    const { startedAt } = thinking()
+    live('conversation.stream_delta', delta(true, 400, 2))
+    expect(thinking()).toMatchObject({ startedAt, estimatedTokens: 400 })
+    live('conversation.stream_delta', delta(false, 400, 3))
+    expect(thinking()).toBeUndefined()
+    live('conversation.stream_delta', delta(true, 10, 4, 'turn-1'))
+    expect(thinking()).toBeUndefined()
+    live('conversation.stream_delta', delta(true, 10, 5))
+    expect(thinking()).toBeDefined()
+    unmount()
+    expect(thinking()).toBeUndefined()
 })

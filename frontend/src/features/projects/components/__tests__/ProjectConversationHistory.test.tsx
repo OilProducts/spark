@@ -168,7 +168,7 @@ const InteractiveHistory = ({
             onToggleThinkingEntryExpanded={(entryId) =>
                 setExpandedThinkingEntries((current) => ({
                     ...current,
-                    [entryId]: !current[entryId],
+                    [entryId]: current[entryId] === false,
                 }))
             }
             onReviewFlowRunRequest={vi.fn()}
@@ -1047,7 +1047,7 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
     })
 
-    it('hides thinking behind "Show thinking", keeping a live marker, then collapses each summary to its lead-in', async () => {
+    it('hides thinking behind "Show thinking", keeping a live marker, then opens each summary until collapsed', async () => {
         const user = userEvent.setup()
 
         render(
@@ -1068,6 +1068,9 @@ describe('ProjectConversationHistory', () => {
 
         await user.click(screen.getByRole('button', { name: 'Show thinking' }))
         expect(screen.getByText('Considering proposal')).toBeVisible()
+        expect(screen.getByText('Smallest safe change first.')).toBeVisible()
+
+        await user.click(screen.getByTestId('project-thinking-toggle-segment-reasoning-1'))
         expect(screen.queryByText('Smallest safe change first.')).not.toBeInTheDocument()
 
         await user.click(screen.getByTestId('project-thinking-toggle-segment-reasoning-1'))

@@ -90,6 +90,11 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         completePreferenceInteraction({ run_presentation })
     },
     preferredEditorMode: 'structured',
+    preferredShowThinking: true,
+    setPreferredShowThinking: (show) => {
+        set({ preferredShowThinking: show })
+        completePreferenceInteraction({ show_thinking: show })
+    },
     editorMode: 'structured',
     setEditorMode: (mode) => set({ editorMode: mode }),
     selectedNodeId: null,

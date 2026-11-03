@@ -160,13 +160,17 @@ impl ClaudeCodeBackend {
                 .or_else(|| metadata_string(&request.metadata, "claude_code.session_id"));
         let mut turn = Turn::new(&request, resumed_session_id.is_some());
         let mut thread_resume_failure = None;
-        if let Err(error) = self.run_with_respawn(
+        let result = self.run_with_respawn(
             &request,
             &event_sink,
             resumed_session_id.as_deref(),
             &questions,
             &mut turn,
-        ) {
+        );
+        // A turn that dies mid-thought never closes its block.
+        let thinking_ended = turn.state.end_thinking();
+        turn.push(thinking_ended, &event_sink);
+        if let Err(error) = result {
             // The stored session never started, so start a fresh one.
             let Some(discarded_session_id) = resumed_session_id.filter(|_| {
                 turn.state.session_id.is_none() && error.message.contains("without a result event")
@@ -291,6 +295,12 @@ impl ClaudeCodeBackend {
             .arg("stdio")
             .arg("--include-partial-messages")
             .arg("--verbose")
+            // Without it thinking blocks carry no text, and the
+            // showThinkingSummaries setting does not change that.
+            // ponytail: hidden flag, seen on CLI 2.1.317; an older CLI that
+            // lacks it fails the launch. Add a version gate if that matters.
+            .arg("--thinking-display")
+            .arg("summarized")
             // Resumes otherwise reuse the session's first system prompt and
             // ignore the instructions appended below.
             .arg("--system-prompt-snapshot")
@@ -628,7 +638,10 @@ impl Turn {
             if let Some(sink) = event_sink {
                 sink(event.clone());
             }
-            self.events.push(event);
+            // Thinking progress is live-only: it is never part of the turn's record.
+            if event.thinking_state().is_none() {
+                self.events.push(event);
+            }
         }
     }
 }
@@ -867,7 +880,18 @@ struct ClaudeCodeTurnState {
     /// The item the latest result's text was reported under.
     result_item_id: Option<String>,
     tool_calls: BTreeMap<String, Value>,
+    /// The thinking block in progress, as the live indicator reports it.
+    thinking_block: Option<ThinkingBlockProgress>,
 }
+
+#[derive(Debug)]
+struct ThinkingBlockProgress {
+    estimated_tokens: Option<u64>,
+    reported_at: std::time::Instant,
+}
+
+/// Token updates arrive per delta; live clients need about one a second.
+const THINKING_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 impl ClaudeCodeTurnState {
     fn resolved_final_text(&self) -> String {
@@ -973,6 +997,13 @@ impl ClaudeCodeTurnState {
                 let text = retry_message(message);
                 return vec![self.warning("system_api_retry", text, message)];
             }
+            "thinking_tokens" => {
+                return if message["parent_tool_use_id"].is_null() {
+                    self.thinking_tokens(message["estimated_tokens"].as_u64())
+                } else {
+                    Vec::new()
+                };
+            }
             // A subagent's lifecycle updates the tool call that spawned it.
             "task_started" | "task_updated" => return Vec::new(),
             "task_progress" | "task_notification" => {
@@ -993,6 +1024,48 @@ impl ClaudeCodeTurnState {
                 event.details = Some(message.clone());
             },
         )]
+    }
+
+    fn thinking_tokens(&mut self, estimated_tokens: Option<u64>) -> Vec<TurnStreamEvent> {
+        let now = std::time::Instant::now();
+        let (due, estimated_tokens) = match self.thinking_block.as_mut() {
+            Some(block) => {
+                block.estimated_tokens = estimated_tokens.or(block.estimated_tokens);
+                let due = block.reported_at.elapsed() >= THINKING_PROGRESS_INTERVAL;
+                if due {
+                    block.reported_at = now;
+                }
+                (due, block.estimated_tokens)
+            }
+            None => {
+                self.thinking_block = Some(ThinkingBlockProgress {
+                    estimated_tokens,
+                    reported_at: now,
+                });
+                (true, estimated_tokens)
+            }
+        };
+        if due {
+            vec![self.thinking_event(true, estimated_tokens)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Closes the thinking block in progress, if any, with its last estimate.
+    fn end_thinking(&mut self) -> Vec<TurnStreamEvent> {
+        match self.thinking_block.take() {
+            Some(block) => vec![self.thinking_event(false, block.estimated_tokens)],
+            None => Vec::new(),
+        }
+    }
+
+    fn thinking_event(&self, active: bool, estimated_tokens: Option<u64>) -> TurnStreamEvent {
+        let mut event = TurnStreamEvent::thinking_progress(active, estimated_tokens);
+        event.source.backend = Some(CLAUDE_CODE_BACKEND.to_string());
+        event.source.app_thread_id = self.session_id.clone();
+        event.source.raw_kind = Some("system_thinking_tokens".to_string());
+        event
     }
 
     /// A backend-neutral warning, shown as an agent event.
@@ -1130,12 +1203,26 @@ impl ClaudeCodeTurnState {
             return Vec::new();
         }
         let event = message.get("event").unwrap_or(message);
-        if event.get("type").and_then(Value::as_str) == Some("message_start") {
-            self.partial_block_ids.clear();
-            return Vec::new();
-        }
-        if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
-            return Vec::new();
+        match event.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                self.partial_block_ids.clear();
+                return Vec::new();
+            }
+            Some("content_block_start") => {
+                let thinking = matches!(
+                    event.pointer("/content_block/type").and_then(Value::as_str),
+                    Some("thinking" | "redacted_thinking")
+                );
+                return if thinking {
+                    // Shows the indicator before the first token estimate.
+                    self.thinking_tokens(None)
+                } else {
+                    self.end_thinking()
+                };
+            }
+            Some("content_block_stop" | "message_stop") => return self.end_thinking(),
+            Some("content_block_delta") => {}
+            _ => return Vec::new(),
         }
         let Some(index) = event
             .get("index")
@@ -1261,6 +1348,12 @@ impl ClaudeCodeTurnState {
     }
 
     fn ingest_result(&mut self, message: &Value, last: bool) -> Vec<TurnStreamEvent> {
+        let mut events = self.end_thinking();
+        events.extend(self.result_events(message, last));
+        events
+    }
+
+    fn result_events(&mut self, message: &Value, last: bool) -> Vec<TurnStreamEvent> {
         // Each result claims the latest assistant text once; a later result
         // with no new text gets its own item, while promoting the same result
         // on a stop reuses its item.

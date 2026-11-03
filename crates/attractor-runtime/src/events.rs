@@ -983,3 +983,51 @@ mod tests {
         );
     }
 }
+
+/// One node's transient thinking state for live clients; never journaled.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeThinking {
+    pub node_id: String,
+    pub stage_index: u64,
+    pub attempt: u64,
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens: Option<u64>,
+}
+
+/// The adapter event carrying a [`NodeThinking`] from a worker to its host.
+pub const NODE_THINKING_ADAPTER_EVENT: &str = "node_thinking";
+
+type PendingNodeThinking =
+    std::collections::HashMap<String, std::collections::BTreeMap<(String, u64, u64), NodeThinking>>;
+
+/// The latest unpublished thinking state per run and node. A run-event observer
+/// notification carries only the run id, so the publisher drains this for it.
+static PENDING_NODE_THINKING: std::sync::LazyLock<std::sync::Mutex<PendingNodeThinking>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn record_node_thinking(run_id: &str, thinking: NodeThinking) {
+    PENDING_NODE_THINKING
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .entry(run_id.to_string())
+        .or_default()
+        .insert(
+            (
+                thinking.node_id.clone(),
+                thinking.stage_index,
+                thinking.attempt,
+            ),
+            thinking,
+        );
+}
+
+/// Removes and returns the run's thinking updates since the last call.
+pub fn take_node_thinking(run_id: &str) -> Vec<NodeThinking> {
+    PENDING_NODE_THINKING
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .remove(run_id)
+        .map(|pending| pending.into_values().collect())
+        .unwrap_or_default()
+}

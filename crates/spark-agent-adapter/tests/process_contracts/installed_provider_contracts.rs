@@ -10,10 +10,11 @@ use std::process::Command;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    AgentAttachment, AgentTurnBackend, AgentTurnRequest, CodexAppServerBackend,
-    RustLlmAgentTurnBackend, AGENT_ATTACHMENTS_METADATA_KEY,
+    AgentAttachment, AgentTurnBackend, AgentTurnEventSink, AgentTurnRequest, ClaudeCodeBackend,
+    CodexAppServerBackend, RustLlmAgentTurnBackend, AGENT_ATTACHMENTS_METADATA_KEY,
 };
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
+use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
 use unified_llm_adapter::Client;
 
 use super::test_support::ENV_LOCK;
@@ -144,4 +145,45 @@ fn installed_claude_code_accepts_image_blocks_and_file_references() {
         "agent never read the file: {events}"
     );
     assert_answer(output.final_assistant_text);
+}
+
+/// `--thinking-display` is a hidden flag: this notices if a CLI update drops it
+/// or stops returning thinking text.
+#[test]
+#[ignore = "runs the installed claude CLI against a signed-in account"]
+fn installed_claude_code_streams_thinking_text_and_token_estimates() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut request = request(temp.path(), "claude-code");
+    request.prompt =
+        "Which is larger, 2^100 or 3^63? Reason carefully, then answer in one word.".to_string();
+    request.metadata.clear();
+    request.reasoning_effort = Some("high".to_string());
+    let live = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = live.clone();
+    let sink: AgentTurnEventSink = std::sync::Arc::new(move |event: TurnStreamEvent| {
+        if let Some(state) = event.thinking_state() {
+            sink_events.lock().unwrap().push(state);
+        }
+    });
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(request, Some(sink))
+        .expect("claude turn");
+
+    let thoughts = output
+        .events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::ContentCompleted
+                && event.channel == Some(TurnStreamChannel::Reasoning)
+        })
+        .count();
+    let live = live.lock().unwrap();
+    eprintln!("thinking blocks with text: {thoughts}; live updates: {live:?}");
+    assert!(thoughts > 0, "no thinking text: {:?}", output.events);
+    assert_eq!(live.first().map(|state| state.0), Some(true));
+    assert!(live
+        .last()
+        .is_some_and(|(active, tokens)| !active && tokens.is_some()));
 }

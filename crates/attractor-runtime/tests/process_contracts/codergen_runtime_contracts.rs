@@ -564,6 +564,134 @@ fn codergen_external_sink_wins_over_reconstructed_run_paths() {
         .exists());
 }
 
+struct ThinkingBackend;
+
+impl spark_agent_adapter::CodergenBackend for ThinkingBackend {
+    fn run(
+        &mut self,
+        _request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        unreachable!("the handler streams")
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        _request: spark_agent_adapter::CodergenBackendRequest,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let sink = event_sink.expect("event sink");
+        let thinking = |active, tokens| {
+            spark_agent_adapter::CodergenEvent::new(
+                "turn_event",
+                BTreeMap::from([(
+                    "turn_stream_event".to_string(),
+                    json!(spark_common::events::TurnStreamEvent::thinking_progress(
+                        active, tokens
+                    )),
+                )]),
+            )
+        };
+        let recorded = spark_agent_adapter::CodergenEvent::new(
+            "after_thinking",
+            BTreeMap::from([("step".to_string(), json!(1))]),
+        );
+        sink(thinking(true, Some(50)));
+        sink(thinking(false, Some(186)));
+        sink(recorded.clone());
+        // Not streamed: the live-only events must not shift the prefix count.
+        let terminal = spark_agent_adapter::CodergenEvent::new(
+            "batch_only",
+            BTreeMap::from([("step".to_string(), json!(2))]),
+        );
+        let mut output = spark_agent_adapter::CodergenBackendOutput::text("Done");
+        output.events = vec![recorded, terminal];
+        Ok(output)
+    }
+}
+
+#[test]
+fn node_thinking_reaches_the_publisher_without_touching_the_run_record() {
+    let flow = serde_json::from_value::<FlowDefinition>(json!({
+        "schema_version": "2",
+        "id": "g",
+        "nodes": {
+            "task": {
+                "kind": "agent_task",
+                "config": { "kind": "agent_task", "prompt": "Ship it" }
+            }
+        }
+    }))
+    .expect("flow parses");
+    let node = flow.nodes.get("task").expect("task").clone();
+    let temp = tempdir().unwrap();
+    let paths = RunRootPaths::new(temp.path(), "project", "run-thinking").unwrap();
+    std::fs::create_dir_all(paths.logs_dir()).unwrap();
+    let seen_at_notice = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen_at_notice);
+    let mut runner = RuntimeHandlerRunner::new()
+        .with_codergen_backend_factory(|| Box::new(ThinkingBackend))
+        .with_run_event_observer(Arc::new(move |run_id: &str| {
+            observed
+                .lock()
+                .unwrap()
+                .extend(attractor_runtime::events::take_node_thinking(run_id));
+        }));
+
+    runner
+        .execute(NodeExecutionRequest {
+            node_id: "task".to_string(),
+            stage_index: 3,
+            attempt: 1,
+            context: ContextMap::new(),
+            prompt: "Ship it".to_string(),
+            node_attrs: node_attrs_for_handler("task", &node),
+            node,
+            flow: flow.clone(),
+            outgoing_edges: outgoing_routing_edges(&flow, "task").unwrap(),
+            run_paths: Some(paths.clone()),
+            run_workdir: temp.path().to_path_buf(),
+            run_id: "run-thinking".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("codergen executes");
+
+    let thinking = seen_at_notice.lock().unwrap();
+    assert_eq!(thinking.len(), 2);
+    assert!(thinking[0].active);
+    assert_eq!(
+        (
+            thinking[0].node_id.as_str(),
+            thinking[0].stage_index,
+            thinking[0].attempt,
+            thinking[0].estimated_tokens
+        ),
+        ("task", 3, 1, Some(50))
+    );
+    assert!(!thinking[1].active);
+    assert_eq!(thinking[1].estimated_tokens, Some(186));
+
+    // Nothing about thinking was recorded for the run, and the backend's
+    // batch-only event was still delivered after the live-only ones.
+    let mut recorded = String::new();
+    let mut pending = vec![paths.root.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            if entry.path().is_dir() {
+                pending.push(entry.path());
+            } else if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
+                recorded.push_str(&std::fs::read_to_string(entry.path()).unwrap_or_default());
+            }
+        }
+    }
+    assert!(!recorded.contains("thinking_progress"), "{recorded}");
+    assert!(recorded.contains("batch_only"), "{recorded}");
+}
+
 /// The manager loop's intervention path reaches a running Claude Code node
 /// as a live message in its turn.
 #[cfg(unix)]

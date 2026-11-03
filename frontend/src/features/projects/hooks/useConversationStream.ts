@@ -10,6 +10,7 @@ import {
     type ConversationPage,
     type ConversationStreamDeltaEventResponse,
 } from '@/lib/workspaceClient'
+import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 
 const LIVE_ENDPOINT = '/workspace/api/live/events'
@@ -57,6 +58,7 @@ export function useConversationStream(args: UseConversationStreamArgs) {
 
         let isCancelled = false
         let issued = 0
+        const thinkingKey = conversationThinkingKey(activeConversationId)
         // A conversation missing on a reopen after a reset is gone; on a first open it is a new thread.
         let afterReset = false
 
@@ -125,12 +127,20 @@ export function useConversationStream(args: UseConversationStreamArgs) {
                 } else if (detail.type === 'conversation.stream_delta') {
                     // Transient deltas render live but are droppable and never committed.
                     const delta = parseConversationStreamDeltaEventResponse(detail.payload)
-                    if (delta) {
+                    if (delta?.delta_kind === 'thinking') {
+                        useLiveThinkingStore.getState().report(thinkingKey, delta.active === true, delta.estimated_tokens, delta.turn_id)
+                    } else if (delta) {
                         argsRef.current.applyTransientConversationEvent(activeProjectPath, delta, 'event-stream')
                     }
                 }
             } catch {
                 // A malformed frame is dropped whole; the next window or batch restores state.
+            }
+            // A turn that settled without reporting the end of its thinking stops showing it.
+            const thinking = useLiveThinkingStore.getState().byKey[thinkingKey]
+            const turnStatus = thinking?.turnId ? argsRef.current.getConversationRecord(activeConversationId)?.turnsById[thinking.turnId]?.status : null
+            if (turnStatus === 'complete' || turnStatus === 'failed') {
+                useLiveThinkingStore.getState().report(thinkingKey, false)
             }
         }
 
@@ -139,6 +149,8 @@ export function useConversationStream(args: UseConversationStreamArgs) {
         return () => {
             isCancelled = true
             window.removeEventListener('spark:conversation-live-event', handleLiveEvent)
+            // Live events stop reaching this conversation, including its thinking's end.
+            useLiveThinkingStore.getState().report(thinkingKey, false)
         }
     }, [activeConversationId, activeProjectPath])
 }

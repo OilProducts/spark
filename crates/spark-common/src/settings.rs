@@ -128,6 +128,7 @@ pub struct ClientPreferences {
     pub show_advanced_controls: Option<bool>,
     pub expand_child_flows: Option<bool>,
     pub graph_settings_open: Option<bool>,
+    pub show_thinking: Option<bool>,
     pub runs_scope: Option<PresentationScope>,
     pub triggers_scope: Option<PresentationScope>,
     pub appearance: Option<Appearance>,

@@ -188,6 +188,12 @@ describe('Transcript', () => {
         expect(screen.getByText('Thought live')).toBeVisible()
         expect(screen.getByText('Thought done')).toBeVisible()
         expect(screen.queryByText('Thinking')).toBeNull()
+        // Readable without a click; each entry still collapses and reopens on its own.
+        expect(screen.getAllByText('details')).toHaveLength(2)
+        fireEvent.click(screen.getByTestId('t-thinking-toggle-done'))
+        expect(screen.getAllByText('details')).toHaveLength(1)
+        fireEvent.click(screen.getByTestId('t-thinking-toggle-done'))
+        expect(screen.getAllByText('details')).toHaveLength(2)
     })
 
     it('fetches a truncated call\'s full output once when it opens within a conversation, and never without one', async () => {

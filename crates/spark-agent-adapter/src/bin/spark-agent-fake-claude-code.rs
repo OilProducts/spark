@@ -783,6 +783,36 @@ fn main() {
         return;
     }
 
+    if mode == "empty-thinking" {
+        // What the CLI streams when it withholds thinking text.
+        for line in [
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "message_start"}}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""}}}),
+            serde_json::json!({"type": "system", "subtype": "thinking_tokens", "session_id": session_id,
+                "estimated_tokens": 50, "estimated_tokens_delta": 50}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50}}}),
+            serde_json::json!({"type": "system", "subtype": "thinking_tokens", "session_id": session_id,
+                "estimated_tokens": 186, "estimated_tokens_delta": 136}),
+            serde_json::json!({"type": "assistant", "session_id": session_id,
+                "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "s"}]}}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_stop", "index": 0}}),
+            serde_json::json!({"type": "assistant", "session_id": session_id,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "All set."}]}}),
+            serde_json::json!({"type": "result", "subtype": "success", "is_error": false,
+                "result": "All set.", "session_id": session_id,
+                "usage": {"input_tokens": 1, "output_tokens": 2}}),
+        ] {
+            emit(&mut out, line);
+        }
+        return;
+    }
+
     if mode == "multi-block" {
         for line in [
             serde_json::json!({"type": "stream_event", "session_id": session_id,

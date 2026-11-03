@@ -683,6 +683,17 @@ impl CodergenEvent {
             payload,
         }
     }
+
+    /// `(active, estimated_tokens)` of a live-only `thinking_progress` turn event.
+    pub fn thinking_state(&self) -> Option<(bool, Option<u64>)> {
+        let event = self.payload.get("turn_stream_event")?;
+        (event["kind"] == "thinking_progress").then(|| {
+            (
+                event["status"] == "active",
+                event["details"]["estimated_tokens"].as_u64(),
+            )
+        })
+    }
 }
 
 /// Live consumer for codergen events as they are produced, so journals and
@@ -1086,7 +1097,10 @@ impl CodergenHandler {
             let attempt_sink = events.sink.clone().map(|sink| {
                 let streamed = std::sync::Arc::clone(&streamed);
                 std::sync::Arc::new(move |event: CodergenEvent| {
-                    streamed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // Live-only events are not in the backend's returned list.
+                    if event.thinking_state().is_none() {
+                        streamed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
                     sink(event);
                 }) as CodergenEventSink
             });

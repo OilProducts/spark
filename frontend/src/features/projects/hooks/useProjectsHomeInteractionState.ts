@@ -107,7 +107,7 @@ export function useProjectsHomeInteractionState({
         updateHomeConversationSession(activeConversationId, {
             expandedThinkingEntries: {
                 ...conversationSession.expandedThinkingEntries,
-                [entryId]: !conversationSession.expandedThinkingEntries[entryId],
+                [entryId]: conversationSession.expandedThinkingEntries[entryId] === false,
             },
         })
     }, [activeConversationId, conversationSession.expandedThinkingEntries, updateHomeConversationSession])

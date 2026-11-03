@@ -1,6 +1,8 @@
 import { act, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { useStore } from '@/store'
+import { visitKey } from '../model/visitModel'
 import { RunStream } from '../RunStream'
 import { WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { useRunJournalStore } from '../state/runJournalStore'
@@ -329,6 +331,14 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
             expect(useRunTranscriptStore.getState().byRunId.a.segments[0]).toMatchObject({ id: 'segment', content: 'message' })
             emit(replacement.onmessage!, events[2])
             expect(loadSelectedRunStatus).toHaveBeenCalledTimes(requests[0] + 1)
+            // Live thinking reaches its node's visit through the same stream, and only there.
+            const thinking = (active: boolean) => ({ type: 'run.thinking', resource: { kind: 'node_execution', id: 'n' },
+                payload: { run_id: 'a', node_id: 'task', stage_index: 2, attempt: 1, active, estimated_tokens: 90 } })
+            const key = visitKey('a', 'task', 2, 1)
+            emit(replacement.onmessage!, thinking(true))
+            expect(useLiveThinkingStore.getState().byKey[key]).toMatchObject({ estimatedTokens: 90 })
+            emit(replacement.onmessage!, thinking(false))
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeUndefined()
         } finally {
             window.removeEventListener('spark:run-segment-upsert', dispatched)
         }

@@ -5307,6 +5307,18 @@ struct LiveConversationTurnState {
 
 impl LiveConversationTurnState {
     fn ingest_event(&mut self, mut event: TurnStreamEvent) -> spark_storage::Result<()> {
+        if let Some((active, estimated_tokens)) = event.thinking_state() {
+            // Live clients only: nothing is recorded for it.
+            let delta = self.transient_event(
+                self.assistant_turn_id.clone(),
+                TransientStreamBody::Thinking {
+                    active,
+                    estimated_tokens,
+                },
+            );
+            (self.progress)(delta);
+            return Ok(());
+        }
         let provenance = self.repository.append_provider_event(
             &self.conversation_id,
             &self.project_path,
@@ -5513,19 +5525,23 @@ impl LiveConversationTurnState {
         let turn_id = match &body {
             TransientStreamBody::TurnDelta { turn } => turn.id.clone(),
             TransientStreamBody::SegmentDelta { segment } => segment.turn_id.clone(),
-            TransientStreamBody::TokenUsage { .. } => self.assistant_turn_id.clone(),
-        };
-        self.stream_sequence += 1;
-        Some(
-            TransientStreamEvent {
-                conversation_id: self.conversation_id.clone(),
-                turn_id,
-                stream_sequence: self.stream_sequence,
-                base_revision: self.base_revision,
-                body,
+            TransientStreamBody::TokenUsage { .. } | TransientStreamBody::Thinking { .. } => {
+                self.assistant_turn_id.clone()
             }
-            .wire_payload(),
-        )
+        };
+        Some(self.transient_event(turn_id, body))
+    }
+
+    fn transient_event(&mut self, turn_id: String, body: TransientStreamBody) -> Value {
+        self.stream_sequence += 1;
+        TransientStreamEvent {
+            conversation_id: self.conversation_id.clone(),
+            turn_id,
+            stream_sequence: self.stream_sequence,
+            base_revision: self.base_revision,
+            body,
+        }
+        .wire_payload()
     }
 
     fn emit_materialized_segment(

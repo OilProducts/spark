@@ -361,6 +361,73 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
 }
 
 #[test]
+fn live_thinking_progress_reaches_clients_as_a_transient_delta_and_is_never_traced() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = ScriptedAgentTurnBackend::with_stream_events(
+        vec![AgentTurnOutput::default()],
+        vec![vec![
+            TurnStreamEvent::thinking_progress(true, Some(50)),
+            TurnStreamEvent::thinking_progress(false, Some(186)),
+        ]],
+    );
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-live-thinking",
+            ConversationTurnRequest {
+                project_path: "/projects/live-thinking".to_string(),
+                message: "Think".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    let assistant_turn_id = prepared.assistant_turn_id.clone();
+    let trace_root = temp.path().to_path_buf();
+    let deltas = Arc::new(Mutex::new(Vec::new()));
+    let seen = deltas.clone();
+    service
+        .complete_started_turn_with_progress_payloads(prepared, move |payload| {
+            if payload["delta_kind"] == "thinking" {
+                seen.lock().unwrap().push(payload);
+                // Nothing wrote it: the trace is pruned only once the turn settles.
+                for entry in walkdir_files(&trace_root) {
+                    if entry.ends_with("provider-trace.jsonl") {
+                        assert!(!fs::read_to_string(&entry)
+                            .unwrap_or_default()
+                            .contains("thinking_progress"));
+                    }
+                }
+            }
+        })
+        .expect("turn completes");
+
+    let deltas = deltas.lock().unwrap();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(deltas[0]["type"], "stream_delta");
+    assert_eq!(deltas[0]["turn_id"], json!(assistant_turn_id));
+    assert_eq!(deltas[0]["active"], true);
+    assert_eq!(deltas[0]["estimated_tokens"], 50);
+    assert_eq!(deltas[1]["active"], false);
+    assert_eq!(deltas[1]["estimated_tokens"], 186);
+}
+
+fn walkdir_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+#[test]
 fn live_provider_event_write_failure_prevents_transcript_commit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

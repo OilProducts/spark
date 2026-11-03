@@ -1,3 +1,5 @@
+import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
+import { visitKey } from '@/features/runs/model/visitModel'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { ModelDefaultsController } from '@/features/settings/ModelDefaultsController'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
@@ -444,6 +446,19 @@ export function WorkspaceLiveEventsController() {
                     window.dispatchEvent(new CustomEvent('spark:run-upsert', {
                         detail: { run: payload.run },
                     }))
+                    return
+                }
+                if (envelope.type === 'run.thinking') {
+                    if (
+                        typeof payload.run_id === 'string' && typeof payload.node_id === 'string'
+                        && typeof payload.stage_index === 'number' && typeof payload.attempt === 'number'
+                    ) {
+                        useLiveThinkingStore.getState().report(
+                            visitKey(payload.run_id, payload.node_id, payload.stage_index, payload.attempt),
+                            payload.active === true,
+                            typeof payload.estimated_tokens === 'number' ? payload.estimated_tokens : null,
+                        )
+                    }
                     return
                 }
                 if (envelope.type === 'conversation.segment_upsert' && envelope.resource?.kind === 'node_execution') {

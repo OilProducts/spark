@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { useState, type ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,7 +7,7 @@ import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { RunRecord } from '../../model/shared'
 import { buildRunContextOverview, runStatusKind } from '../../model/runOverviewModel'
-import type { RunVisit, VisitOutcome } from '../../model/visitModel'
+import { visitKey, type RunVisit, type VisitOutcome } from '../../model/visitModel'
 import { RunContextItem } from '../RunContextItem'
 import { RunStatusItem } from '../RunStatusItem'
 import { RunVisitsCard } from '../RunVisitsCard'
@@ -442,7 +443,7 @@ describe('RunVisitsCard', () => {
     expect(screen.getByTestId('run-visit-ended')).toHaveTextContent('Visit ended · Completed · 7m 43s')
   })
 
-  it('folds a visit transcript into command groups and hides thinking until asked', () => {
+  it('folds a visit transcript into command groups, showing thinking by default and live thinking while it runs', () => {
     const segment = (id: string, order: number, extra: Partial<RunTranscriptSegment>): RunTranscriptSegment => ({
       id, turn_id: 'response', order, kind: 'assistant_message', role: 'assistant', status: 'complete',
       timestamp: '2026-09-29T10:00:00Z', updated_at: '2026-09-29T10:00:00Z', content: '',
@@ -499,13 +500,49 @@ describe('RunVisitsCard', () => {
     expect(within(transcript).getByText('git status --short')).toBeVisible()
     expect(within(transcript).getByText('npm test').closest('button')).toHaveAttribute('title', "/bin/zsh -lc 'npm test'")
     expect(within(transcript).getByText('Failed')).toBeVisible()
+    expect(screen.getByText('Checking the diff')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
+    act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), true, 1200))
+    expect(screen.getByTestId('run-visit-thinking')).toHaveTextContent('~1,200 tokens')
+    act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), false))
+    expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
     expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
     expect(screen.getByText('Checking the diff')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
     // A line still expands to that call's output.
     fireEvent.click(within(transcript).getByText('npm test'))
     expect(within(transcript).getByText('b output')).toBeVisible()
+  })
+
+  it('shows live thinking only while the visit runs', () => {
+    useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), true, 5)
+    render(
+      <SelectingVisitsCard
+        visits={[visit('review', 1, 'completed')]}
+        flowNodes={{}}
+        segments={[]}
+        prompts={[]}
+        journal={[]}
+        now={0}
+        isNarrowViewport={false}
+        isLive={false}
+        transcriptError={null}
+        timelineError={null}
+        onOpenRun={vi.fn()}
+        statusRow={{ label: 'Completed', tone: 'success' }}
+        contextKeyCount={0}
+        renderStatus={() => null}
+        renderContext={() => null}
+        artifactEntries={[]}
+        onViewArtifact={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('run-visit-row'))
+    expect(screen.getByTestId('run-visit-view-outcome')).toBeVisible()
+    expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
+    act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), false))
   })
 
   it('clears a search that hides a key opened from a visit', () => {

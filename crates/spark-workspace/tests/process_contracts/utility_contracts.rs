@@ -674,3 +674,49 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
     assert_eq!(call_count(&calls), 0);
     assert_eq!(stored_run_title(&settings, "child-run"), None);
 }
+
+#[test]
+fn node_thinking_is_published_once_as_a_transient_envelope_for_that_run() {
+    let (_temp, settings) = fixture();
+    let runner = attractor_runtime::RuntimeHandlerRunner::new()
+        .with_run_event_observer(std::sync::Arc::new(|_: &str| {}));
+    let thinking = |active, estimated_tokens| attractor_runtime::events::NodeThinking {
+        node_id: "task".to_string(),
+        stage_index: 2,
+        attempt: 1,
+        active,
+        estimated_tokens,
+    };
+    runner.publish_node_thinking("run-a", thinking(true, Some(10)));
+    runner.publish_node_thinking("run-a", thinking(true, Some(90)));
+
+    let envelopes = spark_workspace::live::node_thinking_envelopes(&settings, "run-a");
+
+    // Between publisher passes only the node's latest state survives.
+    assert_eq!(envelopes.len(), 1);
+    let envelope = &envelopes[0];
+    assert_eq!(envelope.event_type, "run.thinking");
+    assert!(envelope.cursor.is_none(), "never replayed from a cursor");
+    assert_eq!(envelope.payload["run_id"], "run-a");
+    assert_eq!(envelope.payload["node_id"], "task");
+    assert_eq!(envelope.payload["stage_index"], 2);
+    assert_eq!(envelope.payload["attempt"], 1);
+    assert_eq!(envelope.payload["active"], true);
+    assert_eq!(envelope.payload["estimated_tokens"], 90);
+    let query = |run_id: &str| {
+        validate_live_query(RawLiveQuery {
+            run_id: Some(run_id.to_string()),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    assert!(spark_workspace::live::envelope_matches_query(
+        envelope,
+        &query("run-a")
+    ));
+    assert!(!spark_workspace::live::envelope_matches_query(
+        envelope,
+        &query("run-b")
+    ));
+    assert!(spark_workspace::live::node_thinking_envelopes(&settings, "run-a").is_empty());
+}

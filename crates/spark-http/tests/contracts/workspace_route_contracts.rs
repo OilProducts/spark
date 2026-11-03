@@ -2107,9 +2107,10 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         initial.1["preferences"]["effective"]["editor_sidebar_width"],
         288
     );
+    assert_eq!(initial.1["preferences"]["effective"]["show_thinking"], true);
     let payload = json!({"section":"client_preferences", "expected_revision": initial.1["preferences"]["revision"],
         "value":{"client_id":"browser-one", "preferences":{"editor_mode":"files", "editor_sidebar_width":400,
-            "show_advanced_controls":true,"expand_child_flows":true,"graph_settings_open":true,
+            "show_advanced_controls":true,"expand_child_flows":true,"graph_settings_open":true,"show_thinking":false,
             "runs_scope":"all","triggers_scope":"active","home_sidebar_primary_split_ratio":0.6,"appearance":"dark"}}});
     let saved = request_json(
         app.clone(),
@@ -2124,6 +2125,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         ("show_advanced_controls", json!(true)),
         ("expand_child_flows", json!(true)),
         ("graph_settings_open", json!(true)),
+        ("show_thinking", json!(false)),
         ("runs_scope", json!("all")),
         ("triggers_scope", json!("active")),
         ("appearance", json!("dark")),

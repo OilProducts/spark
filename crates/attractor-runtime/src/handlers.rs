@@ -749,6 +749,15 @@ impl RuntimeHandlerRunner {
         }
     }
 
+    /// Hands a node's thinking state to live clients. It is never journaled;
+    /// without an observer nothing would drain it, so it is dropped.
+    pub fn publish_node_thinking(&self, run_id: &str, thinking: crate::events::NodeThinking) {
+        if let Some(observer) = &self.run_event_observer {
+            crate::events::record_node_thinking(run_id, thinking);
+            observer(run_id);
+        }
+    }
+
     pub(crate) fn run_event_observer(&self) -> Option<crate::store::RunEventObserver> {
         self.run_event_observer.clone()
     }
@@ -1212,6 +1221,26 @@ impl RuntimeHandlerRunner {
             let activity = activity.clone();
             let sink_runtime = runtime.clone();
             Arc::new(move |mut event: spark_agent_adapter::CodergenEvent| {
+                if let Some((active, estimated_tokens)) = event.thinking_state() {
+                    let thinking = crate::events::NodeThinking {
+                        node_id: node_id.clone(),
+                        stage_index: sink_runtime.stage_index,
+                        attempt: sink_runtime.attempt,
+                        active,
+                        estimated_tokens,
+                    };
+                    // A container worker has no observer; its host publishes this.
+                    if let Some(sink) = &runner.external_event_sink {
+                        let _ = sink(crate::events::codergen_adapter_event(
+                            &run_id,
+                            &node_id,
+                            crate::events::NODE_THINKING_ADAPTER_EVENT,
+                            json!(thinking),
+                        ));
+                    }
+                    runner.publish_node_thinking(&run_id, thinking);
+                    return;
+                }
                 write_agent_trace_event(trace_path.as_deref(), &event);
                 if let Some(activity) = activity.as_ref() {
                     if let Err(error) = externalize_codergen_tool_output(activity, &mut event) {

@@ -266,7 +266,7 @@ it('renders inline flow launches in the transcript with a link to the run', asyn
     expect(useStore.getState().viewMode).toBe('runs')
 })
 
-it('opens assistant turns with the worked meta, folds commands, hides thinking until asked and keeps notices', async () => {
+it('opens assistant turns with the worked meta, folds commands, shows thinking by default and keeps notices', async () => {
     task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
     const at = (seconds: number) => `2026-09-20T10:00:${String(seconds).padStart(2, '0')}Z`
     const segment = (id: string, order: number, kind: string, extra: Record<string, unknown>) => ({ id, turn_id: 'a1', order, kind, role: 'assistant', status: 'complete', timestamp: at(order), updated_at: at(order), completed_at: at(order), content: '', error: null, tool_call: null, source: null, ...extra })
@@ -294,12 +294,14 @@ it('opens assistant turns with the worked meta, folds commands, hides thinking u
     expect(group).toHaveAttribute('aria-expanded', 'true')
     expect(detail().getByText('git status')).toBeInTheDocument()
     expect(detail().getByTestId('mission-tool-call-toggle-c1')).toHaveAttribute('title', "/bin/zsh -lc 'git status'")
-    // Thinking between the calls stays hidden until asked for.
-    expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
+    // Thinking between the calls shows unless turned off.
     const thinking = detail().getByRole('button', { name: 'Show thinking' })
-    expect(thinking).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(thinking)
     expect(thinking).toHaveAttribute('aria-pressed', 'true')
+    expect(detail().getByText('Planning the fix')).toBeInTheDocument()
+    fireEvent.click(thinking)
+    expect(thinking).toHaveAttribute('aria-pressed', 'false')
+    expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
+    fireEvent.click(thinking)
     expect(detail().getByText('Planning the fix')).toBeInTheDocument()
     // Opening a call with a truncated preview fetches its full output once.
     fireEvent.click(detail().getByTestId('mission-tool-call-toggle-c2'))

@@ -98,7 +98,8 @@ export function useProjectsHomeController() {
     const [requestUserInputActionError, setRequestUserInputActionError] = useState<string | null>(null)
     const [submittingRequestUserInputIds, setSubmittingRequestUserInputIds] = useState<Record<string, boolean>>({})
     // The transcript's "Show thinking" toggle lives in the sheet header, so it stays in view.
-    const [showThinking, setShowThinking] = useState(false)
+    const showThinking = useStore((state) => state.preferredShowThinking)
+    const setShowThinking = useStore((state) => state.setPreferredShowThinking)
     // Settings edits round-trip through the server before the conversation
     // snapshot updates; showing the requested values while the save is in
     // flight keeps the selects consistent (no stale model from the previous

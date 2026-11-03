@@ -19,6 +19,8 @@ pub enum TurnStreamEventKind {
     RequestUserInputRequested,
     ContextCompactionStarted,
     ContextCompactionCompleted,
+    /// Transient: live clients only, never in a turn's recorded events.
+    ThinkingProgress,
     TurnCompleted,
     Error,
     Other(String),
@@ -37,6 +39,7 @@ impl TurnStreamEventKind {
             Self::RequestUserInputRequested => "request_user_input_requested",
             Self::ContextCompactionStarted => "context_compaction_started",
             Self::ContextCompactionCompleted => "context_compaction_completed",
+            Self::ThinkingProgress => "thinking_progress",
             Self::TurnCompleted => "turn_completed",
             Self::Error => "error",
             Self::Other(value) => value.as_str(),
@@ -63,6 +66,7 @@ impl FromStr for TurnStreamEventKind {
             "request_user_input_requested" => Self::RequestUserInputRequested,
             "context_compaction_started" => Self::ContextCompactionStarted,
             "context_compaction_completed" => Self::ContextCompactionCompleted,
+            "thinking_progress" => Self::ThinkingProgress,
             "turn_completed" => Self::TurnCompleted,
             "error" => Self::Error,
             other => Self::Other(other.to_string()),
@@ -208,6 +212,32 @@ impl TurnStreamEvent {
         };
         event.validate()?;
         Ok(event)
+    }
+
+    /// A harness's report that a turn is thinking (`active`) or has stopped,
+    /// with its running token estimate when the harness gives one.
+    pub fn thinking_progress(active: bool, estimated_tokens: Option<u64>) -> Self {
+        let mut event = Self::content_delta(TurnStreamChannel::Reasoning, "");
+        event.kind = TurnStreamEventKind::ThinkingProgress;
+        event.channel = None;
+        event.content_delta = None;
+        event.message = None;
+        event.status = Some(if active { "active" } else { "ended" }.to_string());
+        event.details =
+            estimated_tokens.map(|tokens| serde_json::json!({"estimated_tokens": tokens}));
+        event
+    }
+
+    /// `(active, estimated_tokens)` of a `thinking_progress` event.
+    pub fn thinking_state(&self) -> Option<(bool, Option<u64>)> {
+        (self.kind == TurnStreamEventKind::ThinkingProgress).then(|| {
+            (
+                self.status.as_deref() == Some("active"),
+                self.details
+                    .as_ref()
+                    .and_then(|details| details["estimated_tokens"].as_u64()),
+            )
+        })
     }
 
     pub fn content_delta(channel: TurnStreamChannel, content: impl Into<String>) -> Self {

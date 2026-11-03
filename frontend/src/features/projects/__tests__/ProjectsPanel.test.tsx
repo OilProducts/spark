@@ -1194,7 +1194,7 @@ describe('ProjectsPanel', () => {
     expect(screen.getByText(/README\.md/)).toBeInTheDocument()
   })
 
-  it('renders thinking summaries collapsed to their bold lead-in and expands the details on demand', async () => {
+  it('opens thinking summaries by default and collapses the details on demand', async () => {
     const user = userEvent.setup()
 
     vi.stubGlobal(
@@ -1286,15 +1286,15 @@ describe('ProjectsPanel', () => {
     const showThinking = await screen.findByRole('button', { name: 'Show thinking' })
     expect(showThinking.closest('header')).not.toBeNull()
     expect(screen.getByTestId('project-ai-conversation-body')).not.toContainElement(showThinking)
-    await user.click(showThinking)
+    expect(showThinking).toHaveAttribute('aria-pressed', 'true')
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Considering proposal')
     })
-    expect(screen.queryByText('Looking for the smallest safe change first.')).not.toBeInTheDocument()
+    expect(screen.getByText('Looking for the smallest safe change first.')).toBeInTheDocument()
 
     await user.click(screen.getByTestId('project-thinking-toggle-segment-reasoning-1'))
 
-    expect(screen.getByText('Looking for the smallest safe change first.')).toBeInTheDocument()
+    expect(screen.queryByText('Looking for the smallest safe change first.')).not.toBeInTheDocument()
   })
 
   it('replays stream events that arrive before the initial conversation snapshot', async () => {
@@ -1585,8 +1585,8 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
-    await user.click(await screen.findByRole('button', { name: 'Thinking' }))
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
+    await screen.findByRole('button', { name: 'Thinking', expanded: true })
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the project layout first.')
@@ -2702,8 +2702,8 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
-    await user.click(await screen.findByRole('button', { name: 'Thinking' }))
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
+    await screen.findByRole('button', { name: 'Thinking', expanded: true })
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the repository structure first.')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('I found the main entry points and can summarize them.')
@@ -3061,8 +3061,8 @@ describe('ProjectsPanel', () => {
       ),
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
-    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
+    await screen.findAllByRole('button', { name: 'Thinking', expanded: true })
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       const text = history.textContent ?? ''
@@ -3282,8 +3282,8 @@ describe('ProjectsPanel', () => {
       ),
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
-    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
+    await screen.findAllByRole('button', { name: 'Thinking', expanded: true })
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       const text = history.textContent ?? ''
@@ -3512,8 +3512,8 @@ describe('ProjectsPanel', () => {
       }
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
-    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
+    await screen.findAllByRole('button', { name: 'Thinking', expanded: true })
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       expect(history).toHaveTextContent('Planning from the project context. and I am checking the repository first.')
@@ -3660,7 +3660,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
-    fireEvent.click(await screen.findByRole('button', { name: 'Show thinking' }))
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
     await waitFor(() => {
       expect(history).toHaveTextContent('Reviewing repo')
       expect(history).toHaveTextContent('Considering proposal')
@@ -3782,7 +3782,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
-    fireEvent.click(await screen.findByRole('button', { name: 'Show thinking' }))
+    await screen.findByRole('button', { name: 'Show thinking', pressed: true })
     await waitFor(() => {
       expect(history).toHaveTextContent('Considering proposal')
     })

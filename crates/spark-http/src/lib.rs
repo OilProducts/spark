@@ -352,7 +352,11 @@ pub(crate) struct LiveSubscriber {
 
 impl LiveSubscriber {
     fn push(&self, envelope: LiveEnvelope) {
-        let transient = envelope.event_type == "conversation.stream_delta";
+        let is_transient = |event_type: &str| {
+            event_type == "conversation.stream_delta"
+                || event_type == spark_workspace::live::NODE_THINKING_EVENT_TYPE
+        };
+        let transient = is_transient(&envelope.event_type);
         let bytes = serde_json::to_vec(&envelope).map_or(0, |bytes| bytes.len());
         {
             let mut queue = self
@@ -370,7 +374,7 @@ impl LiveSubscriber {
                 let Some(index) = queue
                     .0
                     .iter()
-                    .position(|(queued, _)| queued.event_type == "conversation.stream_delta")
+                    .position(|(queued, _)| is_transient(&queued.event_type))
                 else {
                     let dropped = queue.0.len() as u64 + 1;
                     queue.0.clear();
@@ -976,6 +980,9 @@ fn publish_live_run_after_incremental_with(
         live_hub.publish(envelope.clone());
     }
     live_hub.publish_execution_transcripts(settings, run_id);
+    for envelope in spark_workspace::live::node_thinking_envelopes(settings, run_id) {
+        live_hub.publish(envelope);
+    }
     *usage = full_run_usage_accumulator(settings, run_id).ok();
     let breakdown = usage.as_ref().and_then(|usage| usage.breakdown());
     if let Ok(Some(envelope)) = run_upsert_envelope_with_usage(settings, run_id, breakdown.as_ref())
@@ -1181,22 +1188,24 @@ mod live_queue_tests {
     /// drops an incoming token frame rather than overflowing.
     #[test]
     fn transient_frames_are_dropped_first() {
-        let (_temp, hub) = hub();
-        let subscriber = hub.subscribe();
-        for _ in 0..SUBSCRIBER_QUEUE_ENVELOPES {
-            hub.publish(envelope("conversation.stream_delta"));
-        }
-        hub.publish(envelope("conversation.stream_delta"));
-        hub.publish(envelope("run.upsert"));
-        let mut types = Vec::new();
-        while let Some(item) = subscriber.try_recv() {
-            match item {
-                Received::Envelope(envelope) => types.push(envelope.event_type),
-                other => panic!("unexpected {other:?}"),
+        for transient in ["conversation.stream_delta", "run.thinking"] {
+            let (_temp, hub) = hub();
+            let subscriber = hub.subscribe();
+            for _ in 0..SUBSCRIBER_QUEUE_ENVELOPES {
+                hub.publish(envelope(transient));
             }
+            hub.publish(envelope(transient));
+            hub.publish(envelope("run.upsert"));
+            let mut types = Vec::new();
+            while let Some(item) = subscriber.try_recv() {
+                match item {
+                    Received::Envelope(envelope) => types.push(envelope.event_type),
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            assert_eq!(types.len(), SUBSCRIBER_QUEUE_ENVELOPES);
+            assert_eq!(types.last().map(String::as_str), Some("run.upsert"));
         }
-        assert_eq!(types.len(), SUBSCRIBER_QUEUE_ENVELOPES);
-        assert_eq!(types.last().map(String::as_str), Some("run.upsert"));
     }
 
     /// Commit wakeups are out of band: they coalesce, survive a full queue,
