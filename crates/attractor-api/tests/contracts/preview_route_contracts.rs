@@ -394,3 +394,25 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[test]
+fn preview_route_rejects_duplicate_decision_keys_in_raw_json() {
+    // Raw request text: building it with json! would drop the duplicate.
+    let body = r#"{"flow":{"schema_version":"2","id":"dup","nodes":{
+      "start":{"kind":"start","routes":{"next":{"to":"work","description":"Enter."}}},
+      "work":{"kind":"agent_task","contracts":{"response":"decision_envelope"},
+        "routes":{"done":{"to":"failed","description":"First."},"done":{"to":"done","description":"Second."}}},
+      "done":{"kind":"exit","config":{"kind":"exit","result":{"name":"completed","outcome":"success"}}},
+      "failed":{"kind":"exit","config":{"kind":"exit","result":{"name":"blocked","outcome":"failure"}}}}}}"#;
+    let response =
+        handle_preview_request("POST", "/preview", body, &PreviewServiceConfig::default());
+    assert_eq!(response.status_code, 400, "{}", response.body);
+    assert!(
+        response.body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate key \"done\""),
+        "{}",
+        response.body
+    );
+}

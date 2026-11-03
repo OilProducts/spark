@@ -1,5 +1,5 @@
 import { useStore } from '@/store'
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
@@ -13,6 +13,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { DEFAULT_EXIT_RESULT } from '@/lib/canonicalFlowModel'
 import { formatDecisionMap, parseDecisionMap } from '@/lib/flowContracts'
+import { setInvalidDraft } from '@/lib/flowPersistence'
 import type { NodePropertyValue } from '../Sidebar'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 import { ContextKeyListEditor } from './ContextKeyListEditor'
@@ -644,7 +645,8 @@ export function NodeInspectorPanel({
 }
 
 // Edits a `key = decision` map as text. The draft is local so a line being
-// typed is not lost; only complete lines reach the node config.
+// typed is not lost; the node config changes only while the whole draft is
+// valid, and an invalid draft blocks saving until it is fixed.
 function DecisionMapEditor({
     label,
     help,
@@ -658,21 +660,34 @@ function DecisionMapEditor({
 }) {
     const id = useId()
     const [draft, setDraft] = useState(() => formatDecisionMap(value))
+    const errors = parseDecisionMap(draft).errors
+    const error = errors.length > 0 ? `${label}: ${errors.join(' ')}` : null
+    useEffect(() => {
+        setInvalidDraft(id, error)
+        return () => setInvalidDraft(id, null)
+    }, [id, error])
     return (
         <div className="space-y-1.5">
             <Label htmlFor={`${id}-map`}>{label}</Label>
             <Textarea
                 id={`${id}-map`}
-                aria-describedby={`${id}-help`}
+                aria-describedby={error ? `${id}-help ${id}-error` : `${id}-help`}
+                aria-invalid={error ? true : undefined}
                 value={draft}
                 onChange={(event) => {
                     setDraft(event.target.value)
-                    onChange(parseDecisionMap(event.target.value))
+                    const parsed = parseDecisionMap(event.target.value)
+                    if (parsed.errors.length === 0) onChange(parsed.map)
                 }}
                 rows={3}
                 className="font-mono text-sm"
             />
             <p id={`${id}-help`} className="text-xs text-muted-foreground">{help}</p>
+            {error ? (
+                <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
+                    {errors.join(' ')} Not saved until fixed.
+                </p>
+            ) : null}
         </div>
     )
 }

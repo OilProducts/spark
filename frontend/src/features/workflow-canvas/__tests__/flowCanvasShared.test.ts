@@ -1033,7 +1033,14 @@ describe('schema-2 routes and fork structure', () => {
 
         const text = formatDecisionMap(switchFlow.nodes.route.config.cases)
         expect(text).toBe('0 = zero\n"0" = text_zero\ntrue = zero')
-        expect(parseDecisionMap(`${text}\n"a=b" = other\nincomplete`)).toEqual({ ...switchFlow.nodes.route.config.cases, '"a=b"': 'other' })
+        expect(parseDecisionMap(`${text}\n"a=b" = other\n\n`)).toEqual({
+            map: { ...switchFlow.nodes.route.config.cases, '"a=b"': 'other' },
+            errors: [],
+        })
+        // Incomplete or repeated lines are errors, never a silently reduced map.
+        expect(parseDecisionMap('0 = clean\n0 = conflicts').errors).toEqual(['Line 2 repeats key 0.'])
+        expect(parseDecisionMap('0 = clean\n"ready" =').errors).toEqual(['Line 2 needs `key = decision`.'])
+        expect(parseDecisionMap('incomplete').errors).toEqual(['Line 1 needs `key = decision`.'])
     })
 
     it('derives fork branch and join edges and saves them as the fork config, never as routes', () => {

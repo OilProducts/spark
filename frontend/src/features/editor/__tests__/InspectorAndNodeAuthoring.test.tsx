@@ -10,6 +10,8 @@ import { NodeInspectorPanel } from '@/features/editor/components/NodeInspectorPa
 import { applyNodePropertyChangeToData } from '@/features/editor/Sidebar'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { resetFlowSaveBaselines, saveFlowContent } from '@/lib/flowPersistence'
+import { useStore } from '@/store'
 
 vi.mock('@/components/model-chooser/useModelOptions', () => ({
     useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'openai', id: 'gpt-5.5', display: 'gpt-5.5', is_default: false, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'available', error: null } } } }),
@@ -144,6 +146,49 @@ describe('Inspector and node authoring behavior', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Child Results' }), { target: { value: 'completed = child_completed\nblocked = child_blocked' } })
     expect(subflowProps.onPropertyChange).toHaveBeenLastCalledWith('config.results', { completed: 'child_completed', blocked: 'child_blocked' })
     expectLabelsAndReferences()
+  })
+
+  it('keeps invalid map drafts out of the node config and blocks saving until fixed', async () => {
+    const cases = [
+      // Each reduced map would itself pass backend validation.
+      ['switch', { kind: 'switch', on: 'context.count', cases: { '0': 'clean' }, otherwise: 'conflicts' }, 'Cases', '0 = clean\n0 = conflicts'],
+      ['switch', { kind: 'switch', on: 'context.count', cases: { '0': 'clean' }, otherwise: 'conflicts' }, 'Cases', '0 = clean\n"ready" ='],
+      ['tool', { kind: 'tool', command: 'make', exit_codes: { '0': 'passed', '1': 'rejected' } }, 'Exit Codes', '0 = passed\n0 = rejected'],
+      ['subflow', { kind: 'subflow', flow_ref: 'child', results: { completed: 'done' } }, 'Child Results', 'completed = done\nblocked'],
+    ] as const
+    for (const [kind, config, label, text] of cases) {
+      const props = panelProps(kind, { config })
+      render(<NodeInspectorPanel {...props} />)
+      const field = screen.getByRole('textbox', { name: label })
+      fireEvent.change(field, { target: { value: text } })
+      expect(props.onPropertyChange).not.toHaveBeenCalledWith(`config.${label === 'Cases' ? 'cases' : label === 'Exit Codes' ? 'exit_codes' : 'results'}`, expect.anything())
+      expect(field).toHaveAttribute('aria-invalid', 'true')
+      const alert = screen.getByRole('alert')
+      expect(field.getAttribute('aria-describedby')).toContain(alert.id)
+
+      // Saving is refused while the draft is invalid; no request is sent.
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      resetFlowSaveBaselines()
+      expect(await saveFlowContent('demo', { flow: { schema_version: '2', id: 'demo', nodes: {} } })).toBe(false)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(useStore.getState().saveErrorMessage).toContain(label)
+
+      // Fixing the draft applies it and unblocks saving.
+      fireEvent.change(field, { target: { value: text.split('\n')[0] } })
+      expect(screen.queryByRole('alert')).toBeNull()
+      cleanup()
+      vi.unstubAllGlobals()
+    }
+    // Once the invalid drafts are gone, saving proceeds.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: 'saved' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    resetFlowSaveBaselines()
+    expect(await saveFlowContent('demo', { flow: { schema_version: '2', id: 'demo', nodes: {} } })).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
   })
 
   it('writes config fields into the typed config and resets it when the kind changes', () => {

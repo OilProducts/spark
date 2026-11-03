@@ -331,14 +331,23 @@ export function formatDecisionMap(map: unknown): string {
 }
 
 // Decisions never contain `=`, so the last `=` separates key from decision.
-export function parseDecisionMap(text: string): Record<string, string> {
-    const map: Record<string, string> = {}
-    text.split('\n').forEach((line) => {
+// A nonblank line without both parts, or a key given twice, is an error: the
+// map is never silently reduced.
+export function parseDecisionMap(text: string): { map: Record<string, string>; errors: string[] } {
+    const map = new Map<string, string>()
+    const errors: string[] = []
+    text.split('\n').forEach((line, index) => {
+        if (!line.trim()) return
         const separator = line.lastIndexOf('=')
-        if (separator < 0) return
-        const key = line.slice(0, separator).trim()
-        const decision = line.slice(separator + 1).trim()
-        if (key && decision) map[key] = decision
+        const key = separator < 0 ? '' : line.slice(0, separator).trim()
+        const decision = separator < 0 ? '' : line.slice(separator + 1).trim()
+        if (!key || !decision) {
+            errors.push(`Line ${index + 1} needs \`key = decision\`.`)
+        } else if (map.has(key)) {
+            errors.push(`Line ${index + 1} repeats key ${key}.`)
+        } else {
+            map.set(key, decision)
+        }
     })
-    return map
+    return { map: Object.fromEntries(map), errors }
 }

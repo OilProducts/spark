@@ -66,6 +66,18 @@ export async function waitForFlowSaves(): Promise<void> {
     await Promise.all([...inFlightSaves])
 }
 
+// Editor fields whose text cannot be applied yet; saving waits for them.
+const invalidDrafts = new Map<string, string>()
+
+/** Records (or with `null`, clears) an editor draft that must block saving. */
+export function setInvalidDraft(id: string, message: string | null) {
+    if (message) {
+        invalidDrafts.set(id, message)
+    } else {
+        invalidDrafts.delete(id)
+    }
+}
+
 export function saveFlowContent(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): Promise<boolean> {
     const save = persistFlowContent(name, content, projectPath)
     inFlightSaves.add(save)
@@ -84,6 +96,11 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
         return true
     }
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
+    const draftErrors = [...invalidDrafts.values()]
+    if (draftErrors.length > 0) {
+        markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
+        return false
+    }
     const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
     if (duplicates.length > 0) {
         markSaveFailure(

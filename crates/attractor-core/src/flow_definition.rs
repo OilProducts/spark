@@ -33,7 +33,7 @@ pub struct FlowDefinition {
     pub inputs: Vec<FlowInput>,
     #[serde(default, skip_serializing_if = "FlowDefaults::is_empty")]
     pub defaults: FlowDefaults,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "unique_keys")]
     pub nodes: BTreeMap<String, FlowNode>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: FlowMetadata,
@@ -178,7 +178,11 @@ pub struct FlowNode {
     pub extensions: BTreeMap<String, Value>,
     /// The node's complete decision vocabulary: each decision ID and the
     /// one route it selects. Edges are derived from this map.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "unique_keys"
+    )]
     pub routes: BTreeMap<String, FlowRoute>,
 }
 
@@ -247,7 +251,7 @@ pub enum NodeConfig {
     /// scalar case keys (`"0"` is number 0, `'"0"'` is string "0").
     Switch {
         on: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "unique_keys")]
         cases: BTreeMap<String, String>,
         otherwise: String,
     },
@@ -271,7 +275,11 @@ pub enum NodeConfig {
         output_map: BTreeMap<String, String>,
         /// Exit-code adapter: each listed code (a decimal integer key)
         /// selects a declared decision.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "BTreeMap::is_empty",
+            deserialize_with = "unique_keys"
+        )]
         exit_codes: BTreeMap<String, String>,
         /// JSON adapter: the named top-level field of the tool's single JSON
         /// stdout object is the decision.
@@ -287,7 +295,7 @@ pub enum NodeConfig {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         output_map: BTreeMap<String, String>,
         /// Child terminal result name -> local decision.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "unique_keys")]
         results: BTreeMap<String, String>,
     },
 }
@@ -2041,6 +2049,39 @@ fn valid_flow_ref(value: &str) -> bool {
         // A flow_ref names a flow directory; YAML flow files are retired.
         !(value.ends_with(".yaml") || value.ends_with(".yml"))
     })
+}
+
+/// A map whose keys must be unique: a duplicate key is a parse error,
+/// reported before insertion could drop either entry.
+fn unique_keys<'de, D, V>(deserializer: D) -> Result<BTreeMap<String, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    struct UniqueKeys<V>(std::marker::PhantomData<V>);
+    impl<'de, V: Deserialize<'de>> serde::de::Visitor<'de> for UniqueKeys<V> {
+        type Value = BTreeMap<String, V>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map with unique keys")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut values = BTreeMap::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if values.contains_key(&key) {
+                    return Err(serde::de::Error::custom(format!("duplicate key {key:?}")));
+                }
+                let value = map.next_value()?;
+                values.insert(key, value);
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_map(UniqueKeys(std::marker::PhantomData))
 }
 
 fn default_input_type() -> String {

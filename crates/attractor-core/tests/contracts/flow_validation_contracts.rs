@@ -542,3 +542,41 @@ fn a_success_exit_is_never_a_branch_entry() {
         "{found:?}"
     );
 }
+
+/// Raw JSON text: `json!` and `Value` would drop the duplicate before parsing.
+const DUPLICATE_ROUTES_JSON: &str = r#"{"schema_version":"2","id":"dup","nodes":{
+  "start":{"kind":"start","routes":{"next":{"to":"work","description":"Enter."}}},
+  "work":{"kind":"agent_task","contracts":{"response":"decision_envelope"},
+    "routes":{"done":{"to":"failed","description":"First."},"done":{"to":"done","description":"Second."}}},
+  "done":{"kind":"exit","config":{"kind":"exit","result":{"name":"completed","outcome":"success"}}},
+  "failed":{"kind":"exit","config":{"kind":"exit","result":{"name":"blocked","outcome":"failure"}}}}}"#;
+
+#[test]
+fn canonical_json_rejects_duplicate_keys_before_insertion() {
+    let error = FlowDefinition::from_json_str(DUPLICATE_ROUTES_JSON).unwrap_err();
+    assert!(
+        error.detail.contains("duplicate key \"done\""),
+        "{}",
+        error.detail
+    );
+    assert!(serde_json::from_str::<FlowDefinition>(DUPLICATE_ROUTES_JSON).is_err());
+
+    for raw in [
+        // Switch cases, tool exit codes, subflow results and node IDs.
+        r#"{"kind":"switch","on":"context.x","cases":{"0":"a","0":"b"},"otherwise":"a"}"#,
+        r#"{"kind":"tool","command":"true","exit_codes":{"0":"a","0":"b"}}"#,
+        r#"{"kind":"subflow","flow_ref":"child","results":{"completed":"a","completed":"b"}}"#,
+    ] {
+        let error = serde_json::from_str::<attractor_core::NodeConfig>(raw).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate key"),
+            "{raw}: {error}"
+        );
+    }
+    let nodes =
+        r#"{"schema_version":"2","id":"dup","nodes":{"a":{"kind":"start"},"a":{"kind":"start"}}}"#;
+    assert!(serde_json::from_str::<FlowDefinition>(nodes)
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate key \"a\""));
+}
