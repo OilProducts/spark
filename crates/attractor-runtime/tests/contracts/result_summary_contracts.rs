@@ -218,7 +218,11 @@ fn opted_in_exit_summarizes_failed_run_and_preserves_failure_reason() {
     assert_eq!(result.state, "ready");
     assert_eq!(result.display_mode.as_deref(), Some("summary"));
     assert_eq!(result.body_markdown.trim(), CANNED_SUMMARY);
-    assert_eq!(result.error.as_deref(), Some("boom-reason"));
+    // The failure keeps its own reason ahead of the unmatched-route details.
+    assert!(result
+        .error
+        .as_deref()
+        .is_some_and(|error| error.starts_with("boom-reason; no_matching_route")));
 }
 
 #[test]

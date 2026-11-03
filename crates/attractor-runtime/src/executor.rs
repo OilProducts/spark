@@ -30,9 +30,10 @@ use crate::retry::{
     should_retry_attempt,
 };
 use crate::routing::{
-    first_target_with_visits_left, is_conditional_node, is_exit_node, mark_unavailable_routes,
-    max_visits, outgoing_routing_edges, resolve_start_node, select_exhausted_route_with_prior,
-    select_next_node_with_prior, NextNodeSelection, VISIT_LIMIT_REACHED,
+    first_target_with_visits_left, is_conditional_node, is_exit_node, is_unmatched_route_failure,
+    mark_unavailable_routes, max_visits, outgoing_routing_edges, resolve_start_node,
+    select_exhausted_route_with_prior, select_next_node_with_prior, stage_failure_reason,
+    unmatched_route_reason, NextNodeSelection, VISIT_LIMIT_REACHED,
 };
 use crate::store::{CreateRunRequest, RunStore};
 use crate::terminal::{
@@ -365,26 +366,33 @@ where
                         &visit_counts,
                     )?;
                     let Some(next_node) = selection.selected_node.clone() else {
-                        if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
-                            return finalize_failed(
-                                &store,
-                                &paths,
-                                &run_id,
-                                &mut record,
-                                &mut self.node_executor,
-                                &flow,
-                                &current_node,
-                                &completed_nodes,
-                                &context,
-                                &retry_counts,
-                                &visit_counts,
-                                &node_outcomes,
-                                &route_trace,
-                                selection.reason,
-                                0,
-                            );
-                        }
-                        return terminal_checkpoint_result(&checkpoint, &flow);
+                        // The stored completed visit fails the run without
+                        // executing the node again.
+                        let reason = unmatched_route_reason(
+                            &flow,
+                            &current_node,
+                            &resume_outcome,
+                            None,
+                            "",
+                            &selection,
+                        )?;
+                        return finalize_failed(
+                            &store,
+                            &paths,
+                            &run_id,
+                            &mut record,
+                            &mut self.node_executor,
+                            &flow,
+                            &current_node,
+                            &completed_nodes,
+                            &context,
+                            &retry_counts,
+                            &visit_counts,
+                            &node_outcomes,
+                            &route_trace,
+                            reason,
+                            0,
+                        );
                     };
                     current_node = next_node;
                     record_visit(&mut visit_counts, &current_node);
@@ -856,9 +864,10 @@ where
                 continue;
             }
 
-            // An exhausted runtime failure stops the run before partial
-            // acceptance, completion, or any outcome=fail route.
-            if is_runtime_failure(&outcome) {
+            // An exhausted runtime failure, or a branch without a route,
+            // stops the run before partial acceptance, completion, or any
+            // outcome=fail route.
+            if is_runtime_failure(&outcome) || is_unmatched_route_failure(&outcome) {
                 clear_runtime_retry_context(&mut context)?;
                 let reason = stage_failure_reason(&outcome);
                 store.append_event(
@@ -1006,44 +1015,18 @@ where
                 &prior_preferred_label,
                 &visit_counts,
             )?;
-            let Some(next_node) = selection.selected_node else {
-                // An exhausted target with no other route fails whatever the outcome.
-                let visit_limited = selection.reason.starts_with(VISIT_LIMIT_REACHED);
-                if outcome.status == OutcomeStatus::Fail || visit_limited {
-                    let reason = if visit_limited {
-                        selection.reason
-                    } else {
-                        stage_failure_reason(&outcome)
-                    };
-                    save_checkpoint_event(
-                        &store,
-                        &paths,
-                        &run_id,
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &retry_counts,
-                        &visit_counts,
-                    )?;
-                    return finalize_failed(
-                        &store,
-                        &paths,
-                        &run_id,
-                        &mut record,
-                        &mut self.node_executor,
-                        &flow,
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &retry_counts,
-                        &visit_counts,
-                        &node_outcomes,
-                        &route_trace,
-                        reason,
-                        artifact_node_ids.len(),
-                    );
-                }
-                return finalize_completed(
+            let Some(next_node) = selection.selected_node.clone() else {
+                // Only an exit ends a run successfully; a non-exit node
+                // without a route fails it, whatever its outcome.
+                let reason = unmatched_route_reason(
+                    &flow,
+                    &current_node,
+                    &outcome,
+                    prior_status,
+                    &prior_preferred_label,
+                    &selection,
+                )?;
+                return finalize_failed(
                     &store,
                     &paths,
                     &run_id,
@@ -1057,9 +1040,7 @@ where
                     &visit_counts,
                     &node_outcomes,
                     &route_trace,
-                    "success",
-                    None,
-                    None,
+                    reason,
                     artifact_node_ids.len(),
                 );
             };
@@ -1348,51 +1329,6 @@ fn resume_outcome_for_node(node_id: &str, context: &AttractorContext) -> Outcome
             .to_string(),
         ..Outcome::new(status)
     }
-}
-
-fn terminal_checkpoint_result(
-    checkpoint: &CheckpointState,
-    flow: &FlowDefinition,
-) -> Result<PipelineExecutionResult> {
-    let completed_nodes = checkpoint
-        .completed_nodes
-        .iter()
-        .filter(|node_id| flow.nodes.contains_key(node_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let outcome = checkpoint
-        .context
-        .get(OUTCOME_KEY)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let status = if outcome.as_deref() == Some("fail") {
-        "failed"
-    } else {
-        "completed"
-    };
-    Ok(PipelineExecutionResult {
-        status: status.to_string(),
-        current_node: checkpoint.current_node.clone(),
-        completed_nodes,
-        context: checkpoint.context.clone(),
-        node_outcomes: BTreeMap::new(),
-        route_trace: vec![checkpoint.current_node.clone()],
-        failure_reason: if status == "failed" {
-            checkpoint
-                .context
-                .get("failure_reason")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            String::new()
-        },
-        outcome,
-        outcome_reason_code: None,
-        outcome_reason_message: None,
-    })
 }
 
 fn ensure_run_record_defaults(record: &mut RunRecord) -> String {
@@ -2044,13 +1980,4 @@ fn finalize_canceled(
         outcome_reason_code: None,
         outcome_reason_message: None,
     })
-}
-
-fn stage_failure_reason(outcome: &Outcome) -> String {
-    let reason = outcome.failure_reason.trim();
-    if reason.is_empty() {
-        "stage_failed".to_string()
-    } else {
-        reason.to_string()
-    }
 }
