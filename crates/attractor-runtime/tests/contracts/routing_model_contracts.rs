@@ -1382,6 +1382,12 @@ fn an_independent_fatal_sibling_error_after_blocked_fails_the_owner() {
                 Outcome::error(FailureKind::Contract, "bad envelope", Some(false)),
                 "contract",
             ),
+            // A runtime failure the cancellation did not cause is the
+            // branch's own error, not a cancellation.
+            (
+                Outcome::error(FailureKind::Runtime, "provider crashed", Some(false)),
+                "runtime",
+            ),
         ] {
             let run = execute(fork_flow(tolerate), after_cancellation(error.clone()), None);
             let results = fork_results(&run);
@@ -1404,21 +1410,6 @@ fn an_independent_fatal_sibling_error_after_blocked_fails_the_owner() {
             }
         }
     }
-    // A runtime error after cancellation is the cancellation interrupting
-    // the node: canceled, with the interruption kept as evidence.
-    let run = execute(
-        fork_flow(false),
-        after_cancellation(Outcome::error(
-            FailureKind::Runtime,
-            "turn aborted",
-            Some(true),
-        )),
-        None,
-    );
-    assert_eq!(run.result.status, "completed");
-    let results = fork_results(&run);
-    assert_eq!(results[1]["status"], json!("canceled"));
-    assert_eq!(results[1]["interruption"], json!("turn aborted"));
 }
 
 const INTERRUPT_CHILD_ENV: &str = "SPARK_BRANCH_INTERRUPT_CHILD_DIR";
@@ -1591,4 +1582,122 @@ fn an_interrupted_pause_node_in_a_branch_requires_a_recovery_decision() {
             attractor_runtime::fork_branch_requiring_recovery_decision(&paths, &flow, "fork", 1, 0);
         assert_eq!(pending.as_deref(), pause.then_some("t1"), "pause={pause}");
     }
+}
+
+/// Branches `t1` and `t2` are tools running `commands`; both join.
+fn tool_fork_flow(first: &str, second: &str) -> FlowDefinition {
+    let tool = |command: &str| {
+        json!({"kind": "tool", "config": {"kind": "tool", "command": command, "exit_codes": {"0": "done"}},
+            "routes": {"done": route("join")}})
+    };
+    parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["t1", "t2"], "join": "join"}},
+        "t1": tool(first),
+        "t2": tool(second),
+        "join": {"kind": "fan_in", "routes": {"next": route("synth")}},
+        "synth": agent(json!({"done": route("done")})),
+        "done": exit("completed", "success"),
+    }))
+}
+
+#[test]
+fn branch_tools_drain_output_beyond_pipe_capacity_without_a_timeout() {
+    let chatty =
+        "head -c 1048576 /dev/zero | tr '\\000' a; head -c 1048576 /dev/zero | tr '\\000' b >&2";
+    let (runner, calls) = scripted_runner(script(&[("synth", vec![completed("done")])]), false);
+    let run = execute(tool_fork_flow(chatty, chatty), runner, None);
+    assert_eq!(
+        run.result.status,
+        "completed",
+        "{}",
+        run.record().last_error
+    );
+    assert_eq!(count(&calls, "synth"), 1);
+    assert!(fork_results(&run)
+        .iter()
+        .all(|record| record["status"] == "completed"));
+}
+
+#[test]
+fn external_cancellation_stops_branch_tools_that_never_return_on_their_own() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let canceler = store.clone();
+    // Cancel once both branches are inside their tools.
+    std::thread::spawn(move || {
+        let paths = loop {
+            if let Some(paths) = canceler.find_run_root("run-contract").ok().flatten() {
+                let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+                if (0..2).all(|index| branches.join(format!("{index}.progress.json")).exists()) {
+                    break paths;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut record = attractor_runtime::read_run_record(&paths).unwrap().unwrap();
+        attractor_runtime::mark_record_cancel_requested(&mut record);
+        attractor_runtime::write_run_record(&paths, &record).unwrap();
+    });
+    let control_store = store.clone();
+    let (runner, calls) = scripted_runner(script(&[("synth", vec![completed("done")])]), false);
+    let started = std::time::Instant::now();
+    let result = PipelineExecutor::with_control(runner, move || {
+        let paths = control_store.find_run_root("run-contract").ok().flatten()?;
+        let record = control_store.read_run_record(&paths).ok().flatten()?;
+        (record.status == "cancel_requested")
+            .then_some(attractor_runtime::ExecutionControlAction::Cancel)
+    })
+    .execute(ExecuteRunRequest {
+        store: store.clone(),
+        record: RunRecord::new("run-contract", temp.path().to_string_lossy()),
+        flow: tool_fork_flow("sleep 60", "sleep 60"),
+        flow_definition_json: None,
+        launch_context: LaunchContext::empty(),
+        runtime_context: ContextMap::new(),
+        max_steps: None,
+        start: Default::default(),
+    })
+    .unwrap();
+    assert_eq!(result.status, "canceled");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert_eq!(count(&calls, "synth"), 0);
+    let paths = store.find_run_root("run-contract").unwrap().unwrap();
+    let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+    for index in 0..2 {
+        let record: Value = serde_json::from_str(
+            &std::fs::read_to_string(branches.join(format!("{index}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["status"], json!("canceled"), "{record}");
+        assert_eq!(
+            record["interruption"],
+            json!("tool command stopped by cancellation")
+        );
+    }
+}
+
+#[test]
+fn a_tool_interrupted_by_its_fork_is_canceled_not_failed() {
+    // t1 blocks immediately; t2's running tool is stopped by the fork's
+    // cancellation and recorded as canceled with that evidence.
+    let mut flow = tool_fork_flow("true", "sleep 60");
+    flow.nodes.get_mut("t1").unwrap().routes =
+        serde_json::from_value(json!({"done": route("failed")})).unwrap();
+    flow.nodes.insert(
+        "failed".to_string(),
+        serde_json::from_value(exit("blocked", "failure")).unwrap(),
+    );
+    let (runner, _calls) = scripted_runner(script(&[]), false);
+    let run = execute(flow, runner, None);
+    assert_eq!(run.result.status, "completed");
+    assert_eq!(run.record().outcome_reason_code.as_deref(), Some("blocked"));
+    let results = fork_results(&run);
+    assert_eq!(results[0]["status"], json!("terminal_result"));
+    assert_eq!(results[1]["status"], json!("canceled"));
+    assert_eq!(
+        results[1]["interruption"],
+        json!("tool command stopped by cancellation")
+    );
 }

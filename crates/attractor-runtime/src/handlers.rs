@@ -337,6 +337,10 @@ pub struct HandlerRuntime {
     /// Set by the owning fork when this node runs in a branch: raised when
     /// the fork stops its remaining branches.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Raised when this invocation was actually interrupted by its fork's
+    /// cancellation or the run's, so its error is the cancellation and not
+    /// an execution error of its own.
+    pub interrupted: Arc<AtomicBool>,
 }
 
 impl HandlerRuntime {
@@ -370,6 +374,7 @@ impl HandlerRuntime {
             fallback_profile: request.fallback_profile,
             fallback_reasoning_effort: request.fallback_reasoning_effort,
             cancel: None,
+            interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -377,6 +382,20 @@ impl HandlerRuntime {
         self.cancel
             .as_ref()
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+    }
+
+    /// Whether the owning fork or the user canceled this invocation; a
+    /// positive answer marks the invocation interrupted.
+    fn stop_requested(&self) -> bool {
+        let stop = self.canceled_by_owner()
+            || self
+                .run_paths
+                .as_ref()
+                .is_some_and(|paths| run_record_cancel_requested(paths));
+        if stop {
+            self.interrupted.store(true, Ordering::SeqCst);
+        }
+        stop
     }
 }
 
@@ -1112,25 +1131,8 @@ impl RuntimeHandlerRunner {
                             mode.trim().to_ascii_lowercase().replace('-', "_") == "text_only"
                         });
                     if runtime.run_paths.is_some() || runtime.cancel.is_some() {
-                        let paths = runtime.run_paths.clone();
-                        let owner = runtime.cancel.clone();
-                        backend.set_cancel_check(Arc::new(move || {
-                            owner.as_ref().is_some_and(|cancel| cancel.load(Ordering::SeqCst))
-                                || paths.as_ref().is_some_and(|paths| {
-                                    crate::records::read_run_record(paths)
-                                        .ok()
-                                        .flatten()
-                                        .is_some_and(|record| {
-                                            matches!(
-                                                crate::records::normalize_run_status(
-                                                    &record.status
-                                                )
-                                                .as_str(),
-                                                "cancel_requested" | "canceled"
-                                            )
-                                        })
-                                })
-                        }));
+                        let check_runtime = runtime.clone();
+                        backend.set_cancel_check(Arc::new(move || check_runtime.stop_requested()));
                     }
                     if runtime.run_paths.is_some() && !text_only {
                         let runner = self.clone();
@@ -1388,13 +1390,30 @@ impl RuntimeHandlerRunner {
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
+        // Branch tools stop when their fork or the user cancels; the run
+        // record is read at most every 250 ms.
+        let mut last_check = Instant::now();
+        let mut stop_check = || {
+            if runtime.canceled_by_owner() {
+                runtime.interrupted.store(true, Ordering::SeqCst);
+                return true;
+            }
+            if last_check.elapsed() < Duration::from_millis(250) {
+                return false;
+            }
+            last_check = Instant::now();
+            runtime.stop_requested()
+        };
         let spawned = run_shell_command(
             &command,
             &cwd,
             timeout,
             tool_env,
             None,
-            runtime.cancel.clone(),
+            runtime
+                .cancel
+                .is_some()
+                .then_some(&mut stop_check as &mut dyn FnMut() -> bool),
         );
         let command_output = match spawned {
             Ok(output) => output,
@@ -1412,7 +1431,16 @@ impl RuntimeHandlerRunner {
         };
         write_tool_output_if_available(&runtime, &command_output.stdout)?;
 
-        let mut outcome = if command_output.timed_out {
+        let mut outcome = if command_output.interrupted {
+            Outcome {
+                context_updates: tool_context_updates(command_output.stdout.trim(), -1),
+                ..Outcome::error(
+                    FailureKind::Runtime,
+                    "tool command stopped by cancellation",
+                    Some(false),
+                )
+            }
+        } else if command_output.timed_out {
             Outcome {
                 context_updates: tool_context_updates(command_output.stdout.trim(), -1),
                 ..Outcome::error(
@@ -1707,6 +1735,7 @@ impl RuntimeHandlerRunner {
                 return Ok(HumanGateWaitResult::Answered(choice, note));
             }
             if runtime.canceled_by_owner() {
+                runtime.interrupted.store(true, Ordering::SeqCst);
                 return Ok(HumanGateWaitResult::Interrupted(Outcome::error(
                     FailureKind::Runtime,
                     "Branch canceled by its fork while waiting for human input",
@@ -1722,6 +1751,7 @@ impl RuntimeHandlerRunner {
                 "cancel_requested" | "canceled" => {
                     // Fail non-retryably; the executor's post-stage control
                     // poll then finalizes the run as canceled.
+                    runtime.interrupted.store(true, Ordering::SeqCst);
                     return Ok(HumanGateWaitResult::Interrupted(Outcome::error(
                         FailureKind::Runtime,
                         "Run cancel requested while waiting for human input",
@@ -2193,6 +2223,7 @@ impl RuntimeHandlerRunner {
             );
             // An invocation accepted before an interruption is never run
             // again; its context updates are already in the saved context.
+            let mut interrupted = Arc::new(AtomicBool::new(false));
             let (raw, already_applied) = match accepted.take() {
                 Some(outcome) => (outcome, true),
                 None => {
@@ -2204,6 +2235,7 @@ impl RuntimeHandlerRunner {
                     }
                     let mut node_runtime = HandlerRuntime::from_request(request);
                     node_runtime.cancel = Some(cancel.clone());
+                    interrupted = node_runtime.interrupted.clone();
                     let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         self.execute_runtime(node_runtime)
                     })) {
@@ -2243,13 +2275,12 @@ impl RuntimeHandlerRunner {
                 }
             };
             if outcome.is_error() {
-                // Cancellation interrupts a running node as a runtime error
-                // (a killed tool, an aborted agent turn): that is the fork's
-                // cancellation, recorded as canceled with the interruption as
-                // evidence. Contract and routing errors are the branch's own
-                // and keep their kind, reason and precedence.
+                // An invocation the fork's or the user's cancellation actually
+                // interrupted is canceled, with the interruption as evidence.
+                // Any other error, of any kind, is the branch's own and keeps
+                // its kind, reason and precedence.
                 let kind = outcome.error_kind().unwrap_or(FailureKind::Runtime);
-                if kind == FailureKind::Runtime && cancel.load(Ordering::SeqCst) {
+                if interrupted.load(Ordering::SeqCst) {
                     return record!(
                         "canceled",
                         json!({
@@ -2396,6 +2427,7 @@ struct ShellOutput {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    interrupted: bool,
 }
 
 /// The decision a finished tool command selects through its node's one
@@ -2699,6 +2731,7 @@ fn run_hook(
             stdout: String::new(),
             stderr: error.to_string(),
             timed_out: false,
+            interrupted: false,
         },
     )
 }
@@ -2829,13 +2862,16 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
         .unwrap_or_else(|| "tool command timed out".to_string())
 }
 
+/// Runs `command`, draining stdout and stderr concurrently so a chatty
+/// command never blocks on a full pipe, and kills it at `timeout` or when
+/// `stop` answers true.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
     timeout: Option<Duration>,
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
-    cancel: Option<Arc<AtomicBool>>,
+    mut stop: Option<&mut dyn FnMut() -> bool>,
 ) -> std::io::Result<ShellOutput> {
     let mut child = Command::new("sh")
         .arg("-c")
@@ -2857,37 +2893,54 @@ fn run_shell_command(
         }
     }
 
-    if timeout.is_none() && cancel.is_none() {
+    if timeout.is_none() && stop.is_none() {
         let output = child.wait_with_output()?;
-        return Ok(shell_output_from_process(output, false));
+        return Ok(shell_output_from_process(output, false, false));
     }
 
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
     let started_at = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            let output = child.wait_with_output()?;
-            return Ok(shell_output_from_process(output, false));
+    let (status, timed_out, interrupted) = loop {
+        if let Some(status) = child.try_wait()? {
+            break (status, false, false);
         }
         let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
-        if timed_out
-            || cancel
-                .as_ref()
-                .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
-        {
+        let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
+        if timed_out || interrupted {
             let _ = child.kill();
-            let output = child.wait_with_output()?;
-            return Ok(shell_output_from_process(output, timed_out));
+            break (child.wait()?, timed_out, interrupted);
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
+    };
+    let output = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    };
+    Ok(shell_output_from_process(output, timed_out, interrupted))
 }
 
-fn shell_output_from_process(output: std::process::Output, timed_out: bool) -> ShellOutput {
+fn shell_output_from_process(
+    output: std::process::Output,
+    timed_out: bool,
+    interrupted: bool,
+) -> ShellOutput {
     ShellOutput {
         exit_code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         timed_out,
+        interrupted,
     }
 }
 
@@ -3158,17 +3211,22 @@ pub fn fork_branch_requiring_recovery_decision(
 
 /// Whether the user asked to cancel the run this branch belongs to.
 fn run_cancel_requested(runtime: &HandlerRuntime) -> bool {
-    runtime.run_paths.as_ref().is_some_and(|paths| {
-        crate::records::read_run_record(paths)
-            .ok()
-            .flatten()
-            .is_some_and(|record| {
-                matches!(
-                    crate::records::normalize_run_status(&record.status).as_str(),
-                    "cancel_requested" | "canceled"
-                )
-            })
-    })
+    runtime
+        .run_paths
+        .as_ref()
+        .is_some_and(run_record_cancel_requested)
+}
+
+fn run_record_cancel_requested(paths: &RunRootPaths) -> bool {
+    crate::records::read_run_record(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|record| {
+            matches!(
+                crate::records::normalize_run_status(&record.status).as_str(),
+                "cancel_requested" | "canceled"
+            )
+        })
 }
 
 fn record_status(record: &Value) -> &str {

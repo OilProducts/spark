@@ -158,6 +158,9 @@ pub(crate) fn execute_manager_loop(
             .as_ref()
             .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
         {
+            runtime
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(Outcome::error(
                 FailureKind::Runtime,
                 "Branch canceled by its fork while its child ran",
