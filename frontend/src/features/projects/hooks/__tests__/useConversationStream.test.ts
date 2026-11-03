@@ -103,3 +103,23 @@ it('a new thread is a 404 and an empty window, never unavailable', async () => {
     expect(cache().conversationsById.chat).toBeDefined()
     expect(cache().unavailableConversationIds?.chat).toBeUndefined()
 })
+
+it('a newer stream window, even from a new store generation, survives a page request still in flight', async () => {
+    const answer = deferredReload()
+    openChat()
+    const fresh = conversationPage({ ...chat, title: 'New store' }, { generation: 'generation-new', revision: '2' })
+    live('conversation.window', fresh)
+    expect(cache().conversationsById.chat.generation).toBe('generation-new')
+    // The page the hook asked for first lands late, from the old store.
+    await act(async () => { answer(json(200, conversationPage({ ...chat, title: 'Old store' }, { revision: '50' }))) })
+    expect(cache().conversationsById.chat.generation).toBe('generation-new')
+    expect(cache().conversationsById.chat.watermark).toBe('2')
+    // Live batches go on applying on top of the stream's window.
+    live('conversation.changes', {
+        generation: 'generation-new', from_revision: '2', watermark: '3',
+        rows: [{ kind: 'turn', conversation_id: 'chat', id: 'turn-2', position: '2', revision: '3', deleted: false,
+            payload: { id: 'turn-2', role: 'user', content: 'Later', status: 'complete', kind: 'message', timestamp: '2026-11-01T00:00:01Z' } }],
+    })
+    expect(cache().conversationsById.chat.watermark).toBe('3')
+    expect(Object.keys(cache().conversationsById.chat.rows).some((key) => key.includes('turn-2'))).toBe(true)
+})

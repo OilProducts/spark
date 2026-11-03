@@ -711,7 +711,11 @@ impl IntoResponse for WorkspaceApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(json!({ "detail": self.0.detail() }))).into_response()
+        let body = match self.0.code() {
+            Some(code) => json!({ "code": code, "detail": self.0.detail() }),
+            None => json!({ "detail": self.0.detail() }),
+        };
+        (status, Json(body)).into_response()
     }
 }
 

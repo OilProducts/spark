@@ -208,7 +208,7 @@ fn a_resent_mid_turn_message_is_delivered_once() {
                 )
                 .unwrap_err();
             assert!(
-                matches!(conflict, spark_workspace::WorkspaceError::Conflict(_)),
+                matches!(conflict, spark_workspace::WorkspaceError::TurnIdConflict(_)),
                 "{conflict}"
             );
             return Ok(answer("Working."));

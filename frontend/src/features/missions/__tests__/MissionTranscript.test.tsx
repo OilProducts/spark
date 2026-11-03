@@ -70,3 +70,21 @@ it('shows a message delivered into the running turn where it was sent, and one q
     expect(text.indexOf('Use the docs.')).toBeLessThan(text.indexOf('Read your note.'))
     expect(text.indexOf('Read your note.')).toBeLessThan(text.indexOf('Then write the summary.'))
 })
+
+it('shows a message whose delivery into the running turn is unresolved as still sending, never as sent', () => {
+    const live: ConversationSnapshotResponse = {
+        ...snapshot('reasoning'),
+        turns: [
+            { id: 'turn-user', role: 'user', content: 'Deliver the prompt.', timestamp: at, kind: 'message', status: 'complete', artifact_id: null },
+            { id: 'turn-running', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'streaming', artifact_id: null },
+        ],
+        segments: [{
+            id: 'segment-user-message-sent-1', turn_id: 'turn-running', order: 1, kind: 'user_message', role: 'user',
+            status: 'delivery_pending', timestamp: at, updated_at: at, completed_at: null, content: 'Use the docs.',
+            artifact_id: null, error: null, source: null, tool_call: null,
+        }],
+    }
+    render(<MissionTranscript conversation={{ conversationId: 'mission-1', record: record(live), loading: false, error: '', reload: vi.fn() }} project="/project" runs={new Map()} />)
+    expect(screen.getByText('Sending into the running turn…')).toBeInTheDocument()
+    expect(screen.queryByText('Sent into the running turn')).toBeNull()
+})

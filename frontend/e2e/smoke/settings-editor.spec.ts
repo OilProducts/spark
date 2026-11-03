@@ -702,7 +702,8 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     } })
     expect(created.ok()).toBeTruthy()
     const createdRow = conversationRowOf(await created.json(), 'cr0125-browser-chat')!
-    const read = async () => conversationRowOf(await (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json())!.payload
+    // Until the first save commits, the conversation is not found and polls keep polling.
+    const read = async () => conversationRowOf(await (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json())?.payload
     // Hold the chat's page: until it loads, its revision is unknown and the picker must stay disabled.
     let hydrate!: () => void
     const hydrated = new Promise<void>((resolve) => { hydrate = resolve })
@@ -752,7 +753,7 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     expect(requests[0].expected_revision).toBe(settingsRevisionOf(createdRow))
     expect(statuses).toEqual([200])
-    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('my-model')
+    await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('my-model')
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
 
     await chooseModel(page, 'anthropic', 'claude-opus-4-6')
@@ -764,7 +765,7 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
     const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
-    await expect.poll(async () => (await read()).settings.models.stored).toMatchObject(final)
+    await expect.poll(async () => (await read())?.settings?.models.stored).toMatchObject(final)
     expect(statuses).toEqual([200, 200, 200])
     expect(requests.map((request) => request.expected_revision)).toEqual([settingsRevisionOf(createdRow), ...acked.slice(0, 2)])
     await page.reload()
@@ -854,6 +855,7 @@ test('mission picker default persists through the real conversation backend', as
     expect(response.ok(), await response.text()).toBeTruthy()
     const mission = await response.json()
     const readPage = async () => (await page.request.get(`/workspace/api/conversations/${mission.id}?project_path=${encodeURIComponent(project)}`)).json()
+    // Until the save commits, the conversation is not found and polls keep polling.
     const read = async () => conversationRowOf(await readPage())?.payload
     await page.goto('/')
     await page.getByTestId('activity-missions').click()
@@ -868,7 +870,7 @@ test('mission picker default persists through the real conversation backend', as
     await customModel(page, 'mission-custom', detail)
     await chooseEffort(page, 'High')
     await detail.getByRole('button', { name: 'Save model', exact: true }).click()
-    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('mission-custom')
+    await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('mission-custom')
     await openModel()
     await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('mission-custom · High')
     await openPicker(page, detail)
@@ -880,7 +882,7 @@ test('mission picker default persists through the real conversation backend', as
     await expect(page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true })).toBeDisabled()
     await page.keyboard.press('Escape')
     await detail.getByRole('button', { name: 'Save model', exact: true }).click()
-    await expect.poll(async () => (await read()).settings.models.stored).toBeNull()
+    await expect.poll(async () => (await read())?.settings?.models.stored).toBeNull()
     await expect(detail.getByRole('button', { name: 'Save model', exact: true })).toHaveCount(0)
     await openModel()
     await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('project-parent · Low')

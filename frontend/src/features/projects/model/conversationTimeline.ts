@@ -39,6 +39,11 @@ function resolveWorkedElapsedSeconds(
     return Math.max(0, Math.round((completedMs - startedMs) / 1000))
 }
 
+/** A segment status as an entry status: a running segment streams; only user messages are delivered. */
+function entryStatus(status: ConversationSegmentResponse['status']) {
+    return status === 'running' ? 'streaming' : status === 'delivery_pending' ? 'pending' : status
+}
+
 /**
  * One segment as its timeline entry, or null for kinds the transcript does not show. Shared by
  * conversations and run nodes; `turnId` marks an assistant message as its turn's, for retry.
@@ -51,7 +56,7 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
             role: 'assistant',
             content: segment.content,
             timestamp: segment.timestamp,
-            status: segment.status === 'running' ? 'streaming' : segment.status,
+            status: entryStatus(segment.status),
             artifactId: segment.artifact_id ?? null,
             error: segment.error ?? null,
         }
@@ -64,7 +69,7 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
             role: 'assistant',
             content: segment.content,
             timestamp: segment.timestamp,
-            status: segment.status === 'running' ? 'streaming' : segment.status,
+            status: entryStatus(segment.status),
             error: segment.error ?? null,
         }
     }
@@ -76,7 +81,7 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
             role: 'user',
             content: segment.content,
             timestamp: segment.timestamp,
-            status: segment.status === 'failed' ? 'failed' : 'delivered',
+            status: segment.status === 'failed' || segment.status === 'delivery_pending' ? segment.status : 'delivered',
             error: segment.error ?? null,
         }
     }
@@ -87,7 +92,7 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
             role: 'assistant',
             content: segment.content,
             timestamp: segment.timestamp,
-            status: segment.status === 'running' ? 'streaming' : segment.status,
+            status: entryStatus(segment.status),
             error: segment.error ?? null,
             presentation: 'thinking',
         }

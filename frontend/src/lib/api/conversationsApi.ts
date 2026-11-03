@@ -53,7 +53,8 @@ export interface ConversationSegmentResponse {
     /** An `agent_event`'s category; only `warning` is shown. */
     category?: string | null
     role: 'assistant' | 'system' | 'user'
-    status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running'
+    /** `delivery_pending`: a message accepted into a running turn whose delivery is unresolved. */
+    status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running' | 'delivery_pending'
     timestamp: string
     updated_at: string
     content: string
@@ -456,6 +457,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         || record.status === 'streaming'
         || record.status === 'failed'
         || record.status === 'running'
+        || record.status === 'delivery_pending'
         ? record.status
         : 'complete'
     const toolCall = asUnknownRecord(record.tool_call)

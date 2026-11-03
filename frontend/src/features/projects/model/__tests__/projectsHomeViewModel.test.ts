@@ -178,14 +178,17 @@ describe('buildProjectsHomeViewModel', () => {
       turns: [snapshot.turns[0], { ...pendingMessage, status: 'complete', artifact_id: null }],
     }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
       .toEqual([['turn-user', 'complete'], ['turn-sent', 'complete']])
-    // Delivered into the running turn: its segment renders under the same id.
-    expect(build({
+    // Accepted into the running turn: its segment renders under the same id, pending until the
+    // delivery resolves, then delivered or failed.
+    const sent = (status: string, error: string | null = null) => build({
       segments: [{
         id: 'segment-user-message-turn-sent', turn_id: 'turn-assistant', order: 1, kind: 'user_message', role: 'user',
-        status: 'complete', content: 'Next step?', timestamp: '2026-03-24T18:02:01Z', updated_at: '2026-03-24T18:02:01Z',
-        completed_at: null, artifact_id: null, error: null, source: null, tool_call: null,
-      }],
-    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
-      .toEqual([['turn-user', 'complete'], ['turn-sent', 'delivered']])
+        status, content: 'Next step?', timestamp: '2026-03-24T18:02:01Z', updated_at: '2026-03-24T18:02:01Z',
+        completed_at: null, artifact_id: null, error, source: null, tool_call: null,
+      }] as typeof snapshot.segments,
+    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status])
+    expect(sent('delivery_pending')).toEqual([['turn-user', 'complete'], ['turn-sent', 'delivery_pending']])
+    expect(sent('complete')).toEqual([['turn-user', 'complete'], ['turn-sent', 'delivered']])
+    expect(sent('failed', 'Spark restarted while delivering this message.')).toEqual([['turn-user', 'complete'], ['turn-sent', 'failed']])
   })
 })

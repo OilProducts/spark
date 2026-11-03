@@ -1041,10 +1041,13 @@ async fn conversation_turn_route_keeps_client_turn_id_and_ignores_a_resend() {
     conflicting["message"] = json!("Something else");
     let (status, conflict, _) = request_json(app.clone(), "POST", uri, Some(conflicting)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(conflict["code"], "turn_id_conflict");
     assert!(conflict["detail"]
         .as_str()
         .unwrap()
         .starts_with("turn_id_conflict"));
+    // The conflict starts nothing either.
+    assert_eq!(backend_requests.lock().expect("requests").len(), 1);
 
     let (status, _, _) = request_json(
         app.clone(),

@@ -104,6 +104,12 @@ export function useConversationStream(args: UseConversationStreamArgs) {
                     if (page.rows.some((row) => row.kind === 'conversation' && !row.deleted)) {
                         afterReset = false
                     }
+                    // The stream's window is newer than any page request still in flight, which
+                    // could even be another store generation's: it supersedes them. After a reset,
+                    // an empty window still waits for the reload to say whether the chat is gone.
+                    if (!afterReset) {
+                        issued += 1
+                    }
                     argsRef.current.applyConversationPage(activeProjectPath, page, 'window', 'event-stream-window')
                 } else if (detail.type === 'conversation.changes') {
                     const batch = parseConversationBatchResponse(detail.payload, LIVE_ENDPOINT)

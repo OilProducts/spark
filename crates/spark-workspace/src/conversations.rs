@@ -1805,7 +1805,7 @@ impl WorkspaceConversationService {
                 return Ok(None);
             };
         if accepted["client_request_sha256"] != json!(request_sha256) {
-            return Err(WorkspaceError::Conflict(
+            return Err(WorkspaceError::TurnIdConflict(
                 "turn_id_conflict: client_turn_id was already used for a different message."
                     .to_string(),
             ));

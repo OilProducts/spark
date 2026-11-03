@@ -13,6 +13,10 @@ pub enum WorkspaceError {
     #[error("{0}")]
     Conflict(String),
 
+    /// A client turn id already accepted for a different message.
+    #[error("{0}")]
+    TurnIdConflict(String),
+
     #[error("{0}")]
     Forbidden(String),
 
@@ -28,7 +32,7 @@ impl WorkspaceError {
         match self {
             Self::Validation(_) => 400,
             Self::NotFound(_) => 404,
-            Self::Conflict(_) => 409,
+            Self::Conflict(_) | Self::TurnIdConflict(_) => 409,
             Self::Forbidden(_) => 403,
             Self::ServiceUnavailable(_) => 503,
             Self::Internal(_) => 500,
@@ -37,6 +41,11 @@ impl WorkspaceError {
 
     pub fn detail(&self) -> String {
         self.to_string()
+    }
+
+    /// The machine-readable code a response carries beside its detail, if any.
+    pub fn code(&self) -> Option<&'static str> {
+        matches!(self, Self::TurnIdConflict(_)).then_some("turn_id_conflict")
     }
 }
 

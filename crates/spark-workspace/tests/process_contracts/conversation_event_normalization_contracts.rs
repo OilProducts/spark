@@ -4944,7 +4944,7 @@ fn a_duplicate_send_returns_the_original_acceptance_and_starts_no_second_turn() 
 
     let conflict = send("A different message.").expect_err("reused id");
     assert!(
-        matches!(conflict, WorkspaceError::Conflict(_)),
+        matches!(conflict, WorkspaceError::TurnIdConflict(_)),
         "{conflict}"
     );
     let snapshot = service.get_snapshot(id, Some(project)).expect("snapshot");
