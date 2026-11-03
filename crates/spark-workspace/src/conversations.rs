@@ -1482,6 +1482,10 @@ impl WorkspaceConversationService {
             if request.client_turn_id.is_some() {
                 pending["client_request_sha256"] = json!(request_sha256);
             }
+            // The accepted message owns its uploads from this commit on.
+            if let Some(references) = user_turn.get("attachments") {
+                pending["attachments"] = references.clone();
+            }
             mutations.push(segment_mutation_from_value(&pending)?);
             let accepted = commit_conversation_mutations(
                 &repository,

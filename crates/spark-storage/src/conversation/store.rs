@@ -214,6 +214,22 @@ impl ConversationStore {
         Ok(true)
     }
 
+    /// Run a project's registration under its lifecycle gate, after
+    /// finishing any deletion of the same path still awaiting cleanup, so a
+    /// concurrent deletion and the registration never interleave.
+    pub fn register_project<T, E: From<StorageError>>(
+        &self,
+        project_path: &str,
+        register: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let gate = self.project_gate(project_path);
+        let _gate = gate.write().unwrap_or_else(|poison| poison.into_inner());
+        if self.pending_deletions().contains(project_path) {
+            self.finish_project_deletion_locked(project_path)?;
+        }
+        register()
+    }
+
     fn finish_project_deletion_locked(&self, project_path: &str) -> Result<()> {
         let markers = self.database.read(|read| read.project_deletions())?;
         let Some(marker) = markers

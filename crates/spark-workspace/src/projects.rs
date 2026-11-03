@@ -79,8 +79,9 @@ impl WorkspaceProjectService {
             .map_err(Into::into)
     }
 
-    /// Registers a project. A deletion of the same path still awaiting
-    /// cleanup finishes first, so nothing new lands in its old directory.
+    /// Registers a project under its lifecycle gate. A deletion of the same
+    /// path still awaiting cleanup finishes first, so nothing new lands in its
+    /// old directory, and a concurrent deletion runs wholly before or after.
     pub fn register_project(
         &self,
         store: &spark_storage::ConversationStore,
@@ -89,19 +90,23 @@ impl WorkspaceProjectService {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
-        store.finish_project_deletion(&project_path)?;
-        let registry = self.registry();
-        if request.execution_profile_id.is_some()
-            && registry.read_project_record(&project_path)?.is_some()
-        {
-            return Err(WorkspaceError::Validation("Use the project settings update with expected_revision to change an existing execution profile.".into()));
-        }
-        let execution_profile_id =
-            self.validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;
-        crate::project_setup::initialize_project(Path::new(&project_path))?;
-        registry
-            .register_project_with_execution_profile(&project_path, execution_profile_id.as_deref())
-            .map_err(Into::into)
+        store.register_project(&project_path, || {
+            let registry = self.registry();
+            if request.execution_profile_id.is_some()
+                && registry.read_project_record(&project_path)?.is_some()
+            {
+                return Err(WorkspaceError::Validation("Use the project settings update with expected_revision to change an existing execution profile.".into()));
+            }
+            let execution_profile_id = self
+                .validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;
+            crate::project_setup::initialize_project(Path::new(&project_path))?;
+            registry
+                .register_project_with_execution_profile(
+                    &project_path,
+                    execution_profile_id.as_deref(),
+                )
+                .map_err(Into::into)
+        })
     }
 
     pub fn update_project_state(

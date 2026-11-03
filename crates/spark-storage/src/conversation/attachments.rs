@@ -211,6 +211,36 @@ impl ConversationRepository {
         })
     }
 
+    /// An attachment's record and bytes, read under the project gate and the
+    /// conversation lock, so cleanup cannot remove the bytes mid-download.
+    /// `None` when the attachment is unknown or its bytes are unreadable.
+    pub fn read_attachment_bytes(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        attachment_id: &str,
+    ) -> Result<Option<(ConversationAttachment, Vec<u8>)>> {
+        let store = self.store();
+        let project_path = store.registry().project_paths(project_path)?.project_path;
+        let home_dir = store.home_dir().to_path_buf();
+        let gate = store.project_gate(&project_path);
+        let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
+        store.with_conversation(conversation_id, |slot| {
+            let Some(attachment) = slot
+                .as_ref()
+                .filter(|loaded| loaded.record.meta.project_path == project_path)
+                .and_then(|loaded| loaded.attachments.get(attachment_id))
+                .filter(|attachment| attachment.readable(&home_dir))
+            else {
+                return Ok(None);
+            };
+            let path = attachment.path(&home_dir);
+            let bytes = fs::read(&path)
+                .map_err(|source| StorageError::io("read attachment", &path, source))?;
+            Ok(Some((attachment.record.clone(), bytes)))
+        })
+    }
+
     pub fn list_attachments(
         &self,
         conversation_id: &str,

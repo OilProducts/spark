@@ -138,6 +138,7 @@ impl ConversationRepository {
             let mut snapshot_level_change = false;
             let mut changed_turns = Vec::new();
             let mut new_turns = Vec::new();
+            let mut new_segment_attachments = Vec::new();
             let mut changed_segments = Vec::new();
             let mut tombstoned_segments = Vec::new();
             let mut changed_artifacts = Vec::new();
@@ -171,13 +172,16 @@ impl ConversationRepository {
                     ConversationMutation::SegmentUpserted { mut segment }
                     | ConversationMutation::RecoveredSegmentUpserted { mut segment, .. } => {
                         resolve_segment_order(record, &mut segment);
-                        keep_acceptance(
-                            &mut segment.extra,
-                            record
-                                .transcript
-                                .find_segment(&segment.id)
-                                .map(|existing| &existing.extra),
-                        );
+                        let existing = record.transcript.find_segment(&segment.id);
+                        if existing.is_none() {
+                            // A message accepted into a running turn owns its uploads.
+                            new_segment_attachments.extend(
+                                super::attachments::turn_attachment_ids(
+                                    segment.extra.get("attachments"),
+                                ),
+                            );
+                        }
+                        keep_acceptance(&mut segment.extra, existing.map(|existing| &existing.extra));
                         // An echoed preview keeps referencing the stored output.
                         if let (Some(previous), Some(tool_call)) = (
                             previous_outputs.get(&segment.id),
@@ -277,6 +281,7 @@ impl ConversationRepository {
             let newly_attached: Vec<String> = new_turns
                 .iter()
                 .flat_map(|turn| super::attachments::turn_attachment_ids(turn.extra.get("attachments")))
+                .chain(new_segment_attachments)
                 .collect();
             let projected = projected_turn.and_then(|turn_id| {
                 let sequence = *loaded.trace_last_by_turn.get(turn_id)?;
@@ -624,17 +629,20 @@ fn dedup<T: PartialEq>(items: &[T]) -> Vec<&T> {
     unique
 }
 
-/// Fingerprint of the request a client turn id was accepted for.
-const ACCEPTANCE_KEY: &str = "client_request_sha256";
+/// What an accepted message recorded: the fingerprint of the request its
+/// client turn id was accepted for, and the uploads it owns.
+const ACCEPTANCE_KEYS: [&str; 2] = ["client_request_sha256", "attachments"];
 
-/// An accepted request's fingerprint never changes, even when a later
-/// upsert (such as a provider's delivery report) rebuilds the entity.
+/// An accepted message's record never changes, even when a later upsert
+/// (such as a provider's delivery report) rebuilds the entity without it.
 fn keep_acceptance(
     extra: &mut serde_json::Map<String, Value>,
     existing: Option<&serde_json::Map<String, Value>>,
 ) {
-    if let Some(accepted) = existing.and_then(|existing| existing.get(ACCEPTANCE_KEY)) {
-        extra.insert(ACCEPTANCE_KEY.to_string(), accepted.clone());
+    for key in ACCEPTANCE_KEYS {
+        if let Some(accepted) = existing.and_then(|existing| existing.get(key)) {
+            extra.insert(key.to_string(), accepted.clone());
+        }
     }
 }
 
@@ -648,8 +656,9 @@ fn tool_output_artifact(segment: &TranscriptSegment) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A turn may only start referencing attachments that are stored and
-/// readable at commit time.
+/// A new turn, or a new message segment accepted into a running turn, may
+/// only start referencing attachments that are stored and readable at
+/// commit time.
 fn validate_new_turn_attachments(
     home_dir: &Path,
     conversation_id: &str,
@@ -657,13 +666,21 @@ fn validate_new_turn_attachments(
     mutations: &[ConversationMutation],
 ) -> Result<()> {
     for mutation in mutations {
-        let ConversationMutation::TurnUpserted { turn } = mutation else {
-            continue;
+        let references = match mutation {
+            ConversationMutation::TurnUpserted { turn }
+                if loaded.record.transcript.find_turn(&turn.id).is_none() =>
+            {
+                turn.extra.get("attachments")
+            }
+            ConversationMutation::SegmentUpserted { segment }
+            | ConversationMutation::RecoveredSegmentUpserted { segment, .. }
+                if loaded.record.transcript.find_segment(&segment.id).is_none() =>
+            {
+                segment.extra.get("attachments")
+            }
+            _ => continue,
         };
-        if loaded.record.transcript.find_turn(&turn.id).is_some() {
-            continue;
-        }
-        for id in super::attachments::turn_attachment_ids(turn.extra.get("attachments")) {
+        for id in super::attachments::turn_attachment_ids(references) {
             let readable = loaded
                 .attachments
                 .get(&id)

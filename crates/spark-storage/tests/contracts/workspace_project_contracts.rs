@@ -836,3 +836,111 @@ fn an_interrupted_trace_append_is_repaired_before_the_next_one() {
         Err(StorageError::JsonlLine { line: 1, .. })
     ));
 }
+
+/// Registration and deletion of one project serialize on its lifecycle
+/// gate: a deletion that starts while a registration runs waits for it, then
+/// removes what it registered.
+#[test]
+fn registration_and_deletion_of_one_project_never_interleave() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/contended";
+    let registry = ProjectRegistry::new(&home);
+    registry.register_project(path).unwrap();
+    let store = ConversationStore::open(&home).unwrap();
+    let deleted = registry.deletable_project(path).unwrap();
+    let (inside_tx, inside_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+    let registering = {
+        let (store, home) = (store.clone(), home.clone());
+        std::thread::spawn(move || {
+            store.register_project(path, || {
+                inside_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+                ProjectRegistry::new(&home).register_project(path)
+            })
+        })
+    };
+    inside_rx.recv().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let deleting = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let result = store.delete_project(&deleted, &|_| {});
+            done_tx.send(()).unwrap();
+            result
+        })
+    };
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_millis(300))
+        .is_err());
+    finish_tx.send(()).unwrap();
+    registering.join().unwrap().unwrap();
+    deleting.join().unwrap().unwrap();
+    assert_eq!(registry.read_project_record(path).unwrap(), None);
+    assert!(!registry.project_paths(path).unwrap().root.exists());
+}
+
+/// A download that arrives while cleanup holds the conversation waits for
+/// it and reports the attachment gone, never a half-removed file.
+#[test]
+fn attachment_downloads_serialize_with_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/download";
+    let store = ConversationStore::open(&home).unwrap();
+    let repo = ConversationRepository::new(store.clone());
+    let draft = repo
+        .create_attachment("chat", path, "draft.txt", b"draft bytes")
+        .unwrap();
+    let (_, bytes) = repo
+        .read_attachment_bytes("chat", path, &draft.id)
+        .unwrap()
+        .expect("readable");
+    assert_eq!(bytes, b"draft bytes");
+
+    // Hold the database so cleanup stops inside the conversation lock.
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            store
+                .database()
+                .read(|_| {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap()
+        })
+    };
+    held_rx.recv().unwrap();
+    let pruning = {
+        let repo = repo.clone();
+        std::thread::spawn(move || {
+            repo.prune_attachments(
+                "chat",
+                path,
+                time::OffsetDateTime::now_utc() + time::Duration::hours(25),
+            )
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let downloading = {
+        let (repo, id) = (repo.clone(), draft.id.clone());
+        std::thread::spawn(move || {
+            let result = repo.read_attachment_bytes("chat", path, &id);
+            done_tx.send(()).unwrap();
+            result
+        })
+    };
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_millis(300))
+        .is_err());
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    assert_eq!(pruning.join().unwrap().unwrap(), vec![draft.id.clone()]);
+    assert_eq!(downloading.join().unwrap().unwrap(), None);
+}

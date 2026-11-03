@@ -45,16 +45,10 @@ impl WorkspaceConversationService {
         attachment_id: &str,
     ) -> WorkspaceResult<(ConversationAttachment, Vec<u8>)> {
         let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
-        let (record, path) = self
+        Ok(self
             .repository()
-            .read_attachment(conversation_id, &project_path, attachment_id)?
-            .ok_or_else(|| unknown_attachment(attachment_id))?;
-        let bytes = std::fs::read(&path).map_err(|error| {
-            WorkspaceError::Internal(format!(
-                "Unable to read attachment {attachment_id}: {error}"
-            ))
-        })?;
-        Ok((record, bytes))
+            .read_attachment_bytes(conversation_id, &project_path, attachment_id)?
+            .ok_or_else(|| unknown_attachment(attachment_id))?)
     }
 
     /// Delete an upload that no sent message references.
