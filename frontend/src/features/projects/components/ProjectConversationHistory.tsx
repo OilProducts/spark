@@ -408,28 +408,12 @@ export function ProjectConversationHistory({
 
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
-            {olderMessagesError ? (
-                <div role="alert" className="flex flex-wrap items-center justify-center gap-2 text-sm text-destructive">
-                    <span>{olderMessagesError}</span>
-                    <Button type="button" variant="outline" size="xs" onClick={() => { void onLoadOlderMessages?.() }}>
-                        Retry
-                    </Button>
-                </div>
-            ) : hasOlderMessages ? (
-                <div className="flex justify-center">
-                    <Button
-                        type="button"
-                        data-testid="project-load-older-messages"
-                        variant="ghost"
-                        size="xs"
-                        disabled={isLoadingOlderMessages}
-                        aria-busy={isLoadingOlderMessages}
-                        onClick={() => { void onLoadOlderMessages?.() }}
-                    >
-                        {isLoadingOlderMessages ? 'Loading older messages…' : 'Load older messages'}
-                    </Button>
-                </div>
-            ) : null}
+            <OlderMessagesControl
+                hasOlderMessages={hasOlderMessages}
+                isLoading={isLoadingOlderMessages}
+                error={olderMessagesError}
+                onLoad={onLoadOlderMessages}
+            />
             <Transcript
                 data-testid="project-ai-conversation-history-list"
                 testIdPrefix="project"
@@ -446,6 +430,43 @@ export function ProjectConversationHistory({
                 onRetryTurn={onRetryTurn}
                 renderEntry={renderEntry}
             />
+        </div>
+    )
+}
+
+/** Loads the page before the oldest loaded message: a button while there is one, busy while
+ * loading, and an alert with Retry when loading failed. */
+export function OlderMessagesControl({ hasOlderMessages, isLoading, error, onLoad, testId = 'project-load-older-messages' }: {
+    hasOlderMessages: boolean
+    isLoading: boolean
+    error: string | null
+    onLoad?: () => void | Promise<void>
+    testId?: string
+}) {
+    if (error) {
+        return (
+            <div role="alert" className="flex flex-wrap items-center justify-center gap-2 text-sm text-destructive">
+                <span>{error}</span>
+                <Button type="button" variant="outline" size="xs" onClick={() => { void onLoad?.() }}>
+                    Retry
+                </Button>
+            </div>
+        )
+    }
+    if (!hasOlderMessages) return null
+    return (
+        <div className="flex justify-center">
+            <Button
+                type="button"
+                data-testid={testId}
+                variant="ghost"
+                size="xs"
+                disabled={isLoading}
+                aria-busy={isLoading}
+                onClick={() => { void onLoad?.() }}
+            >
+                {isLoading ? 'Loading older messages…' : 'Load older messages'}
+            </Button>
         </div>
     )
 }

@@ -695,8 +695,12 @@ describe('summary snapshots', () => {
     cache = open(buildSnapshot({ conversation_id: 'open', project_path: '/a', revision: 2 }), cache)
     // Exactly what a summary reset does.
     cache = { ...cache, summaryCursor: null }
-    for (const projectPath of ['/a', null]) {
-      const replaced = applySummarySnapshotToCache(cache, snapshot([
+    // A project's HTTP list from the new store waits for the feed's own new snapshot.
+    const early = applySummarySnapshotToCache(cache, snapshot([summary('a', '/a', 1, { title: 'NEW' })], '/a', '1', 'generation-new'), 'http')
+    expect(early).toBe(cache)
+    for (const projectPath of [null, '/a']) {
+      const base = projectPath === null ? cache : { ...cache, summaryAuthority: null }
+      const replaced = applySummarySnapshotToCache(base, snapshot([
         summary('a', '/a', 1, { title: 'NEW' }),
         summary('dead', '/a', 1, { title: 'Reborn' }),
       ], projectPath, '1', 'generation-new'), projectPath === null ? 'live' : 'http')

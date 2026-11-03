@@ -101,6 +101,9 @@ export type ProjectConversationCacheState = {
     summaryCursor?: { generation: string; watermark: string } | null
     /** The store generation the summary rows belong to; kept when a reset clears the cursor. */
     summaryGeneration?: string | null
+    /** The newest live all-projects snapshot: an HTTP list read before it, or in another
+     * generation, predates its membership and is ignored. */
+    summaryAuthority?: { generation: string; watermark: string } | null
     /** Conversations that were deleted or are gone after a reset. */
     unavailableConversationIds?: Record<string, true>
     // Last applied live update's stream_sequence, by turn id.
@@ -672,6 +675,11 @@ export function applySummarySnapshotToCache(
     source: 'live' | 'http',
     projectPath: string | null = snapshot.project_path,
 ): ProjectConversationCacheState {
+    const authority = current.summaryAuthority
+    if (source === 'http' && authority && (authority.generation !== snapshot.generation
+        || compareRevisions(snapshot.watermark, authority.watermark) < 0)) {
+        return current
+    }
     const inScope = (path: string) => projectPath === null || path === projectPath
     const generation = current.summaryGeneration ?? current.summaryCursor?.generation ?? null
     // Revisions from another store generation say nothing about this one: every summary row,
@@ -706,6 +714,9 @@ export function applySummarySnapshotToCache(
         summariesByProjectPath: lists,
         summaryGeneration: snapshot.generation,
         summaryCursor,
+        summaryAuthority: source === 'live' && projectPath === null
+            ? { generation: snapshot.generation, watermark: snapshot.watermark }
+            : changedGeneration ? null : authority ?? null,
     }
 }
 

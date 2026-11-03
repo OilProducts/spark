@@ -7,6 +7,7 @@ import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
 import { EventLine, MessageRow, RunCard, ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { Transcript } from '@/components/app/transcript/Transcript'
+import { OlderMessagesControl } from '@/features/projects/components/ProjectConversationHistory'
 import { ProjectConversationRequestUserInputCard } from '@/features/projects/components/ProjectConversationRequestUserInputCard'
 import {
     getConversationFlowLaunches,
@@ -38,7 +39,10 @@ export function RunLink({ runId, className, children }: { runId: string; classNa
 
 type Entry = ConversationTimelineEntry
 
-type Conversation = { conversationId: string; record: NormalizedConversationRecord | null; loading: boolean; error: string; reload: () => void }
+type Conversation = {
+    conversationId: string; record: NormalizedConversationRecord | null; loading: boolean; error: string; reload: () => void
+    hasOlderMessages?: boolean; isLoadingOlderMessages?: boolean; olderMessagesError?: string | null; loadOlderMessages?: () => Promise<void>
+}
 
 /** The mission's log in the shared transcript grammar: turn headers, folded commands, run cards and quiet event lines. */
 export function MissionTranscript({ conversation, project, runs }: { conversation: Conversation; project: string; runs: Map<string, MissionRun> }) {
@@ -127,6 +131,8 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         {error && <InlineError>{error}</InlineError>}
         {retryError && <InlineError>{retryError}</InlineError>}
         <SectionHeading as="h3" action={<ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} />}>Log</SectionHeading>
+        <OlderMessagesControl testId="mission-load-older-messages" hasOlderMessages={conversation.hasOlderMessages ?? false}
+            isLoading={conversation.isLoadingOlderMessages ?? false} error={conversation.olderMessagesError ?? null} onLoad={conversation.loadOlderMessages} />
         <Transcript testIdPrefix="mission" entries={entries} showThinking={showThinking} formatTimestamp={formatTime} loading={loading}
             conversation={{ id: conversationId, projectPath: project }} onRetryTurn={retryTurn} renderEntry={renderEntry} />
     </>

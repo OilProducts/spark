@@ -5,7 +5,7 @@ import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { MissionsPanel } from '../MissionsPanel'
 import { useStore } from '@/store'
-import { conversationMutationAck, conversationPage } from '@/test/conversationWire'
+import { conversationBatch, conversationMutationAck, conversationPage, conversationRows } from '@/test/conversationWire'
 
 const fields = { title: 'Deliver search', description: '', archived: false }
 type Task = { id: string; revision: number; fields: typeof fields; activity: unknown[]; status?: string; updated_at?: string; [key: string]: unknown }
@@ -38,6 +38,8 @@ beforeEach(() => {
             else if (body.fields) task = { ...task, revision: task.revision + 1, fields: { ...task.fields, ...body.fields } }
             return { ok: true, json: async () => task }
         }
+        // A reload catches up from the window's watermark: the fixture's rows as one change batch.
+        if (url.includes('/conversations/') && url.includes('/changes?')) return { ok: true, json: async () => conversationBatch(conversationRows(positioned(snapshot))) }
         if (url.includes('/conversations/')) return { ok: true, json: async () => page(snapshot) }
         if (url === `/workspace/api/playbooks/bug-report?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => ({ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the draft first.' }) }
         if (url === `/workspace/api/playbooks?project_path=${encodeURIComponent('/project')}`) return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }

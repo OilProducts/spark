@@ -1,5 +1,5 @@
 import { act, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { applyConversationPageToCache } from '@/features/projects/model/projectsHomeState'
 import { parseConversationPageResponse } from '@/lib/workspaceClient'
@@ -40,7 +40,7 @@ const snapshotEnvelope = (summaries: ReturnType<typeof summary>[], watermark: st
     'conversations.snapshot',
     summarySnapshot(summaries, { watermark }),
 )
-const changesEnvelope = (rows: Record<string, unknown>[], options: { watermark?: string } = {}) => liveEnvelope(
+const changesEnvelope = (rows: Record<string, unknown>[], options: { watermark?: string; generation?: string } = {}) => liveEnvelope(
     'conversations.changes',
     conversationBatch(rows, options),
 )
@@ -236,4 +236,56 @@ it('after a summary reset, a snapshot from a new store generation replaces every
     expect(useStore.getState().homeConversationCache.summaryCursor).toEqual({ generation: 'generation-new', watermark: '1' })
     // An open transcript is not part of the summary scope and stays.
     expect(useStore.getState().homeConversationCache.conversationsById.open).toBeDefined()
+})
+
+describe('a project thread list that was in flight when the feed initialized', () => {
+    /** Starts a project list request and returns its resolver. */
+    const pendingList = async () => {
+        const { renderHook } = await import('@testing-library/react')
+        const { useProjectConversationCache } = await import('@/features/projects/hooks/useProjectConversationCache')
+        let answer!: (body: unknown) => void
+        fetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+            answer = (body) => resolve({ ok: true, status: 200, json: async () => body })
+        }))
+        const cache = renderHook(() => useProjectConversationCache({
+            persistProjectState: async () => {}, projectSessionsByPath: {}, updateProjectSessionState: () => {},
+        }))
+        let request!: Promise<unknown>
+        act(() => { request = cache.result.current.loadProjectConversationSummaries('/p') })
+        return async (body: unknown) => { await act(async () => { answer(body); await request }) }
+    }
+
+    it('is ignored after the feed moved to a new store generation, and live changes go on', async () => {
+        seedConversation('open', '/q', 2)
+        render(<WorkspaceLiveEventsController />)
+        emit(liveEnvelope('conversations.snapshot', summarySnapshot([summary('old', '/p', 100)], { watermark: '100', generation: 'generation-old' })))
+        const respond = await pendingList()
+        emit(liveEnvelope('conversations.reset', reset('100')))
+        emit(liveEnvelope('conversations.snapshot', summarySnapshot(
+            [summary('fresh', '/p', 1), summary('elsewhere', '/q', 1)],
+            { watermark: '1', generation: 'generation-new' },
+        )))
+        // The old generation's list lands late.
+        await respond(summarySnapshot([summary('old', '/p', 100)], { project_path: '/p', watermark: '100', generation: 'generation-old' }))
+        expect(listed('/p')).toEqual([['fresh', 'Chat fresh', '1']])
+        expect(listed('/q')).toEqual([['elsewhere', 'Chat elsewhere', '1']])
+        expect(useStore.getState().homeConversationCache.summaryCursor).toEqual({ generation: 'generation-new', watermark: '1' })
+        emit(changesEnvelope([conversationRow(summary('later', '/p', 2))], { watermark: '2', generation: 'generation-new' }))
+        expect(listed('/p')).toEqual(expect.arrayContaining([['fresh', 'Chat fresh', '1'], ['later', 'Chat later', '2']]))
+        expect(useStore.getState().homeConversationCache.conversationsById.open).toBeDefined()
+    })
+
+    it('read before a same-generation snapshot cannot bring back a thread it no longer lists', async () => {
+        seedConversation('open', '/q', 2)
+        render(<WorkspaceLiveEventsController />)
+        const respond = await pendingList()
+        emit(snapshotEnvelope([summary('kept', '/q', 150)], '200'))
+        await respond(summarySnapshot([summary('gone', '/p', 90)], { project_path: '/p', watermark: '100' }))
+        expect(listed('/p')).toEqual([])
+        expect(listed('/q')).toEqual([['kept', 'Chat kept', '150']])
+        expect(useStore.getState().homeConversationCache.summaryCursor).toEqual({ generation: TEST_GENERATION, watermark: '200' })
+        emit(changesEnvelope([conversationRow(summary('new', '/p', 201))], { watermark: '201' }))
+        expect(listed('/p')).toEqual([['new', 'Chat new', '201']])
+        expect(useStore.getState().homeConversationCache.conversationsById.open).toBeDefined()
+    })
 })
