@@ -29,7 +29,8 @@ use spark_storage::conversation::{
     TransientStreamEvent, ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
 };
 use spark_storage::{
-    ConversationRepository, ConversationStore, ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION,
+    ConversationRepository, ConversationStore, ProjectRegistry, StorageError,
+    CONVERSATION_STATE_SCHEMA_VERSION,
 };
 use spark_triggers::TriggerActivationRequest;
 use time::OffsetDateTime;
@@ -3721,11 +3722,24 @@ impl WorkspaceConversationService {
         project_path: Option<&str>,
     ) -> WorkspaceResult<Value> {
         let requested_project_path = normalize_optional_project_path(project_path)?;
-        if let Some(output) = self.repository().read_segment_tool_output(
-            conversation_id,
-            requested_project_path.as_deref(),
-            segment_id,
-        )? {
+        let stored = self
+            .repository()
+            .read_segment_tool_output(
+                conversation_id,
+                requested_project_path.as_deref(),
+                segment_id,
+            )
+            .map_err(|error| match error {
+                StorageError::Io { source, .. }
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    WorkspaceError::NotFound(
+                        "The full output of this tool call is no longer available.".to_string(),
+                    )
+                }
+                other => other.into(),
+            })?;
+        if let Some(output) = stored {
             return Ok(json!({
                 "output": output,
                 "output_size": output.len(),

@@ -109,8 +109,12 @@ impl WorkspaceProjectService {
         })
     }
 
+    /// Updates a registered project's state under its lifecycle gate. An
+    /// unregistered or deleted project is unknown: state updates never
+    /// register one.
     pub fn update_project_state(
         &self,
+        store: &spark_storage::ConversationStore,
         request: ProjectStateUpdate,
     ) -> WorkspaceResult<ProjectRecord> {
         let _references =
@@ -135,19 +139,30 @@ impl WorkspaceProjectService {
                 "Register the project before editing its defaults.".into(),
             ));
         }
-        self.registry()
-            .update_project_record(
-                &project_path,
-                ProjectRecordUpdate {
-                    expected_revision: request.expected_revision,
-                    last_accessed_at: request.last_accessed_at,
-                    is_favorite: request.is_favorite,
-                    active_conversation_id: request.active_conversation_id,
-                    execution_profile_id,
-                    ..ProjectRecordUpdate::default()
-                },
-            )
-            .map_err(Into::into)
+        store.update_project(&project_path, || {
+            if self
+                .registry()
+                .read_project_record(&project_path)?
+                .is_none()
+            {
+                return Err(WorkspaceError::NotFound(
+                    "Unknown project. Register it first.".into(),
+                ));
+            }
+            self.registry()
+                .update_project_record(
+                    &project_path,
+                    ProjectRecordUpdate {
+                        expected_revision: request.expected_revision,
+                        last_accessed_at: request.last_accessed_at,
+                        is_favorite: request.is_favorite,
+                        active_conversation_id: request.active_conversation_id,
+                        execution_profile_id,
+                        ..ProjectRecordUpdate::default()
+                    },
+                )
+                .map_err(Into::into)
+        })
     }
 
     /// Deletes a project through the app's conversation store: its running

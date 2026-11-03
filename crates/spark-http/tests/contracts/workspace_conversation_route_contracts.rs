@@ -58,6 +58,20 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
                         "output": "full output",
                         "file_paths": []
                     }
+                },
+                {
+                    "id": "segment-present", "turn_id": "turn-a", "order": 2,
+                    "kind": "tool_call", "role": "assistant", "status": "complete",
+                    "content": "", "source": {},
+                    "tool_call": {"id": "tool-b", "output": "PREVIEW", "output_truncated": true,
+                        "output_size": 14, "output_artifact": "tool-output/present.txt"}
+                },
+                {
+                    "id": "segment-missing", "turn_id": "turn-a", "order": 3,
+                    "kind": "tool_call", "role": "assistant", "status": "complete",
+                    "content": "", "source": {},
+                    "tool_call": {"id": "tool-c", "output": "ONLY PREVIEW", "output_truncated": true,
+                        "output_size": 100000, "output_artifact": "tool-output/missing.txt"}
                 }
             ]
         }),
@@ -88,6 +102,24 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
         output.1,
         json!({"output": "full output", "output_size": 11})
     );
+    // Externalized output comes from its blob; a missing blob is reported,
+    // never its preview passed off as the full output.
+    let blobs = project
+        .conversations_dir
+        .join("conversation-http/tool-output");
+    std::fs::create_dir_all(&blobs).expect("tool output dir");
+    std::fs::write(blobs.join("present.txt"), "present output").expect("blob");
+    let output_uri = |segment: &str| {
+        format!("/workspace/api/conversations/conversation-http/tool-output/{segment}?project_path=/projects/http-app")
+    };
+    let present = request_json(app.clone(), "GET", &output_uri("segment-present"), None).await;
+    assert_eq!(
+        present.1,
+        json!({"output": "present output", "output_size": 14})
+    );
+    let missing = request_json(app.clone(), "GET", &output_uri("segment-missing"), None).await;
+    assert_eq!(missing.0, StatusCode::NOT_FOUND, "{}", missing.1);
+    assert!(!missing.1.to_string().contains("ONLY PREVIEW"));
 
     for payload in [
         json!({"project_path": "/projects/http-app", "chat_mode": "plan"}),

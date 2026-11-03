@@ -989,3 +989,52 @@ fn work_arriving_during_deletion_cancellation_is_refused() {
         .join(&deleted.project_id)
         .exists());
 }
+
+/// A project-state update and a deletion serialize on the lifecycle gate:
+/// the deletion waits for the update, then removes the updated project.
+#[test]
+fn project_state_updates_and_deletion_never_interleave() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/updated-while-deleted";
+    let registry = ProjectRegistry::new(&home);
+    registry.register_project(path).unwrap();
+    let store = ConversationStore::open(&home).unwrap();
+    let deleted = registry.deletable_project(path).unwrap();
+    let (inside_tx, inside_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+    let updating = {
+        let (store, home) = (store.clone(), home.clone());
+        std::thread::spawn(move || {
+            store.update_project(path, || {
+                inside_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+                ProjectRegistry::new(&home).update_project_record(
+                    path,
+                    ProjectRecordUpdate {
+                        is_favorite: Some(true),
+                        ..ProjectRecordUpdate::default()
+                    },
+                )
+            })
+        })
+    };
+    inside_rx.recv().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let deleting = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let result = store.delete_project(&deleted, &|_| {});
+            done_tx.send(()).unwrap();
+            result
+        })
+    };
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_millis(300))
+        .is_err());
+    finish_tx.send(()).unwrap();
+    assert!(updating.join().unwrap().unwrap().is_favorite);
+    deleting.join().unwrap().unwrap();
+    assert_eq!(registry.read_project_record(path).unwrap(), None);
+    assert!(!registry.project_paths(path).unwrap().root.exists());
+}

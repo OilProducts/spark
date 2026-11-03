@@ -899,3 +899,57 @@ fn failed_transactions_roll_back_rows_and_memory() {
         .unwrap();
     assert_eq!(snapshot, first.snapshot);
 }
+
+/// Externalized output is read from its blob; inline output has no blob;
+/// a preview whose blob is missing is an error, never complete output.
+#[test]
+fn segment_tool_output_distinguishes_inline_present_and_missing_bytes() {
+    let project_path = "/projects/tool-output-reads";
+    let (temp, repo) = setup(project_path);
+    let tool = |id: &str, tool_call: Value| {
+        let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
+        segment.kind = "tool_call".to_string();
+        segment.tool_call = Some(tool_call);
+        ConversationMutation::SegmentUpserted { segment }
+    };
+    let root = conversation_dir(&temp, project_path, "conversation-reads");
+    fs::create_dir_all(root.join("tool-output")).unwrap();
+    fs::write(root.join("tool-output/present.txt"), "full present output").unwrap();
+    repo.commit_conversation(
+        "conversation-reads",
+        project_path,
+        0,
+        vec![
+            ConversationMutation::TurnUpserted {
+                turn: assistant_turn("turn-assistant", "complete"),
+            },
+            tool(
+                "segment-inline",
+                json!({"id": "a", "output": "inline output"}),
+            ),
+            tool(
+                "segment-present",
+                json!({"id": "b", "output": "PREVIEW", "output_truncated": true,
+                    "output_size": 19, "output_artifact": "tool-output/present.txt"}),
+            ),
+            tool(
+                "segment-missing",
+                json!({"id": "c", "output": "ONLY PREVIEW", "output_truncated": true,
+                    "output_size": 100000, "output_artifact": "tool-output/missing.txt"}),
+            ),
+        ],
+    )
+    .unwrap();
+    let read = |segment: &str| {
+        repo.read_segment_tool_output("conversation-reads", Some(project_path), segment)
+    };
+    assert_eq!(read("segment-inline").unwrap(), None);
+    assert_eq!(
+        read("segment-present").unwrap().as_deref(),
+        Some("full present output")
+    );
+    assert!(matches!(
+        read("segment-missing"),
+        Err(StorageError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+    ));
+}

@@ -238,6 +238,19 @@ impl ConversationStore {
         register()
     }
 
+    /// Run a change to an existing project's record under its lifecycle
+    /// gate. A project whose deletion still awaits cleanup is refused.
+    pub fn update_project<T, E: From<StorageError>>(
+        &self,
+        project_path: &str,
+        update: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let gate = self.project_gate(project_path);
+        let _gate = gate.write().unwrap_or_else(|poison| poison.into_inner());
+        self.admit_project(project_path)?;
+        update()
+    }
+
     fn finish_project_deletion_locked(&self, project_path: &str) -> Result<()> {
         let markers = self.database.read(|read| read.project_deletions())?;
         let Some(marker) = markers

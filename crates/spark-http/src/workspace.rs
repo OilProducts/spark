@@ -266,6 +266,7 @@ async fn register_project(
 
 async fn update_project_state(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<ProjectStateUpdateBody>, JsonRejection>,
 ) -> ApiResult<ProjectRecord> {
@@ -273,6 +274,7 @@ async fn update_project_state(
     let is_favorite = request.is_favorite.map(|value| value.unwrap_or(false));
     let changes_settings = request.execution_profile_id.is_some();
     let record = WorkspaceProjectService::new((*settings).clone()).update_project_state(
+        &store,
         ProjectStateUpdate {
             expected_revision: request.expected_revision,
             project_path: request.project_path,

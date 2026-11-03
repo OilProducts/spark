@@ -286,7 +286,9 @@ impl ConversationRepository {
     }
 
     /// Read one segment's externalized tool output. Returns `None` when the
-    /// segment's output is stored inline or the conversation is unknown.
+    /// segment's output is stored inline or the conversation is unknown. A
+    /// segment that holds only a preview whose full output is missing is an
+    /// error (`NotFound` I/O), never its preview passed off as complete.
     pub fn read_segment_tool_output(
         &self,
         conversation_id: &str,
@@ -296,15 +298,31 @@ impl ConversationRepository {
         let Some(snapshot) = self.read_snapshot(conversation_id, project_path)? else {
             return Ok(None);
         };
-        let Some(artifact) = snapshot["segments"]
+        let Some(tool_call) = snapshot["segments"]
             .as_array()
             .into_iter()
             .flatten()
             .find(|segment| segment["id"] == segment_id)
-            .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
-            .and_then(crate::conversation::safe_tool_output_artifact)
+            .map(|segment| &segment["tool_call"])
         else {
             return Ok(None);
+        };
+        let missing = |path: PathBuf| {
+            StorageError::io(
+                "read segment tool output",
+                path,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            )
+        };
+        let Some(artifact) = tool_call["output_artifact"]
+            .as_str()
+            .and_then(crate::conversation::safe_tool_output_artifact)
+        else {
+            return if tool_call["output_truncated"] == true {
+                Err(missing(PathBuf::from(segment_id)))
+            } else {
+                Ok(None)
+            };
         };
         let Some(root) =
             self.conversation_root(conversation_id, snapshot["project_path"].as_str())?
@@ -314,7 +332,6 @@ impl ConversationRepository {
         let path = root.join(artifact);
         match fs::read_to_string(&path) {
             Ok(output) => Ok(Some(output)),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(source) => Err(StorageError::io("read segment tool output", &path, source)),
         }
     }

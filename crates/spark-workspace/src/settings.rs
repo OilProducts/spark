@@ -448,6 +448,7 @@ pub fn update_workspace_settings(
                 return Ok(view);
             }
             crate::WorkspaceProjectService::new(settings.clone()).update_project_state(
+                store,
                 crate::ProjectStateUpdate {
                     project_path: project_path.clone(),
                     execution_profile_id,

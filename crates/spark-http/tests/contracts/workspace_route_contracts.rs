@@ -149,8 +149,16 @@ async fn project_deletion_route_removes_conversations_then_the_directory() {
         "{}",
         listed.1
     );
-    // Stale reads of the deleted project resurrect nothing.
+    // Stale reads and state updates of the deleted project resurrect nothing.
     stale_project_reads(&app, &project_path).await;
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::NOT_FOUND, "{}", favorite.1);
     assert!(!project_root.exists());
     assert_eq!(
         spark_storage::ProjectRegistry::new(&settings.data_dir)
@@ -227,10 +235,26 @@ async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
 
     stale_project_reads(&app, &project_path).await;
     assert!(!paths.conversations_dir.join("conversation-unseen").exists());
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::CONFLICT, "{}", favorite.1);
 
     assert!(store.finish_project_deletion(&project_path).unwrap());
     assert!(!paths.root.exists());
     stale_project_reads(&app, &project_path).await;
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::NOT_FOUND, "{}", favorite.1);
     assert!(!paths.root.exists());
     assert_eq!(
         spark_storage::ProjectRegistry::new(&settings.data_dir)
@@ -238,6 +262,16 @@ async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
             .unwrap(),
         None
     );
+    // Explicit registration still brings the project back.
+    let again = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_dir})),
+    )
+    .await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    assert!(paths.root.exists());
 }
 
 #[tokio::test]
