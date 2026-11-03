@@ -108,6 +108,10 @@ pub struct ConversationTurnRequest {
     /// Ids of this conversation's uploads to send with the message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
+    /// Browser-chosen id for the user turn, so the browser can render the
+    /// message before the response and a resent request adds no second turn.
+    #[serde(default)]
+    pub client_turn_id: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -1274,6 +1278,31 @@ impl WorkspaceConversationService {
             ));
         }
 
+        if let Some(client_turn_id) = request.client_turn_id.as_deref() {
+            // The id becomes a stored turn id, so it gets the same rules as other client ids.
+            spark_common::settings::validate_client_id(client_turn_id).map_err(|_| {
+                WorkspaceError::Validation(
+                    "client_turn_id must contain 1–80 ASCII letters, digits, underscores or hyphens."
+                        .to_string(),
+                )
+            })?;
+            // A resend of an accepted request answers with the current state.
+            // A message delivered into a running turn has no turn of its own:
+            // the turn reports it as a segment, and until then only this
+            // process knows it was accepted.
+            if find_turn(&snapshot, client_turn_id).is_some()
+                || find_segment(&snapshot, &format!("segment-user-message-{client_turn_id}"))
+                    .is_some()
+                || delivered_client_turn_ids()
+                    .lock()
+                    .unwrap()
+                    .contains(&(conversation_id.to_string(), client_turn_id.to_string()))
+            {
+                prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+                self.attach_model_settings(&mut snapshot)?;
+                return Ok((None, snapshot));
+            }
+        }
         let base_revision = snapshot_revision(&snapshot);
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, &project_path);
         let current_chat_mode = normalize_chat_mode(
@@ -1371,7 +1400,10 @@ impl WorkspaceConversationService {
         let mut user_turn = match mode {
             TurnStart::Queued(turn) => turn.clone(),
             _ => json!({
-                "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
+                "id": request
+                    .client_turn_id
+                    .clone()
+                    .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple())),
                 "role": "user",
                 "content": message,
                 "timestamp": iso_now(),
@@ -1405,6 +1437,11 @@ impl WorkspaceConversationService {
             if !delivered {
                 user_turn["status"] = json!("queued");
                 mutations.push(turn_mutation_from_value(&user_turn)?);
+            } else if let Some(client_turn_id) = request.client_turn_id.clone() {
+                delivered_client_turn_ids()
+                    .lock()
+                    .unwrap()
+                    .insert((conversation_id.to_string(), client_turn_id));
             }
             if !mutations.is_empty() {
                 commit_conversation_mutations(
@@ -4363,6 +4400,17 @@ enum TurnStart<'a> {
     Send,
     /// This queued message, as the next turn.
     Queued(&'a Value),
+}
+
+/// Client turn ids of messages delivered into a running turn, by conversation.
+/// Callers hold the conversation's turn lock.
+fn delivered_client_turn_ids() -> &'static Mutex<std::collections::BTreeSet<(String, String)>> {
+    static IDS: std::sync::OnceLock<Mutex<std::collections::BTreeSet<(String, String)>>> =
+        std::sync::OnceLock::new();
+    // ponytail: one small entry per mid-turn message for the process's
+    // lifetime. After a restart the reported segment answers; a message its
+    // turn never reported died with that turn, so a resend may start it again.
+    IDS.get_or_init(Default::default)
 }
 
 /// Held from deciding whether a message starts, joins or queues behind a

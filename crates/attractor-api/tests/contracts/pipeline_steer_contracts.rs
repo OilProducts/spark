@@ -312,7 +312,9 @@ fn steer_delivers_to_active_claude_code_agent_node() {
         "claude-code",
         content(&settings, agent_flow("steer_claude")),
     );
-    wait_for_log(&log, "USER_CONTENT=", 1);
+    // The CLI logs the prompt before it sends system/init, and the session
+    // takes messages only after init; its reply follows init on the stream.
+    wait(|| node_log_contains(&settings, "steer-claude", "work", "Working."));
 
     let result = steer(
         &service,
@@ -373,7 +375,9 @@ fn steer_a_claude_code_turn_never_reads_shows_as_not_sent() {
         "claude-code",
         content(&settings, agent_flow("steer_claude_unread")),
     );
-    wait_for_log(&log, "USER_CONTENT=", 1);
+    // The CLI logs the prompt before it sends system/init, and the session
+    // takes messages only after init; its reply follows init on the stream.
+    wait(|| node_log_contains(&settings, "steer-claude-unread", "work", "Working."));
 
     let result = steer(
         &service,

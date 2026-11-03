@@ -32,6 +32,11 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<(
             temp_path: temp_path_buf,
             source,
         })?;
+    // The rename is durable only once the directory entry is.
+    #[cfg(unix)]
+    fs::File::open(&parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|source| StorageError::io("sync parent directory of", path, source))?;
     Ok(())
 }
 

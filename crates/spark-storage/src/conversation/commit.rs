@@ -227,6 +227,7 @@ impl ConversationRepository {
         // conversation.json is the published revision cursor. Append detailed
         // events and semantic transcript records before advancing it so a
         // crash cannot acknowledge state that recovery can no longer hydrate.
+        activity.sync()?;
         write_record(&record_paths, &record, &write_plan)?;
 
         Ok(ConversationCommit {

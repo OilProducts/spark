@@ -1,7 +1,7 @@
 import { useCallback, useMemo, type SetStateAction } from 'react'
 import { useStore } from '@/store'
 
-import type { PendingConversationTurnState } from '../model/conversationState'
+import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { ComposerAttachment } from '../model/types'
 
 type UseProjectsHomeInteractionStateArgs = {
@@ -22,6 +22,7 @@ const EMPTY_CONVERSATION_SESSION = {
     isPinnedToBottom: true,
     scrollTop: null as number | null,
     attachments: [] as ComposerAttachment[],
+    pendingMessages: [] as PendingUserMessage[],
 }
 
 export function useProjectsHomeInteractionState({
@@ -118,6 +119,7 @@ export function useProjectsHomeInteractionState({
         panelError: projectSession.panelError,
         pendingConversationTurn: projectSession.pendingConversationTurn,
         pendingDeleteConversationId: projectSession.pendingDeleteConversationId,
+        pendingMessages: conversationSession.pendingMessages,
         setChatDraft,
         setPanelError,
         setPendingConversationTurn,

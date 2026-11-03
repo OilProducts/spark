@@ -990,6 +990,7 @@ export async function sendConversationTurnValidated(
     payload: {
         project_path: string
         message: string
+        client_turn_id?: string
         attachment_ids?: string[]
         provider?: string | null
         llm_profile?: string | null

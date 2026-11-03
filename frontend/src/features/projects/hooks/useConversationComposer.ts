@@ -7,7 +7,7 @@ import {
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import type { PendingConversationTurnState } from '../model/conversationState'
+import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments } from './useComposerAttachments'
 
@@ -135,20 +135,48 @@ export function useConversationComposer({
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
         const chatMode = parsedCommand?.chatMode ?? null
-        const attachmentIds = sending.map((entry) => entry.attachment!.id)
-        await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const sentAttachments = sending.map((entry) => entry.attachment!)
+        const attachmentIds = sentAttachments.map((attachment) => attachment.id)
+        // The server records the message under this id, so the pending entry is
+        // replaced in place and a resent request cannot add a second turn.
+        // getRandomValues, unlike randomUUID, also works on plain-HTTP (non-secure) origins.
+        const clientTurnId = `turn-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+        const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
+            const store = useStore.getState()
+            store.updateHomeConversationSession(conversationId, {
+                pendingMessages: update(store.homeConversationSessionsById[conversationId]?.pendingMessages ?? []),
+            })
+        }
+        updatePendingMessages((messages) => [...messages, {
+            id: clientTurnId,
+            kind: 'message',
+            role: 'user',
+            content: messageToSend,
+            timestamp: new Date().toISOString(),
+            status: 'pending',
+            ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
+        }])
+        // The message shows in the transcript now, so the composer clears now;
+        // a failed send puts the text back ahead of anything typed meanwhile.
+        const currentDraft = () => useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? ''
+        const setDraft = (draft: string) => useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
+        if (currentDraft() === chatDraft) {
+            setDraft('')
+        }
+        const accepted = await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
+            client_turn_id: clientTurnId,
             ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
             chat_mode: chatMode,
         }), () => {
-            // Accepted: clear what was sent, keeping anything typed or attached meanwhile.
+            // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
-            const store = useStore.getState()
-            if (store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft === chatDraft) {
-                store.updateHomeProjectSession(activeProjectPath, { chatDraft: '' })
-            }
         })
+        if (!accepted) {
+            updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
+            setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
+        }
     }
 
     /** Resends a failed turn's message as a new turn; the draft is left alone. */
@@ -167,9 +195,9 @@ export function useConversationComposer({
         failure: string,
         start: () => Promise<ConversationSnapshotResponse>,
         onAccepted?: () => void,
-    ) => {
+    ): Promise<boolean> => {
         if (!activeProjectPath) {
-            return
+            return false
         }
         const afterRevision = getCurrentConversationRevision(conversationId)
         setPendingConversationTurn({ conversationId, afterRevision })
@@ -184,9 +212,11 @@ export function useConversationComposer({
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
+            return true
         } catch (error) {
             const message = formatErrorMessage(error, failure)
             setPanelError(message)
+            return false
         } finally {
             setPendingConversationTurn(null)
             setSendingChat(conversationId, false)

@@ -153,6 +153,71 @@ fn a_message_sent_while_a_native_turn_runs_joins_it_in_order() {
     assert_eq!(assistant["content"], "Done.");
 }
 
+/// A resent mid-turn message, matched by its client turn id, is neither
+/// delivered again nor started as a turn: before the turn reports it, after it
+/// does, and after the turn ends.
+#[test]
+fn a_resent_mid_turn_message_is_delivered_once() {
+    let resend = |service: &WorkspaceConversationService| {
+        let (started, snapshot) = service
+            .send_turn(
+                "native-resend",
+                ConversationTurnRequest {
+                    client_turn_id: Some("turn-steer1".to_string()),
+                    ..turn("Also update the docs.")
+                },
+            )
+            .unwrap();
+        assert!(started.is_none(), "the resend started a turn");
+        snapshot
+    };
+    let reported = |snapshot: &Value| {
+        user_messages(snapshot)
+            .iter()
+            .any(|segment| segment["id"] == "segment-user-message-turn-steer1")
+    };
+    let (_temp, service, calls) = native_chat(move |service, index, _| {
+        if index == 0 {
+            let first = resend(service);
+            assert!(!reported(&first));
+            // Before the turn reports the delivery.
+            let again = resend(service);
+            assert!(!reported(&again));
+            return Ok(answer("Working."));
+        }
+        // The turn reports the message before the model reads it.
+        let snapshot = service
+            .get_snapshot("native-resend", Some(PROJECT))
+            .unwrap();
+        assert!(reported(&snapshot), "{snapshot}");
+        resend(service);
+        Ok(answer("Done."))
+    });
+    let service = service.get().unwrap();
+
+    service
+        .execute_turn("native-resend", turn("Do the work"))
+        .unwrap();
+    let snapshot = resend(service);
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2, "a resend reached the model as a new turn");
+    let delivered = calls[1]
+        .messages
+        .iter()
+        .filter(|message| **message == Message::user("Also update the docs."))
+        .count();
+    assert_eq!(delivered, 1);
+    assert_eq!(user_messages(&snapshot).len(), 1, "{snapshot}");
+    let user_turns = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .count();
+    assert_eq!(user_turns, 1, "{snapshot}");
+}
+
 #[test]
 fn stop_completes_a_native_turn_and_shows_its_unread_message_not_sent() {
     let (_temp, service, calls) = native_chat(|service, _, request| {

@@ -76,6 +76,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
                 reasoning_effort: Some("high".to_string()),
                 chat_mode: Some("plan".to_string()),
                 attachment_ids: Vec::new(),
+                client_turn_id: None,
             },
         )
         .expect("start turn");
@@ -487,6 +488,7 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("plan".to_string()),
                 attachment_ids: Vec::new(),
+                client_turn_id: None,
             },
         )
         .expect("second turn");
@@ -647,6 +649,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("plan".to_string()),
                 attachment_ids: Vec::new(),
+                client_turn_id: None,
             },
         )
         .expect("second execution");
@@ -3053,6 +3056,7 @@ fn live_replay_substitutes_a_fresh_snapshot_for_slim_journal_refs() {
                 reasoning_effort: None,
                 chat_mode: Some("plan".to_string()),
                 attachment_ids: Vec::new(),
+                client_turn_id: None,
             },
         )
         .expect("start turn");

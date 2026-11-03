@@ -976,6 +976,68 @@ async fn request_user_input_answer_route_returns_backend_errors_without_expiring
     assert!(assistant_turn.get("error").is_none());
 }
 
+/// The browser names the user turn so it can render it before the response;
+/// resending the same request returns the current state without a new turn.
+#[tokio::test]
+async fn conversation_turn_route_keeps_client_turn_id_and_ignores_a_resend() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
+        final_assistant_text: Some("Only answer.".to_string()),
+        ..AgentTurnOutput::default()
+    }]);
+    let backend_requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let uri = "/workspace/api/conversations/conversation-client-id/turns";
+    let body = json!({
+        "project_path": "/projects/client-id",
+        "message": "Hello",
+        "provider": "codex",
+        "client_turn_id": "turn-browser1",
+    });
+    let turns_of = |snapshot: &Value| snapshot["turns"].as_array().expect("turns").clone();
+
+    let (status, first, _) = request_json(app.clone(), "POST", uri, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    let user_turn = turns_of(&first)
+        .into_iter()
+        .find(|turn| turn["role"] == "user")
+        .expect("user turn");
+    assert_eq!(user_turn["id"], "turn-browser1");
+    assert_eq!(user_turn["content"], "Hello");
+    let answered = wait_for_conversation_snapshot(
+        &settings,
+        "conversation-client-id",
+        "/projects/client-id",
+        |snapshot| {
+            snapshot["turns"]
+                .as_array()
+                .expect("turns")
+                .iter()
+                .any(|turn| turn["role"] == "assistant" && turn["status"] == "complete")
+        },
+    )
+    .await;
+
+    let (status, resent, _) = request_json(app.clone(), "POST", uri, Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(turns_of(&resent).len(), turns_of(&answered).len());
+    assert_eq!(backend_requests.lock().expect("requests").len(), 1);
+
+    let (status, _, _) = request_json(
+        app.clone(),
+        "POST",
+        uri,
+        Some(json!({
+            "project_path": "/projects/client-id",
+            "message": "Bad id",
+            "client_turn_id": "../escape",
+        })),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}");
+}
+
 pub(super) async fn request_json(
     app: axum::Router,
     method: &str,

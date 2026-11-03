@@ -1789,6 +1789,104 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     );
 }
 
+/// The handler subscribes before it reads initial state, so a change made
+/// while that read runs still reaches the stream. A FIFO in place of
+/// conversation.json holds the read open while a trigger is created.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_route_delivers_a_change_made_while_it_reads_initial_state() {
+    use std::io::Write;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/run");
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path = project_path.canonicalize().expect("canonical project");
+    trigger_project(&settings, &project_path);
+    seed_conversation(&settings, &project_path, "conversation-gap");
+    let record = ConversationRepository::new(&settings.data_dir)
+        .project_paths(&project_path.to_string_lossy())
+        .expect("project paths")
+        .conversations_dir
+        .join("conversation-gap/conversation.json");
+    // Startup recovery reads conversation records, so build before the swap.
+    let app = build_app(settings);
+    let staged = record.with_extension("staged");
+    fs::rename(&record, &staged).expect("stage record");
+    let content = fs::read(&staged).expect("record");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&record)
+        .status()
+        .expect("mkfifo")
+        .success());
+    let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let writer = std::thread::spawn({
+        let record = record.clone();
+        move || {
+            // Opening blocks until the handler opens the record to read it.
+            let mut fifo = fs::OpenOptions::new()
+                .write(true)
+                .open(&record)
+                .expect("open fifo");
+            opened_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            fs::rename(&staged, &record).expect("restore record");
+            fifo.write_all(&content).expect("write record");
+        }
+    });
+    let uri = format!(
+        "/workspace/api/live/events?conversation_id=conversation-gap&conversation_project_path={path}&include_triggers=true&triggers_project_path={path}",
+        path = url_encode(&project_path.to_string_lossy())
+    );
+    let live = tokio::spawn({
+        let app = app.clone();
+        async move { request(app, "GET", &uri, None).await }
+    });
+    tokio::task::spawn_blocking(move || opened_rx.recv_timeout(Duration::from_secs(20)))
+        .await
+        .unwrap()
+        .expect("the handler reads conversation.json");
+    let created = request(
+        app,
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project_path,
+            "name": "Gap webhook",
+            "source_type": "webhook",
+            "action": {"flow_name": "ops/run"},
+            "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let trigger_id = json_body(created).await["id"].as_str().unwrap().to_string();
+    release_tx.send(()).unwrap();
+    writer.join().unwrap();
+
+    let mut stream = live.await.unwrap().into_body().into_data_stream();
+    let mut types = Vec::new();
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .unwrap_or_else(|_| panic!("no trigger.upsert after {types:?}"))
+            .expect("SSE stream item")
+            .expect("SSE bytes");
+        let frame = String::from_utf8(frame.to_vec()).unwrap();
+        if frame.starts_with(':') {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        if envelope["type"] == "trigger.upsert" {
+            assert_eq!(envelope["resource"]["id"], trigger_id);
+            break;
+        }
+        types.push(envelope["type"].clone());
+    }
+    assert_eq!(types, ["conversation.snapshot", "trigger.snapshot"]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_route_streams_mission_upserts_through_turn_delivery() {
     let temp = tempfile::tempdir().expect("tempdir");

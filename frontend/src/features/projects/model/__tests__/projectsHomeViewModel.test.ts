@@ -82,6 +82,7 @@ describe('buildProjectsHomeViewModel', () => {
       activeConversationRecord: hydrateConversationRecordFromSnapshot(snapshot),
       activeProjectPath: '/tmp/project-alpha',
       pendingConversationTurn: null,
+      pendingMessages: [],
       projectGitMetadata: {
         '/tmp/project-alpha': {
           branch: 'main',
@@ -130,6 +131,7 @@ describe('buildProjectsHomeViewModel', () => {
         conversationId: 'conversation-1',
         afterRevision: record.revision,
       },
+      pendingMessages: [],
       projectGitMetadata: {},
       uiDefaults: {
         llm_model: '',
@@ -145,5 +147,42 @@ describe('buildProjectsHomeViewModel', () => {
       role: 'user',
       content: 'Start planning.',
     })
+  })
+
+  it('shows a sent message until the server records it as a turn or a delivered segment', () => {
+    const pendingMessage = {
+      id: 'turn-sent',
+      kind: 'message' as const,
+      role: 'user' as const,
+      content: 'Next step?',
+      timestamp: '2026-03-24T18:02:00Z',
+      status: 'pending' as const,
+    }
+    const build = (changes: Partial<ConversationSnapshotResponse>) => buildProjectsHomeViewModel({
+      activeConversationId: 'conversation-1',
+      activeConversationRecord: hydrateConversationRecordFromSnapshot({ ...snapshot, ...changes }),
+      activeProjectPath: '/tmp/project-alpha',
+      pendingConversationTurn: null,
+      pendingMessages: [pendingMessage],
+      projectGitMetadata: {},
+      uiDefaults: { llm_model: '', llm_provider: 'codex', reasoning_effort: '' },
+    }).activeConversationHistory.filter((entry) => entry.role === 'user')
+
+    expect(build({ turns: snapshot.turns.slice(0, 1) }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
+      .toEqual([['turn-user', 'complete'], ['turn-sent', 'pending']])
+    // Recorded as a user turn under the same id.
+    expect(build({
+      turns: [snapshot.turns[0], { ...pendingMessage, status: 'complete', artifact_id: null }],
+    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
+      .toEqual([['turn-user', 'complete'], ['turn-sent', 'complete']])
+    // Delivered into the running turn: its segment renders under the same id.
+    expect(build({
+      segments: [{
+        id: 'segment-user-message-turn-sent', turn_id: 'turn-assistant', order: 1, kind: 'user_message', role: 'user',
+        status: 'complete', content: 'Next step?', timestamp: '2026-03-24T18:02:01Z', updated_at: '2026-03-24T18:02:01Z',
+        completed_at: null, artifact_id: null, error: null, source: null, tool_call: null,
+      }],
+    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
+      .toEqual([['turn-user', 'complete'], ['turn-sent', 'delivered']])
   })
 })

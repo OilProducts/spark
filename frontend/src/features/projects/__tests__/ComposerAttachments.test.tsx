@@ -79,8 +79,10 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
         return json({ detail: 'backend unavailable' }, 503)
       }
       const ids = (body.attachment_ids as string[] | undefined) ?? []
+      // Like the server, the user turn keeps the browser's id.
+      const userTurnId = String(body.client_turn_id)
       return json(snapshot(conversationId, [{
-        id: 'turn-user-1',
+        id: userTurnId,
         role: 'user',
         content: body.message,
         timestamp: '2026-10-01T10:01:00Z',
@@ -102,7 +104,7 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
         timestamp: '2026-10-01T10:01:01Z',
         status: 'complete',
         kind: 'message',
-        parent_turn_id: 'turn-user-1',
+        parent_turn_id: userTurnId,
       }]))
     }
     if (conversationId && !init?.method) {
@@ -213,7 +215,7 @@ describe('composer attachments', () => {
     await waitFor(() => expect(pendingAttachments()).toHaveLength(0))
     expect(server.turns).toEqual([{
       conversationId: 'chat-a',
-      body: { project_path: PROJECT, message: '', attachment_ids: ['att-1', 'att-2', 'att-3'], chat_mode: null },
+      body: { project_path: PROJECT, message: '', client_turn_id: expect.stringMatching(/^turn-/), attachment_ids: ['att-1', 'att-2', 'att-3'], chat_mode: null },
     }])
     const history = await screen.findByTestId('message-attachments')
     expect(within(history).getByRole('img', { name: 'screenshot.png' })).toHaveAttribute(
@@ -340,7 +342,7 @@ describe('composer attachments', () => {
     await waitFor(() => expect(server.turns).toHaveLength(1))
     expect(server.turns[0]).toEqual({
       conversationId: 'chat-b',
-      body: { project_path: PROJECT, message: 'Only text here', chat_mode: null },
+      body: { project_path: PROJECT, message: 'Only text here', client_turn_id: expect.stringMatching(/^turn-/), chat_mode: null },
     })
 
     await user.click(screen.getByRole('button', { name: /Open thread Chat A/i }))

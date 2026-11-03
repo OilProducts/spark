@@ -21,7 +21,7 @@ import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
 import { isThinkingEntry } from '../model/conversationTimeline'
-import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
+import { buildProjectsHomeViewModel, isPendingMessageRecorded } from '../model/projectsHomeViewModel'
 import { projectLabel } from '../model/projectChoices'
 import { latestContextUsage } from '../components/ContextMeter'
 import {
@@ -79,6 +79,7 @@ export function useProjectsHomeController() {
         panelError,
         pendingConversationTurn,
         pendingDeleteConversationId,
+        pendingMessages,
         setChatDraft,
         setPanelError,
         setPendingConversationTurn,
@@ -105,6 +106,7 @@ export function useProjectsHomeController() {
         activeConversationRecord,
         activeProjectPath,
         pendingConversationTurn,
+        pendingMessages,
         projectGitMetadata,
         uiDefaults,
     }), [
@@ -113,6 +115,7 @@ export function useProjectsHomeController() {
         activeProjectPath,
         activeProjectScope,
         pendingConversationTurn,
+        pendingMessages,
         projectGitMetadata,
         uiDefaults,
     ])
@@ -207,6 +210,19 @@ export function useProjectsHomeController() {
             setPendingConversationTurn(null)
         }
     }, [activeConversationRecord, pendingConversationTurn, setPendingConversationTurn])
+
+    // A sent message stays pending until the server records it under its id.
+    useEffect(() => {
+        if (!activeConversationRecord || !pendingMessages.some((message) => isPendingMessageRecorded(activeConversationRecord, message.id))) {
+            return
+        }
+        const conversationId = activeConversationRecord.conversation_id
+        const store = useStore.getState()
+        store.updateHomeConversationSession(conversationId, {
+            pendingMessages: (store.homeConversationSessionsById[conversationId]?.pendingMessages ?? [])
+                .filter((message) => !isPendingMessageRecorded(activeConversationRecord, message.id)),
+        })
+    }, [activeConversationRecord, pendingMessages])
 
     const attachmentUrl = useMemo(() => (
         activeConversationId && activeProjectPath

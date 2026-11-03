@@ -839,3 +839,43 @@ fn read_snapshot_derives_plan_segment_artifact_id_from_plan_record() {
     .expect("transcript");
     assert!(!transcript.contains("proposed-plan-1"));
 }
+
+/// Both logs are synced after the appends and before anything is published.
+/// A log linked to /dev/null takes appends and reads as empty, but cannot be
+/// synced, so its commit must fail with no artifact or conversation.json written.
+#[cfg(unix)]
+#[test]
+fn commit_conversation_syncs_both_logs_before_publishing() {
+    let project_path = "/projects/durable";
+    let (temp, repo) = setup(project_path);
+    let artifact = || ConversationMutation::ArtifactUpserted {
+        collection: ArtifactCollection::FlowRunRequests,
+        artifact: json!({"id": "request-a", "status": "pending_review"}),
+    };
+    // A turn appends to both logs; an artifact alone appends only an event.
+    for (conversation_id, log, mutations) in [
+        (
+            "conversation-transcript",
+            "transcript.jsonl",
+            vec![
+                ConversationMutation::TurnUpserted {
+                    turn: user_turn("turn-user", "Hello"),
+                },
+                artifact(),
+            ],
+        ),
+        ("conversation-events", "events.jsonl", vec![artifact()]),
+    ] {
+        let dir = conversation_dir(&temp, project_path, conversation_id);
+        fs::create_dir_all(&dir).expect("conversation dir");
+        std::os::unix::fs::symlink("/dev/null", dir.join(log)).expect("link log");
+
+        let error = repo
+            .commit_conversation(conversation_id, project_path, 0, mutations)
+            .expect_err("an unsyncable log fails the commit");
+
+        assert!(error.to_string().contains("sync"), "{log}: {error}");
+        assert!(!dir.join("conversation.json").exists(), "{log}");
+        assert!(!dir.join("artifacts").exists(), "{log}");
+    }
+}
