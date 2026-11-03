@@ -7,7 +7,8 @@ use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{workspace_records::RecordRepository, ProjectRegistry};
+use spark_storage::{workspace_records::RecordRepository, ConversationStore, ProjectRegistry};
+use std::sync::Arc;
 
 const EDITABLE_FIELDS: &[&str] = &["title", "description", "archived", "budget", "playbook"];
 
@@ -153,10 +154,11 @@ fn stored(mission: &MissionRecord) -> Value {
 #[derive(Clone)]
 pub struct WorkspaceMissionService {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
 }
 impl WorkspaceMissionService {
-    pub fn new(settings: SparkSettings) -> Self {
-        Self { settings }
+    pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
+        Self { settings, store }
     }
     fn scope(&self, project_path: &str) -> WorkspaceResult<spark_storage::ProjectPaths> {
         if project_path.trim().is_empty() {
@@ -190,7 +192,7 @@ impl WorkspaceMissionService {
             || (mission.inbox.runs.iter().any(RosterEntry::in_flight)
                 && !mission.inbox.runs.iter().any(|run| run.status == "waiting"))
             || mission.conversation_id.as_deref().is_some_and(|id| {
-                WorkspaceConversationService::new(self.settings.clone())
+                WorkspaceConversationService::new(self.settings.clone(), self.store.clone())
                     .turn_in_flight(id, &mission.project_path)
             })
         {
@@ -342,7 +344,7 @@ impl WorkspaceMissionService {
         if mutation.revision.is_some() {
             return Err(invalid("Creation must omit revision"));
         }
-        let source = spark_storage::ConversationHandleRepository::new(&self.settings.data_dir)
+        let source = spark_storage::ConversationRepository::new(self.store.clone())
             .find_conversation_by_handle(handle)?
             .ok_or_else(|| {
                 WorkspaceError::NotFound(format!("Unknown conversation handle: {handle}"))
@@ -590,7 +592,7 @@ impl WorkspaceMissionService {
                 inbox::runtime(&self.settings),
                 mission.conversation_id.as_deref(),
             ) {
-                let _ = inbox::conversations(&self.settings, &runtime)
+                let _ = inbox::conversations(&self.settings, &self.store, &runtime)
                     .interrupt_turn(conversation, &mission.project_path);
             }
             self.close_locked(
@@ -635,7 +637,8 @@ impl WorkspaceMissionService {
         else {
             return;
         };
-        let roles = crate::roles::WorkspaceRoleService::new(self.settings.clone());
+        let roles =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone());
         let Some(role) = roles.conversation_role(&mission.project_path, source) else {
             return;
         };
@@ -665,8 +668,11 @@ impl WorkspaceMissionService {
         for trigger in self.enabled_targeting_triggers(mission)? {
             states.update(&trigger.id, |state| state.enabled = false)?;
             if let Some(runtime) = inbox::runtime(&self.settings) {
-                let saved = crate::triggers::WorkspaceTriggerService::new(self.settings.clone())
-                    .get_trigger(&mission.project_path, &trigger.id)?;
+                let saved = crate::triggers::WorkspaceTriggerService::new(
+                    self.settings.clone(),
+                    self.store.clone(),
+                )
+                .get_trigger(&mission.project_path, &trigger.id)?;
                 (runtime.publish)(crate::live::trigger_upsert_envelope(&json!(saved)));
             }
             disabled.push(format!("{} ({})", trigger.name, trigger.id));
@@ -686,11 +692,8 @@ impl WorkspaceMissionService {
         });
         mission.note(actor, &note);
         if let Some(conversation) = &mission.conversation_id {
-            WorkspaceConversationService::new(self.settings.clone()).append_notice(
-                conversation,
-                &mission.project_path,
-                &note,
-            )?;
+            WorkspaceConversationService::new(self.settings.clone(), self.store.clone())
+                .append_notice(conversation, &mission.project_path, &note)?;
         }
         Ok(())
     }
@@ -742,6 +745,7 @@ impl WorkspaceMissionService {
         let (project, id) = (mission.project_path.clone(), mission.id.clone());
         if inbox::deliver_inbox(
             &self.settings,
+            &self.store,
             repo,
             &mission.id,
             &conversation,
@@ -801,8 +805,11 @@ impl WorkspaceMissionService {
                     continue;
                 }
                 if let Some(conversation) = &mission.conversation_id {
-                    let _ = WorkspaceConversationService::new(self.settings.clone())
-                        .abandon_active_turn(conversation, &mission.project_path);
+                    let _ = WorkspaceConversationService::new(
+                        self.settings.clone(),
+                        self.store.clone(),
+                    )
+                    .abandon_active_turn(conversation, &mission.project_path);
                 }
                 for run in mission.inbox.runs.iter().filter(|run| run.in_flight()) {
                     let _ = self.deliver(&run.run_id, true);

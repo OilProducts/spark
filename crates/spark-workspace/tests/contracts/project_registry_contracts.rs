@@ -31,10 +31,13 @@ enabled = false
     fs::create_dir_all(&project_dir).expect("project");
 
     let record = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: Some("native-dev".to_string()),
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: Some("native-dev".to_string()),
+            },
+        )
         .expect("register");
     assert_eq!(record.execution_profile_id.as_deref(), Some("native-dev"));
 
@@ -55,10 +58,13 @@ enabled = false
         .unwrap();
     assert_eq!(updated.last_opened_at, "2001-01-01T00:00:00Z");
     let reopened = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: record.project_path.clone(),
-            execution_profile_id: None,
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: record.project_path.clone(),
+                execution_profile_id: None,
+            },
+        )
         .unwrap();
     assert!(reopened.last_opened_at > updated.last_opened_at);
     assert_eq!(reopened.created_at, record.created_at);
@@ -95,10 +101,13 @@ fn project_service_sets_up_definitions_before_recording_a_registration() {
     let service = WorkspaceProjectService::new(settings.clone());
     let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
     let register = |path: &Path, profile: Option<&str>| {
-        service.register_project(ProjectRegistrationRequest {
-            project_path: path.to_string_lossy().into_owned(),
-            execution_profile_id: profile.map(str::to_string),
-        })
+        service.register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: path.to_string_lossy().into_owned(),
+                execution_profile_id: profile.map(str::to_string),
+            },
+        )
     };
     let recorded = |path: &Path| {
         registry
@@ -259,10 +268,13 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     fs::create_dir_all(&project_dir).expect("project dir");
     let service = WorkspaceProjectService::new(settings.clone());
     let project = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: None,
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: None,
+            },
+        )
         .expect("register");
     let conversations_dir = settings
         .projects_dir
@@ -345,7 +357,10 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     );
 
     let summaries = service
-        .list_project_conversations(Some(&project.project_path))
+        .list_project_conversations(
+            &crate::conversations(settings.clone()),
+            Some(&project.project_path),
+        )
         .expect("conversations");
 
     assert_eq!(

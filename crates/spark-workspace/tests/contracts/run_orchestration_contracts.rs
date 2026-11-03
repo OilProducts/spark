@@ -5,11 +5,8 @@ use attractor_core::{CheckpointState, FlowDefinition, RunRecord};
 use attractor_runtime::{CreateRunRequest, RunStore};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{ConversationHandleRepository, ProjectRegistry};
-use spark_workspace::{
-    RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
-    WorkspaceError,
-};
+use spark_storage::ProjectRegistry;
+use spark_workspace::{RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceError};
 
 #[test]
 fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
@@ -23,7 +20,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
         project_path.to_str().expect("utf-8"),
         "conversation-launch",
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let response = service
         .launch_workspace_run(RunLaunchRequest {
@@ -79,7 +76,14 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
         .record
         .expect("record");
     assert_eq!(run.flow_name, "ops/run");
-    assert_eq!(run.project_path, project_path.to_string_lossy());
+    // Stored conversations hold the normalized project path.
+    assert_eq!(
+        run.project_path,
+        project_path
+            .canonicalize()
+            .expect("canonical")
+            .to_string_lossy()
+    );
     assert_eq!(run.llm_provider, "anthropic");
     assert_eq!(run.reasoning_effort.as_deref(), Some("low"));
 }
@@ -98,7 +102,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
         project_path.to_str().expect("utf-8"),
         "conversation-launch",
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let response = service
         .launch_workspace_run(RunLaunchRequest {
@@ -173,7 +177,7 @@ fn launches_resolve_flows_through_the_projects_org_repo() {
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
     let name = crate::install_org_flow(&project_path, simple_flow());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let launch = |project: &Path| {
         service.launch_workspace_run(RunLaunchRequest {
             flow_name: name.clone(),
@@ -210,7 +214,7 @@ fn retry_and_continue_record_recovery_artifacts_and_delegate_to_attractor() {
         "conversation-recovery",
     );
     seed_failed_run(&settings, "run-failed", &project_path);
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let retry = service
         .retry_workspace_run(
@@ -376,7 +380,7 @@ fn checkpoint(current_node: &str) -> CheckpointState {
 
 fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
     let registry = ProjectRegistry::new(&settings.data_dir);
-    let project = registry
+    let _project = registry
         .ensure_project_paths(project_path)
         .expect("project");
     write_legacy_conversation_files(
@@ -408,15 +412,6 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
             "proposed_plans": []
         }),
     );
-    ConversationHandleRepository::new(&settings.data_dir)
-        .ensure_conversation_handle(
-            conversation_id,
-            &project.project_id,
-            project_path,
-            "2026-01-01T00:00:00Z",
-            Some("amber-anchor"),
-        )
-        .expect("handle");
 }
 
 fn simple_flow() -> Value {

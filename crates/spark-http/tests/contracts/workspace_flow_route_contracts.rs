@@ -67,7 +67,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
             "edges": [{"from": "start", "to": "review"}, {"from": "review", "to": "done"}]
         }),
     );
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let query = format!("?project_path={}", project.display());
 
     let bundled = request_json(app.clone(), "GET", "/workspace/api/flows", None).await;
@@ -238,7 +238,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
 async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let missing = request_json(app.clone(), "GET", "/workspace/api/flows/missing", None).await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
@@ -297,7 +297,7 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
     std::fs::write(memory.join("notes/a.md"), "note a\n").expect("note");
     let before = walk(&project);
 
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let query = format!("project_path={}", project.display());
     let get = |uri: String| {
         let app = app.clone();
@@ -464,7 +464,7 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
     )
     .expect("bundled moves on");
 
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let query = format!("project_path={}", project.display());
     let get = |uri: String| {
         let app = app.clone();
@@ -547,7 +547,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     std::fs::create_dir_all(&memory).expect("memory");
     symlink(&outside, memory.join("coordinator")).expect("link");
 
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let query = format!("project_path={}", project.display());
     for uri in [
         format!("/workspace/api/org/item?{query}&kind=role&name=leak"),
@@ -636,7 +636,7 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
     std::fs::create_dir_all(&org_roles).expect("org roles");
     symlink(outside.join("project.md"), org_roles.join("coordinator.md")).expect("link");
 
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let list = || {
         let app = app.clone();
         let uri = format!("/workspace/api/org?project_path={}", project.display());
@@ -684,7 +684,7 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
         "---\ntype: Role\n---\n\nYou coordinate.\n",
     )
     .expect("role");
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let tree = || {
         let mut paths: Vec<_> = walk(temp.path());
         paths.sort();
@@ -692,8 +692,9 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     };
     let before = tree();
     let project = temp.path().join("unseen");
+    // The app stays open: closing it checkpoints its own database.
     let (status, list, _) = request_json(
-        app,
+        app.clone(),
         "GET",
         &format!("/workspace/api/org?project_path={}", project.display()),
         None,
@@ -723,7 +724,7 @@ async fn workspace_org_list_writes_nothing_into_a_partial_workspace_data_root() 
         .expect("project paths");
     std::fs::create_dir_all(&paths.conversations_dir).expect("partial root");
     std::fs::write(paths.root.join("note.txt"), "keep\n").expect("note");
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let tree = || {
         let mut entries: Vec<_> = walk(temp.path())
             .into_iter()
@@ -736,8 +737,9 @@ async fn workspace_org_list_writes_nothing_into_a_partial_workspace_data_root() 
         entries
     };
     let before = tree();
+    // The app stays open: closing it checkpoints its own database.
     let (status, list, _) = request_json(
-        app,
+        app.clone(),
         "GET",
         &format!("/workspace/api/org?project_path={}", project.display()),
         None,

@@ -18,13 +18,10 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_storage::{
-    ActivityRepository, ConversationRepository, ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION,
-};
+use spark_storage::{ConversationRepository, ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION};
 use spark_workspace::{
-    live::conversation_envelopes_after, ConversationRequestUserInputAnswerRequest,
-    ConversationSettingsUpdate, ConversationTurnRequest, WorkspaceConversationService,
-    WorkspaceError,
+    ConversationRequestUserInputAnswerRequest, ConversationSettingsUpdate, ConversationTurnRequest,
+    WorkspaceConversationService, WorkspaceError,
 };
 
 use super::test_support::ENV_LOCK;
@@ -62,7 +59,7 @@ impl Drop for EnvVarGuard {
 fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let (prepared, snapshot) = service
         .start_turn(
@@ -101,28 +98,13 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     // journal entry.
     assert_eq!(snapshot["revision"], 4);
 
-    let events = service
-        .read_events_after("conversation-turn", "/projects/turns", 0)
-        .expect("events");
-    assert_eq!(
-        events
-            .iter()
-            .map(|event| event["type"].as_str().expect("type"))
-            .collect::<Vec<_>>(),
-        vec![
-            "turn_upsert",
-            "turn_upsert",
-            "turn_upsert",
-            "conversation_snapshot_ref"
-        ]
-    );
-    assert_eq!(
-        events
-            .iter()
-            .map(|event| event["revision"].as_i64().expect("revision"))
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4]
-    );
+    // One transaction stored the three turns and the settings metadata.
+    let events = crate::stored_upserts(&settings, "conversation-turn");
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|event| event["type"] == "turn_upsert"));
+    assert!(events
+        .windows(2)
+        .all(|pair| pair[0]["revision"] == pair[1]["revision"]));
 
     let conflict = service
         .start_turn(
@@ -141,7 +123,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
 fn project_chat_persists_every_provider_event_but_only_the_completed_logical_unit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-large-provider-stream",
@@ -176,46 +158,38 @@ fn project_chat_persists_every_provider_event_but_only_the_completed_logical_uni
         )
         .expect("ingest provider stream");
 
+    // Every provider event was traced before projection; the settled turn's
+    // trace is pruned and its sequences stay below the allocator floor.
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths("/projects/large-provider-stream")
         .expect("project paths");
-    let activity = ActivityRepository::new(
-        project
-            .conversations_dir
-            .join("conversation-large-provider-stream"),
-    );
-    let provider_events = activity
-        .read_events()
-        .expect("events")
-        .into_iter()
-        .filter(|record| record.event["type"] == "provider_event")
-        .collect::<Vec<_>>();
-    assert_eq!(provider_events.len(), 50_001);
-    assert!(provider_events
-        .iter()
-        .all(|record| record.event["turn_id"] == prepared.assistant_turn_id));
+    let root = project
+        .conversations_dir
+        .join("conversation-large-provider-stream");
     assert_eq!(
-        provider_events
-            .iter()
-            .filter(|record| record.event["event"]["kind"] == "content_delta")
-            .count(),
-        50_000
+        fs::read(root.join("provider-trace.jsonl")).expect("trace"),
+        Vec::<u8>::new()
     );
-    let transcript = activity.hydrate_transcript().expect("transcript");
-    let logical_units = transcript
+    let stored = crate::shared_store(&settings.data_dir)
+        .database()
+        .read(|read| read.conversation("conversation-large-provider-stream"))
+        .expect("rows")
+        .expect("conversation");
+    assert_eq!(stored.trace_sequence_high_water, 50_001);
+    let logical_units = stored
         .segments
         .iter()
-        .filter(|segment| segment.turn_id == prepared.assistant_turn_id)
+        .filter(|segment| segment["turn_id"] == prepared.assistant_turn_id)
         .collect::<Vec<_>>();
     assert_eq!(logical_units.len(), 1);
-    assert_eq!(logical_units[0].content, "complete");
+    assert_eq!(logical_units[0]["content"], "complete");
 }
 
 #[test]
 fn project_chat_event_and_transcript_share_externalized_tool_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-large-tool-output",
@@ -251,35 +225,43 @@ fn project_chat_event_and_transcript_share_externalized_tool_output() {
     let root = project
         .conversations_dir
         .join("conversation-large-tool-output");
-    let activity = ActivityRepository::new(&root);
-    let event = activity
-        .read_events()
-        .expect("events")
-        .into_iter()
-        .find(|record| record.event["type"] == "provider_event")
-        .expect("provider event");
-    let transcript = activity.hydrate_transcript().expect("transcript");
-    let segment = transcript
+    // The traced event and the stored segment share one immutable blob.
+    let snapshot = service
+        .get_snapshot(
+            "conversation-large-tool-output",
+            Some("/projects/large-tool-output"),
+        )
+        .expect("snapshot");
+    let stored = crate::shared_store(&settings.data_dir)
+        .database()
+        .read(|read| read.conversation("conversation-large-tool-output"))
+        .expect("rows")
+        .expect("conversation");
+    let segment = stored
         .segments
         .iter()
-        .find(|segment| segment.kind == "tool_call")
+        .find(|segment| segment["kind"] == "tool_call")
         .expect("tool segment");
+    let artifact = segment["tool_call"]["output_artifact"]
+        .as_str()
+        .expect("externalized");
+    assert!(artifact.starts_with("tool-output/segment-tool-app-turn-tool-large."));
     assert_eq!(
-        segment.tool_call.as_ref(),
-        Some(&event.event["event"]["tool_call"])
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("tool-output/segment-tool-app-turn-tool-large.txt"))
-            .expect("artifact"),
+        fs::read_to_string(root.join(artifact)).expect("artifact"),
         full_output
     );
+    assert!(snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["tool_call"]["output_artifact"].as_str() == Some(artifact)));
 }
 
 #[test]
 fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-recovered-provider-unit",
@@ -290,7 +272,7 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
             },
         )
         .expect("start turn");
-    let repository = ConversationRepository::new(&settings.data_dir);
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let mut completed = content_completed("assistant", "recovered", "app-turn", "answer");
     repository
         .append_provider_event(
@@ -301,7 +283,7 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
         )
         .expect("persist terminal provider event");
     let read = || {
-        ConversationRepository::new(&settings.data_dir)
+        ConversationRepository::new(crate::shared_store(&settings.data_dir))
             .read_snapshot(
                 "conversation-recovered-provider-unit",
                 Some("/projects/recovered-provider-unit"),
@@ -355,10 +337,7 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
         }],
         vec![vec![completion]],
     );
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
     let (prepared, started) = service
         .start_turn(
             "conversation-provider-write-failure",
@@ -375,20 +354,21 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
     let root = project
         .conversations_dir
         .join("conversation-provider-write-failure");
-    let transcript_path = root.join("transcript.jsonl");
-    let transcript_before = fs::read(&transcript_path).expect("transcript before");
-    let events_path = root.join("events.jsonl");
-    fs::remove_file(&events_path).expect("remove events file");
-    fs::create_dir(&events_path).expect("block event append");
+    let rows = || {
+        crate::shared_store(&settings.data_dir)
+            .database()
+            .read(|read| read.conversation("conversation-provider-write-failure"))
+            .expect("rows")
+    };
+    let before = rows();
+    // A directory where the trace file belongs makes every append fail.
+    fs::create_dir_all(root.join("provider-trace.jsonl")).expect("block trace append");
 
     let error = service
         .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
         .expect_err("provider event write must fail the turn");
     assert!(matches!(error, WorkspaceError::Internal(_)));
-    assert_eq!(
-        fs::read(&transcript_path).expect("transcript after"),
-        transcript_before
-    );
+    assert_eq!(rows(), before);
 }
 
 #[test]
@@ -396,7 +376,7 @@ fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
     let _env_lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let _debug_guard = EnvVarGuard::remove(ENV_SPARK_DEBUG_CODEX_JSONRPC);
     let (default_prepared, _) = service
@@ -444,7 +424,7 @@ fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
 #[test]
 fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
 
     let (first_prepared, _snapshot) = service
         .start_turn(
@@ -581,7 +561,7 @@ fn start_turn_agent_history_does_not_hydrate_removed_legacy_state_turns() {
         }),
     );
 
-    let service = WorkspaceConversationService::new(settings);
+    let service = crate::conversations(settings);
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-legacy-agent-request",
@@ -621,10 +601,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
 
     service
         .execute_turn(
@@ -707,59 +684,38 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
     assert_eq!(snapshot["revision"], persisted["revision"]);
     assert_eq!(snapshot["turns"], persisted["turns"]);
 
-    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_codex_jsonrpc_trace("conversation-execute", "/projects/execute")
-        .expect("raw log");
+    let raw_log =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_codex_jsonrpc_trace("conversation-execute", "/projects/execute")
+            .expect("raw log");
     assert!(
         raw_log.is_empty(),
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
-    let events = service
-        .read_events_after("conversation-execute", "/projects/execute", 0)
-        .expect("events");
+    let events = crate::stored_upserts(&settings, "conversation-execute");
     assert!(events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["id"] == assistant_turn_id
             && event["turn"]["status"] == "complete"
     }));
 
-    // Replay from a cursor older than a slim snapshot ref collapses to one
-    // fresh snapshot envelope carrying full current state.
-    let from_zero =
-        conversation_envelopes_after(&settings, "conversation-execute", "/projects/execute", 0)
-            .expect("live envelopes");
-    let snapshot_envelope = from_zero.last().expect("envelope");
-    assert_eq!(snapshot_envelope.event_type, "conversation.snapshot");
-    assert!(snapshot_envelope.payload["state"]["turns"]
+    // A client behind the current revision gets one fresh snapshot carrying
+    // the committed completion.
+    let state =
+        crate::live_snapshot_state(&settings, "conversation-execute", "/projects/execute", 0);
+    assert!(state["turns"]
         .as_array()
         .expect("turns")
         .iter()
-        .any(|turn| turn["id"] == assistant_turn_id && turn["content"] == "Second answer"));
-
-    // Replay after the last ref streams the committed completion upserts.
-    let last_ref_revision = events
-        .iter()
-        .filter(|event| event["type"] == "conversation_snapshot_ref")
-        .filter_map(|event| event["revision"].as_i64())
-        .max()
-        .expect("snapshot ref revision");
-    let live_envelopes = conversation_envelopes_after(
-        &settings,
-        "conversation-execute",
-        "/projects/execute",
-        last_ref_revision,
-    )
-    .expect("live envelopes");
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.turn_upsert"
-            && envelope.payload["turn"]["id"] == assistant_turn_id
-            && envelope.payload["turn"]["status"] == "complete"
-            && envelope.payload["turn"]["content"] == "Second answer"
-            && envelope.payload["turn"]["token_usage"]["total"]["inputTokens"] == json!(12)
-            && envelope.payload["turn"]["token_usage"]["total"]["outputTokens"] == json!(5)
-            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(2)
-    }));
+        .any(|turn| {
+            turn["id"] == assistant_turn_id
+                && turn["status"] == "complete"
+                && turn["content"] == "Second answer"
+                && turn["token_usage"]["total"]["inputTokens"] == json!(12)
+                && turn["token_usage"]["total"]["outputTokens"] == json!(5)
+                && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(2)
+        }));
 }
 
 #[test]
@@ -800,10 +756,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
 
     let stream_failed = service
         .execute_turn(
@@ -859,13 +812,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
     assert_eq!(stream_segment["error_code"], "rate_limit_exceeded");
     assert_eq!(stream_segment["details"]["status_code"], json!(429));
 
-    let stream_events = service
-        .read_events_after(
-            "conversation-execute-stream-failure",
-            "/projects/execute-errors",
-            0,
-        )
-        .expect("stream events");
+    let stream_events = crate::stored_upserts(&settings, "conversation-execute-stream-failure");
     assert!(stream_events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["id"] == stream_assistant_turn_id
@@ -880,22 +827,24 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["segment"]["details"]["raw"]["error"]["code"] == "rate_limit_exceeded"
     }));
 
-    let stream_live = conversation_envelopes_after(
+    let stream_live = crate::live_snapshot_state(
         &settings,
         "conversation-execute-stream-failure",
         "/projects/execute-errors",
         0,
-    )
-    .expect("stream live envelopes");
-    assert!(stream_live.iter().any(|envelope| {
-        envelope.event_type == "conversation.turn_upsert"
-            && envelope.payload["turn"]["id"] == stream_assistant_turn_id
-            && envelope.payload["turn"]["status"] == "failed"
-            && envelope.payload["turn"]["error"] == "backend stream failed"
-            && envelope.payload["turn"]["error_code"] == "rate_limit_exceeded"
-            && envelope.payload["turn"]["details"]["provider"] == "openai"
-            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
-    }));
+    );
+    assert!(stream_live["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| {
+            turn["id"] == stream_assistant_turn_id
+                && turn["status"] == "failed"
+                && turn["error"] == "backend stream failed"
+                && turn["error_code"] == "rate_limit_exceeded"
+                && turn["details"]["provider"] == "openai"
+                && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
+        }));
 
     let resume_failed = service
         .execute_turn(
@@ -941,24 +890,19 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         resume_failed["event_log"][0]["details"]["thread_id"],
         "thread-public-execute"
     );
-    let resume_raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_codex_jsonrpc_trace(
-            "conversation-execute-resume-failure",
-            "/projects/execute-errors",
-        )
-        .expect("resume raw log");
+    let resume_raw_log =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_codex_jsonrpc_trace(
+                "conversation-execute-resume-failure",
+                "/projects/execute-errors",
+            )
+            .expect("resume raw log");
     assert!(
         resume_raw_log.is_empty(),
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
-    let resume_events = service
-        .read_events_after(
-            "conversation-execute-resume-failure",
-            "/projects/execute-errors",
-            0,
-        )
-        .expect("resume events");
+    let resume_events = crate::stored_upserts(&settings, "conversation-execute-resume-failure");
     assert!(resume_events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["id"] == resume_assistant_turn_id
@@ -966,25 +910,26 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["turn"]["error_code"] == "thread_resume_failed"
             && event["turn"]["details"]["thread_id"] == "thread-public-execute"
     }));
-    let resume_live = conversation_envelopes_after(
+    let resume_live = crate::live_snapshot_state(
         &settings,
         "conversation-execute-resume-failure",
         "/projects/execute-errors",
         0,
-    )
-    .expect("resume live envelopes");
-    assert!(resume_live.iter().any(|envelope| {
-        envelope.event_type == "conversation.turn_upsert"
-            && envelope.payload["turn"]["id"] == resume_assistant_turn_id
-            && envelope.payload["turn"]["status"] == "failed"
-            && envelope.payload["turn"]["error_code"] == "thread_resume_failed"
-            && envelope.payload["turn"]["details"]["thread_id"] == "thread-public-execute"
-    }));
-    assert!(resume_live.iter().any(|envelope| {
-        envelope.event_type == "conversation.snapshot"
-            && envelope.payload["state"]["event_log"][0]["details"]["thread_id"]
-                == "thread-public-execute"
-    }));
+    );
+    assert!(resume_live["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| {
+            turn["id"] == resume_assistant_turn_id
+                && turn["status"] == "failed"
+                && turn["error_code"] == "thread_resume_failed"
+                && turn["details"]["thread_id"] == "thread-public-execute"
+        }));
+    assert_eq!(
+        resume_live["event_log"][0]["details"]["thread_id"],
+        "thread-public-execute"
+    );
 }
 
 #[test]
@@ -1014,8 +959,7 @@ fn execute_turn_starts_fresh_codex_thread_after_resume_failure() {
         },
     ]);
     let requests = backend.requests();
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+    let service = crate::conversations_with_backend(settings, Arc::new(backend));
 
     service
         .execute_turn(
@@ -1072,7 +1016,7 @@ fn execute_turn_starts_fresh_codex_thread_after_resume_failure() {
 fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-events",
@@ -1214,24 +1158,17 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
             && segment["details"]["state"] == "closed"
     }));
 
-    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_codex_jsonrpc_trace("conversation-events", "/projects/events")
-        .expect("raw log");
+    let raw_log =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_codex_jsonrpc_trace("conversation-events", "/projects/events")
+            .expect("raw log");
     assert!(
         raw_log.is_empty(),
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
-    let events = service
-        .read_events_after("conversation-events", "/projects/events", 0)
-        .expect("events");
-    assert!(events
-        .iter()
-        .any(|event| event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()));
-
     let live_envelopes =
-        conversation_envelopes_after(&settings, "conversation-events", "/projects/events", 0)
-            .expect("live envelopes");
+        crate::stored_live_envelopes(&settings, "conversation-events", "/projects/events");
     assert!(live_envelopes.iter().any(|envelope| {
         envelope.event_type == "conversation.turn_upsert"
             && envelope.payload["turn"]["id"] == prepared.assistant_turn_id
@@ -1349,7 +1286,7 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
 #[test]
 fn missing_final_answer_event_fails_even_when_final_assistant_text_is_present() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-fallback-final-text",
@@ -1401,7 +1338,7 @@ fn missing_final_answer_event_fails_even_when_final_assistant_text_is_present() 
 fn claude_commentary_materializes_before_tools_and_final_answer_in_chat_and_plan() {
     for chat_mode in ["chat", "plan"] {
         let temp = tempfile::tempdir().expect("tempdir");
-        let service = WorkspaceConversationService::new(settings(temp.path()));
+        let service = crate::conversations(settings(temp.path()));
         let conversation_id = format!("conversation-claude-order-{chat_mode}");
         let (prepared, _) = service
             .start_turn(
@@ -1462,7 +1399,7 @@ fn claude_commentary_materializes_before_tools_and_final_answer_in_chat_and_plan
 #[test]
 fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_content() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-stream-error",
@@ -1506,9 +1443,7 @@ fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_
     assert_eq!(segment["source"]["app_turn_id"], "app-turn");
     assert_eq!(segment["source"]["item_id"], "error-item");
 
-    let events = service
-        .read_events_after("conversation-stream-error", "/projects/stream-error", 2)
-        .expect("events");
+    let events = crate::stored_upserts(&settings(temp.path()), "conversation-stream-error");
     assert!(events
         .iter()
         .any(|event| { event["type"] == "turn_upsert" && event["turn"]["status"] == "failed" }));
@@ -1520,7 +1455,7 @@ fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_
 #[test]
 fn stream_error_with_final_text_and_usage_stays_failed() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-stream-error-final-text",
@@ -1569,13 +1504,10 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
     assert_eq!(segment["error"], "backend failed");
     assert_ne!(segment["content"], "Do not persist as success");
 
-    let events = service
-        .read_events_after(
-            "conversation-stream-error-final-text",
-            "/projects/stream-error-final-text",
-            0,
-        )
-        .expect("events");
+    let events = crate::stored_upserts(
+        &settings(temp.path()),
+        "conversation-stream-error-final-text",
+    );
     assert!(events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["id"] == prepared.assistant_turn_id
@@ -1588,7 +1520,7 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
 fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_order() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings);
+    let service = crate::conversations(settings.clone());
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-late-segment",
@@ -1646,9 +1578,7 @@ fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_or
             < assistant["order"].as_i64().expect("assistant order")
     );
 
-    let events = service
-        .read_events_after("conversation-late-segment", "/projects/late-segment", 0)
-        .expect("events");
+    let events = crate::stored_upserts(&settings, "conversation-late-segment");
     let assistant_revision = events
         .iter()
         .find(|event| {
@@ -1693,10 +1623,7 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
             content_delta("reasoning", "Thinking", "app-turn", "reasoning"),
         ]],
     );
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
     let progress_payloads = Arc::new(Mutex::new(Vec::new()));
     let progress_payloads_for_callback = Arc::clone(&progress_payloads);
 
@@ -1720,11 +1647,14 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
         .expect("execute turn");
 
     let live_payloads = progress_payloads.lock().expect("progress payloads");
-    // Committed start events keep the journal wire shape.
+    // The committed start publishes as a snapshot of the accepted state.
     assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "turn_upsert"
-            && payload["turn"]["role"] == "user"
-            && payload["turn"]["content"] == "Stream this"
+        payload["type"] == "conversation_snapshot"
+            && payload["state"]["turns"].as_array().is_some_and(|turns| {
+                turns
+                    .iter()
+                    .any(|turn| turn["role"] == "user" && turn["content"] == "Stream this")
+            })
     }));
     // Streamed updates are transient deltas: coalesced bodies, a per-turn
     // stream sequence, the committed base revision, and no durable revision.
@@ -1773,9 +1703,7 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
     assert_eq!(assistant_turn["status"], "complete");
     assert_eq!(assistant_turn["content"], "Hello");
 
-    let events = service
-        .read_events_after("conversation-live-stream", "/projects/live-stream", 0)
-        .expect("events");
+    let events = crate::stored_upserts(&settings, "conversation-live-stream");
     assert!(!events.iter().any(|event| {
         event["type"] == "segment_upsert"
             && event["segment"]["kind"] == "assistant_message"
@@ -1812,8 +1740,7 @@ fn claude_code_live_text_completions_update_delta_segments_in_place() {
         }],
         vec![vec![first_delta, second_delta]],
     );
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+    let service = crate::conversations_with_backend(settings, Arc::new(backend));
     let live_payloads = Arc::new(Mutex::new(Vec::new()));
     let callback_payloads = Arc::clone(&live_payloads);
 
@@ -1887,7 +1814,7 @@ cat > /dev/null
         .expect("script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
         let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", &script);
-        let service = WorkspaceConversationService::new(settings);
+        let service = crate::conversations(settings);
 
         let snapshot = service
             .execute_turn(
@@ -1930,8 +1857,7 @@ fn claude_code_completed_tool_segment_preserves_canonical_command_payload() {
         final_assistant_text: Some("Done.".to_string()),
         ..AgentTurnOutput::default()
     }]);
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+    let service = crate::conversations_with_backend(settings, Arc::new(backend));
 
     let snapshot = service
         .execute_turn(
@@ -1981,10 +1907,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
         }],
     );
     let answer_requests = backend.answer_requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-input",
@@ -2056,9 +1979,10 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
         .iter()
         .any(|segment| segment["kind"] == "assistant_message"
             && segment["content"] == "Approved after input."));
-    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_codex_jsonrpc_trace("conversation-input", "/projects/input")
-        .expect("raw log");
+    let raw_log =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_codex_jsonrpc_trace("conversation-input", "/projects/input")
+            .expect("raw log");
     assert!(
         raw_log.is_empty(),
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
@@ -2178,10 +2102,7 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
             ..AgentTurnOutput::default()
         }],
     );
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-input-live",
@@ -2244,10 +2165,8 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
 fn request_user_input_live_request_is_answerable_before_original_turn_finishes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let backend = BlockingRequestInputBackend::new();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        Arc::new(backend.clone()),
-    );
+    let service =
+        crate::conversations_with_backend(settings(temp.path()), Arc::new(backend.clone()));
     let (prepared, started_snapshot) = service
         .start_turn(
             "conversation-input-live-pending",
@@ -2344,42 +2263,6 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
             && segment["request_user_input"]["request_id"] == "input-2"
             && segment["request_user_input"]["status"] == "pending"
     }));
-
-    let events = service
-        .read_events_after(
-            "conversation-input-live-pending",
-            "/projects/input-live-pending",
-            0,
-        )
-        .expect("events");
-    let revisions = events
-        .iter()
-        .map(|event| event["revision"].as_i64().expect("revision"))
-        .collect::<Vec<_>>();
-    assert!(revisions.windows(2).all(|window| window[0] < window[1]));
-    let answer_revision = events
-        .iter()
-        .find(|event| {
-            event["type"] == "segment_upsert"
-                && event["segment"]["kind"] == "request_user_input"
-                && event["segment"]["request_user_input"]["request_id"] == "input-1"
-                && event["segment"]["request_user_input"]["status"] == "answered"
-        })
-        .and_then(|event| event["revision"].as_i64())
-        .expect("answer revision");
-    let after_answer = service
-        .read_events_after(
-            "conversation-input-live-pending",
-            "/projects/input-live-pending",
-            answer_revision,
-        )
-        .expect("events after answer");
-    assert!(after_answer.iter().any(|event| {
-        event["type"] == "segment_upsert"
-            && event["segment"]["kind"] == "request_user_input"
-            && event["segment"]["request_user_input"]["request_id"] == "input-2"
-            && event["segment"]["request_user_input"]["status"] == "pending"
-    }));
 }
 
 #[test]
@@ -2396,10 +2279,7 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             ..AgentTurnOutput::default()
         }],
     );
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-input-expired",
@@ -2485,10 +2365,7 @@ fn request_user_input_answer_backend_errors_return_error_without_expiring_reques
     let temp = tempfile::tempdir().expect("tempdir");
     let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
     let answer_requests = backend.answer_requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
     let (prepared, _snapshot) = service
         .start_turn(
             "conversation-input-backend-error",
@@ -3037,10 +2914,10 @@ fn stream_error_event(message: &str) -> TurnStreamEvent {
 }
 
 #[test]
-fn live_replay_substitutes_a_fresh_snapshot_for_slim_journal_refs() {
+fn live_replay_sends_one_fresh_snapshot_to_any_older_cursor() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     // start_turn commits three turn upserts plus a settings-change entry that
     // is journaled as a slim conversation_snapshot_ref (revisions 1-4).
@@ -3061,42 +2938,35 @@ fn live_replay_substitutes_a_fresh_snapshot_for_slim_journal_refs() {
         )
         .expect("start turn");
 
-    // Replay from zero streams the committed turn upserts until the ref, then
-    // substitutes one fresh snapshot envelope for the ref and everything
-    // after it.
-    let envelopes = conversation_envelopes_after(
+    // Any older cursor gets one fresh snapshot carrying full current state;
+    // the current revision gets nothing.
+    let state = crate::live_snapshot_state(
         &settings,
         "conversation-ref-replay",
         "/projects/ref-replay",
         0,
-    )
-    .expect("replay");
-    assert_eq!(envelopes.len(), 4);
-    for envelope in &envelopes[..3] {
-        assert_eq!(envelope.event_type, "conversation.turn_upsert");
-    }
-    let snapshot_envelope = &envelopes[3];
-    assert_eq!(snapshot_envelope.event_type, "conversation.snapshot");
-    assert_eq!(
-        snapshot_envelope.cursor.as_ref().expect("cursor").value,
-        4,
-        "snapshot envelope carries the current committed revision"
     );
     assert_eq!(
-        snapshot_envelope.payload["state"]["chat_mode"], "plan",
+        state["chat_mode"], "plan",
         "snapshot payload carries full current state"
     );
-
-    // A cursor pointing directly at the ref yields just the snapshot.
-    let envelopes = conversation_envelopes_after(
+    let revision = state["revision"].as_i64().expect("revision");
+    let state = crate::live_snapshot_state(
         &settings,
         "conversation-ref-replay",
         "/projects/ref-replay",
-        3,
+        revision - 1,
+    );
+    assert_eq!(state["revision"], revision);
+    assert!(spark_workspace::live::conversation_envelopes_after(
+        &settings,
+        &crate::shared_store(&settings.data_dir),
+        "conversation-ref-replay",
+        "/projects/ref-replay",
+        revision,
     )
-    .expect("replay from ref");
-    assert_eq!(envelopes.len(), 1);
-    assert_eq!(envelopes[0].event_type, "conversation.snapshot");
+    .expect("current")
+    .is_empty());
 }
 
 fn structured_stream_error_event(
@@ -3184,11 +3054,9 @@ fn runtime_session_records_thread_continuity_and_tombstones_on_resume_failure() 
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
-    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
 
     service
         .execute_turn(
@@ -3292,10 +3160,7 @@ fn claude_code_failed_resume_is_tombstoned() {
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
     let (conversation, project_path) = (
         "conversation-claude-tombstone",
         "/projects/claude-tombstone",
@@ -3330,10 +3195,11 @@ fn claude_code_failed_resume_is_tombstoned() {
     assert!(!requests[2]
         .metadata
         .contains_key("spark.runtime.claude_code.session_id"));
-    let session = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_runtime_session(conversation, Some(project_path))
-        .expect("session read")
-        .expect("session");
+    let session =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_runtime_session(conversation, Some(project_path))
+            .expect("session read")
+            .expect("session");
     assert_eq!(session.thread_id.as_deref(), Some("claude-session-old"));
     assert!(session.resume_failed);
 }
@@ -3364,10 +3230,7 @@ fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
     let project_path = "/projects/claude-code-continuity";
 
     service
@@ -3414,10 +3277,11 @@ fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
         .expect("turns")
         .iter()
         .any(|turn| turn["content"] == "Recovered answer" && turn["status"] == "complete"));
-    let session = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_runtime_session("conversation-claude-code-continuity", Some(project_path))
-        .expect("session read")
-        .expect("session");
+    let session =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_runtime_session("conversation-claude-code-continuity", Some(project_path))
+            .expect("session read")
+            .expect("session");
     assert_eq!(session.provider, "claude_code_cli");
     assert_eq!(session.thread_id.as_deref(), Some("claude-session-fresh"));
     assert!(!session.resume_failed);
@@ -3439,11 +3303,9 @@ fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
         },
     ]);
     let requests = backend.requests();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(backend),
-    );
-    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
 
     service
         .execute_turn(
@@ -3458,15 +3320,15 @@ fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
 
     // Conversations that predate the runtime-session sidecar have only the
     // transcript turn stamps; continuity must still resume via the turn scan.
-    let session_path = repository
-        .conversation_session_path(
-            "conversation-legacy-continuity",
-            Some("/projects/runtime-session"),
-        )
-        .expect("session path")
-        .expect("conversation root");
-    assert!(session_path.exists());
-    fs::remove_file(&session_path).expect("remove session sidecar");
+    assert!(repository
+        .read_runtime_session("conversation-legacy-continuity", None)
+        .expect("session")
+        .is_some());
+    repository
+        .store()
+        .database()
+        .write(|tx| tx.delete_runtime_session("conversation-legacy-continuity", "codex_app_server"))
+        .expect("remove runtime session");
 
     service
         .execute_turn(
@@ -3506,7 +3368,7 @@ fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
 fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let conversation_id = "conversation-live-equivalence";
     let project_path = "/projects/live-equivalence";
     let (prepared, _) = service
@@ -3557,7 +3419,7 @@ fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
         )
         .expect("ingest");
 
-    let repo = ConversationRepository::new(&settings.data_dir);
+    let repo = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let snapshot = repo
         .read_snapshot(conversation_id, Some(project_path))
         .expect("read")
@@ -3598,20 +3460,20 @@ fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project_path)
         .expect("project paths");
-    let transcript_path = project
-        .conversations_dir
-        .join(conversation_id)
-        .join("transcript.jsonl");
-    let transcript_before = std::fs::read_to_string(&transcript_path).expect("transcript");
+    let _ = project;
+    let rows = || {
+        crate::shared_store(&settings.data_dir)
+            .database()
+            .read(|read| read.conversation(conversation_id))
+            .expect("rows")
+    };
+    let rows_before = rows();
     let reopened = repo
         .read_snapshot(conversation_id, Some(project_path))
         .expect("reopen")
         .expect("snapshot");
     assert_eq!(reopened["revision"].as_i64().expect("revision"), revision);
-    assert_eq!(
-        std::fs::read_to_string(&transcript_path).expect("transcript after"),
-        transcript_before
-    );
+    assert_eq!(rows(), rows_before);
 }
 
 #[test]
@@ -3631,7 +3493,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
     for mode in ["question", "dead-question", "interrupt-question"] {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
         let config = settings(temp.path());
-        let service = WorkspaceConversationService::new(config.clone());
+        let service = crate::conversations(config.clone());
         let id = format!("claude-{mode}");
         let (prepared, started) = service
             .start_turn(
@@ -3662,7 +3524,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
         receiver
             .recv_timeout(Duration::from_secs(10))
             .expect("pending question before turn completion");
-        let persisted = ConversationRepository::new(&config.data_dir)
+        let persisted = ConversationRepository::new(crate::shared_store(&config.data_dir))
             .read_snapshot(&id, Some(&project))
             .unwrap()
             .unwrap();
@@ -3678,7 +3540,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
             "Blue"
         );
         // A fresh service reads the checkpoint and routes to the same live adapter.
-        let reopened = WorkspaceConversationService::new(config.clone());
+        let reopened = crate::conversations(config.clone());
         if mode == "question" {
             let answered = reopened
                 .submit_request_user_input_answer(
@@ -3752,7 +3614,7 @@ fn claude_chat_turns_on_one_session_each_report_their_own_usage_delta() {
         env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
     );
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     for message in ["first", "second"] {
         service
             .execute_turn(
@@ -3803,7 +3665,7 @@ fn claude_plan_mode_turn_creates_a_pending_review_proposed_plan() {
     );
     // The fake submits a plan through ExitPlanMode and asserts the deny.
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "exit-plan-mode");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
 
     let snapshot = service
         .execute_turn(
@@ -3846,7 +3708,7 @@ fn claude_stream_interrupt_error_result_completes_shortened_turn() {
         env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
     );
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "interrupt-aborted");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let (prepared, started) = service
         .start_turn(
             "interrupt-stream",
@@ -3954,7 +3816,7 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
         env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
     );
     let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
         let (prepared, started) = service
@@ -3976,7 +3838,7 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
 #[test]
 fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
     use spark_workspace::inbox::{install_runtime, InboxRuntime};
-    use spark_workspace::missions::WorkspaceMissionService;
+
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let project = temp
@@ -3999,14 +3861,14 @@ fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
             publish: Arc::new(|_| {}),
         },
     );
-    let missions = WorkspaceMissionService::new(config.clone());
+    let missions = crate::missions(config.clone());
     let mission = missions
         .create(
             &project,
             serde_json::from_value(json!({"fields": {"title": "Retry"}})).unwrap(),
         )
         .unwrap();
-    let service = WorkspaceConversationService::new(config.clone());
+    let service = crate::conversations(config.clone());
     service
         .update_conversation_settings(
             &mission.id,
@@ -4142,10 +4004,7 @@ fn message_turns(snapshot: &Value) -> Vec<(String, String, String)> {
 fn messages_sent_during_a_turn_that_cannot_take_them_queue_and_start_in_order() {
     let temp = tempfile::tempdir().unwrap();
     let backend = Arc::new(GatedAgentTurnBackend::default());
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        backend.clone(),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), backend.clone());
     let project = "/projects/queue";
     let running = start_gated_turn(&service, "queue", project);
 
@@ -4197,10 +4056,7 @@ fn messages_sent_during_a_turn_that_cannot_take_them_queue_and_start_in_order() 
 fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
     let temp = tempfile::tempdir().unwrap();
     let backend = Arc::new(GatedAgentTurnBackend::default());
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        backend.clone(),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), backend.clone());
     let project = "/projects/stop-queue";
     let running = start_gated_turn(&service, "stop-queue", project);
     send(&service, "stop-queue", project, "after stop");
@@ -4228,7 +4084,7 @@ fn claude_turn_with_mid_turn_send(
         env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
     );
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
-    let service = WorkspaceConversationService::new(settings(temp));
+    let service = crate::conversations(settings(temp));
     // The composer sends settings only when they change.
     let request = |message: &str| ConversationTurnRequest {
         project_path: project.clone(),
@@ -4539,10 +4395,7 @@ fn assert_delivered_history(plan: bool) {
         plan,
         ..LiveMessageBackend::default()
     });
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings(temp.path()),
-        backend.clone(),
-    );
+    let service = crate::conversations_with_backend(settings(temp.path()), backend.clone());
     let project = "/projects/history";
     let request = |message: &str| ConversationTurnRequest {
         project_path: project.to_string(),
@@ -4589,10 +4442,7 @@ fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_f
     for provider in ["codex", "claude-code", "openai"] {
         let temp = tempfile::tempdir().unwrap();
         let backend = Arc::new(LiveMessageBackend::default());
-        let service = WorkspaceConversationService::new_with_agent_turn_backend(
-            settings(temp.path()),
-            backend.clone(),
-        );
+        let service = crate::conversations_with_backend(settings(temp.path()), backend.clone());
         let project = "/projects/attach";
         let request = |message: &str, attachment_ids: Vec<String>| ConversationTurnRequest {
             project_path: project.to_string(),

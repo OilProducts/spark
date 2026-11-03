@@ -7,10 +7,9 @@ use super::records::{TranscriptSegment, TranscriptTurn};
 pub const TRANSIENT_STREAM_EVENT_TYPE: &str = "stream_delta";
 
 /// A live stream update for connected clients. Transient events carry a
-/// per-turn stream sequence instead of a durable revision, are never appended
-/// to the committed journal (the journal writer only accepts
-/// [`super::journal::JournalEntry`]), and may be dropped on reconnect because
-/// the committed transcript restores durable state.
+/// per-turn stream sequence instead of a durable revision, are never stored,
+/// and may be dropped on reconnect because the committed transcript restores
+/// durable state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransientStreamEvent {
     pub conversation_id: String,
@@ -25,7 +24,7 @@ pub struct TransientStreamEvent {
 
 impl TransientStreamEvent {
     /// The live wire payload for this delta. Carries `type: "stream_delta"`
-    /// and no `revision`, so the journal appender refuses it and clients can
+    /// and no `revision`, so clients can
     /// discriminate committed events from transients on payload type alone.
     pub fn wire_payload(&self) -> Value {
         let mut payload = serde_json::to_value(self).unwrap_or_else(|_| json!({}));

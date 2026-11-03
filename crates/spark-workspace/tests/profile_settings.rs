@@ -26,6 +26,7 @@ fn save(
 ) -> spark_workspace::WorkspaceResult<Value> {
     update_workspace_settings(
         settings,
+        &shared_store(&(settings).data_dir),
         serde_json::from_value(
             json!({"section": section, "expected_revision": revision, "value": value}),
         )
@@ -380,7 +381,12 @@ fn candidate_profile_contents_are_checked_by_validate_and_save_without_writes() 
             .unwrap_err()
             .to_string()
             .contains("spark.toml.models.llm_profile"));
-        assert!(update_workspace_settings(&settings, request).is_err());
+        assert!(update_workspace_settings(
+            &settings,
+            &shared_store(&(&settings).data_dir),
+            request
+        )
+        .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
     let mut valid = llm("team");
@@ -457,7 +463,10 @@ fn disabling_referenced_execution_profile_fails_validate_and_save() {
     assert!(
         spark_workspace::settings::validate_workspace_settings_update(&settings, &request).is_err()
     );
-    assert!(update_workspace_settings(&settings, request).is_err());
+    assert!(
+        update_workspace_settings(&settings, &shared_store(&(&settings).data_dir), request)
+            .is_err()
+    );
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
@@ -548,7 +557,9 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
         "{error}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let error = update_workspace_settings(&settings, request()).unwrap_err();
+    let error =
+        update_workspace_settings(&settings, &shared_store(&(&settings).data_dir), request())
+            .unwrap_err();
     assert!(
         error
             .to_string()
@@ -563,7 +574,9 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
     write_flow(&explicit);
     validate_workspace_settings_update(&settings, &request()).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let saved = update_workspace_settings(&settings, request()).unwrap();
+    let saved =
+        update_workspace_settings(&settings, &shared_store(&(&settings).data_dir), request())
+            .unwrap();
     assert_eq!(saved["llm_profiles"]["stored"][1]["models"], json!(["m1"]));
 
     // Endpoint, label and supported model-list edits remain valid with inheritance.
@@ -577,5 +590,95 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
     let before = std::fs::read(&path).unwrap();
     validate_workspace_settings_update(&settings, &request).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    update_workspace_settings(&settings, request).unwrap();
+    update_workspace_settings(&settings, &shared_store(&(&settings).data_dir), request).unwrap();
+}
+
+/// One conversation store per test home, shared by every service a test
+/// builds, the way one app shares its store.
+#[allow(dead_code)]
+fn shared_store(
+    data_dir: impl AsRef<std::path::Path>,
+) -> std::sync::Arc<spark_storage::ConversationStore> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static STORES: OnceLock<Mutex<HashMap<PathBuf, Weak<spark_storage::ConversationStore>>>> =
+        OnceLock::new();
+    let data_dir = data_dir.as_ref();
+    let mut stores = STORES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(store) = stores.get(data_dir).and_then(Weak::upgrade) {
+        return store;
+    }
+    let store = spark_storage::ConversationStore::open(data_dir).expect("conversation store");
+    stores.insert(data_dir.to_path_buf(), Arc::downgrade(&store));
+    store
+}
+
+#[allow(dead_code)]
+fn conversations(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn conversations_with_backend(
+    settings: spark_common::settings::SparkSettings,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_agent_turn_backend(
+        settings, store, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+        settings, store, factory,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory_and_backend(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings, store, factory, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn missions(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::missions::WorkspaceMissionService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::missions::WorkspaceMissionService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn roles(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::roles::WorkspaceRoleService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::roles::WorkspaceRoleService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn triggers(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceTriggerService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceTriggerService::new(settings, store)
 }

@@ -1,10 +1,10 @@
 //! Tool-output externalization.
 //!
 //! Durable transcripts store a bounded tool-output preview; full outputs live
-//! in per-segment sidecar files under `conversations/<id>/tool-output/`,
-//! written at the commit boundary and fetched on demand. This keeps semantic
-//! transcript records small no matter how
-//! large tool outputs get.
+//! in immutable blobs under `conversations/<id>/tool-output/`, written and
+//! synced before the transaction that references them and fetched on demand.
+//! Each output version gets its own file name, so bytes a committed segment
+//! references are never overwritten.
 
 use serde_json::{json, Value};
 
@@ -16,12 +16,13 @@ use super::records::TranscriptSegment;
 /// Largest tool output stored inline in the durable transcript. Larger outputs
 /// are externalized and the inline value becomes a preview of this size.
 pub const TOOL_OUTPUT_INLINE_LIMIT_BYTES: usize = 8 * 1024;
+const TOOL_OUTPUT_DIR_NAME: &str = "tool-output";
 
-/// Externalize an oversized tool output from `segment` into its sidecar file.
+/// Externalize an oversized tool output from `segment` into a new blob.
 ///
 /// No-ops when the segment has no string output, the output fits inline, the
 /// output is already a preview (`output_truncated`), or the segment id is not
-/// filesystem-safe. Never overwrites a sidecar with an existing preview.
+/// filesystem-safe.
 pub(crate) fn externalize_segment_tool_output(
     root: &std::path::Path,
     segment: &mut TranscriptSegment,
@@ -32,10 +33,39 @@ pub(crate) fn externalize_segment_tool_output(
     externalize_tool_output(root, &segment.id, tool_call)
 }
 
+/// Run transcripts: one file per segment, rewritten in place.
 pub(crate) fn externalize_tool_output(
     root: &std::path::Path,
     artifact_id: &str,
     tool_call: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    externalize(root, artifact_id, tool_call, false)
+}
+
+/// Conversations: a new immutable file per output version.
+pub(crate) fn externalize_conversation_segment_tool_output(
+    root: &std::path::Path,
+    segment: &mut TranscriptSegment,
+) -> Result<()> {
+    let Some(tool_call) = segment.tool_call.as_mut().and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    externalize(root, &segment.id, tool_call, true)
+}
+
+pub(crate) fn externalize_conversation_tool_output(
+    root: &std::path::Path,
+    artifact_id: &str,
+    tool_call: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    externalize(root, artifact_id, tool_call, true)
+}
+
+fn externalize(
+    root: &std::path::Path,
+    artifact_id: &str,
+    tool_call: &mut serde_json::Map<String, Value>,
+    versioned: bool,
 ) -> Result<()> {
     if tool_call.get("output_truncated").and_then(Value::as_bool) == Some(true) {
         return Ok(());
@@ -47,7 +77,14 @@ pub(crate) fn externalize_tool_output(
         return Ok(());
     }
     let output = output.to_string();
-    let artifact = format!("tool-output/{artifact_id}.txt");
+    let artifact = if versioned {
+        format!(
+            "{TOOL_OUTPUT_DIR_NAME}/{artifact_id}.{}.txt",
+            uuid::Uuid::new_v4().simple()
+        )
+    } else {
+        format!("{TOOL_OUTPUT_DIR_NAME}/{artifact_id}.txt")
+    };
     write_text_atomic(root.join(&artifact), &output)?;
     let (preview, _) = truncate_utf8(&output, TOOL_OUTPUT_INLINE_LIMIT_BYTES);
     tool_call.insert("output".to_string(), json!(preview));
@@ -55,6 +92,15 @@ pub(crate) fn externalize_tool_output(
     tool_call.insert("output_truncated".to_string(), json!(true));
     tool_call.insert("output_artifact".to_string(), json!(artifact));
     Ok(())
+}
+
+/// A stored `output_artifact` path when it names a file directly inside the
+/// conversation's tool-output directory.
+pub(crate) fn safe_tool_output_artifact(artifact: &str) -> Option<&str> {
+    let name = artifact
+        .strip_prefix(TOOL_OUTPUT_DIR_NAME)?
+        .strip_prefix('/')?;
+    is_safe_segment_file_id(name).then_some(artifact)
 }
 
 /// Guard sidecar file names against path traversal. Segment ids are generated

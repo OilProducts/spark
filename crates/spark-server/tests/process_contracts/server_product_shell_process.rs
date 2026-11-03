@@ -100,6 +100,73 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
     assert!(!api_missing.body_text().contains("process ui"));
 }
 
+/// One server per Spark home: a second process on the same home fails
+/// before serving, an independent home is unaffected, and the home opens
+/// again once its server is gone.
+#[test]
+fn a_second_serve_process_on_one_home_exits_before_serving() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let other = tempfile::tempdir().expect("other home");
+    let ui_dir = temp.path().join("ui");
+    fs::create_dir_all(&ui_dir).expect("ui dir");
+    fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
+    let first = RunningServer::start(temp.path(), &ui_dir);
+
+    let port = free_tcp_port();
+    let mut second = Command::new(env!("CARGO_BIN_EXE_spark-server"))
+        .env("HOME", temp.path())
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--data-dir",
+            &temp.path().join("spark-home").to_string_lossy(),
+            "--ui-dir",
+            &ui_dir.to_string_lossy(),
+        ])
+        .current_dir(repo_root())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn second server");
+    let status = (0..200)
+        .find_map(|_| {
+            let status = second.try_wait().expect("poll second server");
+            if status.is_none() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            status
+        })
+        .unwrap_or_else(|| {
+            let _ = second.kill();
+            panic!("the second server kept running");
+        });
+    let mut stderr = String::new();
+    second
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    assert!(!status.success());
+    assert!(
+        stderr.contains("Unable to initialize Spark server")
+            && stderr.contains("Another Spark server"),
+        "{stderr}"
+    );
+    assert!(try_http_get(port, "/").is_err());
+    assert_eq!(http_get(first.port, "/").status, 200);
+
+    let independent = RunningServer::start(other.path(), &ui_dir);
+    assert_eq!(http_get(independent.port, "/").status, 200);
+
+    drop(first);
+    let restarted = RunningServer::start(temp.path(), &ui_dir);
+    assert_eq!(http_get(restarted.port, "/").status, 200);
+}
+
 #[test]
 fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     let temp = tempfile::tempdir().expect("tempdir");

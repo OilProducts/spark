@@ -375,6 +375,7 @@ pub fn validate_workspace_settings_update(
 
 pub fn update_workspace_settings(
     settings: &SparkSettings,
+    store: &std::sync::Arc<spark_storage::ConversationStore>,
     request: WorkspaceSettingsUpdate,
 ) -> WorkspaceResult<Value> {
     // Delegated project/conversation/profile operations acquire this themselves.
@@ -478,7 +479,7 @@ pub fn update_workspace_settings(
             project_path,
             model_settings,
         } => {
-            let service = crate::WorkspaceConversationService::new(settings.clone());
+            let service = crate::WorkspaceConversationService::new(settings.clone(), store.clone());
             if model_settings.is_none() {
                 let snapshot = service.get_snapshot(&conversation_id, Some(&project_path))?;
                 if snapshot["settings"]["models"]["revision"].as_str()

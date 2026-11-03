@@ -6,8 +6,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_http::{build_app, build_app_with_rust_llm_client};
-use spark_storage::{ConversationHandleRepository, ProjectRegistry};
+use spark_http::build_app_with_rust_llm_client;
+use spark_storage::ProjectRegistry;
 use tower::ServiceExt;
 use unified_llm_adapter::{
     ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
@@ -26,7 +26,7 @@ async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
         project_path.to_str().expect("utf-8"),
         "conversation-http-review",
     );
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let created = request_json(
         app.clone(),
@@ -111,7 +111,7 @@ async fn run_request_executes_codergen_through_injected_rust_llm_client() {
             adapter,
         )
         .expect("client");
-    let app = build_app_with_rust_llm_client(settings, client);
+    let app = build_app_with_rust_llm_client(settings, client).expect("app");
 
     let created = request_json(
         app,
@@ -172,7 +172,7 @@ async fn proposed_plan_review_route_records_rejection() {
         project_path.to_str().expect("utf-8"),
         "conversation-plan-http",
     );
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let response = request_json(
         app,
@@ -242,7 +242,7 @@ async fn request_text(
 
 fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
     let registry = ProjectRegistry::new(&settings.data_dir);
-    let project = registry
+    let _project = registry
         .ensure_project_paths(project_path)
         .expect("project");
     crate::write_conversation_snapshot(
@@ -269,15 +269,6 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
             "segments": []
         }),
     );
-    ConversationHandleRepository::new(&settings.data_dir)
-        .ensure_conversation_handle(
-            conversation_id,
-            &project.project_id,
-            project_path,
-            "2026-01-01T00:00:00Z",
-            Some("amber-anchor"),
-        )
-        .expect("handle");
 }
 
 fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation_id: &str) {

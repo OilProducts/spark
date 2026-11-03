@@ -79,13 +79,17 @@ impl WorkspaceProjectService {
             .map_err(Into::into)
     }
 
+    /// Registers a project. A deletion of the same path still awaiting
+    /// cleanup finishes first, so nothing new lands in its old directory.
     pub fn register_project(
         &self,
+        store: &spark_storage::ConversationStore,
         request: ProjectRegistrationRequest,
     ) -> WorkspaceResult<ProjectRecord> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
+        store.finish_project_deletion(&project_path)?;
         let registry = self.registry();
         if request.execution_profile_id.is_some()
             && registry.read_project_record(&project_path)?.is_some()
@@ -141,26 +145,46 @@ impl WorkspaceProjectService {
             .map_err(Into::into)
     }
 
-    pub fn delete_project(&self, project_path: &str) -> WorkspaceResult<DeletedProjectRecord> {
+    /// Deletes a project through the app's conversation store: its running
+    /// turns are interrupted, everything it owns is tombstoned with a
+    /// durable cleanup marker, and its directory is removed only after that
+    /// commit is checkpointed. A failed cleanup keeps the marker and is
+    /// reported; deleting again retries it.
+    pub fn delete_project(
+        &self,
+        conversations: &WorkspaceConversationService,
+        project_path: &str,
+    ) -> WorkspaceResult<DeletedProjectRecord> {
         let project_path = normalize_project_path_or_400(project_path)?;
-        self.registry()
-            .delete_project_record(&project_path)
-            .map_err(|error| match error {
-                spark_storage::StorageError::InvalidRepositoryPath { reason, .. }
-                    if reason == "Unknown project." =>
-                {
-                    WorkspaceError::NotFound(reason)
-                }
-                other => other.into(),
-            })
+        let store = conversations.store();
+        if let Some(pending) = store.pending_project_deletion(&project_path)? {
+            store.finish_project_deletion(&project_path)?;
+            return Ok(pending);
+        }
+        let deleted =
+            self.registry()
+                .deletable_project(&project_path)
+                .map_err(|error| match error {
+                    spark_storage::StorageError::InvalidRepositoryPath { reason, .. }
+                        if reason == "Unknown project." =>
+                    {
+                        WorkspaceError::NotFound(reason)
+                    }
+                    other => other.into(),
+                })?;
+        store.delete_project(&deleted, &|conversation_id| {
+            let _ = conversations.interrupt_turn(conversation_id, &project_path);
+        })?;
+        Ok(deleted)
     }
 
-    /// One project's conversations, or every project's when `project_path` is `None`.
+    /// One project's conversations, or every project's when `project_path` is
+    /// `None`, from the app store's summary rows.
     pub fn list_project_conversations(
         &self,
+        conversations: &WorkspaceConversationService,
         project_path: Option<&str>,
     ) -> WorkspaceResult<Vec<ConversationSummary>> {
-        let conversations = WorkspaceConversationService::new(self.settings.clone());
         let Some(project_path) = project_path else {
             let mut summaries = Vec::new();
             for project in self.list_projects()? {

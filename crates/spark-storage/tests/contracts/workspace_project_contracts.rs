@@ -2,7 +2,11 @@ use std::fs;
 
 use serde_json::json;
 use spark_common::project::build_project_id;
-use spark_storage::{ProjectRecordUpdate, ProjectRegistry};
+use spark_storage::conversation::{CatchUp, ChangeScope, ConversationMutation, TranscriptTurn};
+use spark_storage::{
+    ConversationRepository, ConversationStore, DeletedProjectRecord, ProjectRecordUpdate,
+    ProjectRegistry, StorageError,
+};
 
 #[test]
 fn project_registry_registers_lists_and_preserves_toml_shape() {
@@ -108,61 +112,16 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     );
     assert_eq!(updated.execution_profile_id.as_deref(), Some("native"));
 
-    let handles_path = home.join("workspace/conversation-handles.json");
-    fs::create_dir_all(handles_path.parent().expect("parent")).expect("parent");
-    fs::write(
-        &handles_path,
-        serde_json::to_string_pretty(&json!({
-            "schema_version": 1,
-            "pattern": "adjective-noun",
-            "handles": {
-                "amber-anchor": {
-                    "conversation_id": "conversation-1",
-                    "project_id": updated.project_id,
-                    "project_path": project_path,
-                    "created_at": "2026-01-01T00:00:00Z"
-                },
-                "brisk-bank": "malformed",
-                "clear-cloud": {
-                    "conversation_id": "conversation-2",
-                    "project_id": "other",
-                    "project_path": "/projects/other",
-                    "created_at": "2026-01-01T00:00:00Z"
-                },
-                "dawn-dust": {
-                    "project_id": updated.project_id,
-                    "project_path": project_path,
-                    "created_at": "2026-01-01T00:00:00Z"
-                }
-            },
-            "conversation_ids": {
-                "conversation-1": "amber-anchor",
-                "conversation-2": "clear-cloud"
-            }
-        }))
-        .expect("json"),
-    )
-    .expect("handles");
-
-    let deleted = registry
-        .delete_project_record(project_path)
-        .expect("delete");
+    // Validation alone never removes anything; the store removes the
+    // directory after tombstoning the project's conversations.
+    let deleted = registry.deletable_project(project_path).expect("deletable");
     assert_eq!(deleted.project_id, updated.project_id);
-    assert!(!home
-        .join("workspace/projects")
-        .join(&updated.project_id)
-        .exists());
-
-    let handles: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(handles_path).expect("handles")).expect("json");
-    assert!(handles["handles"].get("amber-anchor").is_none());
-    assert!(handles["handles"].get("dawn-dust").is_none());
-    assert_eq!(handles["handles"]["brisk-bank"], json!("malformed"));
-    assert_eq!(
-        handles["conversation_ids"]["conversation-2"],
-        json!("clear-cloud")
-    );
-    assert!(handles["conversation_ids"].get("conversation-1").is_none());
+    let project_root = home.join("workspace/projects").join(&updated.project_id);
+    assert!(project_root.exists());
+    let store = ConversationStore::open(&home).expect("store");
+    store.delete_project(&deleted, &|_| {}).expect("delete");
+    assert!(!project_root.exists());
+    assert_eq!(registry.read_project_record(project_path).unwrap(), None);
 }
 
 fn seed_historical_metadata(registry: &ProjectRegistry, path: &str) -> spark_storage::ProjectPaths {
@@ -362,9 +321,16 @@ fn provider_events_persist_without_replacing_project_metadata() {
     let registry = ProjectRegistry::new(temp.path());
     let path = "/projects/provider-events";
     let paths = seed_historical_metadata(&registry, path);
+    let repo = ConversationRepository::new(ConversationStore::open(temp.path()).unwrap());
+    repo.commit_conversation(
+        "conversation-1",
+        path,
+        0,
+        vec![assistant("turn-1", "streaming")],
+    )
+    .unwrap();
     let bytes = fs::read(&paths.project_file).unwrap();
     let before = fs::metadata(&paths.project_file).unwrap();
-    let repo = spark_storage::ConversationRepository::new(temp.path());
     for message in ["one", "two", "three"] {
         let mut event = serde_json::from_value(json!({
             "kind": "content_delta", "channel": "assistant", "message": message
@@ -374,66 +340,376 @@ fn provider_events_persist_without_replacing_project_metadata() {
             .unwrap();
         assert_metadata_untouched(&paths.project_file, &bytes, &before);
     }
-    let events =
-        spark_storage::ActivityRepository::new(paths.conversations_dir.join("conversation-1"))
-            .read_events()
-            .unwrap();
-    assert_eq!(events.len(), 3);
+    let events = repo
+        .unapplied_provider_events("conversation-1", path, "turn-1")
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
     for (event, message) in events.iter().zip(["one", "two", "three"]) {
-        assert_eq!(event.event["type"], "provider_event");
-        assert_eq!(event.event["event"]["message"], message);
+        assert_eq!(event.event["message"], message);
     }
 }
 
 #[test]
-fn conversation_operations_initialize_unregistered_projects() {
+fn conversation_reads_never_register_projects_and_writes_need_a_live_conversation() {
     let temp = tempfile::tempdir().unwrap();
     let registry = ProjectRegistry::new(temp.path());
-    let repo = spark_storage::ConversationRepository::new(temp.path());
-    for operation in ["read", "list", "delete", "trace", "provider", "session"] {
-        let path = format!("/projects/unregistered-{operation}");
-        assert_eq!(registry.read_project_record(&path).unwrap(), None);
-        match operation {
-            "read" => assert_eq!(
-                repo.read_snapshot("conversation", Some(&path)).unwrap(),
-                None
-            ),
-            "list" => assert!(repo
-                .list_conversation_ids_for_project(&path)
-                .unwrap()
-                .is_empty()),
-            "delete" => repo.delete_conversation("conversation", &path).unwrap(),
-            "trace" => repo
-                .append_codex_jsonrpc_trace("conversation", &path, "outbound", "hello")
-                .unwrap(),
-            "provider" => {
-                let mut event = serde_json::from_value(
-                    json!({"kind": "content_delta", "channel": "assistant", "message": "hello"}),
-                )
-                .unwrap();
-                repo.append_provider_event("conversation", &path, "turn", &mut event)
-                    .unwrap();
-            }
-            "session" => {
-                let session = spark_storage::conversation::RuntimeSession {
-                    schema_version: spark_storage::conversation::RUNTIME_SESSION_SCHEMA_VERSION,
-                    provider: "codex_app_server".into(),
-                    thread_id: Some("thread".into()),
-                    established_at: "2001-01-01T00:00:00Z".into(),
-                    last_turn_id: None,
-                    resume_failed: false,
-                    updated_at: "2001-01-01T00:00:00Z".into(),
-                };
-                repo.write_runtime_session("conversation", &path, &session)
-                    .unwrap();
-                assert_eq!(
-                    repo.read_runtime_session("conversation", Some(&path))
-                        .unwrap(),
-                    Some(session)
-                );
-            }
-            _ => unreachable!(),
-        }
-        assert!(registry.read_project_record(&path).unwrap().is_some());
+    let repo = ConversationRepository::new(ConversationStore::open(temp.path()).unwrap());
+    let path = "/projects/unregistered";
+    assert_eq!(
+        repo.read_snapshot("conversation", Some(path)).unwrap(),
+        None
+    );
+    assert!(repo
+        .list_conversation_ids_for_project(path)
+        .unwrap()
+        .is_empty());
+    repo.delete_conversation("conversation", path).unwrap();
+    let mut event = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "hello"}),
+    )
+    .unwrap();
+    assert!(repo
+        .append_provider_event("conversation", path, "turn", &mut event)
+        .is_err());
+    assert!(repo
+        .write_runtime_session("conversation", path, &session())
+        .is_err());
+    assert_eq!(registry.read_project_record(path).unwrap(), None);
+    // The first commit of a new conversation registers its project.
+    repo.commit_conversation("conversation", path, 0, vec![assistant("turn", "complete")])
+        .unwrap();
+    assert!(registry.read_project_record(path).unwrap().is_some());
+    repo.write_runtime_session("conversation", path, &session())
+        .unwrap();
+    assert_eq!(
+        repo.read_runtime_session("conversation", Some(path))
+            .unwrap(),
+        Some(session())
+    );
+}
+
+fn session() -> spark_storage::conversation::RuntimeSession {
+    spark_storage::conversation::RuntimeSession {
+        schema_version: spark_storage::conversation::RUNTIME_SESSION_SCHEMA_VERSION,
+        provider: "codex_app_server".into(),
+        thread_id: Some("thread".into()),
+        established_at: "2001-01-01T00:00:00Z".into(),
+        last_turn_id: None,
+        resume_failed: false,
+        updated_at: "2001-01-01T00:00:00Z".into(),
     }
+}
+
+fn assistant(id: &str, status: &str) -> ConversationMutation {
+    ConversationMutation::TurnUpserted {
+        turn: TranscriptTurn {
+            id: id.into(),
+            role: "assistant".into(),
+            status: status.into(),
+            ..TranscriptTurn::default()
+        },
+    }
+}
+
+fn user(id: &str, attachments: &[&str]) -> ConversationMutation {
+    let mut turn = TranscriptTurn {
+        id: id.into(),
+        role: "user".into(),
+        content: "hello".into(),
+        status: "complete".into(),
+        ..TranscriptTurn::default()
+    };
+    if !attachments.is_empty() {
+        turn.extra.insert(
+            "attachments".into(),
+            json!(attachments
+                .iter()
+                .map(|id| json!({"id": id}))
+                .collect::<Vec<_>>()),
+        );
+    }
+    ConversationMutation::TurnUpserted { turn }
+}
+
+/// A registered project with two conversations, an attachment and a trace.
+fn seeded_project(
+    home: &std::path::Path,
+    path: &str,
+) -> (std::sync::Arc<ConversationStore>, DeletedProjectRecord) {
+    let registry = ProjectRegistry::new(home);
+    registry.register_project(path).unwrap();
+    let store = ConversationStore::open(home).unwrap();
+    let repo = ConversationRepository::new(store.clone());
+    let attachment = repo
+        .create_attachment("chat-a", path, "notes.txt", b"attached bytes")
+        .unwrap();
+    repo.commit_conversation(
+        "chat-a",
+        path,
+        0,
+        vec![
+            user("turn-user", &[&attachment.id]),
+            assistant("turn-a", "streaming"),
+        ],
+    )
+    .unwrap();
+    repo.commit_conversation("chat-b", path, 0, vec![assistant("turn-b", "complete")])
+        .unwrap();
+    let mut event = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "partial"}),
+    )
+    .unwrap();
+    repo.append_provider_event("chat-a", path, "turn-a", &mut event)
+        .unwrap();
+    let deleted = registry.deletable_project(path).unwrap();
+    (store, deleted)
+}
+
+#[test]
+fn project_deletion_tombstones_everything_then_removes_the_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/doomed";
+    let (store, deleted) = seeded_project(&home, path);
+    let repo = ConversationRepository::new(store.clone());
+    let handle = repo.conversation_handle("chat-a", None).unwrap();
+    let project_root = home.join("workspace/projects").join(&deleted.project_id);
+    assert!(project_root
+        .join("conversations/chat-a/provider-trace.jsonl")
+        .exists());
+
+    let cancelled = std::sync::Mutex::new(Vec::new());
+    store
+        .delete_project(&deleted, &|id| {
+            cancelled.lock().unwrap().push(id.to_string())
+        })
+        .unwrap();
+    assert_eq!(*cancelled.lock().unwrap(), vec!["chat-a", "chat-b"]);
+    assert!(!project_root.exists());
+    assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+    for id in ["chat-a", "chat-b"] {
+        assert_eq!(
+            store
+                .database()
+                .read(|read| read.conversation_location(id))
+                .unwrap(),
+            Some((path.to_string(), true))
+        );
+        assert_eq!(repo.read_snapshot(id, None).unwrap(), None);
+    }
+    // Old cursors converge through tombstones.
+    let CatchUp::Batch(batch) = store
+        .database()
+        .read(|read| {
+            read.changes(
+                ChangeScope::Conversation("chat-a"),
+                store.database().generation(),
+                0,
+            )
+        })
+        .unwrap()
+    else {
+        panic!("catch-up");
+    };
+    assert!(batch.rows.iter().all(|row| row.deleted));
+    assert!(!batch.rows.is_empty());
+
+    // Late callbacks for the deleted work fail and recreate nothing.
+    let mut event = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "late"}),
+    )
+    .unwrap();
+    assert!(repo
+        .append_provider_event("chat-a", path, "turn-a", &mut event)
+        .is_err());
+    assert!(repo
+        .commit_conversation("chat-a", path, 0, vec![assistant("turn-a", "complete")])
+        .is_err());
+    assert!(repo
+        .write_runtime_session("chat-a", path, &session())
+        .is_err());
+    assert!(!project_root.exists());
+
+    // Re-registration starts fresh; the deleted handle is free again but a
+    // deleted conversation id never comes back.
+    ProjectRegistry::new(&home).register_project(path).unwrap();
+    assert!(repo
+        .commit_conversation("chat-a", path, 0, vec![assistant("turn-new", "complete")])
+        .is_err());
+    assert_eq!(
+        repo.conversation_handle("chat-new", Some(&handle)).unwrap(),
+        handle
+    );
+    let fresh = repo
+        .commit_conversation("chat-new", path, 0, vec![assistant("turn-new", "complete")])
+        .unwrap();
+    assert_eq!(fresh.record.meta.conversation_handle, handle);
+}
+
+#[test]
+fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/deferred";
+    let (store, deleted) = seeded_project(&home, path);
+    let project_root = home.join("workspace/projects").join(&deleted.project_id);
+    // The checkpoint barrier reports busy: the commit is durable in SQL, but
+    // no file may be removed yet.
+    store.database().defer_next_checkpoints(1);
+    let error = store.delete_project(&deleted, &|_| {}).unwrap_err();
+    assert!(
+        matches!(error, StorageError::CleanupDeferred { .. }),
+        "{error}"
+    );
+    assert!(project_root
+        .join("conversations/chat-a/attachments")
+        .exists());
+    assert_eq!(
+        store.pending_project_deletion(path).unwrap(),
+        Some(deleted.clone())
+    );
+    // Nothing new is admitted while cleanup is pending.
+    let repo = ConversationRepository::new(store.clone());
+    assert!(repo
+        .commit_conversation("chat-c", path, 0, vec![assistant("turn-c", "complete")])
+        .is_err());
+    drop(repo);
+    drop(store);
+
+    let store = ConversationStore::open(&home).unwrap();
+    assert!(!project_root.exists());
+    assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_directory_removal_keeps_the_marker_and_is_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/stuck";
+    let (store, deleted) = seeded_project(&home, path);
+    let conversations = home
+        .join("workspace/projects")
+        .join(&deleted.project_id)
+        .join("conversations");
+    fs::set_permissions(&conversations, fs::Permissions::from_mode(0o555)).unwrap();
+    let error = store.delete_project(&deleted, &|_| {}).unwrap_err();
+    assert!(matches!(error, StorageError::Io { .. }), "{error}");
+    assert_eq!(
+        store.pending_project_deletion(path).unwrap(),
+        Some(deleted.clone())
+    );
+    // Registration of the same path cannot proceed until cleanup finishes.
+    assert!(store.finish_project_deletion(path).is_err());
+    fs::set_permissions(&conversations, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(store.finish_project_deletion(path).unwrap());
+    assert!(!conversations.exists());
+    assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+}
+
+#[test]
+fn deletion_during_provider_output_stops_the_writer_without_recreating_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/streaming";
+    let (store, deleted) = seeded_project(&home, path);
+    let repo = ConversationRepository::new(store.clone());
+    let writer = std::thread::spawn(move || {
+        for index in 0.. {
+            let mut event = serde_json::from_value(
+                json!({"kind": "content_delta", "channel": "assistant", "message": format!("{index}")}),
+            )
+            .unwrap();
+            if let Err(error) = repo.append_provider_event("chat-a", path, "turn-a", &mut event) {
+                return (index, error);
+            }
+        }
+        unreachable!()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    store.delete_project(&deleted, &|_| {}).unwrap();
+    let (_, error) = writer.join().unwrap();
+    assert!(
+        matches!(error, StorageError::ConversationCommitRejected { .. }),
+        "{error}"
+    );
+    assert!(!home
+        .join("workspace/projects")
+        .join(&deleted.project_id)
+        .exists());
+}
+
+#[test]
+fn turns_cannot_reference_attachments_whose_bytes_are_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/missing-bytes";
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    let attachment = repo
+        .create_attachment("chat", path, "notes.txt", b"bytes")
+        .unwrap();
+    let (_, blob) = repo
+        .read_attachment("chat", path, &attachment.id)
+        .unwrap()
+        .expect("readable");
+    fs::remove_file(&blob).unwrap();
+    assert_eq!(
+        repo.read_attachment("chat", path, &attachment.id).unwrap(),
+        None
+    );
+    let error = repo
+        .commit_conversation("chat", path, 0, vec![user("turn-user", &[&attachment.id])])
+        .unwrap_err();
+    assert!(error.to_string().contains("not available"), "{error}");
+}
+
+#[test]
+fn a_second_store_on_the_same_home_is_refused_until_the_first_closes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let other = temp.path().join("other");
+    let store = ConversationStore::open(&home).unwrap();
+    assert!(matches!(
+        ConversationStore::open(&home),
+        Err(StorageError::HomeLocked { .. })
+    ));
+    // Independent homes do not contend.
+    let independent = ConversationStore::open(&other).unwrap();
+    drop(independent);
+    drop(store);
+    ConversationStore::open(&home).expect("lock released on drop");
+    assert!(home
+        .join(spark_storage::conversation::SERVER_LOCK_FILE_NAME)
+        .exists());
+}
+
+#[test]
+fn first_open_wipes_only_legacy_conversations_and_the_handle_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let registry = ProjectRegistry::new(&home);
+    let paths = registry.ensure_project_paths("/projects/legacy").unwrap();
+    let legacy = paths.conversations_dir.join("old-chat");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("conversation.json"), "{}").unwrap();
+    fs::create_dir_all(&paths.flow_launches_dir).unwrap();
+    let handles = home.join("workspace/conversation-handles.json");
+    fs::write(&handles, "{}").unwrap();
+    let store = ConversationStore::open(&home).unwrap();
+    assert!(!paths.conversations_dir.exists());
+    assert!(!handles.exists());
+    assert!(paths.project_file.exists());
+    assert!(paths.flow_launches_dir.exists());
+    drop(store);
+    // Later opens never wipe again.
+    fs::create_dir_all(&legacy).unwrap();
+    ConversationStore::open(&home).unwrap();
+    assert!(legacy.exists());
 }

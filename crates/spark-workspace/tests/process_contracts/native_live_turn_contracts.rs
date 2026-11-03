@@ -70,7 +70,7 @@ fn native_chat(
         }),
     });
     let client = Client::from_adapters(vec![adapter], None).unwrap();
-    let _ = service.set(WorkspaceConversationService::new_with_agent_turn_backend(
+    let _ = service.set(crate::conversations_with_backend(
         settings(temp.path()),
         Arc::new(RustLlmAgentTurnBackend::new(client)),
     ));
@@ -153,9 +153,10 @@ fn a_message_sent_while_a_native_turn_runs_joins_it_in_order() {
     assert_eq!(assistant["content"], "Done.");
 }
 
-/// A resent mid-turn message, matched by its client turn id, is neither
-/// delivered again nor started as a turn: before the turn reports it, after it
-/// does, and after the turn ends.
+/// A mid-turn message is durably accepted, under its client turn id, before
+/// it is delivered. A resend is neither delivered again nor started as a
+/// turn: before the turn reports it, after it does, and after the turn ends.
+/// Reusing the id for a different message is a conflict.
 #[test]
 fn a_resent_mid_turn_message_is_delivered_once() {
     let resend = |service: &WorkspaceConversationService| {
@@ -179,10 +180,23 @@ fn a_resent_mid_turn_message_is_delivered_once() {
     let (_temp, service, calls) = native_chat(move |service, index, _| {
         if index == 0 {
             let first = resend(service);
-            assert!(!reported(&first));
+            assert!(reported(&first), "accepted before delivery: {first}");
             // Before the turn reports the delivery.
             let again = resend(service);
-            assert!(!reported(&again));
+            assert!(reported(&again));
+            let conflict = service
+                .send_turn(
+                    "native-resend",
+                    ConversationTurnRequest {
+                        client_turn_id: Some("turn-steer1".to_string()),
+                        ..turn("A different message.")
+                    },
+                )
+                .unwrap_err();
+            assert!(
+                matches!(conflict, spark_workspace::WorkspaceError::Conflict(_)),
+                "{conflict}"
+            );
             return Ok(answer("Working."));
         }
         // The turn reports the message before the model reads it.

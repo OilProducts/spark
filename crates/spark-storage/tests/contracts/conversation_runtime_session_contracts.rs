@@ -1,7 +1,7 @@
 use spark_storage::conversation::{
     ConversationMutation, RuntimeSession, TranscriptTurn, RUNTIME_SESSION_SCHEMA_VERSION,
 };
-use spark_storage::{ConversationRepository, ProjectRegistry};
+use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry};
 
 fn setup(project_path: &str) -> (tempfile::TempDir, ConversationRepository) {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -9,7 +9,22 @@ fn setup(project_path: &str) -> (tempfile::TempDir, ConversationRepository) {
     ProjectRegistry::new(&home)
         .ensure_project_paths(project_path)
         .expect("project paths");
-    (temp, ConversationRepository::new(&home))
+    let store = ConversationStore::open(&home).expect("store");
+    (temp, ConversationRepository::new(store))
+}
+
+fn user_turn(content: &str) -> ConversationMutation {
+    ConversationMutation::TurnUpserted {
+        turn: TranscriptTurn {
+            id: "turn-user".to_string(),
+            role: "user".to_string(),
+            kind: Some("message".to_string()),
+            content: content.to_string(),
+            status: "complete".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            ..TranscriptTurn::default()
+        },
+    }
 }
 
 fn session(thread_id: &str) -> RuntimeSession {
@@ -25,9 +40,15 @@ fn session(thread_id: &str) -> RuntimeSession {
 }
 
 #[test]
-fn runtime_session_round_trips_and_missing_file_reads_as_none() {
+fn runtime_session_round_trips_and_missing_session_reads_as_none() {
     let project_path = "/projects/runtime-session";
     let (_temp, repo) = setup(project_path);
+    // Sessions belong to live conversations only.
+    assert!(repo
+        .write_runtime_session("conversation-a", project_path, &session("thread-early"))
+        .is_err());
+    repo.commit_conversation("conversation-a", project_path, 0, vec![user_turn("Hello")])
+        .expect("commit");
 
     assert_eq!(
         repo.read_runtime_session("conversation-a", Some(project_path))
@@ -59,7 +80,7 @@ fn runtime_session_round_trips_and_missing_file_reads_as_none() {
 }
 
 #[test]
-fn runtime_session_presence_never_changes_snapshot_or_journal_reads() {
+fn runtime_session_presence_never_changes_snapshot_reads() {
     let project_path = "/projects/runtime-session-isolated";
     let (_temp, repo) = setup(project_path);
 
@@ -67,17 +88,7 @@ fn runtime_session_presence_never_changes_snapshot_or_journal_reads() {
         "conversation-b",
         project_path,
         0,
-        vec![ConversationMutation::TurnUpserted {
-            turn: TranscriptTurn {
-                id: "turn-user".to_string(),
-                role: "user".to_string(),
-                kind: Some("message".to_string()),
-                content: "Continuity is a separate authority".to_string(),
-                status: "complete".to_string(),
-                timestamp: "2026-01-01T00:00:00Z".to_string(),
-                ..TranscriptTurn::default()
-            },
-        }],
+        vec![user_turn("Continuity is a separate authority")],
     )
     .expect("commit");
 
@@ -85,9 +96,6 @@ fn runtime_session_presence_never_changes_snapshot_or_journal_reads() {
         .read_snapshot("conversation-b", Some(project_path))
         .expect("read")
         .expect("snapshot");
-    let events_before = repo
-        .read_conversation_events_after("conversation-b", project_path, 0)
-        .expect("events");
 
     repo.write_runtime_session("conversation-b", project_path, &session("thread-beta"))
         .expect("write session");
@@ -96,9 +104,5 @@ fn runtime_session_presence_never_changes_snapshot_or_journal_reads() {
         .read_snapshot("conversation-b", Some(project_path))
         .expect("read again")
         .expect("snapshot");
-    let events_after = repo
-        .read_conversation_events_after("conversation-b", project_path, 0)
-        .expect("events again");
     assert_eq!(snapshot_before, snapshot_after);
-    assert_eq!(events_before, events_after);
 }

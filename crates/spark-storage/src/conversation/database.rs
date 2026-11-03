@@ -5,9 +5,10 @@
 //! row plus tombstones. Each successful write transaction allocates exactly one
 //! home-global revision and stamps every row it changes, so `R < revision <= H`
 //! selects the replacement rows a client at cursor `R` needs to reach watermark
-//! `H`. Production conversation paths do not use this module yet.
+//! `H`. [`super::ConversationStore`] owns the one connection per Spark home.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -79,6 +80,7 @@ CREATE TABLE turns (
 CREATE INDEX turns_page ON turns(conversation_id, position, turn_id) WHERE deleted = 0;
 CREATE INDEX turns_order_changed ON turns(conversation_id, order_changed_revision);
 CREATE INDEX turns_revision ON turns(conversation_id, revision);
+CREATE INDEX turns_status ON turns(status, conversation_id) WHERE deleted = 0;
 
 CREATE TABLE segments (
     conversation_id TEXT NOT NULL,
@@ -95,12 +97,15 @@ CREATE TABLE segments (
 ) WITHOUT ROWID;
 CREATE INDEX segments_page ON segments(conversation_id, turn_id, sort_order, segment_id) WHERE deleted = 0;
 CREATE INDEX segments_revision ON segments(conversation_id, revision);
+CREATE INDEX segments_status ON segments(status, conversation_id) WHERE deleted = 0;
 
 CREATE TABLE artifacts (
     conversation_id TEXT NOT NULL REFERENCES conversations(id),
     collection TEXT NOT NULL CHECK (length(collection) > 0),
     artifact_id TEXT NOT NULL CHECK (length(artifact_id) > 0),
     turn_id TEXT,
+    -- Insertion order within the collection, fixed at the first insert.
+    position INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -223,11 +228,44 @@ const READ_STATEMENTS: &[(&str, &str)] = &[
     ("page_artifacts", PAGE_ARTIFACTS_SQL),
 ];
 
+/// Turn and segment statuses a previous process may have left unsettled.
+const UNSETTLED_CONVERSATIONS_SQL: &str = "SELECT c.id, c.project_path FROM conversations c \
+     WHERE c.deleted = 0 AND (EXISTS(SELECT 1 FROM turns t INDEXED BY turns_status \
+     WHERE t.status IN ('pending', 'streaming', 'queued') AND t.conversation_id = c.id \
+     AND t.deleted = 0) OR EXISTS(SELECT 1 FROM segments s INDEXED BY segments_status \
+     WHERE s.status = 'delivery_pending' AND s.conversation_id = c.id AND s.deleted = 0)) \
+     ORDER BY c.id";
+
 /// The app-owned conversation database.
 pub struct ConversationDatabase {
     path: PathBuf,
     generation: String,
     connection: Mutex<Connection>,
+    deferred_checkpoints: AtomicUsize,
+}
+
+/// Every live row of one conversation, for loading it into memory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredConversation {
+    pub project_path: String,
+    pub handle: String,
+    pub trace_sequence_high_water: u64,
+    pub metadata: Value,
+    /// Ascending position: (turn id, position, applied trace sequence, payload).
+    pub turns: Vec<(String, i64, u64, Value)>,
+    pub segments: Vec<Value>,
+    /// (collection, artifact id, payload), in insertion order per collection.
+    pub artifacts: Vec<(String, String, Value)>,
+    /// (attachment id, blob path, status, payload).
+    pub attachments: Vec<(String, String, String, Value)>,
+}
+
+/// A durable project deletion whose filesystem cleanup has not finished.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectDeletionMarker {
+    pub project_path: String,
+    pub project_id: String,
+    pub response: Value,
 }
 
 /// Conversation metadata and summary columns.
@@ -432,7 +470,72 @@ impl ConversationDatabase {
             path,
             generation,
             connection: Mutex::new(connection),
+            deferred_checkpoints: AtomicUsize::new(0),
         })
+    }
+
+    /// The destructive-cleanup barrier. Holding the connection, so no write
+    /// can install a reference meanwhile, run a FULL checkpoint and require it
+    /// to be complete before `cleanup` rechecks rows and removes files. A NORMAL
+    /// commit alone never authorizes deleting previously referenced bytes;
+    /// any busy, error or incomplete result defers cleanup with files intact.
+    pub fn after_checkpoint<T>(
+        &self,
+        cleanup: impl FnOnce(&CheckpointedView<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let connection = self.lock();
+        let deferred = self
+            .deferred_checkpoints
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok();
+        let (busy, log, checkpointed): (i64, i64, i64) = if deferred {
+            (1, -1, -1)
+        } else {
+            connection.query_row("PRAGMA main.wal_checkpoint(FULL)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+        };
+        if busy != 0 || log < 0 || log != checkpointed {
+            return Err(StorageError::CleanupDeferred {
+                reason: format!(
+                    "conversation database checkpoint incomplete (busy={busy}, log={log}, \
+                     checkpointed={checkpointed})"
+                ),
+            });
+        }
+        cleanup(&CheckpointedView {
+            connection: &connection,
+        })
+    }
+
+    /// Fault injection: report the next `count` cleanup checkpoints as busy.
+    #[doc(hidden)]
+    pub fn defer_next_checkpoints(&self, count: usize) {
+        self.deferred_checkpoints.store(count, Ordering::SeqCst);
+    }
+
+    /// Statements that change only cleanup bookkeeping, outside revisions.
+    pub(crate) fn mark_reset_complete(&self) -> Result<()> {
+        self.lock()
+            .execute("UPDATE store_meta SET reset_complete = 1", [])?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_project_deletion(&self, project_path: &str) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM project_deletions WHERE project_path = ?1",
+            [project_path],
+        )?;
+        Ok(())
+    }
+
+    /// Best-effort truncating checkpoint once writers have stopped.
+    pub(crate) fn checkpoint_on_shutdown(&self) {
+        let _ = self
+            .lock()
+            .query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     }
 
     pub fn path(&self) -> &Path {
@@ -656,7 +759,9 @@ impl WriteTransaction<'_> {
         self.touch(&row.conversation_id)?;
         self.tx.execute(
             "INSERT INTO artifacts (conversation_id, collection, artifact_id, turn_id, status, \
-             updated_at, revision, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             updated_at, revision, payload, position) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             (SELECT coalesce(max(position), 0) + 1 FROM artifacts \
+             WHERE conversation_id = ?1 AND collection = ?2)) \
              ON CONFLICT (conversation_id, collection, artifact_id) DO UPDATE SET \
              turn_id = excluded.turn_id, status = excluded.status, \
              updated_at = excluded.updated_at, revision = excluded.revision, deleted = 0, \
@@ -800,6 +905,61 @@ impl WriteTransaction<'_> {
             conversation_id,
             &[provider],
         )
+    }
+
+    /// Record that `turn_id` has projected every trace event through
+    /// `sequence`, and keep the conversation's allocator floor above it.
+    pub fn set_applied_trace(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        sequence: u64,
+    ) -> Result<()> {
+        self.tx.execute(
+            "UPDATE turns SET applied_trace_sequence = max(applied_trace_sequence, ?3) \
+             WHERE conversation_id = ?1 AND turn_id = ?2",
+            params![conversation_id, turn_id, sequence as i64],
+        )?;
+        self.raise_trace_high_water(conversation_id, sequence)
+    }
+
+    pub fn raise_trace_high_water(&self, conversation_id: &str, sequence: u64) -> Result<()> {
+        self.tx.execute(
+            "UPDATE conversations SET trace_sequence_high_water = \
+             max(trace_sequence_high_water, ?2) WHERE id = ?1",
+            params![conversation_id, sequence as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Tombstone every live conversation of a project and record the
+    /// pending filesystem cleanup. Returns the tombstoned conversation ids.
+    pub fn delete_project(&self, marker: &ProjectDeletionMarker) -> Result<Vec<String>> {
+        let ids = {
+            let mut statement = self
+                .tx
+                .prepare("SELECT id FROM conversations WHERE project_path = ?1 AND deleted = 0")?;
+            let ids = statement
+                .query_map([&marker.project_path], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        for id in &ids {
+            self.delete_conversation(id)?;
+        }
+        self.tx.execute(
+            "INSERT INTO project_deletions (project_path, project_id, phase, deletion_revision, \
+             response) VALUES (?1, ?2, 'cleanup_pending', ?3, ?4) \
+             ON CONFLICT (project_path) DO UPDATE SET project_id = excluded.project_id, \
+             deletion_revision = excluded.deletion_revision, response = excluded.response",
+            params![
+                marker.project_path,
+                marker.project_id,
+                self.revision,
+                marker.response.to_string()
+            ],
+        )?;
+        Ok(ids)
     }
 
     fn tombstone(
@@ -967,6 +1127,201 @@ impl ReadTransaction<'_> {
         }))
     }
 
+    /// Every live row of a conversation; `None` when it is unknown or deleted.
+    pub fn conversation(&self, conversation_id: &str) -> Result<Option<StoredConversation>> {
+        let head = self.tx.query_row(
+            "SELECT project_path, handle, trace_sequence_high_water, metadata FROM conversations \
+             WHERE id = ?1 AND deleted = 0",
+            [conversation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        );
+        let (project_path, handle, high_water, metadata) = match head {
+            Ok(head) => head,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let turns = self
+            .json_rows(
+                "SELECT turn_id, position, applied_trace_sequence, payload FROM turns \
+             WHERE conversation_id = ?1 AND deleted = 0 ORDER BY position, turn_id",
+                conversation_id,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)? as u64,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )?
+            .into_iter()
+            .map(|(id, position, applied, payload)| Ok((id, position, applied, parse(&payload)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let segments = self
+            .json_rows(
+                "SELECT s.payload FROM segments s JOIN turns t \
+                 ON t.conversation_id = s.conversation_id AND t.turn_id = s.turn_id \
+                 WHERE s.conversation_id = ?1 AND s.deleted = 0 \
+                 ORDER BY t.position, s.sort_order, s.segment_id",
+                conversation_id,
+                |row| row.get::<_, String>(0),
+            )?
+            .iter()
+            .map(|payload| parse(payload))
+            .collect::<Result<Vec<_>>>()?;
+        let artifacts = self
+            .json_rows(
+                "SELECT collection, artifact_id, payload FROM artifacts \
+                 WHERE conversation_id = ?1 AND deleted = 0 ORDER BY collection, position",
+                conversation_id,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get(2)?,
+                    ))
+                },
+            )?
+            .into_iter()
+            .map(|(collection, id, payload): (String, String, String)| {
+                Ok((collection, id, parse(&payload)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let attachments = self
+            .json_rows(
+                "SELECT attachment_id, blob_path, status, payload FROM attachments \
+                 WHERE conversation_id = ?1 AND deleted = 0 ORDER BY attachment_id",
+                conversation_id,
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )?
+            .into_iter()
+            .map(
+                |(id, path, status, payload): (String, String, String, String)| {
+                    Ok((id, path, status, parse(&payload)?))
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(StoredConversation {
+            project_path,
+            handle,
+            trace_sequence_high_water: high_water as u64,
+            metadata: parse(&metadata)?,
+            turns,
+            segments,
+            artifacts,
+            attachments,
+        }))
+    }
+
+    /// The project a conversation id belongs to and whether it was deleted.
+    pub fn conversation_location(&self, conversation_id: &str) -> Result<Option<(String, bool)>> {
+        match self.tx.query_row(
+            "SELECT project_path, deleted FROM conversations WHERE id = ?1",
+            [conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(location) => Ok(Some(location)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// The live conversation holding `handle`: (conversation id, project path).
+    pub fn conversation_by_handle(&self, handle: &str) -> Result<Option<(String, String)>> {
+        match self.tx.query_row(
+            "SELECT id, project_path FROM conversations WHERE handle = ?1 AND deleted = 0",
+            [handle],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(found) => Ok(Some(found)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Live conversation ids of one project, in id order.
+    pub fn conversation_ids(&self, project_path: &str) -> Result<Vec<String>> {
+        self.json_rows(
+            "SELECT id FROM conversations WHERE project_path = ?1 AND deleted = 0 ORDER BY id",
+            project_path,
+            |row| row.get(0),
+        )
+    }
+
+    /// Live conversations with an active or queued turn or an undecided
+    /// live delivery: (conversation id, project path).
+    pub fn unsettled_conversations(&self) -> Result<Vec<(String, String)>> {
+        let mut statement = self.tx.prepare_cached(UNSETTLED_CONVERSATIONS_SQL)?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The most recently written live runtime session payload.
+    pub fn runtime_session(&self, conversation_id: &str) -> Result<Option<Value>> {
+        let payload = self
+            .json_rows(
+                "SELECT payload FROM runtime_sessions WHERE conversation_id = ?1 AND deleted = 0 \
+                 ORDER BY revision DESC LIMIT 1",
+                conversation_id,
+                |row| row.get::<_, String>(0),
+            )?
+            .pop();
+        payload.map(|payload| parse(&payload)).transpose()
+    }
+
+    pub fn project_deletions(&self) -> Result<Vec<ProjectDeletionMarker>> {
+        let mut statement = self.tx.prepare(
+            "SELECT project_path, project_id, response FROM project_deletions ORDER BY project_path",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+        rows.into_iter()
+            .map(|(project_path, project_id, response)| {
+                Ok(ProjectDeletionMarker {
+                    project_path,
+                    project_id,
+                    response: parse(&response)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn reset_complete(&self) -> Result<bool> {
+        Ok(self.tx.query_row(
+            "SELECT reset_complete FROM store_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn json_rows<T>(
+        &self,
+        sql: &str,
+        key: &str,
+        map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> Result<Vec<T>> {
+        let mut statement = self.tx.prepare_cached(sql)?;
+        let rows = statement.query_map([key], map)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     fn entity_rows(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<EntityRow>> {
         let mut statement = self.tx.prepare_cached(sql)?;
         let rows = statement.query_map(params, |row| {
@@ -1002,4 +1357,46 @@ impl ReadTransaction<'_> {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// The connection after a complete FULL checkpoint, for rechecking cleanup
+/// candidates against current rows before removing files.
+pub struct CheckpointedView<'a> {
+    connection: &'a Connection,
+}
+
+impl CheckpointedView<'_> {
+    /// Whether any live reference names `blob_path` or a path below it.
+    pub fn has_live_reference_under(&self, blob_path: &str) -> Result<bool> {
+        let prefix = format!("{}/", blob_path.trim_end_matches('/'));
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blob_references WHERE deleted = 0 \
+             AND (blob_path = ?1 OR substr(blob_path, 1, length(?2)) = ?2))",
+            params![blob_path, prefix],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn conversation_is_live(&self, conversation_id: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 AND deleted = 0)",
+            [conversation_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn project_has_live_conversations(&self, project_path: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE project_path = ?1 AND deleted = 0)",
+            [project_path],
+            |row| row.get(0),
+        )?)
+    }
+}
+
+fn parse(payload: &str) -> Result<Value> {
+    serde_json::from_str(payload).map_err(|source| StorageError::JsonRead {
+        path: PathBuf::from(CONVERSATION_DATABASE_FILE_NAME),
+        source,
+    })
 }

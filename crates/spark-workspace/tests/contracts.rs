@@ -17,94 +17,108 @@ mod trigger_source_activation_contracts;
 #[path = "contracts/workflow_log_contracts.rs"]
 mod workflow_log_contracts;
 
+/// Seeds one conversation's rows in the home's shared store, exactly as given.
 fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json::Value) {
-    use spark_storage::conversation::{record_from_snapshot, ArtifactCollection};
-    use spark_storage::{ActivityRepository, ConversationHandleRepository, ProjectRegistry};
-
-    let mut record = record_from_snapshot(snapshot).expect("conversation snapshot");
-    let project = ProjectRegistry::new(data_dir)
-        .ensure_project_paths(&record.meta.project_path)
-        .expect("project paths");
-    let root = project.conversations_dir.join(&record.meta.conversation_id);
-    std::fs::create_dir_all(root.join("artifacts")).expect("conversation directories");
-    let activity = ActivityRepository::new(&root);
-    let mut revision = 1;
-    let record_count = (record.transcript.turns.len() + record.transcript.segments.len()) as i64;
-    let published_revision = record.meta.revision.max(record_count);
-    let mut journal_revision = published_revision - record_count;
-    for turn in &record.transcript.turns {
-        journal_revision += 1;
-        let event = activity
-            .append_event(
-                serde_json::json!({"type": "turn_upsert", "revision": journal_revision}),
-                &record.meta.updated_at,
-            )
-            .expect("turn event");
-        activity
-            .append_transcript(&spark_storage::TranscriptRecord::TurnUpsert {
-                revision,
-                committed_at: event.committed_at,
-                source_event_sequence: event.sequence,
-                turn: turn.clone(),
-            })
-            .expect("turn transcript");
-        revision += 1;
-    }
-    for segment in &record.transcript.segments {
-        journal_revision += 1;
-        let event = activity
-            .append_event(
-                serde_json::json!({"type": "segment_upsert", "revision": journal_revision}),
-                &record.meta.updated_at,
-            )
-            .expect("segment event");
-        activity
-            .append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
-                revision,
-                committed_at: event.committed_at,
-                source_event_sequence: event.sequence,
-                segment: segment.clone(),
-            })
-            .expect("segment transcript");
-        revision += 1;
-    }
-    record.meta.revision = published_revision;
-    macro_rules! write {
-        ($path:expr, $value:expr) => {{
-            let mut bytes = serde_json::to_vec_pretty($value).expect("json");
-            bytes.push(b'\n');
-            std::fs::write($path, bytes).expect("conversation file");
-        }};
-    }
-    write!(root.join("conversation.json"), &record.meta);
-    write!(root.join("event-log.json"), &record.artifacts.event_log);
-    for (collection, name) in [
-        (
-            ArtifactCollection::FlowRunRequests,
-            "flow-run-requests.json",
-        ),
-        (ArtifactCollection::FlowLaunches, "flow-launches.json"),
-        (ArtifactCollection::RunRecoveries, "run-recoveries.json"),
-        (ArtifactCollection::ProposedPlans, "proposed-plans.json"),
-    ] {
-        write!(
-            root.join("artifacts").join(name),
-            record.artifacts.collection(collection)
-        );
-    }
-    if !record.meta.conversation_handle.is_empty() {
-        ConversationHandleRepository::new(data_dir)
-            .ensure_conversation_handle(
-                &record.meta.conversation_id,
-                &project.project_id,
-                &record.meta.project_path,
-                &record.meta.created_at,
-                Some(&record.meta.conversation_handle),
-            )
-            .expect("conversation handle");
-    }
+    let mut record =
+        spark_storage::conversation::record_from_snapshot(snapshot).expect("conversation snapshot");
+    // Each stored turn and segment accounts for at least one revision.
+    let entries = (record.transcript.turns.len() + record.transcript.segments.len()) as i64;
+    record.meta.revision = record.meta.revision.max(entries);
+    spark_storage::ConversationRepository::new(shared_store(data_dir))
+        .seed_record(&record)
+        .expect("seed conversation");
 }
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]
 pub(crate) use flow_install::{install_flow, install_named_flow, install_org_flow};
+
+/// One conversation store per test home, shared by every service a test
+/// builds, the way one app shares its store.
+#[allow(dead_code)]
+fn shared_store(
+    data_dir: impl AsRef<std::path::Path>,
+) -> std::sync::Arc<spark_storage::ConversationStore> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static STORES: OnceLock<Mutex<HashMap<PathBuf, Weak<spark_storage::ConversationStore>>>> =
+        OnceLock::new();
+    let data_dir = data_dir.as_ref();
+    let mut stores = STORES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(store) = stores.get(data_dir).and_then(Weak::upgrade) {
+        return store;
+    }
+    let store = spark_storage::ConversationStore::open(data_dir).expect("conversation store");
+    stores.insert(data_dir.to_path_buf(), Arc::downgrade(&store));
+    store
+}
+
+#[allow(dead_code)]
+fn conversations(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn conversations_with_backend(
+    settings: spark_common::settings::SparkSettings,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_agent_turn_backend(
+        settings, store, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+        settings, store, factory,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory_and_backend(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings, store, factory, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn missions(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::missions::WorkspaceMissionService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::missions::WorkspaceMissionService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn roles(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::roles::WorkspaceRoleService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::roles::WorkspaceRoleService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn triggers(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceTriggerService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceTriggerService::new(settings, store)
+}

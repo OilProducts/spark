@@ -8,8 +8,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_http::{build_app, build_app_with_rust_llm_client};
-use spark_storage::{ConversationHandleRepository, ConversationRepository, ProjectRegistry};
+use spark_http::build_app_with_rust_llm_client;
+use spark_storage::{ConversationRepository, ProjectRegistry};
 use tower::ServiceExt;
 use unified_llm_adapter::{
     ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
@@ -32,7 +32,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
     );
     seed_failed_run(&settings, "run-failed", &project_path);
     seed_completed_run(&settings, "run-source", &project_path);
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let launched = request_json(
         app.clone(),
@@ -201,7 +201,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
     assert_eq!(continued.1["continued_from_run_id"], "run-source");
     assert!(continued.1.get("flow_name").is_none());
 
-    let snapshot = ConversationRepository::new(&settings.data_dir)
+    let snapshot = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_snapshot(
             "conversation-http-run",
             Some(project_path.to_str().expect("utf-8")),
@@ -249,7 +249,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
             adapter,
         )
         .expect("client");
-    let app = build_app_with_rust_llm_client(settings, client);
+    let app = build_app_with_rust_llm_client(settings, client).expect("app");
 
     let launched = request_json(
         app,
@@ -395,7 +395,7 @@ fn checkpoint(current_node: &str) -> CheckpointState {
 
 fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
     let registry = ProjectRegistry::new(&settings.data_dir);
-    let project = registry
+    let _project = registry
         .ensure_project_paths(project_path)
         .expect("project");
     write_legacy_conversation_files(
@@ -426,15 +426,6 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
             "proposed_plans": []
         }),
     );
-    ConversationHandleRepository::new(&settings.data_dir)
-        .ensure_conversation_handle(
-            conversation_id,
-            &project.project_id,
-            project_path,
-            "2026-01-01T00:00:00Z",
-            Some("amber-anchor"),
-        )
-        .expect("handle");
 }
 
 fn simple_flow() -> Value {

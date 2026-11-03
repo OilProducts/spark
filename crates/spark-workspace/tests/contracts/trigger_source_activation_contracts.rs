@@ -5,7 +5,6 @@ use attractor_runtime::RunStore;
 use serde_json::{json, Map, Value};
 use spark_common::settings::SparkSettings;
 use spark_triggers::{state, TriggerCreateRequest, TriggerService, WebhookHandleRequest};
-use spark_workspace::WorkspaceTriggerService;
 use time::OffsetDateTime;
 
 #[tokio::test]
@@ -31,7 +30,7 @@ async fn workspace_source_activation_records_missing_flow_failures_without_launc
         })
         .expect("create trigger");
 
-    let outcomes = WorkspaceTriggerService::new(settings.clone())
+    let outcomes = crate::triggers(settings.clone())
         .process_due_trigger_sources_at(at("2026-06-24T10:00:00Z"))
         .await
         .expect("process source");
@@ -76,7 +75,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
         })
         .expect("create trigger");
 
-    let outcomes = WorkspaceTriggerService::new(settings.clone())
+    let outcomes = crate::triggers(settings.clone())
         .process_due_trigger_sources_at(at("2026-06-24T10:00:00Z"))
         .await
         .expect("process source");
@@ -129,7 +128,7 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
     let settings = settings(temp.path());
     write_flow(&settings, "ops/webhook");
     let project = project(&settings, "project");
-    let service = WorkspaceTriggerService::new(settings.clone());
+    let service = crate::triggers(settings.clone());
     let created = service
         .create_trigger(TriggerCreateRequest {
             project_path: project.clone(),
@@ -215,7 +214,7 @@ fn workspace_webhook_launch_failures_are_state_only() {
     let settings = settings(temp.path());
     write_flow(&settings, "ops/invalid");
     let project = project(&settings, "project");
-    let service = WorkspaceTriggerService::new(settings.clone());
+    let service = crate::triggers(settings.clone());
     let failing = service
         .create_trigger(TriggerCreateRequest {
             project_path: project.clone(),
@@ -260,7 +259,7 @@ fn triggers_are_created_only_in_registered_projects() {
     write_flow(&settings, "ops/run");
     let unregistered = temp.path().join("unregistered");
     fs::create_dir_all(&unregistered).expect("project");
-    let error = WorkspaceTriggerService::new(settings)
+    let error = crate::triggers(settings)
         .create_trigger(TriggerCreateRequest {
             project_path: unregistered.to_string_lossy().into_owned(),
             message: None,
@@ -295,7 +294,7 @@ fn flow_event_trigger_keeps_static_context_nested() {
         .put(&trigger, None)
         .expect("put trigger");
 
-    let service = WorkspaceTriggerService::new(settings.clone());
+    let service = crate::triggers(settings.clone());
     let emit = || {
         service
             .emit_flow_event(Map::from_iter([
@@ -360,7 +359,7 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
             ..Default::default()
         })
         .expect("own run");
-    let service = WorkspaceTriggerService::new(settings.clone());
+    let service = crate::triggers(settings.clone());
     let emit = |run_id: &str, project: &str| {
         service
             .emit_flow_event(Map::from_iter([
@@ -382,7 +381,7 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
         vec!["Trigger delivered to role."]
     );
     assert!(emit("run-other", &project).is_empty());
-    let role = spark_workspace::roles::WorkspaceRoleService::new(settings.clone())
+    let role = crate::roles(settings.clone())
         .get(&project, "coordinator")
         .expect("role");
     assert_eq!(role.inbox.event_seq, 1);
@@ -401,7 +400,7 @@ fn hand_deleted_definitions_stop_firing_without_a_restart() {
     definitions
         .put(&flow_event_definition("flow-event", Map::new()), None)
         .expect("put trigger");
-    let service = WorkspaceTriggerService::new(settings.clone());
+    let service = crate::triggers(settings.clone());
     let emit = || {
         service
             .emit_flow_event(Map::from_iter([

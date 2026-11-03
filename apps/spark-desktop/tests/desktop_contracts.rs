@@ -12,7 +12,6 @@ use spark_desktop::desktop_core::{
     load_desktop_settings, server_host_for_settings, set_remote_access_enabled, settings_view,
     start_desktop_server, DesktopPaths, DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
 };
-use spark_storage::ConversationRepository;
 
 #[test]
 fn desktop_uses_spark_home_or_home_dot_spark_as_its_data_directory() {
@@ -260,13 +259,22 @@ fn desktop_server_codex_smoke_persists_codex_app_server_backend_marker() {
         })
     }));
 
-    let events = ConversationRepository::new(&settings.data_dir)
-        .read_conversation_events_after(conversation_id, project_path.to_string_lossy().as_ref(), 0)
-        .expect("conversation events");
-    assert!(events.iter().any(|event| {
-        event["type"] == "segment_upsert"
-            && event["segment"]["source"]["backend"] == "codex_app_server"
+    let snapshot: serde_json::Value = http_client()
+        .get(format!(
+            "{}workspace/api/conversations/{conversation_id}?project_path={}",
+            server.url(),
+            project_path.to_string_lossy()
+        ))
+        .send()
+        .expect("conversation response")
+        .json()
+        .expect("conversation body");
+    assert!(snapshot["segments"].as_array().is_some_and(|segments| {
+        segments
+            .iter()
+            .any(|segment| segment["source"]["backend"] == "codex_app_server")
     }));
+    let _ = settings;
 
     server.shutdown();
 }
@@ -394,7 +402,15 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
         "value": {"client_id": client_id, "preferences": {"editor_mode": "files", "editor_sidebar_width": 400}}
     })).send().unwrap();
     assert!(preference_response.status().is_success());
-    // Keep the old listener open so the replacement necessarily gets a different port.
+    // One server per Spark home: the first releases it before the restart.
+    // Holding its old port makes the replacement necessarily get another.
+    let first_port: SocketAddr = first_url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    first.shutdown();
+    let _held_port = std::net::TcpListener::bind(first_port).unwrap();
     let restarted =
         bootstrap_desktop_runtime(&load_desktop_settings(&paths).unwrap(), &spark_home(&paths))
             .unwrap();
@@ -434,8 +450,36 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     );
     assert_eq!(response["models"]["stored"]["model"], "restart-model");
     assert_eq!(response["models"]["effective"]["model"], "restart-model");
-    first.shutdown();
     second.shutdown();
+}
+
+#[test]
+fn a_second_desktop_server_on_one_home_reports_the_lock_and_releases_everything() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    let bootstrap =
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
+    let mut first = start_desktop_server(bootstrap.settings.clone(), LOCAL_BIND_HOST).unwrap();
+    let error = match start_desktop_server(bootstrap.settings.clone(), LOCAL_BIND_HOST) {
+        Ok(_) => panic!("a second server on the same home started"),
+        Err(error) => error,
+    };
+    assert!(
+        error.starts_with("Unable to initialize desktop server:")
+            && error.contains("Another Spark server"),
+        "{error}"
+    );
+    // The failed start left the running server untouched.
+    let status = http_client()
+        .get(format!("{}workspace/api/settings", first.url()))
+        .send()
+        .unwrap()
+        .status();
+    assert!(status.is_success());
+    first.shutdown();
+    // Neither start kept the home: a fresh server opens it.
+    let mut again = start_desktop_server(bootstrap.settings, LOCAL_BIND_HOST).unwrap();
+    again.shutdown();
 }
 
 #[test]

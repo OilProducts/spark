@@ -1,10 +1,9 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_storage::ProjectRegistry;
-use spark_workspace::{ConversationSettingsUpdate, WorkspaceConversationService, WorkspaceError};
+use spark_workspace::{ConversationSettingsUpdate, WorkspaceError};
 
 #[test]
 fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_for_snapshots() {
@@ -71,35 +70,19 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
                         "file_paths": []
                     }
                 }
+            ],
+            "event_log": [
+                {"message": "Review requested", "timestamp": "2026-01-01T00:00:04Z"}
+            ],
+            "flow_run_requests": [
+                {"id": "request-a", "created_at": "2026-01-01T00:00:04Z", "updated_at": "2026-01-01T00:00:04Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant"}
+            ],
+            "flow_launches": [
+                {"id": "launch-a", "created_at": "2026-01-01T00:00:05Z", "updated_at": "2026-01-01T00:00:05Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launched", "run_id": "run-a"},
+                {"id": "launch-b", "created_at": "2026-01-01T00:00:06Z", "updated_at": "2026-01-01T00:00:06Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launch_failed"}
             ]
         }),
     );
-    let root = project.conversations_dir.join("conversation-a");
-    fs::write(
-        root.join("event-log.json"),
-        serde_json::to_string_pretty(&json!([
-            {"message": "Review requested", "timestamp": "2026-01-01T00:00:04Z"}
-        ]))
-        .expect("json"),
-    )
-    .expect("event log");
-    fs::write(
-        root.join("artifacts/flow-run-requests.json"),
-        serde_json::to_string_pretty(&json!([
-            {"id": "request-a", "created_at": "2026-01-01T00:00:04Z", "updated_at": "2026-01-01T00:00:04Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant"}
-        ]))
-        .expect("json"),
-    )
-    .expect("flow requests");
-    fs::write(
-        root.join("artifacts/flow-launches.json"),
-        serde_json::to_string_pretty(&json!([
-            {"id": "launch-a", "created_at": "2026-01-01T00:00:05Z", "updated_at": "2026-01-01T00:00:05Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launched", "run_id": "run-a"},
-            {"id": "launch-b", "created_at": "2026-01-01T00:00:06Z", "updated_at": "2026-01-01T00:00:06Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launch_failed"}
-        ]))
-        .expect("json"),
-    )
-    .expect("flow launches");
 
     // A conversation whose assistant turn is still streaming lists as running.
     write_state(
@@ -122,7 +105,7 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         }),
     );
 
-    let service = WorkspaceConversationService::new(settings);
+    let service = crate::conversations(settings);
     let snapshot = service
         .get_snapshot("conversation-a", Some(project_path))
         .expect("snapshot");
@@ -173,7 +156,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = "/projects/settings-app";
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let snapshot = service
         .update_conversation_settings(
@@ -225,31 +208,25 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project_path)
         .expect("project");
-    assert!(project
-        .conversations_dir
-        .join("conversation-settings/conversation.json")
-        .exists());
-    assert!(project
-        .conversations_dir
-        .join("conversation-settings/events.jsonl")
-        .exists());
+    // The conversation and its handle are database rows; no files appear.
+    let stored = crate::shared_store(&settings.data_dir)
+        .database()
+        .read(|read| read.conversation("conversation-settings"))
+        .expect("rows")
+        .expect("conversation");
+    assert_eq!(
+        stored.handle,
+        snapshot["conversation_handle"].as_str().unwrap()
+    );
+    assert_eq!(stored.metadata["chat_mode"], "plan");
     assert!(!project
         .conversations_dir
-        .join("conversation-settings/state.json")
+        .join("conversation-settings")
         .exists());
     assert!(!project
         .flow_run_requests_dir
         .join("conversation-settings.json")
         .exists());
-    let handles: Value = serde_json::from_str(
-        &fs::read_to_string(settings.workspace_dir.join("conversation-handles.json"))
-            .expect("handles"),
-    )
-    .expect("json");
-    assert!(handles["conversation_ids"]["conversation-settings"]
-        .as_str()
-        .expect("handle")
-        .contains('-'));
 
     let invalid = service
         .update_conversation_settings(
@@ -275,7 +252,7 @@ fn conversation_service_defaults_llm_profile_and_allocates_summary_handles() {
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project_path)
         .expect("project");
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let shell = service
         .get_snapshot("conversation-shell", Some(project_path))
@@ -318,15 +295,12 @@ fn conversation_service_defaults_llm_profile_and_allocates_summary_handles() {
         .expect("summary");
     assert_eq!(summary.conversation_handle.split('-').count(), 2);
 
-    let handles: Value = serde_json::from_str(
-        &fs::read_to_string(settings.workspace_dir.join("conversation-handles.json"))
-            .expect("handles"),
-    )
-    .expect("json");
-    assert_eq!(
-        handles["conversation_ids"]["conversation-legacy-defaults"].as_str(),
-        Some(summary.conversation_handle.as_str())
-    );
+    let stored = crate::shared_store(&settings.data_dir)
+        .database()
+        .read(|read| read.conversation("conversation-legacy-defaults"))
+        .expect("rows")
+        .expect("conversation");
+    assert_eq!(stored.handle, summary.conversation_handle);
 }
 
 #[test]
@@ -357,7 +331,7 @@ fn conversation_service_rejects_project_mismatch_and_deletes_conversation_state(
             "segments": []
         }),
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let mismatch = service
         .get_snapshot("conversation-a", Some("/projects/b"))

@@ -6,7 +6,6 @@ use spark_common::settings::SparkSettings;
 use spark_storage::workspace_records::RecordRepository;
 use spark_workspace::{
     inbox::{install_runtime, InboxPost, InboxRuntime},
-    missions::WorkspaceMissionService,
     roles::{RoleRecord, RoleState, WorkspaceRoleService, CHIEF_OF_STAFF, COORDINATOR},
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
     WorkspaceConversationService, WorkspaceError,
@@ -50,7 +49,7 @@ impl Harness {
             },
         );
         Self {
-            roles: WorkspaceRoleService::new(settings.clone()),
+            roles: crate::roles(settings.clone()),
             _temp: temp,
             settings,
             project,
@@ -61,10 +60,7 @@ impl Harness {
         self.roles.get(&self.project, name).unwrap()
     }
     fn conversations(&self) -> WorkspaceConversationService {
-        WorkspaceConversationService::new_with_agent_turn_backend(
-            self.settings.clone(),
-            self.agent.clone(),
-        )
+        crate::conversations_with_backend(self.settings.clone(), self.agent.clone())
     }
     fn request(&self, index: usize) -> AgentTurnRequest {
         self.wait_turns(index + 1);
@@ -108,7 +104,7 @@ impl Harness {
     }
     /// The role's `spark convo run-request` from inside its turn.
     fn launch(&self, name: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
-        WorkspaceConversationService::new(self.settings.clone())
+        crate::conversations(self.settings.clone())
             .create_flow_run_request_by_handle(
                 &self.handle(name),
                 FlowRunRequestCreateByHandleRequest {
@@ -194,7 +190,7 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     assert!(!chat.contains("standing Coordinator ("), "{chat}");
     assert!(chat.contains(".spark/state/memory/coordinator"));
     assert!(chat.contains("never edit it"));
-    let missions = WorkspaceMissionService::new(harness.settings.clone());
+    let missions = crate::missions(harness.settings.clone());
     let mission = missions
         .create(
             &harness.project,
@@ -364,7 +360,12 @@ fn a_run_the_role_launched_reports_back_as_a_turn() {
     // Its run is in flight, so the role stays working after the turn ends.
     harness.agent.release(1);
     wait_terminal(&harness.settings, &run);
-    spark_workspace::inbox::deliver_run_events(&harness.settings, &run).unwrap();
+    spark_workspace::inbox::deliver_run_events(
+        &harness.settings,
+        &crate::shared_store(&harness.settings.data_dir),
+        &run,
+    )
+    .unwrap();
     assert_eq!(
         harness.request(1).prompt,
         format!("Run {run} (work/ok, \"Build it\") ended completed.")
@@ -616,7 +617,12 @@ fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instruc
             ),
         )
         .unwrap();
-    spark_workspace::inbox::deliver_run_events(&harness.settings, "run-asks").unwrap();
+    spark_workspace::inbox::deliver_run_events(
+        &harness.settings,
+        &crate::shared_store(&harness.settings.data_dir),
+        "run-asks",
+    )
+    .unwrap();
     let turn = harness.request(1);
     assert!(turn.prompt.contains("Which branch?"), "{}", turn.prompt);
     assert!(turn.prompt.contains("q-1"), "{}", turn.prompt);

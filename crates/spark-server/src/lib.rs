@@ -820,11 +820,16 @@ fn run_serve_process(
             config.host, config.port
         ));
         let client = rust_llm_client_from_settings(&config.settings);
-        axum_serve(
-            listener,
-            spark_http::build_app_with_rust_llm_client(config.settings, client),
-        )
-        .await
+        // Fails before serving, e.g. when another server holds this home.
+        let app = spark_http::build_app_with_rust_llm_client(config.settings, client).map_err(
+            |error| {
+                CommandOutput::stderr(
+                    EXIT_GENERAL_FAILURE,
+                    format!("Unable to initialize Spark server: {error}\n"),
+                )
+            },
+        )?;
+        axum_serve(listener, app).await
     })
 }
 
