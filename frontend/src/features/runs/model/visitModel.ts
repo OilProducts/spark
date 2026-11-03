@@ -14,19 +14,19 @@ import { timestampMs } from './transcriptModel'
 // parallel branches) and the executions list (each execution's status.json),
 // labelled from the run's flow snapshot.
 
+// A node completes with a decision or ends in error; 'failed' is the error
+// the run failed on, 'error' one the run continued past.
 export type VisitOutcome =
-    | 'succeeded'
-    | 'partly_succeeded'
-    | 'did_not_pass'
+    | 'completed'
+    | 'error'
     | 'failed'
     | 'interrupted'
     | 'running'
     | 'waiting'
 
 export const VISIT_OUTCOME_LABELS: Record<VisitOutcome, string> = {
-    succeeded: 'Succeeded',
-    partly_succeeded: 'Partly succeeded',
-    did_not_pass: "Didn't pass",
+    completed: 'Completed',
+    error: 'Error',
     failed: 'Failed',
     interrupted: 'Interrupted',
     running: 'Running',
@@ -63,6 +63,11 @@ export interface RunVisit {
     startedAt: string | null
     endedAt: string | null
     outcome: VisitOutcome
+    /** The decision the node returned, which selected its route. */
+    decision: string | null
+    /** An error's kind (runtime, contract, routing) and whether the flow tolerates it. */
+    failureKind: string | null
+    tolerable: boolean | null
     reason: string | null
     status: Record<string, unknown> | null
     next: { key: string; loopBack: boolean } | null
@@ -99,8 +104,9 @@ const humanizeNodeId = (nodeId: string): string => (
 interface VisitDraft {
     visit: RunVisit
     startSequence: number
-    terminal: 'succeeded' | 'partly_succeeded' | 'failed' | null
+    terminal: 'completed' | 'error' | null
     journalReason: string | null
+    journalDecision: string | null
 }
 
 interface BranchDraft extends VisitDraft {
@@ -140,6 +146,9 @@ export function buildRunVisits({
                     startedAt: null,
                     endedAt: null,
                     outcome: 'running',
+                    decision: null,
+                    failureKind: null,
+                    tolerable: null,
                     reason: null,
                     status: null,
                     next: null,
@@ -149,6 +158,7 @@ export function buildRunVisits({
                 startSequence,
                 terminal: null,
                 journalReason: null,
+                journalDecision: null,
             }
             drafts.set(key, draft)
         }
@@ -177,10 +187,11 @@ export function buildRunVisits({
             openByStage.delete(stageKey)
             draft.visit.endedAt = event.receivedAt
             if (event.type === 'StageCompleted') {
-                draft.terminal = event.payload.outcome === 'partial_success' ? 'partly_succeeded' : 'succeeded'
+                draft.terminal = 'completed'
                 draft.journalReason = asString(event.payload.notes)
+                draft.journalDecision = asString(event.payload.decision)
             } else {
-                draft.terminal = 'failed'
+                draft.terminal = 'error'
                 const error = asString(event.payload.error)
                 draft.journalReason = error === 'stage_failed' ? null : error
             }
@@ -234,6 +245,7 @@ export function buildRunVisits({
             startSequence: event.sequence,
             terminal: null,
             journalReason: null,
+            journalDecision: null,
             parent,
             branchIndex,
         }
@@ -288,7 +300,7 @@ export function buildRunVisits({
             const latest = latestBranchDraft(event)
             if (nodeId && latest && !(latest.terminal === null && latest.visit.nodeId === nodeId)) {
                 if (latest.terminal === null) {
-                    closeBranchDraft(latest, event, 'succeeded')
+                    closeBranchDraft(latest, event, 'completed')
                 }
                 const key = JSON.stringify([runId, nodeId, latest.visit.stageIndex, latest.visit.attempt, 'branch', latest.branchIndex, event.sequence])
                 branchDrafts.push(branchDraft(latest.parent, key, nodeId, latest.branchIndex, event))
@@ -296,13 +308,12 @@ export function buildRunVisits({
         } else if (event.type === 'ParallelBranchNodeCompleted') {
             const open = openBranchDraft(event)
             if (open && open.visit.nodeId === event.payload.branch_node_id) {
-                closeBranchDraft(open, event, event.payload.outcome === 'fail' ? 'failed'
-                    : event.payload.outcome === 'partial_success' ? 'partly_succeeded' : 'succeeded')
+                closeBranchDraft(open, event, event.payload.outcome === 'error' ? 'error' : 'completed')
             }
         } else if (event.type === 'ParallelBranchCompleted') {
             const open = openBranchDraft(event)
             if (open) {
-                closeBranchDraft(open, event, event.payload.success === false ? 'failed' : 'succeeded')
+                closeBranchDraft(open, event, event.payload.success === false ? 'error' : 'completed')
             }
         }
     }
@@ -315,15 +326,10 @@ export function buildRunVisits({
     const settle = (draft: VisitDraft, isLastRootVisit: boolean) => {
         const { visit } = draft
         const status = visit.status
-        const statusOutcome = asString(status?.outcome)
-        const terminal = draft.terminal ?? (
-            statusOutcome === 'fail' ? 'failed'
-                : statusOutcome === 'partial_success' ? 'partly_succeeded'
-                    : statusOutcome ? 'succeeded'
-                        : null
-        )
-        if (terminal === 'failed') {
-            visit.outcome = isLastRootVisit && runStatus === 'failed' ? 'failed' : 'did_not_pass'
+        const statusValue = asString(status?.status)
+        const terminal = statusValue === 'error' || statusValue === 'completed' ? statusValue : draft.terminal
+        if (terminal === 'error') {
+            visit.outcome = isLastRootVisit && runStatus === 'failed' ? 'failed' : 'error'
         } else if (terminal) {
             visit.outcome = terminal
         } else if (runEnded) {
@@ -334,6 +340,9 @@ export function buildRunVisits({
         }
         // A subflow visit's notes are the runtime's "Child completed"; its child
         // run summary says what happened, so only a failure reason is kept.
+        visit.decision = asString(status?.decision) ?? draft.journalDecision
+        visit.failureKind = asString(status?.failure_kind)
+        visit.tolerable = typeof status?.tolerable === 'boolean' ? status.tolerable : null
         visit.reason = asString(status?.failure_reason)
             ?? (visit.childRun ? null : asString(status?.notes) ?? draft.journalReason)
     }
@@ -414,12 +423,21 @@ export function formatVisitDuration(durationMs: number | null): string {
     return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
-export type VisitMark = 'did_not_pass' | 'failed' | 'interrupted' | 'waiting' | 'loop_back'
+/** An error's kind and whether the flow tolerates it, such as "runtime error, tolerable". */
+export function formatVisitErrorKind(visit: Pick<RunVisit, 'failureKind' | 'tolerable'>): string | null {
+    const parts = [
+        visit.failureKind ? `${visit.failureKind} error` : null,
+        visit.tolerable === true ? 'tolerable' : visit.tolerable === false ? 'not tolerable' : null,
+    ].filter(Boolean)
+    return parts.length > 0 ? parts.join(', ') : null
+}
+
+export type VisitMark = 'error' | 'failed' | 'interrupted' | 'waiting' | 'loop_back'
 
 /** The one mark a visit row shows, most urgent first; only notable visits get one. */
 export function visitMark(visit: RunVisit): VisitMark | null {
     if (visit.outcome === 'failed' || visit.outcome === 'waiting'
-        || visit.outcome === 'interrupted' || visit.outcome === 'did_not_pass') {
+        || visit.outcome === 'interrupted' || visit.outcome === 'error') {
         return visit.outcome
     }
     return visit.next?.loopBack ? 'loop_back' : null
@@ -471,7 +489,7 @@ export function visitPrompt(visit: RunVisit, prompts: RunExecutionPrompt[]): str
 }
 
 // The final structured response is shown under Returned, so the transcript
-// drops an assistant message that is only the status envelope.
+// drops an assistant message that is only the decision envelope.
 const isStatusEnvelope = (content: string): boolean => {
     const trimmed = content.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')
     if (!trimmed.startsWith('{')) {
@@ -479,10 +497,68 @@ const isStatusEnvelope = (content: string): boolean => {
     }
     try {
         const parsed = JSON.parse(trimmed)
-        return Boolean(parsed) && typeof parsed === 'object' && 'outcome' in parsed
+        return Boolean(parsed) && typeof parsed === 'object' && 'decision' in parsed
     } catch {
         return false
     }
+}
+
+/** One declared branch's settled result, from a fan-out's `parallel.results`. */
+export interface ParallelBranchResult {
+    id: string
+    index: number
+    status: string
+    decisions: Array<{ node: string; decision: string; target: string | null }>
+    notes: string | null
+    error: { node: string | null; kind: string | null; tolerable: boolean | null; reason: string | null; attempts: number | null } | null
+    terminal: { exitId: string | null; name: string | null; outcome: string | null; node: string | null } | null
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null => (
+    value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+)
+
+/** The branch results a fan-out visit wrote, in declared order; empty for any other visit. */
+export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): ParallelBranchResult[] {
+    const results = asRecord(visit.status?.context_updates)?.['parallel.results']
+    if (!Array.isArray(results)) {
+        return []
+    }
+    return results.flatMap((entry, position) => {
+        const record = asRecord(entry)
+        if (!record) {
+            return []
+        }
+        const error = asRecord(record.error)
+        const terminal = asRecord(record.terminal)
+        const result = asRecord(terminal?.result)
+        const decisions = Array.isArray(record.decisions) ? record.decisions : []
+        return [{
+            id: asString(record.id) ?? `branch ${position + 1}`,
+            index: typeof record.index === 'number' ? record.index : position,
+            status: asString(record.status) ?? 'unknown',
+            decisions: decisions.flatMap((item) => {
+                const decision = asRecord(item)
+                const node = asString(decision?.node)
+                const chosen = asString(decision?.decision)
+                return node && chosen ? [{ node, decision: chosen, target: asString(decision?.target) }] : []
+            }),
+            notes: asString(record.notes),
+            error: error ? {
+                node: asString(error.node),
+                kind: asString(error.kind),
+                tolerable: typeof error.tolerable === 'boolean' ? error.tolerable : null,
+                reason: asString(error.reason),
+                attempts: typeof error.attempts === 'number' ? error.attempts : null,
+            } : null,
+            terminal: terminal ? {
+                exitId: asString(terminal.exit_id),
+                name: asString(result?.name),
+                outcome: asString(result?.outcome),
+                node: asString(terminal.node),
+            } : null,
+        }]
+    })
 }
 
 /**

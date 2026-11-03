@@ -1,5 +1,5 @@
 use attractor_core::{
-    CheckpointState, ContextMap, FlowDefinition, LaunchContext, Outcome, OutcomeStatus, RunRecord,
+    CheckpointState, ContextMap, FailureKind, FlowDefinition, LaunchContext, Outcome, RunRecord,
 };
 use attractor_runtime::retry::{execution_attempt, saved_retry_request, EXECUTION_BASES_KEY};
 use attractor_runtime::{
@@ -8,23 +8,46 @@ use attractor_runtime::{
 };
 use serde_json::json;
 
+fn route(to: &str) -> serde_json::Value {
+    json!({ "to": to, "description": format!("Continue to {to}.") })
+}
+
+fn exit_node() -> serde_json::Value {
+    json!({ "kind": "exit", "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } } })
+}
+
 fn flow() -> FlowDefinition {
     serde_json::from_value(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "retry",
         "title": "Retry",
         "nodes": {
-            "start": { "kind": "start" },
+            "start": { "kind": "start", "routes": { "next": route("task") } },
             "task": {
                 "kind": "agent_task",
                 "config": { "kind": "agent_task", "prompt": "test" },
-                "retry": { "max_retries": 1 }
+                "contracts": { "response": "decision_envelope" },
+                "retry": { "max_retries": 1 },
+                "routes": { "done": route("done") }
             },
-            "done": { "kind": "exit" }
-        },
-        "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+            "done": exit_node()
+        }
     }))
     .unwrap()
+}
+
+/// Each node's successful completion: start's `next`, everything else `done`.
+fn completed(node_id: &str) -> Outcome {
+    Outcome::completed(match node_id {
+        "start" => "next",
+        "again" => "back",
+        _ => "done",
+    })
+}
+
+/// A retryable infrastructure failure.
+fn runtime_error() -> Outcome {
+    Outcome::error(FailureKind::Runtime, "provider unavailable", None)
 }
 
 fn seed(store: &RunStore) {
@@ -38,7 +61,7 @@ fn seed(store: &RunStore) {
                 completed_nodes: vec!["start".into(), "task".into()],
                 context: ContextMap::from([(
                     "_attractor.node_outcomes".into(),
-                    json!({"task":"fail"}),
+                    json!({"task": {"status": "error", "decision": ""}}),
                 )]),
                 retry_counts: [("task".into(), 1), ("start".into(), 7)].into(),
                 visit_counts: Default::default(),
@@ -52,7 +75,7 @@ fn seed(store: &RunStore) {
         .unwrap();
     store.write_node_artifacts(&paths, "task", 1, 1, &NodeArtifacts {
         response: Some("old failure".into()),
-        status: Some(json!({"outcome":"fail", "preferred_label":"", "suggested_next_ids":[], "context_updates":{}, "notes":"", "failure_reason":"old failure"})),
+        status: Some(json!({"status":"error", "decision":"", "context_updates":{}, "notes":"", "failure_reason":"old failure", "failure_kind":"runtime"})),
         under_logs: true,
         ..Default::default()
     }).unwrap();
@@ -102,14 +125,14 @@ fn repeated_explicit_retries_restore_allowance_and_preserve_artifacts() {
                 attempts.push(request.attempt);
                 return Outcome {
                     raw_response_text: format!("attempt {}", request.attempt),
-                    ..Outcome::new(if round < 2 {
-                        OutcomeStatus::Fail
+                    ..if round < 2 {
+                        runtime_error()
                     } else {
-                        OutcomeStatus::Success
-                    })
+                        completed("task")
+                    }
                 };
             }
-            Outcome::new(OutcomeStatus::Success)
+            completed(&request.node_id)
         });
         assert_eq!(attempts, expected);
     }
@@ -141,7 +164,7 @@ fn prepared_attempt_survives_restart_and_reuses_only_its_durable_response() {
     let paths = store.read_run_bundle("retry").unwrap().unwrap().paths;
     store.write_node_artifacts(&paths, "task", 1, 2, &NodeArtifacts {
         response: Some("new durable success".into()),
-        status: Some(json!({"outcome":"success", "preferred_label":"", "suggested_next_ids":[], "context_updates":{}, "notes":""})),
+        status: Some(json!({"status":"completed", "decision":"done", "context_updates":{}, "notes":""})),
         under_logs: true, ..Default::default()
     }).unwrap();
     resume(&store, |request| {
@@ -149,7 +172,7 @@ fn prepared_attempt_survives_restart_and_reuses_only_its_durable_response() {
             request.node_id, "task",
             "durable response must prevent duplicate execution"
         );
-        Outcome::new(OutcomeStatus::Success)
+        completed(&request.node_id)
     });
     assert_eq!(
         store
@@ -254,27 +277,25 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
 fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
     fn loop_flow() -> FlowDefinition {
         serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "looping_retry",
             "title": "Looping retry",
             "nodes": {
-                "start": { "kind": "start" },
+                "start": { "kind": "start", "routes": { "next": route("task") } },
                 "task": {
                     "kind": "agent_task",
-                    "config": { "kind": "agent_task", "prompt": "test" }
+                    "config": { "kind": "agent_task", "prompt": "test" },
+                    "contracts": { "response": "decision_envelope" },
+                    "routes": { "again": route("again"), "done": route("done") }
                 },
                 "again": {
                     "kind": "agent_task",
-                    "config": { "kind": "agent_task", "prompt": "loop" }
+                    "config": { "kind": "agent_task", "prompt": "loop" },
+                    "contracts": { "response": "decision_envelope" },
+                    "routes": { "back": route("task") }
                 },
-                "done": { "kind": "exit" }
-            },
-            "edges": [
-                { "from": "start", "to": "task" },
-                { "from": "task", "to": "again", "condition": "preferred_label=again" },
-                { "from": "task", "to": "done", "condition": "preferred_label=done" },
-                { "from": "again", "to": "task" }
-            ]
+                "done": exit_node()
+            }
         }))
         .unwrap()
     }
@@ -283,16 +304,15 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
         let store = RunStore::for_runs_dir(temp.path());
         let mut visits = Vec::new();
         PipelineExecutor::new(|request: NodeExecutionRequest| {
-            let mut outcome = Outcome::new(OutcomeStatus::Success);
+            let mut outcome = completed(&request.node_id);
             if request.node_id == "task" {
                 visits.push((request.stage_index, request.attempt));
-                outcome.raw_response_text = format!("visit {}", visits.len());
-                if visits.len() == 1 {
-                    outcome.preferred_label = "again".into();
+                outcome = if visits.len() == 1 {
+                    Outcome::completed("again")
                 } else {
-                    outcome.status = OutcomeStatus::Fail;
-                    outcome.retryable = Some(false);
-                }
+                    Outcome::error(FailureKind::Runtime, "provider rejected", Some(false))
+                };
+                outcome.raw_response_text = format!("visit {}", visits.len());
             }
             Ok(outcome)
         })
@@ -311,9 +331,13 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
         let controls = RuntimeControls::new(store.clone());
         let failed = store.read_run_bundle("retry").unwrap().unwrap();
         assert_eq!(failed.record.unwrap().status, "failed");
+        // An execution error is not a completed visit: the failed visit
+        // stays pending at task.
+        let failed_checkpoint = failed.checkpoint.unwrap();
+        assert_eq!(failed_checkpoint.current_node, "task");
         assert_eq!(
-            failed.checkpoint.unwrap().completed_nodes,
-            ["start", "task", "again", "task"]
+            failed_checkpoint.completed_nodes,
+            ["start", "task", "again"]
         );
         controls.prepare_retry("retry").unwrap();
         let prepared = controls.get_checkpoint("retry").unwrap();
@@ -337,7 +361,7 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
         if crash == "durable" {
             store.write_node_artifacts(&failed.paths, "task", 3, 1, &NodeArtifacts {
                 response: Some("retried success".into()),
-                status: Some(json!({"outcome":"success", "suggested_next_ids":[], "context_updates":{}, "preferred_label":"done", "notes":""})),
+                status: Some(json!({"status":"completed", "decision":"done", "context_updates":{}, "notes":""})),
                 under_logs: true,
                 ..Default::default()
             }).unwrap();
@@ -346,14 +370,13 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
         let restarted = RunStore::for_runs_dir(temp.path());
         let mut retried = Vec::new();
         resume(&restarted, |request| {
-            let mut outcome = Outcome::new(OutcomeStatus::Success);
+            let mut outcome = completed(&request.node_id);
             assert_ne!(
                 request.node_id, "again",
                 "retry must finish the prepared visit"
             );
             if request.node_id == "task" {
                 retried.push((request.stage_index, request.attempt));
-                outcome.preferred_label = "done".into();
                 outcome.raw_response_text = "retried success".into();
             }
             outcome

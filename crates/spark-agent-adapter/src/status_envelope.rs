@@ -1,25 +1,19 @@
-use std::cmp::Reverse;
+//! The decision envelope agents answer with:
+//! `{"decision": "<declared id>", "context_updates": {...}, "notes": "..."}`.
+//! The prompt appendix, the provider schema enum and the membership check
+//! all come from the node's declared routes, read from one place:
+//! [`declared_decisions`].
+
 use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
 
 use attractor_core::{
-    attr_i64, attr_string, is_exact_outcome_fail_condition, normalize_condition_literal,
-    routing_edge_from_dot_edge, split_condition_clauses, validate_context_updates_against_contract,
-    ContextMap, ContextWriteContract, DotGraph, FailureKind, Outcome, OutcomeStatus,
-    RUNTIME_UNAVAILABLE_ROUTES_KEY,
+    attr_string, validate_context_updates_against_contract, ContextMap, ContextWriteContract,
+    DotGraph, FailureKind, Outcome, RUNTIME_UNAVAILABLE_ROUTES_KEY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const STRUCTURED_OUTCOME_KEYS: &[&str] = &[
-    "outcome",
-    "preferred_label",
-    "suggested_next_ids",
-    "context_updates",
-    "notes",
-    "failure_reason",
-    "retryable",
-];
+const DECISION_ENVELOPE_KEYS: &[&str] = &["decision", "context_updates", "notes"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlainTextParseResult {
@@ -38,18 +32,49 @@ pub struct StructuredContractViolation {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_contract: Option<ContextWriteContract>,
+    /// The node's declared decisions, restated in repair prompts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StructuredTextOutcome {
+    /// Text from a node without a response contract.
     PlainText(PlainTextParseResult),
     ModeledOutcome(ModeledOutcomeParseResult),
     ContractViolation(StructuredContractViolation),
-    InvalidOutcome(Outcome),
 }
 
-pub fn build_status_envelope_prompt_appendix(
+/// One decision a node declares: its ID, meaning and target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredDecision {
+    pub decision: String,
+    pub description: String,
+    pub target: String,
+}
+
+/// The node's declared decisions, in decision order, from the route edges
+/// of the graph the flow's route map projects.
+pub fn declared_decisions(graph: &DotGraph, node_id: &str) -> Vec<DeclaredDecision> {
+    let mut decisions = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.source == node_id)
+        .filter_map(|edge| {
+            let decision = attr_string(&edge.attrs, "decision");
+            (!decision.is_empty()).then(|| DeclaredDecision {
+                decision,
+                description: attr_string(&edge.attrs, "description"),
+                target: edge.target.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    decisions.sort_by(|left, right| left.decision.cmp(&right.decision));
+    decisions
+}
+
+pub fn build_decision_envelope_prompt_appendix(
     write_contract: Option<&ContextWriteContract>,
     graph: &DotGraph,
     node_id: &str,
@@ -57,31 +82,21 @@ pub fn build_status_envelope_prompt_appendix(
 ) -> String {
     let mut sections = vec![[
         "Structured response contract:".to_string(),
-        "- Return ONLY a JSON object.".to_string(),
-        "- Required top-level key: \"outcome\" with one of \"success\", \"fail\", \"partial_success\", or \"retry\".".to_string(),
-        "- Optional top-level keys: \"preferred_label\", \"suggested_next_ids\", \"context_updates\", \"notes\", \"failure_reason\", and \"retryable\".".to_string(),
-        "- Use \"preferred_label\" for routing.".to_string(),
-        "- Whenever \"outcome\" is \"fail\", set \"failure_reason\" to one sentence saying why.".to_string(),
-        "- \"suggested_next_ids\" must be a list of strings.".to_string(),
-        "- \"context_updates\" must be a JSON object.".to_string(),
-        "- Do not emit any other top-level keys.".to_string(),
-        build_status_envelope_context_updates_contract_text(write_contract),
-        "- If no routing or context updates are needed, prefer: {\"outcome\":\"success\"}".to_string(),
+        "- Return ONLY a JSON object: {\"decision\": \"<decision>\", \"context_updates\": {...}, \"notes\": \"...\"}.".to_string(),
+        "- \"decision\" is required and must be exactly one of the decision IDs listed below.".to_string(),
+        "- \"context_updates\" (a JSON object) and \"notes\" (a string) are optional. Do not emit any other top-level keys.".to_string(),
+        "- Put the evidence for your decision, including any blocker, in \"notes\".".to_string(),
+        "- Finish long-running work inside this invocation: wait for and poll the commands you start rather than detaching them and answering early.".to_string(),
+        build_decision_envelope_context_updates_contract_text(write_contract),
     ]
     .join("\n")];
-    sections.extend(build_status_envelope_routes_text(graph, node_id, context));
+    sections.extend(build_decisions_text(graph, node_id, context));
     sections.join("\n")
 }
 
-/// Lists the node's outgoing edges in the order routing checks them:
-/// conditional edges (an exact `outcome=fail` first, as it wins on failure),
-/// then labeled unconditional edges, then the default. Targets the runtime
-/// lists under `RUNTIME_UNAVAILABLE_ROUTES_KEY` used all their visits.
-fn build_status_envelope_routes_text(
-    graph: &DotGraph,
-    node_id: &str,
-    context: &ContextMap,
-) -> Option<String> {
+/// Lists each declared decision with its target and description. A target
+/// that used all its visits stays listed, with that fact stated.
+fn build_decisions_text(graph: &DotGraph, node_id: &str, context: &ContextMap) -> Option<String> {
     let unavailable = context
         .get(RUNTIME_UNAVAILABLE_ROUTES_KEY)
         .and_then(Value::as_array)
@@ -92,137 +107,72 @@ fn build_status_envelope_routes_text(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let mut edges = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.source == node_id)
-        .map(|edge| {
-            (
-                attr_string(&edge.attrs, "condition").trim().to_string(),
-                attr_string(&edge.attrs, "label").trim().to_string(),
-                attr_i64(&edge.attrs, "weight", 0),
-                edge.target.as_str(),
-            )
-        })
-        .collect::<Vec<_>>();
-    if edges.is_empty() {
+    let decisions = declared_decisions(graph, node_id);
+    if decisions.is_empty() {
         return None;
     }
-    // Stable sort keeps labeled unconditional edges in declaration order: routing takes the first match.
-    edges.sort_by_key(|(condition, label, weight, target)| {
-        match (condition.is_empty(), label.is_empty()) {
-            (false, _) if is_exact_outcome_fail_condition(condition) => {
-                (0, Reverse(*weight), *target)
-            }
-            (false, _) => (1, Reverse(*weight), *target),
-            (true, false) => (2, Reverse(0), ""),
-            (true, true) => (3, Reverse(*weight), *target),
-        }
-    });
-    let mut lines = vec!["Routes from this node, checked in this order:".to_string()];
-    for (condition, label, _, target) in edges {
+    let mut lines = vec!["Decisions (choose exactly one):".to_string()];
+    for DeclaredDecision {
+        decision,
+        description,
+        target,
+    } in decisions
+    {
         let target_label = graph
             .nodes
-            .get(target)
+            .get(&target)
             .map(|node| attr_string(&node.attrs, "label"))
             .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| target.to_string());
-        let selector = if !condition.is_empty() {
-            format!("When the condition `{condition}` holds")
-        } else if !label.is_empty() {
-            format!("With \"preferred_label\": {}", json!(label))
-        } else {
-            "Default".to_string()
-        };
-        let availability = if unavailable.contains(target) {
-            " (unavailable: visit limit reached)"
+            .unwrap_or_else(|| target.clone());
+        let budget = if unavailable.contains(target.as_str()) {
+            " (its target has used all its visits: choosing it ends the run with visit_limit_reached)"
         } else {
             ""
         };
         lines.push(format!(
-            "- {selector}: go to {}{availability}.",
+            "- {}: goes to {}{budget}. {description}",
+            json!(decision),
             json!(target_label)
         ));
     }
     Some(lines.join("\n"))
 }
 
-/// JSON Schema for a node's status envelope: routing values come from the
-/// node's outgoing edges, `context_updates` keys from its write contract.
-pub fn status_envelope_json_schema(
+/// JSON Schema for a node's decision envelope: the decision enum is the
+/// node's declared decisions, `context_updates` keys its write contract.
+pub fn decision_envelope_json_schema(
     graph: &DotGraph,
     node_id: &str,
     write_contract: &ContextWriteContract,
 ) -> Value {
-    let edges = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.source == node_id)
-        .filter_map(|edge| routing_edge_from_dot_edge(edge).ok())
+    let decisions = declared_decisions(graph, node_id)
+        .into_iter()
+        .map(|decision| decision.decision)
         .collect::<Vec<_>>();
-    let mut labels = Vec::<String>::new();
-    let mut successors = Vec::<String>::new();
-    for edge in &edges {
-        // Routing matches an edge's label, and conditions compare
-        // `preferred_label` against their own literals.
-        let condition_labels = split_condition_clauses(edge.condition_text())
-            .into_iter()
-            .filter_map(|clause| {
-                let rest = clause.trim().strip_prefix("preferred_label")?.trim_start();
-                let literal = rest.strip_prefix("!=").or_else(|| rest.strip_prefix('='))?;
-                Some(normalize_condition_literal(literal))
-            });
-        for label in std::iter::once(edge.label.trim().to_string()).chain(condition_labels) {
-            if !label.is_empty() && !labels.contains(&label) {
-                labels.push(label);
-            }
-        }
-        let target = edge.target.as_str().to_string();
-        if !successors.contains(&target) {
-            successors.push(target);
-        }
-    }
-
     let mut properties = serde_json::Map::new();
     properties.insert(
-        "outcome".into(),
-        json!({"type": "string", "enum": ["success", "fail", "partial_success", "retry"]}),
+        "decision".into(),
+        json!({"type": "string", "enum": decisions}),
     );
-    if !labels.is_empty() {
-        properties.insert(
-            "preferred_label".into(),
-            json!({"type": "string", "enum": labels}),
-        );
-    }
-    if !successors.is_empty() {
-        properties.insert(
-            "suggested_next_ids".into(),
-            json!({"type": "array", "items": {"type": "string", "enum": successors}}),
-        );
-    }
-    if !write_contract.allowed_keys.is_empty() {
-        let keys = write_contract
-            .allowed_keys
-            .iter()
-            .map(|key| (key.clone(), json!({})))
-            .collect::<serde_json::Map<_, _>>();
-        properties.insert(
-            "context_updates".into(),
-            json!({"type": "object", "properties": keys, "additionalProperties": false}),
-        );
-    }
+    let keys = write_contract
+        .allowed_keys
+        .iter()
+        .map(|key| (key.clone(), json!({})))
+        .collect::<serde_json::Map<_, _>>();
+    properties.insert(
+        "context_updates".into(),
+        json!({"type": "object", "properties": keys, "additionalProperties": false}),
+    );
     properties.insert("notes".into(), json!({"type": "string"}));
-    properties.insert("failure_reason".into(), json!({"type": "string"}));
-    properties.insert("retryable".into(), json!({"type": "boolean"}));
     json!({
         "type": "object",
         "properties": properties,
-        "required": ["outcome"],
+        "required": ["decision"],
         "additionalProperties": false,
     })
 }
 
-pub fn build_status_envelope_context_updates_contract_text(
+pub fn build_decision_envelope_context_updates_contract_text(
     write_contract: Option<&ContextWriteContract>,
 ) -> String {
     let allowed_keys = write_contract
@@ -257,7 +207,7 @@ pub fn build_status_envelope_context_updates_contract_text(
     lines.join("\n")
 }
 
-pub fn status_envelope_allowed_keys(write_contract: Option<&ContextWriteContract>) -> String {
+pub fn decision_envelope_allowed_keys(write_contract: Option<&ContextWriteContract>) -> String {
     format_allowed_keys(
         write_contract
             .map(|contract| contract.allowed_keys.as_slice())
@@ -265,106 +215,69 @@ pub fn status_envelope_allowed_keys(write_contract: Option<&ContextWriteContract
     )
 }
 
+/// Parses a final answer. Without a response contract the text is plain
+/// output. With one, the answer must be a decision envelope whose decision
+/// is in `decisions`; anything else is a contract violation, never a
+/// default decision.
 pub fn coerce_structured_text_outcome(
     text: &str,
     response_contract: &str,
+    decisions: &[String],
 ) -> StructuredTextOutcome {
     let raw_text = text.trim().to_string();
-    let (candidate, envelope_error) =
-        extract_structured_outcome_payload(text, has_response_contract(response_contract));
-    if let Some(reason) = envelope_error {
-        return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-    }
-    let Some(candidate) = candidate else {
+    if !has_response_contract(response_contract) {
         return StructuredTextOutcome::PlainText(PlainTextParseResult { raw_text });
+    }
+    let violation = |reason: String| {
+        StructuredTextOutcome::ContractViolation(StructuredContractViolation {
+            response_contract: response_contract.to_string(),
+            raw_text: raw_text.clone(),
+            reason,
+            write_contract: None,
+            decisions: decisions.to_vec(),
+        })
     };
-
-    let preferred_label = match optional_string(&candidate, "preferred_label", "") {
-        Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
+    let candidate = match extract_decision_envelope(text) {
+        Ok(candidate) => candidate,
+        Err(reason) => return violation(reason),
+    };
+    let decision = match candidate.get("decision") {
+        Some(Value::String(decision)) => decision.clone(),
+        Some(_) => return violation("invalid decision envelope: decision must be a string".into()),
+        None => {
+            return violation(
+                "invalid decision envelope: missing required top-level key \"decision\"".into(),
+            )
         }
     };
-    let suggested_next_ids = match string_list(&candidate, "suggested_next_ids") {
-        Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-        }
-    };
+    if !decisions.contains(&decision) {
+        return violation(format!(
+            "invalid decision envelope: decision {} is not declared; choose one of {}",
+            json!(decision),
+            format_allowed_keys(decisions)
+        ));
+    }
     let context_updates = match context_updates(&candidate) {
         Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-        }
+        Err(reason) => return violation(reason),
     };
-    let notes = match optional_string(&candidate, "notes", "") {
-        Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-        }
+    let notes = match candidate.get("notes") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(notes)) => notes.clone(),
+        Some(_) => return violation("invalid decision envelope: notes must be a string".into()),
     };
-    let failure_reason = match optional_string(&candidate, "failure_reason", "") {
-        Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-        }
-    };
-    let retryable = match optional_bool(&candidate, "retryable") {
-        Ok(value) => value,
-        Err(reason) => {
-            return contract_violation_or_invalid_outcome(&raw_text, reason, response_contract);
-        }
-    };
-
-    let outcome_name = candidate
-        .get("outcome")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let status = match OutcomeStatus::from_str(&outcome_name) {
-        Ok(OutcomeStatus::Skipped) => {
-            return contract_violation_or_invalid_outcome(
-                &raw_text,
-                "invalid structured status envelope: unsupported outcome status 'skipped'"
-                    .to_string(),
-                response_contract,
-            );
-        }
-        Ok(status) => status,
-        Err(_) => {
-            return contract_violation_or_invalid_outcome(
-                &raw_text,
-                format!(
-                    "invalid structured status envelope: unsupported outcome status '{}'",
-                    if outcome_name.is_empty() {
-                        "<empty>"
-                    } else {
-                        outcome_name.as_str()
-                    }
-                ),
-                response_contract,
-            );
-        }
-    };
-
     StructuredTextOutcome::ModeledOutcome(ModeledOutcomeParseResult {
         outcome: Outcome {
-            status,
-            preferred_label,
-            suggested_next_ids,
             context_updates,
             notes,
-            failure_reason,
-            retryable,
-            failure_kind: (has_response_contract(response_contract)
-                && status == OutcomeStatus::Fail)
-                .then_some(FailureKind::Business),
-            raw_response_text: raw_text,
+            raw_response_text: raw_text.clone(),
+            ..Outcome::completed(decision)
         },
     })
 }
 
+/// A completed outcome a backend returned directly must still carry a
+/// declared decision and keep its write contract.
 pub fn validate_write_contract_violation(
     outcome: &Outcome,
     write_contract: Option<&ContextWriteContract>,
@@ -382,6 +295,7 @@ pub fn validate_write_contract_violation(
         raw_text: raw_text.trim().to_string(),
         reason: violation.format_reason(None),
         write_contract: Some(write_contract.clone()),
+        decisions: Vec::new(),
     })
 }
 
@@ -393,11 +307,12 @@ pub fn build_contract_repair_prompt(violation: &StructuredContractViolation) -> 
         ),
         format!("Validation error: {}", violation.reason),
         String::new(),
-        "Re-emit only a corrected final answer for the same decision.".to_string(),
+        "Re-emit only a corrected final answer for the same judgment.".to_string(),
         "Do not do new repository work.".to_string(),
         "Do not run commands.".to_string(),
-        "Do not change the substantive decision, routing label, or context updates except as required to satisfy the response contract.".to_string(),
+        "Do not change the substantive decision or context updates except as required to satisfy the response contract.".to_string(),
     ];
+    lines.extend(decision_reminder(violation));
     let allowed_keys = violation
         .write_contract
         .as_ref()
@@ -412,7 +327,7 @@ pub fn build_contract_repair_prompt(violation: &StructuredContractViolation) -> 
         ));
     }
     lines.extend([
-        build_status_envelope_context_updates_contract_text(violation.write_contract.as_ref()),
+        build_decision_envelope_context_updates_contract_text(violation.write_contract.as_ref()),
         String::new(),
         "Previous invalid final answer:".to_string(),
         violation.raw_text.clone(),
@@ -422,46 +337,47 @@ pub fn build_contract_repair_prompt(violation: &StructuredContractViolation) -> 
 
 /// Repair for a session that still holds the task and the invalid answer.
 pub fn build_in_session_contract_repair_prompt(violation: &StructuredContractViolation) -> String {
-    [
+    let mut lines = vec![
         format!(
             "Your final answer violated the {} response contract.",
             violation.response_contract
         ),
         format!("Validation error: {}", violation.reason),
-        "Re-emit only a corrected final answer for the same decision. Do not do new repository work."
+        "Re-emit only a corrected final answer for the same judgment. Do not do new repository work."
             .to_string(),
-        build_status_envelope_context_updates_contract_text(violation.write_contract.as_ref()),
-    ]
-    .join("\n")
+    ];
+    lines.extend(decision_reminder(violation));
+    lines.push(build_decision_envelope_context_updates_contract_text(
+        violation.write_contract.as_ref(),
+    ));
+    lines.join("\n")
 }
 
+fn decision_reminder(violation: &StructuredContractViolation) -> Option<String> {
+    (!violation.decisions.is_empty()).then(|| {
+        format!(
+            "Answer with a JSON object whose \"decision\" is one of {}.",
+            format_allowed_keys(&violation.decisions)
+        )
+    })
+}
+
+/// Exhausted repair: a nonretryable contract error with its evidence.
 pub fn contract_failure_outcome(violation: &StructuredContractViolation) -> Outcome {
     Outcome {
-        status: OutcomeStatus::Fail,
         notes: violation.raw_text.clone(),
-        failure_reason: violation.reason.clone(),
-        failure_kind: Some(FailureKind::Contract),
         raw_response_text: violation.raw_text.clone(),
-        ..Outcome::new(OutcomeStatus::Fail)
+        ..Outcome::error(FailureKind::Contract, violation.reason.clone(), Some(false))
     }
 }
 
-pub fn extract_structured_outcome_payload(
-    text: &str,
-    require_contract: bool,
-) -> (Option<BTreeMap<String, Value>>, Option<String>) {
+/// The single JSON object of a final answer, optionally inside one fenced
+/// block, with only decision-envelope keys.
+pub fn extract_decision_envelope(text: &str) -> Result<BTreeMap<String, Value>, String> {
     let stripped = text.trim();
     if stripped.is_empty() {
-        return if require_contract {
-            (
-                None,
-                Some("invalid structured status envelope: empty response".to_string()),
-            )
-        } else {
-            (None, None)
-        };
+        return Err("invalid decision envelope: empty response".to_string());
     }
-
     let mut candidates = vec![stripped.to_string()];
     if stripped.starts_with("```") && stripped.ends_with("```") {
         let lines = stripped.lines().collect::<Vec<_>>();
@@ -472,150 +388,52 @@ pub fn extract_structured_outcome_payload(
             }
         }
     }
-
-    let mut validation_errors = Vec::new();
+    let mut error = String::new();
     for candidate in candidates {
         let payload: Value = match serde_json::from_str(&candidate) {
             Ok(value) => value,
             Err(source) => {
-                if require_contract {
-                    validation_errors.push(format!(
-                        "invalid structured status envelope: invalid JSON: {source}"
-                    ));
-                }
+                error = format!("invalid decision envelope: invalid JSON: {source}");
                 continue;
             }
         };
         let Some(object) = payload.as_object() else {
-            if require_contract {
-                validation_errors
-                    .push("invalid structured status envelope: expected a JSON object".to_string());
-            }
+            error = "invalid decision envelope: expected a JSON object".to_string();
             continue;
         };
-        if !object.contains_key("outcome") {
-            if require_contract {
-                validation_errors.push(
-                    "invalid structured status envelope: missing required top-level key \"outcome\""
-                        .to_string(),
-                );
-            }
-            continue;
-        }
-        let allowed: BTreeSet<_> = STRUCTURED_OUTCOME_KEYS.iter().copied().collect();
         let unexpected = object
             .keys()
-            .filter(|key| !allowed.contains(key.as_str()))
+            .filter(|key| !DECISION_ENVELOPE_KEYS.contains(&key.as_str()))
             .cloned()
             .collect::<Vec<_>>();
         if !unexpected.is_empty() {
-            return (
-                None,
-                Some(format!(
-                    "invalid structured status envelope: unexpected top-level keys {}",
-                    unexpected.join(", ")
-                )),
-            );
+            return Err(format!(
+                "invalid decision envelope: unexpected top-level keys {}",
+                unexpected.join(", ")
+            ));
         }
-        return (
-            Some(
-                object
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-            None,
-        );
+        return Ok(object
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect());
     }
-
-    if require_contract {
-        return (None, validation_errors.pop());
-    }
-    (None, None)
+    Err(error)
 }
 
 fn has_response_contract(response_contract: &str) -> bool {
     !response_contract.trim().is_empty()
 }
 
-fn contract_violation_or_invalid_outcome(
-    text: &str,
-    reason: String,
-    response_contract: &str,
-) -> StructuredTextOutcome {
-    if has_response_contract(response_contract) {
-        StructuredTextOutcome::ContractViolation(StructuredContractViolation {
-            response_contract: response_contract.to_string(),
-            raw_text: text.trim().to_string(),
-            reason,
-            write_contract: None,
-        })
-    } else {
-        StructuredTextOutcome::InvalidOutcome(Outcome {
-            status: OutcomeStatus::Fail,
-            notes: text.trim().to_string(),
-            failure_reason: reason,
-            raw_response_text: text.trim().to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        })
-    }
-}
-
-fn optional_string(
-    payload: &BTreeMap<String, Value>,
-    key: &str,
-    default: &str,
-) -> Result<String, String> {
-    match payload.get(key) {
-        None | Some(Value::Null) => Ok(default.to_string()),
-        Some(Value::String(value)) => Ok(value.clone()),
-        _ => Err(format!(
-            "invalid structured status envelope: {key} must be a string"
-        )),
-    }
-}
-
-fn optional_bool(payload: &BTreeMap<String, Value>, key: &str) -> Result<Option<bool>, String> {
-    match payload.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        _ => Err(format!(
-            "invalid structured status envelope: {key} must be a boolean"
-        )),
-    }
-}
-
-fn string_list(payload: &BTreeMap<String, Value>, key: &str) -> Result<Vec<String>, String> {
-    match payload.get(key) {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                item.as_str().map(str::to_string).ok_or_else(|| {
-                    "invalid structured status envelope: suggested_next_ids must be a list of strings"
-                        .to_string()
-                })
-            })
-            .collect(),
-        _ => Err(
-            "invalid structured status envelope: suggested_next_ids must be a list of strings"
-                .to_string(),
-        ),
-    }
-}
-
 fn context_updates(payload: &BTreeMap<String, Value>) -> Result<ContextMap, String> {
     match payload.get("context_updates") {
         None | Some(Value::Null) => Ok(ContextMap::new()),
-        // Session handles are runtime-owned; an agent never writes them.
+        // Session handles are runtime-owned: an agent writing one is kept
+        // so the write contract rejects it.
         Some(Value::Object(items)) => Ok(items
             .iter()
-            .filter(|(key, _)| key.as_str() != attractor_core::RUNTIME_SESSIONS_KEY)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()),
-        _ => {
-            Err("invalid structured status envelope: context_updates must be an object".to_string())
-        }
+        _ => Err("invalid decision envelope: context_updates must be an object".to_string()),
     }
 }
 

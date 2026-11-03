@@ -298,12 +298,15 @@ fn run_steerable(log_path: Option<PathBuf>) {
             ),
             "turn/steer" => {
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                // Runtime callers set a decision envelope as the final answer.
+                let answer = std::env::var("SPARK_FAKE_FINAL_ANSWER")
+                    .unwrap_or_else(|_| "Steered".to_string());
                 emit_turn_completion(
                     &mut stdout,
                     "thread-steer",
                     "turn-steer",
                     "msg-steer",
-                    "Steered",
+                    &answer,
                     false,
                 );
             }

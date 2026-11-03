@@ -1,25 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
 
 use attractor_core::{
-    is_exact_outcome_fail_condition, normalize_label, select_failure_route_edge_with_context,
-    AttractorContext, ContextMap, FlowDefinition, Outcome, OutcomeStatus, RoutingEdge,
-    RUNTIME_UNAVAILABLE_ROUTES_KEY,
+    ContextMap, FlowDefinition, NodeConfig, Outcome, RoutingEdge, RUNTIME_UNAVAILABLE_ROUTES_KEY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::context::{OUTCOME_KEY, PREFERRED_LABEL_KEY};
 use crate::error::Result;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NextNodeSelection {
-    pub current_node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected_node: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected_edge: Option<RoutingEdge>,
-    pub reason: String,
+/// The transition a completed invocation selected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transition {
+    pub from: String,
+    /// The declared decision; empty for a fork entering its join.
+    pub decision: String,
+    pub target: String,
 }
 
 pub fn resolve_start_node(flow: &FlowDefinition) -> Result<String> {
@@ -34,55 +29,14 @@ pub fn outgoing_routing_edges(flow: &FlowDefinition, node_id: &str) -> Result<Ve
     crate::flow_runtime::outgoing_routing_edges(flow, node_id)
 }
 
-pub fn routing_outcome_for_node(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    context: &AttractorContext,
-) -> Outcome {
-    let prior_status = context
-        .get(OUTCOME_KEY)
-        .and_then(|value| value.as_str())
-        .and_then(|value| OutcomeStatus::from_str(value.trim()).ok());
-    let prior_preferred_label = context
-        .get(PREFERRED_LABEL_KEY)
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    routing_outcome_for_node_with_prior(flow, node_id, outcome, prior_status, prior_preferred_label)
-}
-
-pub fn routing_outcome_for_node_with_prior(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    prior_status: Option<OutcomeStatus>,
-    prior_preferred_label: &str,
-) -> Outcome {
-    if !is_conditional_node(flow, node_id) {
-        return outcome.clone();
-    }
-    let Some(prior_status) = prior_status else {
-        return outcome.clone();
-    };
-    Outcome {
-        status: prior_status,
-        preferred_label: prior_preferred_label.to_string(),
-        suggested_next_ids: outcome.suggested_next_ids.clone(),
-        context_updates: outcome.context_updates.clone(),
-        failure_reason: outcome.failure_reason.clone(),
-        notes: outcome.notes.clone(),
-        retryable: outcome.retryable,
-        failure_kind: outcome.failure_kind,
-        raw_response_text: outcome.raw_response_text.clone(),
-    }
-}
-
-/// Engine default for how many times routing may enter one node in a run.
-/// CR-0100's own implement-change run legitimately needed eleven implement
-/// entries; the default leaves ample headroom while ruling out unbounded spins.
+/// Engine default for how many times transitions may enter one node in a
+/// run. CR-0100's own implement-change run legitimately needed eleven
+/// implement entries; the default leaves ample headroom while ruling out
+/// unbounded spins.
 pub const DEFAULT_MAX_VISITS: u64 = 32;
 
 pub const VISIT_LIMIT_REACHED: &str = "visit_limit_reached";
+pub const NO_MATCHING_ROUTE: &str = "no_matching_route";
 
 pub fn max_visits(flow: &FlowDefinition, node_id: &str) -> u64 {
     flow.nodes
@@ -93,8 +47,7 @@ pub fn max_visits(flow: &FlowDefinition, node_id: &str) -> u64 {
         .unwrap_or(DEFAULT_MAX_VISITS)
 }
 
-/// The visit-limit check every routing path shares: a target that used all
-/// its `max_visits` is not eligible.
+/// Whether `target` used all its `max_visits`.
 pub fn visits_exhausted(
     flow: &FlowDefinition,
     visits: &BTreeMap<String, u64>,
@@ -103,36 +56,64 @@ pub fn visits_exhausted(
     visits.get(target).copied().unwrap_or(0) >= max_visits(flow, target)
 }
 
-pub fn visit_limit_reason(flow: &FlowDefinition, target: &str, from_node: &str) -> String {
+/// The one dispatch rule every runner shares: look the completed
+/// invocation's decision up in its node's route map (a fork enters its
+/// join), then check that target's visit limit. An unknown decision or an
+/// exhausted target is a routing failure; neither ever selects another
+/// route.
+pub fn select_transition(
+    flow: &FlowDefinition,
+    node_id: &str,
+    outcome: &Outcome,
+    visits: &BTreeMap<String, u64>,
+) -> std::result::Result<Transition, String> {
+    let node = flow
+        .nodes
+        .get(node_id)
+        .ok_or_else(|| format!("{NO_MATCHING_ROUTE}: unknown node {node_id:?}"))?;
+    let (decision, target) = match node.config.as_ref() {
+        Some(NodeConfig::Parallel { join, .. }) => (String::new(), join.clone()),
+        _ => match node.routes.get(&outcome.decision) {
+            Some(route) => (outcome.decision.clone(), route.to.clone()),
+            None => return Err(no_matching_route_reason(flow, node_id, &outcome.decision)),
+        },
+    };
+    let used = visits.get(&target).copied().unwrap_or(0);
+    let limit = max_visits(flow, &target);
+    if used >= limit {
+        return Err(format!(
+            "{VISIT_LIMIT_REACHED}: node {node_id:?} decision {decision:?} selects {target:?}, which used {used} of its {limit} visits"
+        ));
+    }
+    Ok(Transition {
+        from: node_id.to_string(),
+        decision,
+        target,
+    })
+}
+
+/// Why a returned decision selects nothing: the decision and the node's
+/// full declared decision-to-target set.
+pub fn no_matching_route_reason(flow: &FlowDefinition, node_id: &str, decision: &str) -> String {
+    let routes = flow
+        .nodes
+        .get(node_id)
+        .map(|node| {
+            node.routes
+                .iter()
+                .map(|(decision, route)| format!("{decision:?} -> {:?}", route.to))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     format!(
-        "{VISIT_LIMIT_REACHED}: {target} used all {} visits; no other route from {from_node}",
-        max_visits(flow, target)
+        "{NO_MATCHING_ROUTE}: node {node_id:?} returned decision {decision:?}; declared decisions [{}]",
+        routes.join(", ")
     )
 }
 
-/// The first candidate with visits left, or the `visit_limit_reached` reason
-/// when every candidate is exhausted. Used for retry-target fallbacks.
-pub fn first_target_with_visits_left(
-    flow: &FlowDefinition,
-    from_node: &str,
-    visits: &BTreeMap<String, u64>,
-    candidates: impl IntoIterator<Item = String>,
-) -> std::result::Result<Option<String>, String> {
-    let mut exhausted = None;
-    for target in candidates {
-        if !visits_exhausted(flow, visits, &target) {
-            return Ok(Some(target));
-        }
-        exhausted.get_or_insert(target);
-    }
-    match exhausted {
-        Some(target) => Err(visit_limit_reason(flow, &target, from_node)),
-        None => Ok(None),
-    }
-}
-
-/// Puts the node's exhausted route targets under the runtime-only
-/// `RUNTIME_UNAVAILABLE_ROUTES_KEY`, so its prompt marks those routes.
+/// Records the node's exhausted route targets under the runtime-only
+/// `RUNTIME_UNAVAILABLE_ROUTES_KEY`: factual budget context for its prompt.
+/// Exhausted decisions stay declared; choosing one fails the run.
 pub fn mark_unavailable_routes(
     context: &mut ContextMap,
     flow: &FlowDefinition,
@@ -154,148 +135,6 @@ pub fn mark_unavailable_routes(
     }
 }
 
-/// Selects the next edge among targets with visits left. When none is
-/// eligible but an exhausted one would have been taken, `selected_node` is
-/// empty, `selected_edge` is that edge and `reason` is `visit_limit_reached`.
-pub fn select_next_node_with_prior(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    context: &AttractorContext,
-    prior_status: Option<OutcomeStatus>,
-    prior_preferred_label: &str,
-    visits: &BTreeMap<String, u64>,
-) -> Result<NextNodeSelection> {
-    let routing_outcome = routing_outcome_for_node_with_prior(
-        flow,
-        node_id,
-        outcome,
-        prior_status,
-        prior_preferred_label,
-    );
-    let (eligible, exhausted) = partition_by_visits_left(flow, node_id, visits)?;
-    if let Some(edge) = select_failure_route_edge_with_context(&eligible, &routing_outcome, context)
-    {
-        return Ok(NextNodeSelection {
-            current_node: node_id.to_string(),
-            selected_node: Some(edge.target.as_str().to_string()),
-            reason: selection_reason(&edge, &routing_outcome),
-            selected_edge: Some(edge),
-        });
-    }
-    let blocked = select_failure_route_edge_with_context(&exhausted, &routing_outcome, context);
-    Ok(blocked_selection(flow, node_id, blocked))
-}
-
-/// The edge routing would take among the node's exhausted targets alone, as a
-/// `visit_limit_reached` selection. Lets a caller that rejects the selected
-/// edge still report the exhausted route it displaced.
-pub fn select_exhausted_route_with_prior(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    context: &AttractorContext,
-    prior_status: Option<OutcomeStatus>,
-    prior_preferred_label: &str,
-    visits: &BTreeMap<String, u64>,
-) -> Result<NextNodeSelection> {
-    let routing_outcome = routing_outcome_for_node_with_prior(
-        flow,
-        node_id,
-        outcome,
-        prior_status,
-        prior_preferred_label,
-    );
-    let (_, exhausted) = partition_by_visits_left(flow, node_id, visits)?;
-    let blocked = select_failure_route_edge_with_context(&exhausted, &routing_outcome, context);
-    Ok(blocked_selection(flow, node_id, blocked))
-}
-
-fn partition_by_visits_left(
-    flow: &FlowDefinition,
-    node_id: &str,
-    visits: &BTreeMap<String, u64>,
-) -> Result<(Vec<RoutingEdge>, Vec<RoutingEdge>)> {
-    Ok(outgoing_routing_edges(flow, node_id)?
-        .into_iter()
-        .partition(|edge| !visits_exhausted(flow, visits, edge.target.as_str())))
-}
-
-fn blocked_selection(
-    flow: &FlowDefinition,
-    node_id: &str,
-    blocked: Option<RoutingEdge>,
-) -> NextNodeSelection {
-    NextNodeSelection {
-        current_node: node_id.to_string(),
-        selected_node: None,
-        reason: blocked
-            .as_ref()
-            .map(|edge| visit_limit_reason(flow, edge.target.as_str(), node_id))
-            .unwrap_or_else(|| "no_route".to_string()),
-        selected_edge: blocked,
-    }
-}
-
-pub const NO_MATCHING_ROUTE: &str = "no_matching_route";
-
-/// Why a non-exit node whose result selected no route fails its run. A
-/// visit-limit selection keeps its reason; a failed result keeps its own
-/// reason with the unmatched-route details appended.
-pub fn unmatched_route_reason(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    prior_status: Option<OutcomeStatus>,
-    prior_preferred_label: &str,
-    selection: &NextNodeSelection,
-) -> Result<String> {
-    if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
-        return Ok(selection.reason.clone());
-    }
-    let result = |outcome: &Outcome| {
-        format!(
-            "status {:?} label {:?}",
-            outcome.status.as_str(),
-            outcome.preferred_label
-        )
-    };
-    let mut details = format!(
-        "{NO_MATCHING_ROUTE}: node {node_id:?} result {}",
-        result(outcome)
-    );
-    let effective = routing_outcome_for_node_with_prior(
-        flow,
-        node_id,
-        outcome,
-        prior_status,
-        prior_preferred_label,
-    );
-    if (effective.status, effective.preferred_label.as_str())
-        != (outcome.status, outcome.preferred_label.as_str())
-    {
-        details.push_str(&format!("; effective result {}", result(&effective)));
-    }
-    let routes = outgoing_routing_edges(flow, node_id)?
-        .iter()
-        .map(|edge| {
-            format!(
-                "-> {:?} condition {:?} label {:?} weight {}",
-                edge.target.as_str(),
-                edge.condition_text(),
-                edge.label,
-                edge.weight
-            )
-        })
-        .collect::<Vec<_>>();
-    details.push_str(&format!("; routes [{}]", routes.join(", ")));
-    Ok(if outcome.status == OutcomeStatus::Fail {
-        format!("{}; {details}", stage_failure_reason(outcome))
-    } else {
-        details
-    })
-}
-
 pub fn stage_failure_reason(outcome: &Outcome) -> String {
     let reason = outcome.failure_reason.trim();
     if reason.is_empty() {
@@ -303,32 +142,4 @@ pub fn stage_failure_reason(outcome: &Outcome) -> String {
     } else {
         reason.to_string()
     }
-}
-
-pub fn is_conditional_node(flow: &FlowDefinition, node_id: &str) -> bool {
-    crate::flow_runtime::is_conditional_node(flow, node_id)
-}
-
-fn selection_reason(edge: &RoutingEdge, outcome: &Outcome) -> String {
-    if !edge.condition_text().is_empty() {
-        if outcome.status == OutcomeStatus::Fail
-            && is_exact_outcome_fail_condition(edge.condition_text())
-        {
-            return "failure_condition".to_string();
-        }
-        return "condition".to_string();
-    }
-    if !outcome.preferred_label.trim().is_empty()
-        && normalize_label(&edge.label) == normalize_label(&outcome.preferred_label)
-    {
-        return "preferred_label".to_string();
-    }
-    if outcome
-        .suggested_next_ids
-        .iter()
-        .any(|node_id| node_id == edge.target.as_str())
-    {
-        return "suggested_next_id".to_string();
-    }
-    "unconditional".to_string()
 }

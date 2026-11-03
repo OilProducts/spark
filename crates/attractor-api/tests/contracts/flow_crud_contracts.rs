@@ -10,20 +10,35 @@ use spark_common::settings::SparkSettings;
 
 fn valid_flow_json() -> Value {
     json!({
-    "schema_version": "1",
-    "id": "workflow",
-    "title": "Workflow",
-    "goal": "Do work",
-    "nodes": {
-        "start": {"kind": "start", "label": "Start"},
-        "task": {
-            "kind": "agent_task",
-            "label": "Task",
-            "config": {"kind": "agent_task", "prompt": "Do work"}
-        },
-        "done": {"kind": "exit", "label": "Done"}
-    },
-    "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+        "schema_version": "2",
+        "id": "workflow",
+        "title": "Workflow",
+        "goal": "Do work",
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "label": "Start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Do work"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
+            },
+            "done": {
+                "kind": "exit",
+                "label": "Done",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -375,6 +390,86 @@ fn files_save_that_fails_validation_or_names_an_unknown_file_writes_nothing() {
 }
 
 #[test]
+fn saves_reject_unknown_and_misplaced_section_fields_without_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let service = AttractorApiService::new(settings(temp.path()));
+    assert_eq!(
+        service
+            .save_flow(save("work", &valid_flow(), &project))
+            .status_code,
+        200
+    );
+    let dir = org.join("flows/work");
+    let before = flow_dir_bytes(&dir);
+    let with_frontmatter = |name: &str, line: &str| {
+        let rest = before[name].strip_prefix("---\n").expect("frontmatter");
+        format!("---\n{line}\n{rest}")
+    };
+
+    for (name, line, field) in [
+        (
+            "start.md",
+            "contracts: {writes_contex: [context.required], retry_target: done}",
+            "writes_contex",
+        ),
+        ("task.md", "manager: {retry_target: done}", "retry_target"),
+        ("task.md", "retry: {goal_gate: true}", "goal_gate"),
+        ("task.md", "execution: {llm_modle: fast}", "llm_modle"),
+        ("task.md", "ui: {weight: 1}", "weight"),
+        (
+            "flow.md",
+            "inputs: [{key: a, goal_gate: true}]",
+            "goal_gate",
+        ),
+        (
+            "flow.md",
+            "execution_lock: {scope: project, key: main, retry_target: done}",
+            "retry_target",
+        ),
+    ] {
+        let text = with_frontmatter(name, line);
+        let files = std::collections::BTreeMap::from([
+            ("flow.md".to_string(), before["flow.md"].clone()),
+            ("start.md".to_string(), before["start.md"].clone()),
+            ("task.md".to_string(), before["task.md"].clone()),
+            ("done.md".to_string(), before["done.md"].clone()),
+            (name.to_string(), text.clone()),
+        ]);
+        let error = attractor_dsl::assemble_flow_files(&files).expect_err(line);
+        let unknown = format!("unknown field `{field}`");
+        assert!(
+            error.detail().contains(&unknown),
+            "{line}: {}",
+            error.detail()
+        );
+
+        let saved = service.save_flow(save_files("work", &[(name, &text)], &project));
+        assert_eq!(saved.status_code, 422, "{line}: {}", saved.body);
+        assert!(saved.body.to_string().contains(&unknown), "{}", saved.body);
+        assert_eq!(flow_dir_bytes(&dir), before, "{line}");
+    }
+
+    let mut value = valid_flow_json();
+    value["nodes"]["start"]["contracts"] =
+        json!({"writes_contex": ["context.required"], "retry_target": "done"});
+    let saved = service.dispatch(
+        "POST",
+        "/api/flows",
+        &json!({"name": "work", "project_path": project, "flow": value}).to_string(),
+    );
+    assert_eq!(saved.status_code, 400, "{}", saved.body);
+    assert!(
+        saved.body.to_string().contains("unknown field `"),
+        "{}",
+        saved.body
+    );
+    assert_eq!(flow_dir_bytes(&dir), before);
+    assert_parent_untouched(&project);
+}
+
+#[test]
 fn files_save_of_a_bundled_flow_edits_a_project_copy() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -411,10 +506,27 @@ fn save_validation_error_reports_diagnostics_without_writing() {
     let response = service.save_flow(save(
         "broken",
         &serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "broken",
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "missing"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "missing",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("flow definition JSON"),
         &project,
@@ -424,11 +536,15 @@ fn save_validation_error_reports_diagnostics_without_writing() {
     assert_eq!(response.body["detail"]["status"], json!("validation_error"));
     assert_eq!(
         response.body["detail"]["errors"][0]["rule_id"],
-        json!("edge_target")
+        json!("route_target")
     );
     assert_eq!(
         response.body["detail"]["errors"][0]["edge"],
         json!(["start", "missing"])
+    );
+    assert_eq!(
+        response.body["detail"]["errors"][0]["decision"],
+        json!("next")
     );
     assert!(!project.exists());
 }
@@ -527,15 +643,28 @@ fn editor_save_deletes_dropped_node_files_and_leaves_other_files_alone() {
     fs::write(org.join("flows/work/unrelated.txt"), "draft\n").expect("unrelated");
 
     let without_task = flow(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workflow",
         "title": "Workflow",
         "goal": "Do work",
         "nodes": {
-            "start": {"kind": "start", "label": "Start"},
-            "done": {"kind": "exit", "label": "Done"}
-        },
-        "edges": [{"from": "start", "to": "done"}]
+            "start": {
+                "kind": "start",
+                "label": "Start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "label": "Done",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     }));
     assert_eq!(
         service

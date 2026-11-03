@@ -83,7 +83,7 @@ impl WorkspaceFlowService {
         let summary = build_flow_summary_from_definition(&source.name, &source.flow);
         Ok(WorkspaceFlowDescription {
             node_count: source.flow.nodes.len(),
-            edge_count: source.flow.edges.len(),
+            edge_count: source.flow.edges().len(),
             features: WorkspaceFlowFeatures {
                 has_human_gate: source
                     .flow

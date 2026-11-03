@@ -4,6 +4,7 @@ import {
   buildCheckpointSummary,
   buildContextRows,
   filterContextRows,
+  nodeOutcomesFromCheckpoint,
 } from '@/features/runs/model/runDetailsModel'
 
 describe('runDetailsModel', () => {
@@ -98,4 +99,29 @@ it('restores clarification routing and suggested choices alongside custom answer
     questionId: 'clarification-1', runId: 'child', origin: 'agent_clarification',
     questionType: 'FREEFORM', options: [{ label: 'Developers', value: 'Developers', description: 'Technical readers' }],
   })
+})
+
+it('keeps a human gate option label for display and its decision id as the answer value', () => {
+  expect(asPendingQuestionSnapshot({
+    question_id: 'gate-2', node_id: 'review_gate', prompt: 'Ship it?', question_type: 'MULTIPLE_CHOICE',
+    options: [{ label: 'Approve and ship', value: 'approve', key: 'A' }, { label: 'Send back', value: 'revise', key: 'S' }],
+  })?.options).toEqual([
+    { label: 'Approve and ship', value: 'approve', key: 'A', description: null },
+    { label: 'Send back', value: 'revise', key: 'S', description: null },
+  ])
+})
+
+it('reads each node status from the checkpoint node_outcomes {status, decision} map', () => {
+  expect(nodeOutcomesFromCheckpoint({
+    pipeline_id: 'run-1',
+    checkpoint: {
+      context: {
+        '_attractor.node_outcomes': {
+          review: { status: 'completed', decision: 'revise' },
+          validate: { status: 'error', decision: null },
+          stale: 'fail',
+        },
+      },
+    },
+  })).toEqual({ review: 'completed', validate: 'error' })
 })

@@ -27,20 +27,23 @@ test("editing one role-bearing node rewrites only that node's file", async ({ pa
       project_path: projectPath,
       name: flowName,
       flow: {
-        schema_version: "1",
+        schema_version: "2",
         id: "roles",
         title: "Roles",
         nodes: {
-          start: { kind: "start", label: "Start" },
-          first: { kind: "agent_task", label: "First", role: "reviewer", config: { kind: "agent_task", prompt: "Review A." } },
-          second: { kind: "agent_task", label: "Second", role: "reviewer", config: { kind: "agent_task", prompt: "Review B." } },
-          done: { kind: "exit", label: "Done" },
+          start: { kind: "start", label: "Start", routes: { next: { to: "first", description: "Enter the first workflow step." } } },
+          first: {
+            kind: "agent_task", label: "First", role: "reviewer", config: { kind: "agent_task", prompt: "Review A." },
+            contracts: { response: "decision_envelope" },
+            routes: { done: { to: "second", description: "Review A is complete." } },
+          },
+          second: {
+            kind: "agent_task", label: "Second", role: "reviewer", config: { kind: "agent_task", prompt: "Review B." },
+            contracts: { response: "decision_envelope" },
+            routes: { done: { to: "done", description: "Review B is complete." } },
+          },
+          done: { kind: "exit", label: "Done", config: { kind: "exit", result: { name: "completed", outcome: "success" } } },
         },
-        edges: [
-          { from: "start", to: "first" },
-          { from: "first", to: "second" },
-          { from: "second", to: "done" },
-        ],
       },
     },
   })

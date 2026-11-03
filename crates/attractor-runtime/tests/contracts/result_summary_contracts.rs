@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use attractor_core::{
-    FlowDefinition, FlowEdge, FlowNode, LaunchContext, NodeConfig, NodeKind, Outcome,
-    OutcomeStatus, RunRecord,
+    ExitOutcome, ExitResult, FailureKind, FlowDefinition, FlowNode, FlowRoute, LaunchContext,
+    NodeConfig, NodeKind, Outcome, RunRecord,
 };
 use attractor_runtime::{
     prepare_fresh_run, ExecuteRunRequest, ExecutionStart, PipelineExecutor, RunStore,
@@ -24,6 +24,10 @@ fn summary_exit(result_summary: bool, prompt: Option<&str>) -> FlowNode {
     FlowNode {
         kind: NodeKind::Exit,
         config: Some(NodeConfig::Exit {
+            result: ExitResult {
+                name: "completed".to_string(),
+                outcome: ExitOutcome::Success,
+            },
             result_summary,
             result_summary_prompt: prompt.map(str::to_string),
         }),
@@ -38,14 +42,28 @@ fn tool_node(command: &str) -> FlowNode {
             command: command.to_string(),
             env_map: BTreeMap::new(),
             output_map: BTreeMap::new(),
+            exit_codes: BTreeMap::from([("0".to_string(), "done".to_string())]),
+            decision_field: None,
         }),
+        routes: routes("done", "done"),
         ..FlowNode::default()
     }
 }
 
+fn routes(decision: &str, to: &str) -> BTreeMap<String, FlowRoute> {
+    BTreeMap::from([(
+        decision.to_string(),
+        FlowRoute {
+            to: to.to_string(),
+            description: format!("Continue to {to}."),
+            ..FlowRoute::default()
+        },
+    )])
+}
+
 fn flow_with_exit(command: &str, exit: FlowNode) -> FlowDefinition {
     FlowDefinition {
-        schema_version: "1".to_string(),
+        schema_version: "2".to_string(),
         id: "summary-contract".to_string(),
         title: "Summary Contract".to_string(),
         nodes: [
@@ -54,6 +72,7 @@ fn flow_with_exit(command: &str, exit: FlowNode) -> FlowDefinition {
                 FlowNode {
                     kind: NodeKind::Start,
                     config: Some(NodeConfig::Start {}),
+                    routes: routes("next", "work"),
                     ..FlowNode::default()
                 },
             ),
@@ -62,19 +81,6 @@ fn flow_with_exit(command: &str, exit: FlowNode) -> FlowDefinition {
         ]
         .into_iter()
         .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "work".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "work".to_string(),
-                to: "done".to_string(),
-                condition: "outcome=success".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
         ..FlowDefinition::default()
     }
 }
@@ -98,9 +104,8 @@ fn execute_flow(
                 node_id: runtime.node_id.clone(),
             });
         Ok(Outcome {
-            status: OutcomeStatus::Success,
             raw_response_text: CANNED_SUMMARY.to_string(),
-            ..Outcome::new(OutcomeStatus::Success)
+            ..Outcome::completed("")
         })
     });
     let store = RunStore::for_runs_dir(runs_dir.to_path_buf());
@@ -218,11 +223,14 @@ fn opted_in_exit_summarizes_failed_run_and_preserves_failure_reason() {
     assert_eq!(result.state, "ready");
     assert_eq!(result.display_mode.as_deref(), Some("summary"));
     assert_eq!(result.body_markdown.trim(), CANNED_SUMMARY);
-    // The failure keeps its own reason ahead of the unmatched-route details.
-    assert!(result
-        .error
-        .as_deref()
-        .is_some_and(|error| error.starts_with("boom-reason; no_matching_route")));
+    // An unmapped exit code is an execution error carrying its evidence.
+    assert!(
+        result.error.as_deref().is_some_and(|error| error
+            .starts_with("tool exited with unmapped code 1")
+            && error.contains("boom-reason")),
+        "{:?}",
+        result.error
+    );
 }
 
 #[test]
@@ -256,11 +264,11 @@ fn summarizer_failure_falls_back_and_records_the_error() {
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let mut runner = RuntimeHandlerRunner::new();
     runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, |_runtime| {
-        Ok(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "summarizer backend unavailable".to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        })
+        Ok(Outcome::error(
+            FailureKind::Runtime,
+            "summarizer backend unavailable",
+            Some(false),
+        ))
     });
     let flow = flow_with_exit("printf still-here", summary_exit(true, None));
     let mut record = RunRecord::new("run-summary-broken", workdir.to_string_lossy());
@@ -370,11 +378,12 @@ fn execution_finalizes_before_return_on_every_exit_without_replacing_outcome() {
         finalized: Arc<Mutex<usize>>,
     }
     impl NodeExecutor for Executor {
-        fn execute(&mut self, _: NodeExecutionRequest) -> Result<Outcome, RuntimeNodeError> {
+        fn execute(&mut self, request: NodeExecutionRequest) -> Result<Outcome, RuntimeNodeError> {
             match self.mode {
                 "failure" => Err(RuntimeNodeError::terminal("original failure")),
                 "runtime" => Err(RuntimeNodeError::runtime("original runtime error")),
-                _ => Ok(Outcome::new(OutcomeStatus::Success)),
+                _ if request.node_id == "start" => Ok(Outcome::completed("next")),
+                _ => Ok(Outcome::completed("done")),
             }
         }
         fn finalize(&mut self) {

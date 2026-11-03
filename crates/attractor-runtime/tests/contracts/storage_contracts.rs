@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    CheckpointState, FlowDefinition, FlowEdge, FlowNode, NodeKind, RawRuntimeEvent, RunManifest,
-    RunRecord,
+    CheckpointState, ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, NodeConfig,
+    NodeContracts, NodeKind, RawRuntimeEvent, RunManifest, RunRecord,
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
@@ -26,7 +26,10 @@ fn checkpoint(current_node: &str, completed_nodes: &[&str]) -> CheckpointState {
             .collect(),
         context: BTreeMap::from([(
             "_attractor.node_outcomes".to_string(),
-            json!({"start": "success", "work": "success"}),
+            json!({
+                "start": {"status": "completed", "decision": "next"},
+                "work": {"status": "completed", "decision": "done"}
+            }),
         )]),
         retry_counts: BTreeMap::new(),
         visit_counts: Default::default(),
@@ -61,10 +64,12 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
     };
 
     let flow = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "create",
-        "nodes": { "start": { "kind": "start" }, "done": { "kind": "exit" } },
-        "edges": [{ "from": "start", "to": "done" }]
+        "nodes": {
+            "start": { "kind": "start", "routes": { "next": { "to": "done", "description": "Finish." } } },
+            "done": { "kind": "exit", "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } } }
+        }
     }))
     .expect("flow");
     let captured_definition = flow.to_canonical_json_string();
@@ -271,7 +276,7 @@ fn raw_events_append_and_normalize_to_newest_first_journal_entries() {
     store
         .append_event(
             &paths,
-            stage_completed_event("run-events", 0, "work", "success"),
+            stage_completed_event("run-events", 0, "work", "done"),
         )
         .expect("stage completed");
     store
@@ -289,7 +294,7 @@ fn raw_events_append_and_normalize_to_newest_first_journal_entries() {
     assert_eq!(journal[0].id, "journal-7");
     assert_eq!(journal[0].kind, "checkpoint");
     assert_eq!(journal[0].summary, "Checkpoint saved at done");
-    assert_eq!(journal[1].summary, "Stage work completed (success)");
+    assert_eq!(journal[1].summary, "Stage work completed (completed)");
     assert_eq!(journal[2].summary, "[work] running");
     assert_eq!(journal[3].summary, "Stage work started");
 }
@@ -442,7 +447,7 @@ fn result_materialization_selects_successful_response_artifact_and_overlays_mark
             &NodeArtifacts {
                 prompt: Some("Prompt".to_string()),
                 response: Some("Raw response body\n".to_string()),
-                status: Some(json!({"outcome": "success"})),
+                status: Some(json!({"status": "completed", "decision": "done"})),
                 under_logs: true,
             },
         )
@@ -495,7 +500,11 @@ fn repeated_visits_and_retries_preserve_separate_execution_attempts() {
                 attempt,
                 &NodeArtifacts {
                     response: Some(response.to_string()),
-                    status: Some(json!({"outcome": if attempt == 0 && stage == 2 { "fail" } else { "success" }})),
+                    status: Some(if attempt == 0 && stage == 2 {
+                        json!({"status": "error", "decision": "", "failure_kind": "runtime"})
+                    } else {
+                        json!({"status": "completed", "decision": "done"})
+                    }),
                     under_logs: true,
                     ..Default::default()
                 },
@@ -534,7 +543,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
                 extra: BTreeMap::new(),
             }),
             flow_definition_json: Some(
-                "{\"schema_version\":\"1\",\"id\":\"artifacts\"}\n".to_string(),
+                "{\"schema_version\":\"2\",\"id\":\"artifacts\"}\n".to_string(),
             ),
             ..CreateRunRequest::default()
         })
@@ -548,7 +557,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
             &NodeArtifacts {
                 prompt: Some("Prompt".to_string()),
                 response: Some("Response".to_string()),
-                status: Some(json!({"outcome": "success"})),
+                status: Some(json!({"status": "completed", "decision": "done"})),
                 under_logs: true,
             },
         )
@@ -667,7 +676,7 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
             "llm_provider": "codex",
             "model": "compat-model",
             "outcome": "success",
-            "outcome_reason_code": null,
+            "outcome_reason_code": "completed",
             "outcome_reason_message": null,
             "parent_node_id": null,
             "parent_run_id": null,
@@ -692,7 +701,7 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
         &json!({
             "completed_nodes": ["start"],
             "context": {
-                "_attractor.node_outcomes": {"start": "success"},
+                "_attractor.node_outcomes": {"start": {"status": "completed", "decision": "next"}},
                 "_attractor.runtime.execution_mode": "native",
                 "_attractor.runtime.execution_profile_capabilities": {},
                 "_attractor.runtime.execution_profile_id": "native",
@@ -708,9 +717,7 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
                 "graph.release": "compat",
                 "internal.root_run_id": "run-m0-i04-api",
                 "internal.run_id": "run-m0-i04-api",
-                "internal.run_workdir": project_path.to_string_lossy(),
-                "outcome": "success",
-                "preferred_label": ""
+                "internal.run_workdir": project_path.to_string_lossy()
             },
             "current_node": "done",
             "logs": [],
@@ -751,29 +758,62 @@ fn result_flow(explicit_result_node: Option<&str>) -> FlowDefinition {
     if let Some(node_id) = explicit_result_node {
         extensions.insert("spark.result_node".to_string(), json!(node_id));
     }
+    let route = |decision: &str, to: &str| {
+        BTreeMap::from([(
+            decision.to_string(),
+            FlowRoute {
+                to: to.to_string(),
+                description: format!("Continue to {to}."),
+                ..FlowRoute::default()
+            },
+        )])
+    };
     FlowDefinition {
-        schema_version: "1.0".to_string(),
+        schema_version: "2".to_string(),
         id: "ResultGraph".to_string(),
         title: "ResultGraph".to_string(),
         nodes: BTreeMap::from([
-            ("start".to_string(), flow_node(NodeKind::Start)),
-            ("work".to_string(), flow_node(NodeKind::AgentTask)),
-            ("done".to_string(), flow_node(NodeKind::Exit)),
+            (
+                "start".to_string(),
+                FlowNode {
+                    kind: NodeKind::Start,
+                    routes: route("next", "work"),
+                    ..FlowNode::default()
+                },
+            ),
+            (
+                "work".to_string(),
+                FlowNode {
+                    kind: NodeKind::AgentTask,
+                    config: Some(NodeConfig::AgentTask {
+                        prompt: "Work.".to_string(),
+                    }),
+                    contracts: Some(NodeContracts {
+                        response: Some("decision_envelope".to_string()),
+                        ..NodeContracts::default()
+                    }),
+                    routes: route("done", "done"),
+                    ..FlowNode::default()
+                },
+            ),
+            (
+                "done".to_string(),
+                FlowNode {
+                    kind: NodeKind::Exit,
+                    config: Some(NodeConfig::Exit {
+                        result: ExitResult {
+                            name: "completed".to_string(),
+                            outcome: ExitOutcome::Success,
+                        },
+                        result_summary: false,
+                        result_summary_prompt: None,
+                    }),
+                    ..FlowNode::default()
+                },
+            ),
         ]),
-        edges: vec![FlowEdge {
-            from: "work".to_string(),
-            to: "done".to_string(),
-            ..FlowEdge::default()
-        }],
         extensions,
         ..FlowDefinition::default()
-    }
-}
-
-fn flow_node(kind: NodeKind) -> FlowNode {
-    FlowNode {
-        kind,
-        ..FlowNode::default()
     }
 }
 

@@ -3,7 +3,7 @@ type: Flow
 id: implementation_worker
 title: Implementation Worker
 description: A reusable child workflow that makes a codebase change, reviews the result, and loops until it is ready.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.summary
   label: Request Summary

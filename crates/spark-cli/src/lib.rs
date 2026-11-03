@@ -1871,6 +1871,18 @@ fn run_flow_validate_dir_command(args: &[String], env: &impl Environment) -> Com
             .map(|_| flow)
             .map_err(flow_source_validation_error)
     });
+    // Subflows validate against their effective children, as at launch.
+    let flow_name = flow_path.ancestors().find_map(|dir| {
+        (dir.file_name()? == "flows")
+            .then(|| flow_path.strip_prefix(dir).ok())
+            .flatten()
+            .map(|name| name.to_string_lossy().replace('\\', "/"))
+    });
+    let loaded = loaded.and_then(|flow| {
+        attractor_dsl::validate_flow_children(&roots, flow_name.as_deref(), &flow)
+            .map(|_| flow)
+            .map_err(|error| flow_source_validation_error(error.into()))
+    });
     let mut response = match loaded {
         Ok(flow) => object_from_value(flow_definition_preview_payload(&flow)),
         Err((error, status)) => flow_definition_error_payload(&error, status),
@@ -1979,19 +1991,18 @@ fn flow_definition_preview_payload(flow: &FlowDefinition) -> Value {
         })
         .collect::<Vec<_>>();
     let edges = flow
-        .edges
-        .iter()
+        .edges()
+        .into_iter()
         .map(|edge| {
             json!({
                 "source": edge.from,
                 "target": edge.to,
                 "from": edge.from,
                 "to": edge.to,
+                "kind": edge.kind,
+                "decision": edge.decision,
+                "description": edge.description,
                 "label": edge.label,
-                "condition": edge.condition,
-                "weight": edge.weight,
-                "transition": edge.transition,
-                "extensions": edge.extensions,
             })
         })
         .collect::<Vec<_>>();

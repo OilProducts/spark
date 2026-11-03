@@ -131,14 +131,18 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
 
 const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
 const smokeFlow = {
-    schema_version: '1',
+    schema_version: '2',
     id: 'overview-live-smoke',
     title: 'Overview live smoke',
     nodes: {
-        start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-        done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+        start: {
+            kind: 'start',
+            label: 'Start',
+            config: { kind: 'start' },
+            routes: { next: { to: 'done', description: 'Enter the first workflow step.' } },
+        },
+        done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
     },
-    edges: [{ from: 'start', to: 'done' }],
 }
 
 test('an open Overview follows a background chat that launches a run', async ({ page }, testInfo) => {

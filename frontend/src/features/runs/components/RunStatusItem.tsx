@@ -26,11 +26,11 @@ import {
 } from '../model/runSummaryFormat'
 import {
     classifyRunFailure,
-    didNotPassVisits,
+    errorVisits,
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { formatVisitErrorKind, visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -61,6 +61,11 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
             {visit.label}{visit.count > 1 ? ` ${visit.number}` : ''}
         </button>
     )
+}
+
+function VisitErrorKind({ visit }: { visit: RunVisit }) {
+    const kind = formatVisitErrorKind(visit)
+    return kind ? <span data-testid="run-visit-error-kind" className="text-muted-foreground"> ({kind})</span> : null
 }
 
 // The keys a visit wrote, named without the "context." prefix.
@@ -160,12 +165,19 @@ export function RunStatusItem({
                 ) : null}
             </>
         )
-        // A completed run can still report a failed outcome, such as a rejected gate.
-        const outcomeReason = run.outcome === 'failure' || run.outcome_reason_code ? formatOutcomeReason(run) : null
+        // A completed run can reach a failure exit; its result name and evidence say why.
+        const failed = run.outcome === 'failure'
+        const outcomeReason = failed || run.outcome_reason_code ? formatOutcomeReason(run) : null
         body = (
             <>
                 {outcomeReason ? (
-                    <p data-testid="run-status-outcome-reason" className="whitespace-pre-wrap break-words text-sm text-warning">{outcomeReason}</p>
+                    <p
+                        data-testid="run-status-outcome-reason"
+                        data-outcome={run.outcome ?? undefined}
+                        className={`whitespace-pre-wrap break-words text-sm ${failed ? 'text-warning' : 'text-muted-foreground'}`}
+                    >
+                        {outcomeReason}
+                    </p>
                 ) : null}
                 <RunResult result={result} resultError={resultError} />
             </>
@@ -176,7 +188,7 @@ export function RunStatusItem({
         body = lastVisit ? <p className="text-sm text-muted-foreground">Stopped in {link(lastVisit)}.</p> : null
     }
 
-    const didNotPass = didNotPassVisits(visits)
+    const didNotPass = errorVisits(visits)
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -186,11 +198,12 @@ export function RunStatusItem({
             {body}
             {kind !== 'waiting' && didNotPass.length > 0 ? (
                 <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
-                    <SectionHeading as="h4" count={didNotPass.length}>Didn’t pass</SectionHeading>
+                    <SectionHeading as="h4" count={didNotPass.length}>Errors</SectionHeading>
                     <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => (
                             <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
                                 {link(visit)}
+                                <VisitErrorKind visit={visit} />
                                 {': '}
                                 {visit.reason
                                     ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>

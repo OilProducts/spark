@@ -3,7 +3,7 @@ type: Flow
 id: review_change
 title: Review Change
 description: Review a branch or diff with evidence-graded findings that survive an adversarial verification pass.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.source_ref
   label: Source Ref

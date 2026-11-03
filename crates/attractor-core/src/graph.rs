@@ -116,6 +116,9 @@ pub struct NodeRef {
     pub attributes: AttributeMap,
 }
 
+/// One outgoing edge of a node as handlers see it: a declared route's
+/// decision, target and description, or a fork's structural edge (empty
+/// decision).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,11 +126,11 @@ pub struct EdgeRef {
     pub source: NodeId,
     pub target: NodeId,
     #[serde(default)]
+    pub decision: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub condition: String,
-    #[serde(default)]
-    pub weight: i64,
     #[serde(default)]
     pub attributes: AttributeMap,
 }
@@ -138,15 +141,20 @@ impl EdgeRef {
             id: None,
             source,
             target,
+            decision: String::new(),
+            description: String::new(),
             label: String::new(),
-            condition: String::new(),
-            weight: 0,
             attributes: AttributeMap::new(),
         }
     }
 
-    pub fn condition_text(&self) -> &str {
-        self.condition.trim()
+    /// Display text: the label, else the decision.
+    pub fn display_label(&self) -> &str {
+        if self.label.trim().is_empty() {
+            &self.decision
+        } else {
+            &self.label
+        }
     }
 }
 
@@ -330,9 +338,9 @@ pub fn routing_edge_from_dot_edge(edge: &DotEdge) -> Result<RoutingEdge> {
         NodeId::try_from(edge.source.as_str())?,
         NodeId::try_from(edge.target.as_str())?,
     );
+    routing_edge.decision = attr_string(&edge.attrs, "decision");
+    routing_edge.description = attr_string(&edge.attrs, "description");
     routing_edge.label = attr_string(&edge.attrs, "label");
-    routing_edge.condition = attr_string(&edge.attrs, "condition");
-    routing_edge.weight = attr_i64(&edge.attrs, "weight", 0);
     routing_edge.attributes = edge
         .attrs
         .iter()

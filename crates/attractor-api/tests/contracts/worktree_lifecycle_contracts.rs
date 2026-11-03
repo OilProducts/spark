@@ -42,11 +42,20 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
 
 fn parent_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "lifecycle_parent",
         "title": "Lifecycle Parent",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {
+                        "to": "prepare_workspace",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "prepare_workspace": {
                 "kind": "tool",
                 "config": {
@@ -56,16 +65,25 @@ fn parent_flow() -> serde_json::Value {
                     "output_map": {
                         "context.workspace.path": "path",
                         "context.workspace.branch": "branch"
-                    }
+                    },
+                    "exit_codes": {"0": "done"}
                 },
                 "contracts": {
                     "writes_context": ["context.workspace.path", "context.workspace.branch"]
-                }
+                },
+                "routes": {"done": {"to": "work", "description": "The step chose done."}}
             },
             "work": {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": "lifecycle-child"},
-                "manager": {"child_workdir_from": "context.workspace.path"}
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "lifecycle-child",
+                    "results": {"completed": "done"}
+                },
+                "manager": {"child_workdir_from": "context.workspace.path"},
+                "routes": {
+                    "done": {"to": "finalize_commit", "description": "The step chose done."}
+                }
             },
             "finalize_commit": {
                 "kind": "tool",
@@ -73,70 +91,65 @@ fn parent_flow() -> serde_json::Value {
                     "kind": "tool",
                     "command": "set -eu\ncd \"$SPARK_WORKSPACE_PATH\"\ngit add --all\ngit commit -m \"lifecycle change\" >/dev/null\nprintf '{\"commit\":\"%s\"}' \"$(git rev-parse HEAD)\"\n",
                     "env_map": {"SPARK_WORKSPACE_PATH": "context.workspace.path"},
-                    "output_map": {"context.workspace.commit": "commit"}
+                    "output_map": {"context.workspace.commit": "commit"},
+                    "exit_codes": {"0": "done"}
                 },
-                "contracts": {"writes_context": ["context.workspace.commit"]}
+                "contracts": {"writes_context": ["context.workspace.commit"]},
+                "routes": {
+                    "done": {"to": "cleanup_workspace", "description": "The step chose done."}
+                }
             },
             "cleanup_workspace": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
                     "command": "set -eu\ngit worktree remove \"$SPARK_WORKSPACE_PATH\"\n",
-                    "env_map": {"SPARK_WORKSPACE_PATH": "context.workspace.path"}
+                    "env_map": {"SPARK_WORKSPACE_PATH": "context.workspace.path"},
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step chose done."}}
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
                 }
-            },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "prepare_workspace"},
-            {
-                "from": "prepare_workspace",
-                "to": "work",
-                "condition": "outcome=success"
-            },
-            {
-                "from": "work",
-                "to": "finalize_commit",
-                "condition": "outcome=success"
-            },
-            {
-                "from": "finalize_commit",
-                "to": "cleanup_workspace",
-                "condition": "outcome=success"
-            },
-            {
-                "from": "cleanup_workspace",
-                "to": "done",
-                "condition": "outcome=success"
             }
-        ]
+        }
     })
 }
 
 fn child_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "lifecycle_child",
         "title": "Lifecycle Child",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "produce", "description": "Enter the first workflow step."}
+                }
+            },
             "produce": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "printf 'produced by child' > produced.txt"
-                }
+                    "command": "printf 'produced by child' > produced.txt",
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step chose done."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "produce"},
-            {
-                "from": "produce",
-                "to": "done",
-                "condition": "outcome=success"
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
             }
-        ]
+        }
     })
 }
 
@@ -227,29 +240,35 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
 
 fn runs_root_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "runs_root_probe",
         "title": "Runs Root Probe",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "probe", "description": "Enter the first workflow step."}
+                }
+            },
             "probe": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
                     "command": "printf '%s' \"$SPARK_RUNS_ROOT\"",
-                    "env_map": {"SPARK_RUNS_ROOT": "internal.runs_dir"}
-                }
+                    "env_map": {"SPARK_RUNS_ROOT": "internal.runs_dir"},
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step chose done."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "probe"},
-            {
-                "from": "probe",
-                "to": "done",
-                "condition": "outcome=success"
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
             }
-        ]
+        }
     })
 }
 

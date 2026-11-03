@@ -919,7 +919,27 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     let settings = settings(&root);
     let flow_name = crate::install_flow(
         &settings,
-        json!({"schema_version": "1", "id": "review", "title": "Review", "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}}, "edges": [{"from": "start", "to": "done"}]}),
+        json!({
+            "schema_version": "2",
+            "id": "review",
+            "title": "Review",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "done", "description": "Enter the first workflow step."}
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
+        }),
     );
     let project = root.join("bound-project");
     fs::create_dir_all(&project).unwrap();
@@ -1411,7 +1431,29 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     assert_eq!(
         crate::install_flow(
             &settings,
-            json!({"schema_version": "1", "id": "ok", "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}}, "edges": [{"from": "start", "to": "done"}]})
+            json!({
+                "schema_version": "2",
+                "id": "ok",
+                "nodes": {
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "done",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
+            })
         ),
         "tests/ok"
     );
@@ -2275,7 +2317,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     assert!(!path.exists());
     let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
         "run_id":"native-after-rejected-save", "working_directory":project, "wait":true,
-        "flow_name": crate::install_flow(&settings, json!({"schema_version": "1", "id": "native", "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}}, "edges": [{"from": "start", "to": "end"}]}))
+        "flow_name": crate::install_flow(&settings, json!({"schema_version": "2", "id": "native", "nodes": {"start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "end", "description": "Enter the first workflow step."}}}, "end": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}}}))
     }))).await;
     assert_eq!(launched.0, StatusCode::OK, "{launched:?}");
     let bundle = attractor_runtime::RunStore::for_settings(&settings)
@@ -2340,7 +2382,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                 .is_empty());
             let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
                 "run_id":"invalid-defaults", "working_directory":project, "wait":true,
-                "flow_name": crate::install_flow(&settings, json!({"schema_version": "1", "id": "invalid", "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}}, "edges": [{"from": "start", "to": "end"}]}))
+                "flow_name": crate::install_flow(&settings, json!({"schema_version": "2", "id": "invalid", "nodes": {"start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "end", "description": "Enter the first workflow step."}}}, "end": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}}}))
             }))).await;
             assert_eq!(
                 launched.1["status"], "validation_error",

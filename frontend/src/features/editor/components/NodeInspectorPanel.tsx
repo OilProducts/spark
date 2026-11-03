@@ -1,5 +1,5 @@
 import { useStore } from '@/store'
-import { useId, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
@@ -11,6 +11,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+import { DEFAULT_EXIT_RESULT } from '@/lib/canonicalFlowModel'
+import { formatDecisionMap, parseDecisionMap } from '@/lib/flowContracts'
+import { setInvalidDraft } from '@/lib/flowPersistence'
+import type { NodePropertyValue } from '../Sidebar'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 import { ContextKeyListEditor } from './ContextKeyListEditor'
 import { InspectorEmptyState, InspectorScaffold } from './InspectorScaffold'
@@ -43,7 +47,8 @@ interface NodeInspectorPanelProps {
     selectedNodeExtensionEntries: ExtensionEntry[]
     selectedNodeToolHookPreWarning: string | null
     selectedNodeToolHookPostWarning: string | null
-    onPropertyChange: (key: string, value: string | boolean) => void
+    selectedNodeFork: { branches: string[]; join: string | null }
+    onPropertyChange: (key: string, value: NodePropertyValue) => void
     onOpenGraphChildSettings: () => void
     onReadsContextChange: (value: string) => void
     onWritesContextChange: (value: string) => void
@@ -59,14 +64,13 @@ interface NodeInspectorPanelProps {
     ) => ReactNode
 }
 
-const isTrue = (value: unknown) => value === true || value === 'true'
 const isDefaultEnabledBoolean = (value: unknown) => value !== false && value !== 'false'
 const NODE_KIND_OPTIONS = [
     { value: 'start', label: 'Start' },
     { value: 'exit', label: 'Exit' },
     { value: 'agent_task', label: 'Agent Task' },
     { value: 'human_gate', label: 'Human Gate' },
-    { value: 'conditional', label: 'Conditional' },
+    { value: 'switch', label: 'Switch' },
     { value: 'parallel', label: 'Parallel' },
     { value: 'fan_in', label: 'Fan In' },
     { value: 'tool', label: 'Tool' },
@@ -86,6 +90,7 @@ export function NodeInspectorPanel({
     selectedNodeExtensionEntries,
     selectedNodeToolHookPreWarning,
     selectedNodeToolHookPostWarning,
+    selectedNodeFork,
     onPropertyChange,
     onOpenGraphChildSettings,
     onReadsContextChange,
@@ -98,7 +103,14 @@ export function NodeInspectorPanel({
 }: NodeInspectorPanelProps) {
     const id = useId()
     const flowMetadata = useStore((state) => state.flowMetadata)
-    const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
+    const kind = (selectedNode?.data?.kind as string) || 'agent_task'
+    const config = (selectedNode?.data?.config && typeof selectedNode.data.config === 'object'
+        ? selectedNode.data.config
+        : {}) as Record<string, unknown>
+    const exitResult = (config.result && typeof config.result === 'object'
+        ? config.result
+        : DEFAULT_EXIT_RESULT) as { name?: string; outcome?: string }
+    const toolAdapter = typeof config.decision_field === 'string' ? 'decision_field' : 'exit_codes'
     return (
         <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
             <InspectorScaffold
@@ -191,54 +203,21 @@ export function NodeInspectorPanel({
 
                         {visibility.showParallelOptions ? (
                             <>
-                                <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-join-policy`}>Join Policy</Label>
-                                    <NativeSelect
-                                        id={`${id}-join-policy`}
-                                        value={selectedJoinPolicy}
-                                        onChange={(event) => onPropertyChange('join_policy', event.target.value)}
-                                    >
-                                        <option value="wait_all">Wait All</option>
-                                        <option value="first_success">First Success</option>
-                                        <option value="k_of_n">K of N</option>
-                                        <option value="quorum">Quorum</option>
-                                    </NativeSelect>
-                                </div>
-                                {selectedJoinPolicy === 'k_of_n' ? (
-                                    <div className="space-y-1.5">
-                                        <Label htmlFor={`${id}-k-threshold`}>K Threshold</Label>
-                                        <Input
-                                            id={`${id}-k-threshold`}
-                                            data-testid="node-attr-input-join_k"
-                                            value={(selectedNode?.data?.join_k as number | string | undefined) ?? ''}
-                                            onChange={(event) => onPropertyChange('join_k', event.target.value)}
-                                            placeholder="2"
-                                        />
-                                    </div>
-                                ) : null}
-                                {selectedJoinPolicy === 'quorum' ? (
-                                    <div className="space-y-1.5">
-                                        <Label htmlFor={`${id}-quorum-threshold`}>Quorum Threshold</Label>
-                                        <Input
-                                            id={`${id}-quorum-threshold`}
-                                            data-testid="node-attr-input-join_quorum"
-                                            value={(selectedNode?.data?.join_quorum as number | string | undefined) ?? ''}
-                                            onChange={(event) => onPropertyChange('join_quorum', event.target.value)}
-                                            placeholder="0.5"
-                                        />
-                                    </div>
-                                ) : null}
-                                <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-error-policy`}>Error Policy</Label>
-                                    <NativeSelect
-                                        id={`${id}-error-policy`}
-                                        value={(selectedNode?.data?.error_policy as string) || 'continue'}
-                                        onChange={(event) => onPropertyChange('error_policy', event.target.value)}
-                                    >
-                                        <option value="continue">Continue</option>
-                                        <option value="fail_fast">Fail Fast</option>
-                                        <option value="ignore">Ignore</option>
-                                    </NativeSelect>
+                                <Well data-testid="parallel-fork-structure" className="space-y-1 px-3 py-3 text-sm">
+                                    <p className="font-semibold text-foreground">Fork structure</p>
+                                    <p className="break-all"><span className="font-mono">branches</span>: {selectedNodeFork.branches.join(', ') || '(none)'}</p>
+                                    <p className="break-all"><span className="font-mono">join</span>: {selectedNodeFork.join || '(unset)'}</p>
+                                    <p className="text-xs text-muted-foreground">Edit by connecting edges from this node; mark the join edge in its inspector.</p>
+                                </Well>
+                                <div className="flex items-center gap-2">
+                                    <Checkbox
+                                        id={`${id}-tolerate-branch-errors`}
+                                        checked={config.tolerate_branch_execution_errors === true}
+                                        onCheckedChange={(checked) => onPropertyChange('config.tolerate_branch_execution_errors', checked === true)}
+                                    />
+                                    <Label htmlFor={`${id}-tolerate-branch-errors`} className="text-sm font-medium">
+                                        Tolerate Branch Execution Errors
+                                    </Label>
                                 </div>
                                 <div className="space-y-1.5">
                                     <Label htmlFor={`${id}-max-parallel`}>Max Parallel</Label>
@@ -250,6 +229,108 @@ export function NodeInspectorPanel({
                                 </div>
                             </>
                         ) : null}
+
+                        {kind === 'switch' ? (
+                            <>
+                                <div className="space-y-1.5">
+                                    <Label htmlFor={`${id}-switch-on`}>Switch On</Label>
+                                    <Input
+                                        id={`${id}-switch-on`}
+                                        value={typeof config.on === 'string' ? config.on : ''}
+                                        onChange={(event) => onPropertyChange('config.on', event.target.value)}
+                                        className="font-mono text-sm"
+                                        placeholder="context.example.key"
+                                    />
+                                </div>
+                                <DecisionMapEditor
+                                    key={`${selectedNodeId}-cases`}
+                                    label="Cases"
+                                    help={'One `value = decision` per line. Values are JSON scalars: 0 is a number, "0" a string.'}
+                                    value={config.cases}
+                                    onChange={(map) => onPropertyChange('config.cases', map)}
+                                />
+                                <div className="space-y-1.5">
+                                    <Label htmlFor={`${id}-switch-otherwise`}>Otherwise Decision</Label>
+                                    <Input
+                                        id={`${id}-switch-otherwise`}
+                                        value={typeof config.otherwise === 'string' ? config.otherwise : ''}
+                                        onChange={(event) => onPropertyChange('config.otherwise', event.target.value)}
+                                        className="font-mono text-sm"
+                                    />
+                                </div>
+                            </>
+                        ) : null}
+
+                        {kind === 'exit' ? (
+                            <>
+                                <div className="space-y-1.5">
+                                    <Label htmlFor={`${id}-exit-result-name`}>Result Name</Label>
+                                    <Input
+                                        id={`${id}-exit-result-name`}
+                                        value={exitResult.name ?? ''}
+                                        onChange={(event) => onPropertyChange('config.result', { ...exitResult, name: event.target.value })}
+                                        className="font-mono text-sm"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label htmlFor={`${id}-exit-result-outcome`}>Run Outcome</Label>
+                                    <NativeSelect
+                                        id={`${id}-exit-result-outcome`}
+                                        value={exitResult.outcome === 'failure' ? 'failure' : 'success'}
+                                        onChange={(event) => onPropertyChange('config.result', { ...exitResult, outcome: event.target.value })}
+                                    >
+                                        <option value="success">Success</option>
+                                        <option value="failure">Failure</option>
+                                    </NativeSelect>
+                                </div>
+                            </>
+                        ) : null}
+
+                        {kind === 'tool' ? (
+                            <>
+                                <div className="space-y-1.5">
+                                    <Label htmlFor={`${id}-tool-adapter`}>Decision Adapter</Label>
+                                    <NativeSelect
+                                        id={`${id}-tool-adapter`}
+                                        value={toolAdapter}
+                                        onChange={(event) => {
+                                            if (event.target.value === 'decision_field') {
+                                                onPropertyChange('config.exit_codes', '')
+                                                onPropertyChange('config.decision_field', 'decision')
+                                            } else {
+                                                onPropertyChange('config.decision_field', '')
+                                            }
+                                        }}
+                                    >
+                                        <option value="exit_codes">Exit codes</option>
+                                        <option value="decision_field">JSON decision field</option>
+                                    </NativeSelect>
+                                </div>
+                                {toolAdapter === 'decision_field' ? (
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor={`${id}-tool-decision-field`}>Decision Field</Label>
+                                        <Input
+                                            id={`${id}-tool-decision-field`}
+                                            value={config.decision_field as string}
+                                            onChange={(event) => onPropertyChange('config.decision_field', event.target.value)}
+                                            className="font-mono text-sm"
+                                        />
+                                    </div>
+                                ) : (
+                                    <DecisionMapEditor
+                                        key={`${selectedNodeId}-exit-codes`}
+                                        label="Exit Codes"
+                                        help="One `exit code = decision` per line."
+                                        value={config.exit_codes}
+                                        onChange={(map) => onPropertyChange('config.exit_codes', map)}
+                                    />
+                                )}
+                            </>
+                        ) : null}
+
+                        {nodeFieldDiagnostics.config?.length
+                            ? renderFieldDiagnostics('node', 'config', nodeFieldDiagnostics, 'node-field-diagnostics-config')
+                            : null}
 
                         {visibility.showManagerOptions ? (
                             <>
@@ -345,6 +426,16 @@ export function NodeInspectorPanel({
                             </>
                         ) : null}
 
+                        {kind === 'subflow' ? (
+                            <DecisionMapEditor
+                                key={`${selectedNodeId}-results`}
+                                label="Child Results"
+                                help="One `child result name = decision` per line."
+                                value={config.results}
+                                onChange={(map) => onPropertyChange('config.results', map)}
+                            />
+                        ) : null}
+
                         {visibility.showAdvanced ? (
                             <Button
                                 type="button"
@@ -379,53 +470,6 @@ export function NodeInspectorPanel({
                                                     placeholder="900s"
                                                 />
                                             </div>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Checkbox
-                                                id={`${id}-goal-gate`}
-                                                aria-describedby={nodeFieldDiagnostics.goal_gate?.length ? `${id}-goal_gate-diagnostics` : undefined}
-                                                aria-invalid={nodeFieldDiagnostics.goal_gate?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
-                                                checked={isTrue(selectedNode?.data?.goal_gate)}
-                                                onCheckedChange={(checked) => onPropertyChange('goal_gate', checked === true)}
-                                            />
-                                            <Label htmlFor={`${id}-goal-gate`} className="text-sm font-medium">
-                                                Goal Gate
-                                            </Label>
-                                        </div>
-                                        {nodeFieldDiagnostics.goal_gate?.length ? (
-                                            <div id={`${id}-goal_gate-diagnostics`}>
-                                                {renderFieldDiagnostics('node', 'goal_gate', nodeFieldDiagnostics, 'node-field-diagnostics-goal_gate')}
-                                            </div>
-                                        ) : null}
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor={`${id}-retry-target`}>Retry Target</Label>
-                                            <Input
-                                                id={`${id}-retry-target`}
-                                                aria-describedby={nodeFieldDiagnostics.retry_target?.length ? `${id}-retry_target-diagnostics` : undefined}
-                                                aria-invalid={nodeFieldDiagnostics.retry_target?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
-                                                value={(selectedNode?.data?.retry_target as string) || ''}
-                                                onChange={(event) => onPropertyChange('retry_target', event.target.value)}
-                                            />
-                                            {nodeFieldDiagnostics.retry_target?.length ? (
-                                                <div id={`${id}-retry_target-diagnostics`}>
-                                                    {renderFieldDiagnostics('node', 'retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')}
-                                                </div>
-                                            ) : null}
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor={`${id}-fallback-retry-target`}>Fallback Retry Target</Label>
-                                            <Input
-                                                id={`${id}-fallback-retry-target`}
-                                                aria-describedby={nodeFieldDiagnostics.fallback_retry_target?.length ? `${id}-fallback_retry_target-diagnostics` : undefined}
-                                                aria-invalid={nodeFieldDiagnostics.fallback_retry_target?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
-                                                value={(selectedNode?.data?.fallback_retry_target as string) || ''}
-                                                onChange={(event) => onPropertyChange('fallback_retry_target', event.target.value)}
-                                            />
-                                            {nodeFieldDiagnostics.fallback_retry_target?.length ? (
-                                                <div id={`${id}-fallback_retry_target-diagnostics`}>
-                                                    {renderFieldDiagnostics('node', 'fallback_retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-fallback_retry_target')}
-                                                </div>
-                                            ) : null}
                                         </div>
                                         {visibility.showToolCommand ? (
                                             <>
@@ -540,30 +584,6 @@ export function NodeInspectorPanel({
                                         }} />
                                 ) : null}
 
-                                {visibility.showGeneralAdvanced ? (
-                                    <div className="flex items-center gap-4">
-                                        <div className="flex items-center gap-2">
-                                            <Checkbox
-                                                id={`${id}-node-auto-status`}
-                                                checked={isTrue(selectedNode?.data?.auto_status)}
-                                                onCheckedChange={(checked) => onPropertyChange('auto_status', checked === true)}
-                                            />
-                                            <Label htmlFor={`${id}-node-auto-status`} className="text-sm font-medium">
-                                                Auto Status
-                                            </Label>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Checkbox
-                                                id={`${id}-node-allow-partial`}
-                                                checked={isTrue(selectedNode?.data?.allow_partial)}
-                                                onCheckedChange={(checked) => onPropertyChange('allow_partial', checked === true)}
-                                            />
-                                            <Label htmlFor={`${id}-node-allow-partial`} className="text-sm font-medium">
-                                                Allow Partial
-                                            </Label>
-                                        </div>
-                                    </div>
-                                ) : null}
                             </div>
                         ) : null}
 
@@ -589,7 +609,7 @@ export function NodeInspectorPanel({
                                 'flow_ref',
                                 'input_map',
                                 'output_map',
-                                'decisions',
+                                'routes',
                                 'prompt',
                                 'tool.command',
                                 'tool.hooks.pre',
@@ -597,24 +617,15 @@ export function NodeInspectorPanel({
                                 'tool.artifacts.paths',
                                 'tool.artifacts.stdout',
                                 'tool.artifacts.stderr',
-                                'join_policy',
-                                'join_k',
-                                'join_quorum',
-                                'error_policy',
                                 'max_parallel',
                                 'type',
                                 'max_retries',
-                                'goal_gate',
-                                'retry_target',
-                                'fallback_retry_target',
                                 'session',
                                 'class',
                                 'timeout',
                                 'llm_model',
                                 'llm_provider',
                                 'reasoning_effort',
-                                'auto_status',
-                                'allow_partial',
                                 'manager.poll_interval',
                                 'manager.max_cycles',
                                 'manager.stop_condition',
@@ -629,6 +640,54 @@ export function NodeInspectorPanel({
                     </div>
                 )}
             </InspectorScaffold>
+        </div>
+    )
+}
+
+// Edits a `key = decision` map as text. The draft is local so a line being
+// typed is not lost; the node config changes only while the whole draft is
+// valid, and an invalid draft blocks saving until it is fixed.
+function DecisionMapEditor({
+    label,
+    help,
+    value,
+    onChange,
+}: {
+    label: string
+    help: string
+    value: unknown
+    onChange: (map: Record<string, string>) => void
+}) {
+    const id = useId()
+    const [draft, setDraft] = useState(() => formatDecisionMap(value))
+    const errors = parseDecisionMap(draft).errors
+    const error = errors.length > 0 ? `${label}: ${errors.join(' ')}` : null
+    useEffect(() => {
+        setInvalidDraft(id, error)
+        return () => setInvalidDraft(id, null)
+    }, [id, error])
+    return (
+        <div className="space-y-1.5">
+            <Label htmlFor={`${id}-map`}>{label}</Label>
+            <Textarea
+                id={`${id}-map`}
+                aria-describedby={error ? `${id}-help ${id}-error` : `${id}-help`}
+                aria-invalid={error ? true : undefined}
+                value={draft}
+                onChange={(event) => {
+                    setDraft(event.target.value)
+                    const parsed = parseDecisionMap(event.target.value)
+                    if (parsed.errors.length === 0) onChange(parsed.map)
+                }}
+                rows={3}
+                className="font-mono text-sm"
+            />
+            <p id={`${id}-help`} className="text-xs text-muted-foreground">{help}</p>
+            {error ? (
+                <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
+                    {errors.join(' ')} Not saved until fixed.
+                </p>
+            ) : null}
         </div>
     )
 }

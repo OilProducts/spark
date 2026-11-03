@@ -604,18 +604,20 @@ pub fn stage_completed_event(
     run_id: impl Into<String>,
     index: u64,
     node_id: impl Into<String>,
-    outcome: impl Into<String>,
+    decision: impl Into<String>,
 ) -> RawRuntimeEvent {
-    stage_completed_event_with_notes(run_id, index, node_id, outcome, None)
+    stage_completed_event_with_notes(run_id, index, node_id, decision, None)
 }
 
-/// Notes carry the outcome's human-readable result (tool stdout, completion
-/// summaries) into the journal, truncated so chatty tools cannot bloat it.
+/// A completed invocation: `outcome` is the execution status, `decision`
+/// the node's declared decision. Notes carry the human-readable result
+/// (tool stdout, completion summaries), truncated so chatty tools cannot
+/// bloat the journal.
 pub fn stage_completed_event_with_notes(
     run_id: impl Into<String>,
     index: u64,
     node_id: impl Into<String>,
-    outcome: impl Into<String>,
+    decision: impl Into<String>,
     notes: Option<&str>,
 ) -> RawRuntimeEvent {
     const STAGE_NOTES_LIMIT: usize = 200;
@@ -627,7 +629,8 @@ pub fn stage_completed_event_with_notes(
             ("index", json!(index)),
             ("name", json!(node_id.clone())),
             ("node_id", json!(node_id)),
-            ("outcome", json!(outcome.into())),
+            ("outcome", json!("completed")),
+            ("decision", json!(decision.into())),
         ],
     );
     if let Some(notes) = notes.map(str::trim).filter(|notes| !notes.is_empty()) {
@@ -635,6 +638,29 @@ pub fn stage_completed_event_with_notes(
         event.payload.insert("notes".to_string(), json!(truncated));
     }
     event
+}
+
+/// The transition a decision selected: its source, decision, target and
+/// the target's visit number.
+pub fn stage_transition_event(
+    run_id: impl Into<String>,
+    index: u64,
+    node_id: impl Into<String>,
+    decision: impl Into<String>,
+    target: impl Into<String>,
+    visit: u64,
+) -> RawRuntimeEvent {
+    event_with_payload(
+        run_id,
+        "StageTransition",
+        [
+            ("index", json!(index)),
+            ("node_id", json!(node_id.into())),
+            ("decision", json!(decision.into())),
+            ("target", json!(target.into())),
+            ("visit", json!(visit)),
+        ],
+    )
 }
 
 pub fn stage_failed_event(

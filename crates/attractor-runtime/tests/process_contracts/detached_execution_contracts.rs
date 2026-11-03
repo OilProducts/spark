@@ -3,74 +3,34 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use attractor_core::{
-    FlowDefinition, FlowEdge, FlowNode, LaunchContext, NodeConfig, NodeKind, Outcome,
-    OutcomeStatus, RunRecord,
-};
+use attractor_core::{FlowDefinition, LaunchContext, Outcome, RunRecord};
+use serde_json::json;
+
 use attractor_runtime::{
     disk_execution_control, prepare_fresh_run, ExecuteRunRequest, ExecutionStart,
     NodeExecutionRequest, PipelineExecutor, RunStore, RuntimeControls,
 };
 
-fn agent_node(prompt: &str) -> FlowNode {
-    FlowNode {
-        kind: NodeKind::AgentTask,
-        config: Some(NodeConfig::AgentTask {
-            prompt: prompt.to_string(),
-        }),
-        ..FlowNode::default()
-    }
-}
-
 fn simple_flow() -> FlowDefinition {
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "detached-contract".to_string(),
-        title: "Detached Contract".to_string(),
-        nodes: [
-            (
-                "start".to_string(),
-                FlowNode {
-                    kind: NodeKind::Start,
-                    config: Some(NodeConfig::Start {}),
-                    ..FlowNode::default()
-                },
-            ),
-            ("plan".to_string(), agent_node("plan")),
-            ("build".to_string(), agent_node("build")),
-            (
-                "done".to_string(),
-                FlowNode {
-                    kind: NodeKind::Exit,
-                    config: Some(NodeConfig::Exit {
-                        result_summary: false,
-                        result_summary_prompt: None,
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "plan".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "plan".to_string(),
-                to: "build".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "build".to_string(),
-                to: "done".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
-        ..FlowDefinition::default()
-    }
+    let agent = |prompt: &str, to: &str| {
+        json!({"kind": "agent_task", "config": {"kind": "agent_task", "prompt": prompt},
+            "contracts": {"response": "decision_envelope"},
+            "routes": {"done": {"to": to, "description": "The step is complete."}}})
+    };
+    serde_json::from_value(json!({
+        "schema_version": "2",
+        "id": "detached-contract",
+        "title": "Detached Contract",
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"},
+                "routes": {"next": {"to": "plan", "description": "Enter the first step."}}},
+            "plan": agent("plan", "build"),
+            "build": agent("build", "done"),
+            "done": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "completed", "outcome": "success"}}}
+        }
+    }))
+    .expect("flow json")
 }
 
 fn temp_store(temp: &tempfile::TempDir) -> RunStore {
@@ -85,8 +45,17 @@ fn record(run_id: &str, project_path: &Path) -> RunRecord {
     record
 }
 
-fn success() -> Outcome {
-    Outcome::new(OutcomeStatus::Success)
+/// Completes a node with its single declared decision (`next` for start).
+fn success(request: &NodeExecutionRequest) -> Outcome {
+    Outcome::completed(
+        request
+            .node
+            .routes
+            .keys()
+            .next()
+            .expect("one route")
+            .clone(),
+    )
 }
 
 fn journal_shape(
@@ -114,7 +83,7 @@ fn prepared_start_produces_the_same_journal_as_fresh() {
     let flow = simple_flow();
 
     // Baseline: today's Fresh execution.
-    let mut executor = PipelineExecutor::new(|_request: NodeExecutionRequest| Ok(success()));
+    let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| Ok(success(&request)));
     let fresh_result = executor
         .execute(ExecuteRunRequest {
             store: store.clone(),
@@ -147,7 +116,7 @@ fn prepared_start_produces_the_same_journal_as_fresh() {
         .expect("prepared record");
     assert_eq!(prepared_run_record.status, "running");
 
-    let mut executor = PipelineExecutor::new(|_request: NodeExecutionRequest| Ok(success()));
+    let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| Ok(success(&request)));
     let prepared_result = executor
         .execute(ExecuteRunRequest {
             store: store.clone(),
@@ -157,10 +126,22 @@ fn prepared_start_produces_the_same_journal_as_fresh() {
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),
             max_steps: None,
-            start: ExecutionStart::Prepared { paths },
+            start: ExecutionStart::Prepared {
+                paths: paths.clone(),
+            },
         })
         .expect("prepared execute");
     assert_eq!(prepared_result.status, "completed");
+    let prepared_record = store
+        .read_run_record(&paths)
+        .expect("read final record")
+        .expect("final record");
+    assert_eq!(prepared_record.status, "completed");
+    assert_eq!(prepared_record.outcome.as_deref(), Some("success"));
+    assert_eq!(
+        prepared_record.outcome_reason_code.as_deref(),
+        Some("completed")
+    );
     assert_eq!(
         prepared_result.completed_nodes,
         fresh_result.completed_nodes
@@ -185,7 +166,7 @@ fn run_event_observer_fires_for_store_writes() {
         observer_hits.fetch_add(1, Ordering::SeqCst);
     }));
 
-    let mut executor = PipelineExecutor::new(|_request: NodeExecutionRequest| Ok(success()));
+    let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| Ok(success(&request)));
     executor
         .execute(ExecuteRunRequest {
             store,
@@ -233,9 +214,9 @@ fn disk_control_cancels_a_run_mid_flight() {
     let start_paths = paths.clone();
     let handle = std::thread::spawn(move || {
         let mut executor = PipelineExecutor::with_control(
-            |_request: NodeExecutionRequest| {
+            |request: NodeExecutionRequest| {
                 std::thread::sleep(Duration::from_millis(50));
-                Ok(success())
+                Ok(success(&request))
             },
             disk_execution_control(control_paths),
         );
@@ -292,10 +273,10 @@ fn stage_completed_events_carry_truncated_outcome_notes() {
     let long_notes = "fetched 12 tickers ".repeat(30);
     let expected_notes = long_notes.chars().take(200).collect::<String>();
     let notes_for_handler = long_notes.clone();
-    let mut executor = PipelineExecutor::new(move |_request: NodeExecutionRequest| {
+    let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
         Ok(Outcome {
             notes: notes_for_handler.clone(),
-            ..Outcome::new(OutcomeStatus::Success)
+            ..success(&request)
         })
     });
     executor

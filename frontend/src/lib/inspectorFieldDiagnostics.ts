@@ -9,23 +9,16 @@ const appendFieldDiagnostic = (fieldDiagnostics: FieldDiagnosticMap, field: stri
     fieldDiagnostics[field].push(diagnostic)
 }
 
-const resolveRetryTargetFields = (diagnostic: DiagnosticEntry): string[] => {
-    const message = diagnostic.message.toLowerCase()
-    const fields: string[] = []
-
-    const mentionsFallbackRetryTarget = /\bfallback_retry_target\b/.test(message)
-    const retryOnlyMessage = message.replaceAll('fallback_retry_target', '')
-    const mentionsRetryTarget = /\bretry_target\b/.test(retryOnlyMessage)
-
-    if (mentionsRetryTarget) {
-        fields.push('retry_target')
-    }
-    if (mentionsFallbackRetryTarget) {
-        fields.push('fallback_retry_target')
-    }
-
-    return fields.length > 0 ? fields : ['retry_target', 'fallback_retry_target']
-}
+// Node-level rules about a node's typed config (switch, fork, exit, tool,
+// subflow or response contract).
+const NODE_CONFIG_RULE_IDS = new Set([
+    'node_config',
+    'switch_writer',
+    'exit_result',
+    'fork_structure',
+    'response_contract',
+    'subflow_child',
+])
 
 const mapNodeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
     if (diagnostic.rule_id === 'prompt_on_llm_nodes') {
@@ -34,28 +27,23 @@ const mapNodeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
     if (diagnostic.rule_id === 'type_known') {
         return ['type']
     }
-    if (diagnostic.rule_id === 'goal_gate_has_retry') {
-        return ['goal_gate', 'retry_target', 'fallback_retry_target']
-    }
-    if (diagnostic.rule_id === 'retry_target_exists') {
-        return resolveRetryTargetFields(diagnostic)
+    if (NODE_CONFIG_RULE_IDS.has(diagnostic.rule_id)) {
+        return ['config']
     }
     return []
 }
 
 const mapEdgeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
-    if (diagnostic.rule_id === 'condition_syntax') {
-        return ['condition']
+    if (diagnostic.rule_id === 'route_description') {
+        return ['description']
+    }
+    if (diagnostic.decision || diagnostic.rule_id === 'decision_id' || diagnostic.rule_id === 'decision_domain') {
+        return ['decision']
     }
     return []
 }
 
-const mapGraphDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
-    if (diagnostic.rule_id === 'retry_target_exists') {
-        return resolveRetryTargetFields(diagnostic)
-    }
-    return []
-}
+const mapGraphDiagnosticFields = (): string[] => []
 
 const toFieldDiagnosticMap = (
     diagnostics: DiagnosticEntry[],
@@ -75,13 +63,17 @@ export const resolveNodeFieldDiagnostics = (diagnostics: DiagnosticEntry[], node
     return toFieldDiagnosticMap(nodeDiagnostics, mapNodeDiagnosticFields)
 }
 
+// An edge's diagnostics; with a decision, only those for that route (several
+// decisions may target the same node).
 export const resolveEdgeFieldDiagnostics = (
     diagnostics: DiagnosticEntry[],
     source: string,
     target: string,
+    decision?: string,
 ): FieldDiagnosticMap => {
     const edgeDiagnostics = diagnostics.filter(
-        (diagnostic) => diagnostic.edge?.length === 2 && diagnostic.edge[0] === source && diagnostic.edge[1] === target,
+        (diagnostic) => diagnostic.edge?.length === 2 && diagnostic.edge[0] === source && diagnostic.edge[1] === target
+            && (!decision || !diagnostic.decision || diagnostic.decision === decision),
     )
     return toFieldDiagnosticMap(edgeDiagnostics, mapEdgeDiagnosticFields)
 }

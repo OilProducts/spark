@@ -13,7 +13,7 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration, runStatusTone } from '../model/shared'
+import { formatDuration, runRecordTone } from '../model/shared'
 import { flowTitle, formatRunDate, runDayLabel, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
@@ -160,7 +160,7 @@ export function RunList({
                         data-testid="run-history-row"
                         data-run-id={run.run_id}
                         selected={selected}
-                        tone={runStatusTone(run.status)}
+                        tone={runRecordTone(run)}
                         onClick={() => onSelectRun(run)}
                         title={<span data-testid="run-history-row-title" title={`${title} · ${run.run_id}`}>{title}</span>}
                         meta={(

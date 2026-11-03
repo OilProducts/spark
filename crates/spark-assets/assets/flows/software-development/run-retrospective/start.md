@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: locate_run
+  next:
+    to: locate_run
+    description: Enter the first workflow step.
 ---

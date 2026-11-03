@@ -173,6 +173,21 @@ pub fn project_run_milestones(
     if run_state.status != record.status {
         if let Some(kind) = terminal_milestone_kind(&record.status) {
             let message = match kind {
+                // A completed run reached a declared exit; a failure exit
+                // is not a success.
+                "run_completed" if record.outcome.as_deref() == Some("failure") => {
+                    let result = record.outcome_reason_code.as_deref().unwrap_or("failure");
+                    match record
+                        .outcome_reason_message
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        Some(reason) => {
+                            format!("{flow_name} ended {result} (failure): {}", one_line(reason))
+                        }
+                        None => format!("{flow_name} ended {result} (failure)"),
+                    }
+                }
                 "run_completed" => format!("Completed {flow_name}"),
                 "run_canceled" => format!("Canceled {flow_name}"),
                 _ => {

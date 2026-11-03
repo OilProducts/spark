@@ -1610,15 +1610,16 @@ fn envelope_node_request(
     response_contract: Option<&str>,
 ) -> spark_agent_adapter::CodergenRequest {
     use attractor_core::{DotAttribute, DotValue, DotValueType};
-    let source = json!({"schema_version":"1", "id":"flow",
-        "nodes":{"start":{"kind":"start"},
-            "review":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"Review the change."}},
-            "fix":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"fix"}},
-            "end":{"kind":"exit"}},
-        "edges":[{"from":"start","to":"review"},
-            {"from":"review","to":"end","label":"Approve"},
-            {"from":"review","to":"fix","label":"Rework"},
-            {"from":"fix","to":"end"}]
+    let source = json!({"schema_version":"2", "id":"flow",
+        "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"review", "description":"Begin."}}},
+            "review":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"Review the change."},
+                "contracts":{"response":"decision_envelope"},
+                "routes":{"approve":{"to":"end", "description":"The change is ready."},
+                    "rework":{"to":"fix", "description":"The change needs fixes."}}},
+            "fix":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"fix"},
+                "contracts":{"response":"decision_envelope"},
+                "routes":{"fixed":{"to":"end", "description":"Fixed."}}},
+            "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
     });
     let mut graph = attractor_dsl::validated_flow(serde_json::from_value(source).unwrap())
         .unwrap()
@@ -1673,15 +1674,15 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
 }
 
 #[test]
-fn claude_code_status_envelope_node_passes_its_schema_and_routes_from_the_structured_result() {
+fn claude_code_decision_envelope_node_passes_its_schema_and_decides_from_the_structured_result() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "structured");
     let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
-    let request = envelope_node_request(temp.path(), Some("status_envelope"));
-    let expected_schema = spark_agent_adapter::status_envelope_json_schema(
+    let request = envelope_node_request(temp.path(), Some("decision_envelope"));
+    let expected_schema = spark_agent_adapter::decision_envelope_json_schema(
         &request.graph,
         "review",
         &attractor_core::resolve_context_write_contract(&request.node.attrs),
@@ -1695,9 +1696,9 @@ fn claude_code_status_envelope_node_passes_its_schema_and_routes_from_the_struct
 
     assert_eq!(
         execution.outcome.status,
-        attractor_core::OutcomeStatus::Success
+        attractor_core::OutcomeStatus::Completed
     );
-    assert_eq!(execution.outcome.preferred_label, "Approve");
+    assert_eq!(execution.outcome.decision, "approve");
     assert_eq!(execution.repair_attempts, 0);
     let invocations = logged_invocations(&log_path);
     assert_eq!(invocations.len(), 1);
@@ -1707,8 +1708,8 @@ fn claude_code_status_envelope_node_passes_its_schema_and_routes_from_the_struct
         expected_schema
     );
     assert_eq!(
-        expected_schema["properties"]["preferred_label"]["enum"],
-        json!(["Approve", "Rework"])
+        expected_schema["properties"]["decision"]["enum"],
+        json!(["approve", "rework"])
     );
 
     // A node without the envelope contract passes no schema.
@@ -1741,15 +1742,18 @@ fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
         let execution = spark_agent_adapter::CodergenHandler::with_backend(
             RustLlmCodergenBackend::new(Client::new()),
         )
-        .execute(envelope_node_request(temp.path(), Some("status_envelope")))
+        .execute(envelope_node_request(
+            temp.path(),
+            Some("decision_envelope"),
+        ))
         .expect("execution");
 
         assert_eq!(
             execution.outcome.status,
-            attractor_core::OutcomeStatus::Success,
+            attractor_core::OutcomeStatus::Completed,
             "{mode}"
         );
-        assert_eq!(execution.outcome.preferred_label, "Approve", "{mode}");
+        assert_eq!(execution.outcome.decision, "approve", "{mode}");
         assert_eq!(execution.repair_attempts, 1, "{mode}");
         assert!(
             execution.contract_violations[0].reason.contains(reason),
@@ -1807,13 +1811,21 @@ fn claude_code_envelope_repairs_stop_at_the_limit_when_retries_stay_exhausted() 
     let execution = spark_agent_adapter::CodergenHandler::with_backend(
         RustLlmCodergenBackend::new(Client::new()),
     )
-    .execute(envelope_node_request(temp.path(), Some("status_envelope")))
+    .execute(envelope_node_request(
+        temp.path(),
+        Some("decision_envelope"),
+    ))
     .expect("execution");
 
     assert_eq!(
         execution.outcome.status,
-        attractor_core::OutcomeStatus::Fail
+        attractor_core::OutcomeStatus::Error
     );
+    assert_eq!(
+        execution.outcome.failure_kind,
+        Some(attractor_core::FailureKind::Contract)
+    );
+    assert!(execution.outcome.decision.is_empty());
     assert_eq!(
         execution.repair_attempts,
         spark_agent_adapter::codergen::DEFAULT_CONTRACT_REPAIR_ATTEMPTS
@@ -1827,17 +1839,17 @@ fn claude_code_envelope_repairs_stop_at_the_limit_when_retries_stay_exhausted() 
     );
 }
 
-/// Opt-in smoke: one status-envelope node against the real CLI's
+/// Opt-in smoke: one decision-envelope node against the real CLI's
 /// `--json-schema`. Run with the same command as the other real tests.
 #[test]
 #[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
-fn real_claude_code_status_envelope_node_returns_a_schema_valid_outcome() {
+fn real_claude_code_decision_envelope_node_returns_a_schema_valid_decision() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let _mode_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_PERMISSION_MODE", "default");
-    let mut request = envelope_node_request(temp.path(), Some("status_envelope"));
+    let mut request = envelope_node_request(temp.path(), Some("decision_envelope"));
     request.node.attrs.get_mut("prompt").expect("prompt").value = attractor_core::DotValue::String(
-        "Do not use any tools. Finish with outcome success and preferred_label Rework.".to_string(),
+        "Do not use any tools. Finish with the decision rework.".to_string(),
     );
 
     let execution = spark_agent_adapter::CodergenHandler::with_backend(
@@ -1848,9 +1860,9 @@ fn real_claude_code_status_envelope_node_returns_a_schema_valid_outcome() {
 
     assert_eq!(
         execution.outcome.status,
-        attractor_core::OutcomeStatus::Success
+        attractor_core::OutcomeStatus::Completed
     );
-    assert_eq!(execution.outcome.preferred_label, "Rework");
+    assert_eq!(execution.outcome.decision, "rework");
     assert!(execution.contract_violations.is_empty());
 }
 
@@ -2008,7 +2020,7 @@ fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
         (execution, logged_invocations(&log_path))
     };
 
-    let (first, invocations) = run(Some("status_envelope"), None);
+    let (first, invocations) = run(Some("decision_envelope"), None);
     assert_eq!(arg_after(&invocations[0], "--resume"), None);
     let handle = first.session.expect("session handle");
     assert_eq!(handle.provider, "claude-code");
@@ -2021,7 +2033,7 @@ fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
         .contains_key(spark_agent_adapter::MODEL_USAGE_SNAPSHOT_METADATA_KEY));
 
     // The next node resumes it, and counts only its own usage.
-    let (second, invocations) = run(Some("status_envelope"), Some(handle.clone()));
+    let (second, invocations) = run(Some("decision_envelope"), Some(handle.clone()));
     assert_eq!(invocations.len(), 1);
     assert_eq!(
         arg_after(&invocations[0], "--resume").as_deref(),

@@ -18,7 +18,7 @@ use unified_llm_adapter::{
 #[test]
 fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "goal": "Ship",
@@ -28,8 +28,11 @@ fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
                 "config": {
                     "kind": "agent_task",
                     "prompt": "Plan for $goal"
-                }
-            }
+                },
+                "routes": {"done": {"to": "done", "description": "Planned."}}
+            },
+            "done": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "completed", "outcome": "success"}}}
         }
     }))
     .expect("flow parses")
@@ -44,7 +47,9 @@ fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
         )
         .expect("codergen executes");
 
-    assert_eq!(execution.outcome.status.as_str(), "success");
+    // Simulation completes with the node's single declared decision.
+    assert_eq!(execution.outcome.status.as_str(), "completed");
+    assert_eq!(execution.outcome.decision, "done");
     assert_eq!(
         std::fs::read_to_string(logs_root.path().join("task/initial-context.txt")).unwrap(),
         "Plan for docs"
@@ -64,7 +69,7 @@ fn runtime_codergen_wrapper_writes_stage_artifacts_and_maps_events() {
 #[test]
 fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "goal": "Ship",
@@ -106,7 +111,7 @@ fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
         )
         .expect("codergen executes");
 
-    assert_eq!(execution.outcome.status.as_str(), "success");
+    assert_eq!(execution.outcome.status.as_str(), "completed");
     assert_eq!(
         execution.response_text,
         "runtime backend response for gpt-runtime-text"
@@ -130,7 +135,8 @@ fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
         &std::fs::read_to_string(logs_root.path().join("task/status.json")).unwrap(),
     )
     .expect("status json");
-    assert_eq!(status["outcome"], json!("success"));
+    assert_eq!(status["status"], json!("completed"));
+    assert!(status.get("outcome").is_none(), "{status}");
     assert_eq!(status["usage"]["total_tokens"], json!(13));
 
     let requests = calls.lock().expect("calls");
@@ -154,7 +160,7 @@ fn runtime_codergen_executes_text_only_rust_backend_through_public_api() {
 #[test]
 fn initial_context_persistence_failure_prevents_provider_execution() {
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "nodes": {
@@ -200,7 +206,7 @@ fn initial_context_persistence_failure_prevents_provider_execution() {
 #[test]
 fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_api() {
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "nodes": {
@@ -251,7 +257,7 @@ fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_
         .execute("task", ContextMap::new())
         .expect("codergen executes");
 
-    assert_eq!(execution.outcome.status.as_str(), "success");
+    assert_eq!(execution.outcome.status.as_str(), "completed");
     assert_eq!(
         execution.response_text,
         "runtime backend response for gpt-runtime-agent"
@@ -261,7 +267,7 @@ fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_
         &std::fs::read_to_string(logs_root.path().join("task/status.json")).unwrap(),
     )
     .expect("status json");
-    assert_eq!(status["outcome"], json!("success"));
+    assert_eq!(status["status"], json!("completed"));
     assert_eq!(status["usage"]["input_tokens"], json!(5));
     assert_eq!(status["usage"]["output_tokens"], json!(8));
     assert_eq!(
@@ -434,7 +440,7 @@ impl spark_agent_adapter::CodergenBackend for StreamingFakeBackend {
 #[test]
 fn live_sink_receives_prefix_and_execution_keeps_full_event_list() {
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "goal": "Ship",
@@ -501,7 +507,7 @@ fn live_sink_receives_prefix_and_execution_keeps_full_event_list() {
 #[test]
 fn codergen_external_sink_wins_over_reconstructed_run_paths() {
     let flow = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "nodes": {
             "task": {
@@ -585,7 +591,7 @@ send({'type':'result','subtype':'success','is_error':False,'result':'Steered','s
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
     let graph = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "title": "G",
         "nodes": {
@@ -710,7 +716,7 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
 #[test]
 fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
     let flow = serde_json::from_value::<FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "g",
         "nodes": {
             "task": {
@@ -843,7 +849,7 @@ fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
 }
 
 #[test]
-fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
+fn bundled_implement_change_evaluate_prompt_lists_its_decisions() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../spark-assets/assets/flows/software-development/implement-change");
     let flow = attractor_dsl::read_flow_dir(&path).unwrap();
@@ -851,31 +857,55 @@ fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
     let logs_root = tempdir().unwrap();
     let mut codergen = RuntimeCodergen::simulation(graph, Some(logs_root.path().to_path_buf()));
 
-    codergen
+    let execution = codergen
         .execute("evaluate", ContextMap::new())
         .expect("codergen executes");
+    // Simulation never guesses among several declared decisions.
+    assert!(execution.outcome.is_error(), "{:?}", execution.outcome);
 
     let prompt = std::fs::read_to_string(logs_root.path().join("evaluate/prompt.md")).unwrap();
-    let routes = [
-        "Routes from this node, checked in this order:",
-        "- When the condition `outcome=fail` holds: go to \"Implement\".",
-        "- When the condition `outcome=success` holds: go to \"Validate\".",
-    ]
-    .join("\n");
-    assert!(prompt.contains(&routes), "{prompt}");
+    assert!(
+        prompt.contains("Decisions (choose exactly one):"),
+        "{prompt}"
+    );
+    let route = |decision: &str| {
+        let route = flow.route("evaluate", decision).expect("declared route");
+        let target = &flow.nodes[&route.to].label;
+        format!(
+            "- {}: goes to {}. {}",
+            json!(decision),
+            json!(target),
+            route.description
+        )
+    };
+    for decision in ["blocked", "fix", "ready", "unfinished"] {
+        assert!(prompt.contains(&route(decision)), "{decision}\n{prompt}");
+    }
+    assert!(
+        prompt.contains("- \"fix\": goes to \"Implement\"."),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- \"ready\": goes to \"Validate\"."),
+        "{prompt}"
+    );
 }
 
 /// Records the Claude Code session id each node is asked to resume and
-/// hands out a new one per call (`h-<call>`). `check` answers `Again` once,
-/// then `Done`; `resolve` always answers `Re-review`. A design-change
-/// reviewer records [`lens_findings`]; `synthesize` forwards every branch's
-/// findings from `parallel.results`. The first call of `flaky` fails
-/// retryably.
+/// hands out a new one per call (`h-<call>`). `check` answers `again` once,
+/// then `done`; `resolve` answers `rereview` until its prompt marks that
+/// target as out of visits (always, with `ignore_visit_budget`). A
+/// design-change reviewer records [`lens_findings`]; `synthesize` forwards
+/// every branch's findings from `parallel.results`. The first call of
+/// `flaky` fails retryably. Every other node answers `done`.
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
     prompts: Arc<Mutex<Vec<String>>>,
+    ignore_visit_budget: bool,
 }
+
+const VISITS_USED: &str = "its target has used all its visits";
 
 impl spark_agent_adapter::CodergenBackend for SessionBackend {
     fn run(
@@ -896,25 +926,27 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
         ));
         let checks = calls.iter().filter(|(node, _)| node == "check").count();
         let flaky = calls.iter().filter(|(node, _)| node == "flaky").count();
+        let envelope = |decision: &str, updates: serde_json::Value| {
+            spark_agent_adapter::CodergenBackendResponse::Text(
+                json!({"decision": decision, "context_updates": updates}).to_string(),
+            )
+        };
         let response = if request.node_id == "flaky" && flaky == 1 {
             // The first attempt fails and is retried automatically.
-            spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome {
-                failure_reason: "transient".to_string(),
-                retryable: Some(true),
-                ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Fail)
-            })
+            spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome::error(
+                attractor_core::FailureKind::Runtime,
+                "transient",
+                Some(true),
+            ))
         } else if request.node_id == "a" {
-            // An agent cannot forge the runtime's session handles.
-            spark_agent_adapter::CodergenBackendResponse::Text(
-                json!({"outcome": "success", "context_updates": {
-                    "_attractor.runtime.sessions": {"named": {"s": "forged"}}}})
-                .to_string(),
-            )
+            // A forged session handle would be a contract violation (see
+            // agent_written_runtime_sessions_are_contract_violations_not_dropped_keys);
+            // the runtime alone records the handle the backend resumes.
+            envelope("done", json!({}))
         } else if DESIGN_REVIEWERS.contains(&request.node_id.as_str()) {
-            spark_agent_adapter::CodergenBackendResponse::Text(
-                json!({"outcome": "success", "context_updates": {
-                    "context.review.lens_findings": lens_findings(&request.node_id)}})
-                .to_string(),
+            envelope(
+                "done",
+                json!({"context.review.lens_findings": lens_findings(&request.node_id)}),
             )
         } else if request.node_id == "synthesize" {
             let findings = request.context["parallel.results"]
@@ -924,21 +956,20 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
                 .filter_map(|branch| branch["context"].get("context.review.lens_findings"))
                 .flat_map(|findings| findings.as_array().unwrap().clone())
                 .collect::<Vec<_>>();
-            spark_agent_adapter::CodergenBackendResponse::Text(
-                json!({"outcome": "success", "context_updates": {
-                    "context.review.findings": findings}})
-                .to_string(),
-            )
+            envelope("done", json!({"context.review.findings": findings}))
         } else {
-            spark_agent_adapter::CodergenBackendResponse::Outcome(attractor_core::Outcome {
-                preferred_label: match (request.node_id.as_str(), checks) {
-                    ("check", 1) => "Again".to_string(),
-                    ("check", _) => "Done".to_string(),
-                    ("resolve", _) => "Re-review".to_string(),
-                    _ => String::new(),
-                },
-                ..attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success)
-            })
+            let decision = match (request.node_id.as_str(), checks) {
+                ("check", 1) => "again",
+                ("resolve", _)
+                    if self.ignore_visit_budget || !request.prompt.contains(VISITS_USED) =>
+                {
+                    "rereview"
+                }
+                _ => "done",
+            };
+            spark_agent_adapter::CodergenBackendResponse::Outcome(
+                attractor_core::Outcome::completed(decision),
+            )
         };
         Ok(spark_agent_adapter::CodergenBackendOutput {
             response,
@@ -970,18 +1001,46 @@ fn lens_findings(lens: &str) -> serde_json::Value {
     ])
 }
 
-fn session_flow(nodes: serde_json::Value, edges: serde_json::Value) -> FlowDefinition {
+fn session_flow(nodes: serde_json::Value) -> FlowDefinition {
     attractor_dsl::validated_flow(
-        serde_json::from_value(json!({"schema_version": "1", "id": "sessions",
-            "nodes": nodes, "edges": edges}))
-        .expect("flow json"),
+        serde_json::from_value(json!({"schema_version": "2", "id": "sessions", "nodes": nodes}))
+            .expect("flow json"),
     )
     .expect("valid flow")
 }
 
-fn agent_in(session: Option<&str>) -> serde_json::Value {
+fn routes(routes: &[(&str, &str)]) -> serde_json::Value {
+    routes
+        .iter()
+        .map(|(decision, to)| {
+            (
+                decision.to_string(),
+                json!({"to": to, "description": format!("Choose {decision}.")}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+fn start_to(to: &str) -> serde_json::Value {
+    json!({"kind": "start", "routes": routes(&[("next", to)])})
+}
+
+fn exit_node() -> serde_json::Value {
+    json!({"kind": "exit", "config": {"kind": "exit",
+        "result": {"name": "completed", "outcome": "success"}}})
+}
+
+/// An agent task whose single decision `done` goes to `to`.
+fn agent_in(session: Option<&str>, to: &str) -> serde_json::Value {
+    agent_routes(session, &[("done", to)])
+}
+
+fn agent_routes(session: Option<&str>, decisions: &[(&str, &str)]) -> serde_json::Value {
     json!({"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "work"},
-        "runtime": session.map(|s| json!({"session": s})).unwrap_or(json!({}))})
+        "contracts": {"response": "decision_envelope"},
+        "runtime": session.map(|s| json!({"session": s})).unwrap_or(json!({})),
+        "routes": routes(decisions)})
 }
 
 fn run_sessions(
@@ -1015,21 +1074,13 @@ fn run_sessions(
 fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
     let temp = tempdir().unwrap();
     let mut nodes = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "a": agent_in(Some("s")), "b": agent_in(Some("s")), "check": agent_in(None),
-        "c": agent_in(Some("s")),
+        "start": start_to("a"), "done": exit_node(),
+        "a": agent_in(Some("s"), "b"), "b": agent_in(Some("s"), "check"),
+        "check": agent_routes(None, &[("again", "a"), ("done", "c")]),
+        "c": agent_in(Some("s"), "done"),
     });
-    nodes["a"]["contracts"] = json!({"response": "status_envelope"});
     nodes["c"]["execution"] = json!({"llm_provider": "other-provider"});
-    let flow = session_flow(
-        nodes,
-        json!([
-            {"from": "start", "to": "a"}, {"from": "a", "to": "b"}, {"from": "b", "to": "check"},
-            {"from": "check", "to": "a", "label": "Again"},
-            {"from": "check", "to": "c", "label": "Done"},
-            {"from": "c", "to": "done"}
-        ]),
-    );
+    let flow = session_flow(nodes);
     let backend = SessionBackend::default();
     let result = run_sessions(
         temp.path(),
@@ -1094,18 +1145,24 @@ fn nodes_sharing_a_session_continue_it_across_nodes_loops_and_checkpoints() {
     );
 }
 
-#[test]
-fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() {
+fn bundled_design_change() -> FlowDefinition {
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../spark-assets/assets");
-    let flow = attractor_dsl::resolve_flow_roles(
+    attractor_dsl::resolve_flow_roles(
         &attractor_dsl::read_flow_dir(&assets.join("flows/software-development/design-change"))
             .unwrap(),
         &attractor_dsl::FlowRoots::new(&assets, None),
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn bundled_design_change_resolves_in_the_drafters_session_until_review_visits_run_out() {
+    let flow = bundled_design_change();
+    let review_visits = attractor_runtime::routing::max_visits(&flow, "review") as usize;
     let temp = tempdir().unwrap();
     let backend = SessionBackend::default();
-    // `resolve` always asks for a re-review.
+    // `resolve` asks for a re-review until its prompt says `review` is out
+    // of visits, then chooses `done`.
     let result = run_sessions(
         temp.path(),
         "run-design",
@@ -1125,18 +1182,21 @@ fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() 
             .map(|(index, (_, handle))| (format!("h-{}", index + 1), handle.clone()))
             .collect::<Vec<_>>()
     };
-    // `resolve` continues `draft`'s session, then its own on the second pass.
+    // `resolve` continues `draft`'s session, then its own on later passes.
     let draft = handles("draft");
     let resolve = handles("resolve");
     assert_eq!(draft.len(), 1);
-    assert_eq!(resolve.len(), 2);
+    assert_eq!(resolve.len(), review_visits);
     assert_eq!(resolve[0].1, Some(draft[0].0.clone()));
-    assert_eq!(resolve[1].1, Some(resolve[0].0.clone()));
-    // The review runs exactly twice; every reviewer call starts a fresh session.
-    assert_eq!(handles("synthesize").len(), 2);
+    for pass in 1..resolve.len() {
+        assert_eq!(resolve[pass].1, Some(resolve[pass - 1].0.clone()));
+    }
+    // The review runs once per allowed visit; every reviewer call starts a
+    // fresh session.
+    assert_eq!(handles("synthesize").len(), review_visits);
     for id in DESIGN_REVIEWERS {
         let runs = handles(id);
-        assert_eq!(runs.len(), 2, "{id} {calls:?}");
+        assert_eq!(runs.len(), review_visits, "{id} {calls:?}");
         assert!(runs.iter().all(|(_, handle)| handle.is_none()), "{id}");
     }
     let prompts = backend.prompts.lock().unwrap().clone();
@@ -1149,7 +1209,7 @@ fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() 
             .collect::<Vec<_>>()
     };
     // Every reviewer's complete findings, Blockers included, reach
-    // `synthesize` and then `resolve` in both rounds.
+    // `synthesize` and then `resolve` in every round.
     for id in DESIGN_REVIEWERS {
         for finding in lens_findings(id).as_array().unwrap() {
             let finding = finding.as_str().unwrap();
@@ -1162,40 +1222,77 @@ fn bundled_design_change_resolves_in_the_drafters_session_and_re_reviews_once() 
             }
         }
     }
-    // The second `resolve` sees Re-review marked unavailable; routing takes Done.
+    // Only the last `resolve` sees `rereview` marked out of visits.
     let resolve_prompts = prompts_of("resolve");
-    let marked = "go to \"Review Design\" (unavailable: visit limit reached).";
-    assert!(
-        !resolve_prompts[0].contains(marked),
-        "{}",
-        resolve_prompts[0]
+    let marked = format!("- \"rereview\": goes to \"Review Design\" ({VISITS_USED}");
+    let (last, earlier) = resolve_prompts.split_last().unwrap();
+    assert!(last.contains(&marked), "{last}");
+    for prompt in earlier {
+        assert!(!prompt.contains(&marked), "{prompt}");
+    }
+}
+
+#[test]
+fn choosing_an_exhausted_route_fails_the_run_instead_of_rerouting() {
+    let temp = tempdir().unwrap();
+    let flow = bundled_design_change();
+    let review_visits = attractor_runtime::routing::max_visits(&flow, "review") as usize;
+    let backend = SessionBackend {
+        ignore_visit_budget: true,
+        ..SessionBackend::default()
+    };
+    let result = run_sessions(
+        temp.path(),
+        "run-design-exhausted",
+        flow,
+        &backend,
+        Default::default(),
     );
+
+    assert_eq!(result.status, "failed");
     assert!(
-        resolve_prompts[1].contains(marked),
+        result.failure_reason.starts_with("visit_limit_reached"),
         "{}",
-        resolve_prompts[1]
+        result.failure_reason
     );
+    let calls = backend.calls.lock().unwrap().clone();
+    let count = |id: &str| calls.iter().filter(|(node, _)| node == id).count();
+    assert_eq!(count("resolve"), review_visits);
+    assert_eq!(count("synthesize"), review_visits);
+    let store = attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs"));
+    let bundle = store
+        .read_run_bundle("run-design-exhausted")
+        .unwrap()
+        .unwrap();
+    let record = bundle.record.unwrap();
+    assert_eq!(record.status, "failed");
+    assert!(
+        record.last_error.contains("visit_limit_reached"),
+        "{}",
+        record.last_error
+    );
+    // No `done` transition was substituted for the exhausted decision.
+    assert!(!bundle
+        .raw_events
+        .iter()
+        .any(|event| event.event_type == "StageTransition"
+            && event.payload["node_id"] == "resolve"
+            && event.payload["decision"] == "done"));
 }
 
 #[test]
 fn sessions_started_in_parallel_branches_continue_after_fan_in_but_stay_hidden() {
     let temp = tempdir().unwrap();
     let mut nodes = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "fork": {"kind": "parallel", "config": {"kind": "parallel", "join_policy": "wait_all"}},
-        "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
-        "aa": agent_in(None), "b": agent_in(Some("s")), "c": agent_in(Some("s")),
+        "start": start_to("fork"), "done": exit_node(),
+        "fork": {"kind": "parallel",
+            "config": {"kind": "parallel", "branches": ["aa", "b"], "join": "join"}},
+        "join": {"kind": "fan_in", "config": {"kind": "fan_in"}, "routes": routes(&[("next", "c")])},
+        "aa": agent_in(None, "join"), "b": agent_in(Some("s"), "join"),
+        "c": agent_in(Some("s"), "done"),
     });
-    nodes["c"]["contracts"] = json!({"reads_context": ["parallel.results"]});
-    let flow = session_flow(
-        nodes,
-        json!([
-            {"from": "start", "to": "fork"}, {"from": "fork", "to": "aa"},
-            {"from": "fork", "to": "b"}, {"from": "aa", "to": "join"},
-            {"from": "b", "to": "join"}, {"from": "join", "to": "c"},
-            {"from": "c", "to": "done"}
-        ]),
-    );
+    nodes["c"]["contracts"]["reads_context"] = json!(["parallel.results"]);
+    let flow = session_flow(nodes);
     let backend = SessionBackend::default();
     let result = run_sessions(
         temp.path(),
@@ -1214,7 +1311,7 @@ fn sessions_started_in_parallel_branches_continue_after_fan_in_but_stay_hidden()
     );
     // Branch payloads, and the prompts that read them, carry no handles.
     let results = result.context["parallel.results"].to_string();
-    assert!(results.contains("completed_nodes"), "{results}");
+    assert!(results.contains("route_trace"), "{results}");
     assert!(
         !results.contains("_attractor.runtime.sessions"),
         "{results}"
@@ -1229,17 +1326,11 @@ fn sessions_started_in_parallel_branches_continue_after_fan_in_but_stay_hidden()
 fn retries_and_crash_recovery_continue_the_failed_attempts_session() {
     let temp = tempdir().unwrap();
     let mut nodes = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "flaky": agent_in(Some("s")), "b": agent_in(Some("s")),
+        "start": start_to("flaky"), "done": exit_node(),
+        "flaky": agent_in(Some("s"), "b"), "b": agent_in(Some("s"), "done"),
     });
     nodes["flaky"]["retry"] = json!({"max_retries": 1});
-    let flow = session_flow(
-        nodes,
-        json!([
-            {"from": "start", "to": "flaky"}, {"from": "flaky", "to": "b"},
-            {"from": "b", "to": "done"}
-        ]),
-    );
+    let flow = session_flow(nodes);
     let backend = SessionBackend::default();
     let runner = || {
         let backend = backend.clone();
@@ -1307,24 +1398,22 @@ fn child_sessions_continue_per_subflow_node_across_reentries() {
     let temp = tempdir().unwrap();
     attractor_dsl::write_flow_dir(
         &temp.path().join("flows/child"),
-        &session_flow(
-            json!({"start": {"kind": "start"}, "work": agent_in(Some("s")), "done": {"kind": "exit"}}),
-            json!([{"from": "start", "to": "work"}, {"from": "work", "to": "done"}]),
-        ),
+        &session_flow(json!({
+            "start": start_to("work"), "work": agent_in(Some("s"), "done"), "done": exit_node()
+        })),
     )
     .expect("child flow");
-    let subflow = json!({"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child"},
-        "manager": {"max_cycles": 1, "child_autostart": true}});
-    let parent = session_flow(
-        json!({"start": {"kind": "start"}, "done": {"kind": "exit"},
-            "one": subflow, "two": subflow, "check": agent_in(None)}),
-        json!([
-            {"from": "start", "to": "one"}, {"from": "one", "to": "check"},
-            {"from": "check", "to": "one", "label": "Again"},
-            {"from": "check", "to": "two", "label": "Done"},
-            {"from": "two", "to": "done"}
-        ]),
-    );
+    let subflow = |to: &str| {
+        json!({"kind": "subflow",
+            "config": {"kind": "subflow", "flow_ref": "child", "results": {"completed": "done"}},
+            "manager": {"max_cycles": 1, "child_autostart": true},
+            "routes": routes(&[("done", to)])})
+    };
+    let parent = session_flow(json!({
+        "start": start_to("one"), "done": exit_node(),
+        "one": subflow("check"), "two": subflow("done"),
+        "check": agent_routes(None, &[("again", "one"), ("done", "two")]),
+    }));
     let backend = SessionBackend::default();
     let result = run_sessions(
         temp.path(),
@@ -1376,7 +1465,7 @@ impl spark_agent_adapter::CodergenBackend for WorkdirBackend {
             .push(request.project_path.clone());
         Ok(spark_agent_adapter::CodergenBackendOutput {
             response: spark_agent_adapter::CodergenBackendResponse::Outcome(
-                attractor_core::Outcome::new(attractor_core::OutcomeStatus::Success),
+                attractor_core::Outcome::completed("done"),
             ),
             events: Vec::new(),
             usage: None,
@@ -1390,14 +1479,12 @@ fn agent_task_runs_in_the_directory_named_by_runtime_workdir_from() {
     let temp = tempdir().unwrap();
     std::fs::create_dir(temp.path().join("ws")).unwrap();
     let run = |workdir_from: Option<&str>, ws: Option<&str>| {
-        let mut task = agent_in(None);
+        let mut task = agent_in(None, "done");
         if let Some(key) = workdir_from {
             task["runtime"] = json!({"workdir_from": key});
         }
-        let flow = session_flow(
-            json!({"start": {"kind": "start"}, "done": {"kind": "exit"}, "task": task}),
-            json!([{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]),
-        );
+        let flow =
+            session_flow(json!({"start": start_to("task"), "done": exit_node(), "task": task}));
         let launch = ws
             .map(|ws| ContextMap::from([("context.ws".to_string(), json!(ws))]))
             .unwrap_or_default();

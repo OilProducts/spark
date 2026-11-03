@@ -4,7 +4,7 @@ import { RunCard } from "@/components/app/transcript/SegmentRows"
 import type { StatusTone } from "@/components/app/status"
 import { Well } from "@/components/app/well"
 import { flowTitle } from "@/features/runs/model/runOverviewModel"
-import { formatDuration, formatRunStatusLabel, runStatusTone } from "@/features/runs/model/shared"
+import { formatDuration, formatRunStatusLabel, runRecordTone } from "@/features/runs/model/shared"
 import type { PipelineResultResponse } from "@/lib/attractorClient"
 import { useStore } from "@/store"
 import { loadPipelineResult } from "../services/conversationArtifacts"
@@ -122,7 +122,7 @@ function FlowArtifactCard({
                         {artifact.summary}
                     </button>
                 ) : artifact.summary}
-                tone={run ? runStatusTone(run.status) : presentation.tone}
+                tone={run ? runRecordTone(run) : presentation.tone}
                 status={run ? formatRunStatusLabel(run) : presentation.label}
                 duration={run ? formatDuration(run.started_at, run.ended_at, run.status) : undefined}
             />

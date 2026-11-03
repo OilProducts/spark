@@ -5,14 +5,18 @@ import { expect, test } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
 const smokeFlow = {
-  schema_version: '1',
+  schema_version: '2',
   id: 'rust_product_shell',
   title: 'Rust Product Shell',
   nodes: {
-    start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-    done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+    start: {
+      kind: 'start',
+      label: 'Start',
+      config: { kind: 'start' },
+      routes: { next: { to: 'done', description: 'Enter the first workflow step.' } },
+    },
+    done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
   },
-  edges: [{ from: 'start', to: 'done' }],
 }
 
 test.beforeAll(() => {

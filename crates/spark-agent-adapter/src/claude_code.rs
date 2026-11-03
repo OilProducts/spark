@@ -318,7 +318,7 @@ impl ClaudeCodeBackend {
         }
         if let Some(schema) = request
             .metadata
-            .get(crate::codergen::STATUS_ENVELOPE_SCHEMA_METADATA_KEY)
+            .get(crate::codergen::DECISION_ENVELOPE_SCHEMA_METADATA_KEY)
         {
             command.arg("--json-schema").arg(schema.to_string());
         }

@@ -3,7 +3,7 @@ type: Flow
 id: research_program
 title: Research Program
 description: Repeatedly perform the most useful next mathematical action, assess its evidence, update a concise claim state, and commit the result until the exact problem is mechanically resolved or a human cancels the run. Launch with execution_profile_id math-lab.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.problem
   label: Problem

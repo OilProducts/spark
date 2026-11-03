@@ -23,15 +23,25 @@ test.afterEach(async ({ page }) => {
 })
 
 const diagnosticFlow = (id: string, prompt: string) => ({
-  schema_version: "1",
+  schema_version: "2",
   id,
   title: id,
   nodes: {
-    start: { kind: "start", label: "Start", config: { kind: "start" } },
-    extract_declarations: { kind: "agent_task", label: "Extract Testable Declarations", config: { kind: "agent_task", prompt } },
-    done: { kind: "exit", label: "Done", config: { kind: "exit" } },
+    start: {
+      kind: "start",
+      label: "Start",
+      config: { kind: "start" },
+      routes: { next: { to: "extract_declarations", description: "Enter the first workflow step." } },
+    },
+    extract_declarations: {
+      kind: "agent_task",
+      label: "Extract Testable Declarations",
+      config: { kind: "agent_task", prompt },
+      contracts: { response: "decision_envelope" },
+      routes: { done: { to: "done", description: "The declarations are extracted." } },
+    },
+    done: { kind: "exit", label: "Done", config: { kind: "exit", result: { name: "completed", outcome: "success" } } },
   },
-  edges: [{ from: "start", to: "extract_declarations" }, { from: "extract_declarations", to: "done" }],
 })
 
 // The editor previews the flow itself (carrying its token); the launch form previews it by name.

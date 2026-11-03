@@ -524,19 +524,24 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
         .expect("write flow");
     };
     let source = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "inherited",
         "defaults": {"llm_profile": "team", "llm_model": "m1"},
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}}
+            },
             "work": {
                 "kind": "agent_task",
                 "config": {"kind": "agent_task", "prompt": "No model call in this test"},
-                "execution": {"llm_model": "m2"}
+                "contracts": {"response": "decision_envelope"},
+                "execution": {"llm_model": "m2"},
+                "routes": {"done": {"to": "exit", "description": "The work is complete."}}
             },
-            "exit": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "exit"}]
+            "exit": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     });
     write_flow(&source);
     let path = settings.config_dir.join("llm-profiles.toml");

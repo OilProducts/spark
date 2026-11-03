@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use attractor_core::{
     evaluate_condition, AttractorContext, CheckpointState, ContextMap, FailureKind, FlowDefinition,
-    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, OutcomeStatus, RunRecord,
-    RUNTIME_SESSIONS_KEY,
+    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, RunRecord, RUNTIME_SESSIONS_KEY,
 };
 use serde_json::{json, Value};
 
@@ -36,6 +35,7 @@ const CHILD_KEYS: &[&str] = &[
     "context.stack.child.completed_nodes",
     "context.stack.child.route_trace",
     "context.stack.child.failure_reason",
+    "context.stack.child.failure_kind",
     "context.stack.child.retry_count",
     "context.stack.child.retry_counts",
     "context.stack.child.artifact_count",
@@ -85,9 +85,30 @@ pub(crate) fn execute_manager_loop(
     let mut last_steer_at: Option<Instant> = None;
     let mut automatic_steer_attempts = BTreeMap::<(String, Option<String>, String), u64>::new();
 
-    for cycle in 1..=max_cycles {
-        if actions.contains("observe") {
-            ingest_child_telemetry(runner, &runtime, &mut context);
+    // Cycle bounds and the stop condition govern observation and steering,
+    // never completion: past them the same invocation keeps waiting for the
+    // child's terminal result.
+    let mut observing = true;
+    for cycle in 1.. {
+        if cycle > max_cycles {
+            observing = false;
+            // Without a child there is nothing to wait for.
+            if context_string(&context, "context.stack.child.run_id").is_empty() {
+                return Ok(outcome_with_context_updates(
+                    &runtime,
+                    fail_outcome(format!(
+                        "subflow {} has no child run after {max_cycles} cycles",
+                        runtime.node_id
+                    )),
+                    &original_context,
+                    &context,
+                ));
+            }
+        }
+        // The child's status is refreshed every cycle; the bounds only end
+        // telemetry and steering.
+        ingest_child_telemetry(runner, &runtime, &mut context);
+        if observing && actions.contains("observe") {
             append_manager_artifact(
                 runtime.logs_root.as_deref(),
                 &runtime.node_id,
@@ -97,7 +118,10 @@ pub(crate) fn execute_manager_loop(
         }
 
         let now = Instant::now();
-        if actions.contains("steer") && steer_cooldown_elapsed(now, last_steer_at, steer_cooldown) {
+        if observing
+            && actions.contains("steer")
+            && steer_cooldown_elapsed(now, last_steer_at, steer_cooldown)
+        {
             if let Some(intervention) = request_child_intervention(
                 runner,
                 &runtime,
@@ -124,7 +148,7 @@ pub(crate) fn execute_manager_loop(
             }
         }
 
-        if let Some(outcome) = resolve_child_status(&context) {
+        if let Some(outcome) = resolve_child_status(&runtime, &context) {
             return Ok(outcome_with_context_updates(
                 &runtime,
                 outcome,
@@ -132,37 +156,34 @@ pub(crate) fn execute_manager_loop(
                 &context,
             ));
         }
-
-        if !stop_condition.is_empty() && stop_condition_met(&stop_condition, &context) {
-            return Ok(outcome_with_context_updates(
-                &runtime,
-                Outcome {
-                    status: OutcomeStatus::Success,
-                    notes: "Stop condition satisfied".to_string(),
-                    ..Outcome::new(OutcomeStatus::Success)
-                },
-                &original_context,
-                &context,
+        if runtime
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            runtime
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "Branch canceled by its fork while its child ran",
+                Some(false),
             ));
         }
 
-        if actions.contains("wait") {
-            if !poll_interval.is_zero() {
-                std::thread::sleep(poll_interval);
-            }
+        if observing && !stop_condition.is_empty() && stop_condition_met(&stop_condition, &context)
+        {
+            observing = false;
+        }
+
+        if !observing {
+            // Past the bounds the loop only waits; never spin.
+            std::thread::sleep(poll_interval.max(Duration::from_millis(50)));
+        } else if actions.contains("wait") && !poll_interval.is_zero() {
+            std::thread::sleep(poll_interval);
         }
     }
-
-    Ok(outcome_with_context_updates(
-        &runtime,
-        Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "Max cycles exceeded".to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        },
-        &original_context,
-        &context,
-    ))
+    unreachable!("the manager loop returns once the child ends")
 }
 
 fn autostart_child_pipeline(
@@ -227,6 +248,7 @@ fn autostart_child_pipeline(
                 {
                     child_result = resume_existing_child(
                         runner.clone(),
+                        runtime,
                         store.expect("store exists when bundle exists"),
                         bundle,
                     )
@@ -330,7 +352,8 @@ fn autostart_child_pipeline(
                         || (value.status == "failed"
                             && bundle.record.as_ref().is_some_and(restart_marked_record))
                 }) {
-                    result = resume_existing_child(runner.clone(), store.clone(), bundle).ok();
+                    result =
+                        resume_existing_child(runner.clone(), runtime, store.clone(), bundle).ok();
                 }
                 if let Some(result) = result {
                     apply_child_run_result(context, &result, runtime);
@@ -580,8 +603,58 @@ fn bundle_restart_marked(runtime: &HandlerRuntime, run_id: &str) -> bool {
         .is_some_and(|record| restart_marked_record(&record))
 }
 
+/// The child executor's controls, read from the child's own run record, so
+/// a cancel request against the child stops it at its next boundary.
+fn child_control(
+    store: &RunStore,
+    child_run_id: &str,
+) -> impl FnMut() -> Option<crate::executor::ExecutionControlAction> + Send + 'static {
+    let (store, child_run_id) = (store.clone(), child_run_id.to_string());
+    move || {
+        let paths = store.find_run_root(&child_run_id).ok().flatten()?;
+        crate::controls::disk_execution_control(paths)()
+    }
+}
+
+/// Runs a child invocation. If the owning fork cancels this branch while
+/// the child runs, the child's cancellation is requested through the run
+/// controls and the child settles before this returns; the invocation is
+/// then marked interrupted, so the branch records cancellation, not an error.
+fn watch_owner_cancel<T>(
+    runtime: &HandlerRuntime,
+    store: &RunStore,
+    child_run_id: &str,
+    run: impl FnOnce() -> T,
+) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some(cancel) = runtime.cancel.clone() else {
+        return run();
+    };
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::SeqCst) {
+                // The child's record may not exist yet; retry until accepted.
+                if cancel.load(Ordering::SeqCst)
+                    && crate::controls::RuntimeControls::new(store.clone())
+                        .request_cancel(child_run_id)
+                        .is_ok()
+                {
+                    runtime.interrupted.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let result = run();
+        done.store(true, Ordering::SeqCst);
+        result
+    })
+}
+
 fn resume_existing_child(
     runner: RuntimeHandlerRunner,
+    runtime: &HandlerRuntime,
     store: RunStore,
     bundle: crate::store::RunBundle,
 ) -> std::result::Result<ChildRunResult, String> {
@@ -596,11 +669,31 @@ fn resume_existing_child(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "recovery_missing_lineage: captured child flow unavailable".to_string())?;
     let child_id = record.run_id.clone();
-    let pause = flow
-        .nodes
-        .get(&checkpoint.current_node)
-        .and_then(|node| node.runtime.as_ref())
-        .is_some_and(|runtime| runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause);
+    let branch_pause = crate::handlers::fork_branch_requiring_recovery_decision(
+        &bundle.paths,
+        &flow,
+        &checkpoint.current_node,
+        checkpoint.completed_nodes.len() as u64,
+        crate::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?,
+    )
+    .is_some();
+    let pause = branch_pause
+        || flow
+            .nodes
+            .get(&checkpoint.current_node)
+            .and_then(|node| node.runtime.as_ref())
+            .is_some_and(|runtime| {
+                runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause
+            });
     let durable_response = crate::executor::durable_outcome(
         &store,
         &bundle.paths,
@@ -663,8 +756,9 @@ fn resume_existing_child(
             .write_run_record(&bundle.paths, &record)
             .map_err(|error| error.to_string())?;
     }
-    let result = PipelineExecutor::new(runner)
-        .execute(ExecuteRunRequest {
+    let control = child_control(&store, &child_id);
+    let result = watch_owner_cancel(runtime, &store, &child_id, || {
+        PipelineExecutor::with_control(runner, control).execute(ExecuteRunRequest {
             store: store.clone(),
             record,
             flow,
@@ -677,8 +771,9 @@ fn resume_existing_child(
                 checkpoint,
             },
         })
-        .map(pipeline_result_to_child_result)
-        .map_err(|e| e.to_string())?;
+    })
+    .map(pipeline_result_to_child_result)
+    .map_err(|e| e.to_string())?;
     Ok(store
         .read_run_meta(&child_id)
         .ok()
@@ -812,9 +907,10 @@ fn launch_default_child_run(
     let store_for_result = store.clone();
     let child_run_id = request.child_run_id.clone();
     let child_definition_json = request.child_flow.to_canonical_json_string();
-    let mut executor = PipelineExecutor::new(runner);
-    let result = executor
-        .execute(ExecuteRunRequest {
+    let control = child_control(&store, &child_run_id);
+    let watch_store = store.clone();
+    let result = watch_owner_cancel(runtime, &watch_store, &child_run_id, || {
+        PipelineExecutor::with_control(runner, control).execute(ExecuteRunRequest {
             store,
             record,
             flow: request.child_flow,
@@ -828,8 +924,9 @@ fn launch_default_child_run(
                 flow_files: Some(child_flow_files),
             },
         })
-        .map(pipeline_result_to_child_result)
-        .map_err(|error| error.to_string())?;
+    })
+    .map(pipeline_result_to_child_result)
+    .map_err(|error| error.to_string())?;
     Ok(store_for_result
         .read_run_meta(&child_run_id)
         .ok()
@@ -849,6 +946,7 @@ fn pipeline_result_to_child_result(result: PipelineExecutionResult) -> ChildRunR
         completed_nodes: result.completed_nodes,
         route_trace: result.route_trace,
         failure_reason: result.failure_reason,
+        failure_kind: result.failure_kind,
         context: result.context,
         ..ChildRunResult::default()
     }
@@ -958,6 +1056,7 @@ fn child_result_from_meta(meta: crate::store::RunMeta) -> Option<ChildRunResult>
         completed_nodes,
         route_trace,
         failure_reason: record.last_error,
+        failure_kind: record.failure_kind,
         retry_count,
         retry_counts,
         artifact_count,
@@ -1041,6 +1140,11 @@ fn apply_child_run_result(
         context,
         "context.stack.child.failure_reason",
         json!(child_result.failure_reason.clone()),
+    );
+    set_context(
+        context,
+        "context.stack.child.failure_kind",
+        json!(child_result.failure_kind),
     );
     set_context(
         context,
@@ -1252,7 +1356,11 @@ fn apply_intervention_result(
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))
 }
 
-fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
+/// The local decision a finished child selects: its declared terminal
+/// result name mapped through `config.results`. A failed, canceled or
+/// unmapped child is an execution error carrying the child's identity and
+/// reason; it is never mapped to a business result.
+fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Option<Outcome> {
     let child_status = context_string(context, "context.stack.child.status").to_lowercase();
     if !matches!(
         child_status.as_str(),
@@ -1260,24 +1368,27 @@ fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
     ) {
         return None;
     }
-    let child_outcome = context_string(context, "context.stack.child.outcome").to_lowercase();
-    if child_status == "completed" && child_outcome == "success" {
-        return Some(Outcome {
-            status: OutcomeStatus::Success,
-            notes: "Child completed".to_string(),
-            ..Outcome::new(OutcomeStatus::Success)
-        });
-    }
-    if child_status == "completed" && child_outcome == "failure" {
-        let failure_reason = non_empty(context_string(
-            context,
-            "context.stack.child.outcome_reason_message",
-        ))
-        .unwrap_or_else(|| "Child completed with failure outcome".to_string());
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason,
-            ..Outcome::new(OutcomeStatus::Fail)
+    let child_run_id = context_string(context, "context.stack.child.run_id");
+    if child_status == "completed" {
+        let result = context_string(context, "context.stack.child.outcome_reason_code");
+        let results = match runtime.node.config.as_ref() {
+            Some(NodeConfig::Subflow { results, .. }) => results.clone(),
+            _ => BTreeMap::new(),
+        };
+        return Some(match results.get(&result) {
+            Some(decision) => Outcome {
+                notes: non_empty(context_string(
+                    context,
+                    "context.stack.child.outcome_reason_message",
+                ))
+                .unwrap_or_else(|| format!("Child {child_run_id} reached {result}")),
+                ..Outcome::completed(decision.clone())
+            },
+            None => Outcome::error(
+                FailureKind::Routing,
+                format!("child {child_run_id} reached result {result:?}, which config.results does not map"),
+                Some(false),
+            ),
         });
     }
     if child_status == "failed" {
@@ -1286,20 +1397,23 @@ fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
             "context.stack.child.failure_reason",
         ))
         .unwrap_or_else(|| "Child failed".to_string());
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason,
-            ..Outcome::new(OutcomeStatus::Fail)
-        });
+        // The child's own error class carries over: a child routing or
+        // visit-budget failure stays fatal inside a tolerant fork.
+        let kind = context
+            .get("context.stack.child.failure_kind")
+            .and_then(|value| serde_json::from_value::<FailureKind>(value.clone()).ok())
+            .unwrap_or(FailureKind::Runtime);
+        return Some(Outcome::error(
+            kind,
+            format!("child {child_run_id} failed: {failure_reason}"),
+            Some(false),
+        ));
     }
-    if matches!(child_status.as_str(), "aborted" | "canceled" | "cancelled") {
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "aborted_by_user".to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        });
-    }
-    None
+    Some(Outcome::error(
+        FailureKind::Runtime,
+        "aborted_by_user",
+        Some(false),
+    ))
 }
 
 fn manager_config(runtime: &HandlerRuntime) -> Option<&ManagerLoopConfig> {
@@ -1351,7 +1465,7 @@ fn stop_condition_met(condition: &str, context: &ContextMap) -> bool {
     let Ok(context) = AttractorContext::from_map(context.clone()) else {
         return false;
     };
-    evaluate_condition(condition, &Outcome::new(OutcomeStatus::Success), &context)
+    evaluate_condition(condition, &context)
 }
 
 fn child_flow_ref(runtime: &HandlerRuntime) -> String {
@@ -1835,13 +1949,7 @@ fn outcome_with_context_updates(
 }
 
 fn fail_outcome(reason: impl Into<String>) -> Outcome {
-    Outcome {
-        status: OutcomeStatus::Fail,
-        failure_reason: reason.into(),
-        retryable: Some(false),
-        failure_kind: Some(FailureKind::Runtime),
-        ..Outcome::new(OutcomeStatus::Fail)
-    }
+    Outcome::error(FailureKind::Runtime, reason, Some(false))
 }
 
 fn parse_duration_string(raw: &str, default: Duration) -> Option<Duration> {

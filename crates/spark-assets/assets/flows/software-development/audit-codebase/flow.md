@@ -3,7 +3,7 @@ type: Flow
 id: audit_codebase
 title: Audit Codebase
 description: Sweep the repository through parallel audit lenses and adversarially verify the findings. The run ends with the verified findings and an ordered fix backlog.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.objective
   label: Audit Focus

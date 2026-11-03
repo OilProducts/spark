@@ -365,9 +365,10 @@ curl -X POST \
   -d '{"selected_value":"approve"}'
 ```
 
-Use the exact option value exposed by the question payload. `selected_value`
-picks the route; it is not a feedback channel — text that matches no option
-fails the gate as skipped.
+Use an option's `value` (the gate's decision ID) from the question payload;
+labels and keys are display only and are not accepted. `selected_value` picks
+the route; it is not a feedback channel — anything other than a declared
+decision ID is rejected and the gate keeps waiting.
 
 To send feedback with the selection, add an optional `note`:
 
@@ -375,7 +376,7 @@ To send feedback with the selection, add an optional `note`:
 curl -X POST \
   http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions/<question_id>/answer \
   -H 'Content-Type: application/json' \
-  -d '{"selected_value":"Request Fixes","note":"Tighten the error handling in the retry path."}'
+  -d '{"selected_value":"request_fixes","note":"Tighten the error handling in the retry path."}'
 ```
 
 The note reaches downstream nodes as the `human.gate.note` context value;

@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: normalize_task
+  next:
+    to: normalize_task
+    description: Enter the first workflow step.
 ---

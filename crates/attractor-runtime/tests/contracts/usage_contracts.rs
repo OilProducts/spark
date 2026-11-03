@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use attractor_core::{
-    FlowDefinition, FlowEdge, FlowNode, JournalEntry, LaunchContext, NodeConfig, NodeKind,
-    RunRecord,
+    ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, JournalEntry, LaunchContext,
+    NodeConfig, NodeContracts, NodeKind, RunRecord,
 };
 use attractor_runtime::usage::{estimate_model_cost, project_run_usage, RunUsageAccumulator};
 use attractor_runtime::{
@@ -390,7 +390,7 @@ impl spark_agent_adapter::CodergenBackend for UsageEmittingBackend {
     {
         Ok(spark_agent_adapter::CodergenBackendOutput {
             response: spark_agent_adapter::CodergenBackendResponse::Text(
-                "{\"outcome\":\"success\"}".to_string(),
+                "{\"decision\":\"done\"}".to_string(),
             ),
             events: vec![spark_agent_adapter::CodergenEvent::new(
                 "rust_llm_adapter_request_completed",
@@ -474,7 +474,7 @@ impl spark_agent_adapter::CodergenBackend for LiveUsageBackend {
             .push((record.token_usage, record.status));
         Ok(spark_agent_adapter::CodergenBackendOutput {
             response: spark_agent_adapter::CodergenBackendResponse::Text(
-                "{\"outcome\":\"success\"}".to_string(),
+                "{\"decision\":\"done\"}".to_string(),
             ),
             events: vec![event],
             usage: None,
@@ -483,9 +483,35 @@ impl spark_agent_adapter::CodergenBackend for LiveUsageBackend {
     }
 }
 
+fn routes(decision: &str, to: &str) -> BTreeMap<String, FlowRoute> {
+    BTreeMap::from([(
+        decision.to_string(),
+        FlowRoute {
+            to: to.to_string(),
+            description: format!("Continue to {to}."),
+            ..FlowRoute::default()
+        },
+    )])
+}
+
+fn agent_node(prompt: &str, to: &str) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::AgentTask,
+        config: Some(NodeConfig::AgentTask {
+            prompt: prompt.to_string(),
+        }),
+        contracts: Some(NodeContracts {
+            response: Some("decision_envelope".to_string()),
+            ..NodeContracts::default()
+        }),
+        routes: routes("done", to),
+        ..FlowNode::default()
+    }
+}
+
 fn agent_flow() -> FlowDefinition {
     FlowDefinition {
-        schema_version: "1".to_string(),
+        schema_version: "2".to_string(),
         id: "usage-contract".to_string(),
         title: "Usage Contract".to_string(),
         nodes: [
@@ -494,24 +520,20 @@ fn agent_flow() -> FlowDefinition {
                 FlowNode {
                     kind: NodeKind::Start,
                     config: Some(NodeConfig::Start {}),
+                    routes: routes("next", "build"),
                     ..FlowNode::default()
                 },
             ),
-            (
-                "build".to_string(),
-                FlowNode {
-                    kind: NodeKind::AgentTask,
-                    config: Some(NodeConfig::AgentTask {
-                        prompt: "build".to_string(),
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
+            ("build".to_string(), agent_node("build", "done")),
             (
                 "done".to_string(),
                 FlowNode {
                     kind: NodeKind::Exit,
                     config: Some(NodeConfig::Exit {
+                        result: ExitResult {
+                            name: "completed".to_string(),
+                            outcome: ExitOutcome::Success,
+                        },
                         result_summary: false,
                         result_summary_prompt: None,
                     }),
@@ -521,18 +543,6 @@ fn agent_flow() -> FlowDefinition {
         ]
         .into_iter()
         .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "build".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "build".to_string(),
-                to: "done".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
         ..FlowDefinition::default()
     }
 }
@@ -610,33 +620,10 @@ fn live_usage_does_not_write_run_record_mid_stage() {
         })
     });
     let mut flow = agent_flow();
-    flow.nodes.insert(
-        "verify".to_string(),
-        FlowNode {
-            kind: NodeKind::AgentTask,
-            config: Some(NodeConfig::AgentTask {
-                prompt: "verify".to_string(),
-            }),
-            ..FlowNode::default()
-        },
-    );
-    flow.edges = vec![
-        FlowEdge {
-            from: "start".to_string(),
-            to: "build".to_string(),
-            ..Default::default()
-        },
-        FlowEdge {
-            from: "build".to_string(),
-            to: "verify".to_string(),
-            ..Default::default()
-        },
-        FlowEdge {
-            from: "verify".to_string(),
-            to: "done".to_string(),
-            ..Default::default()
-        },
-    ];
+    flow.nodes
+        .insert("verify".to_string(), agent_node("verify", "done"));
+    flow.nodes
+        .insert("build".to_string(), agent_node("build", "verify"));
     PipelineExecutor::new(runner)
         .execute(ExecuteRunRequest {
             store,
@@ -691,7 +678,7 @@ impl unified_llm_adapter::ProviderAdapter for ToolRoundModel {
             )
         } else {
             (
-                vec![StreamEvent::text_delta("{\"outcome\":\"success\"}")],
+                vec![StreamEvent::text_delta("{\"decision\":\"done\"}")],
                 200,
             )
         };
@@ -773,11 +760,13 @@ fn a_native_nodes_run_record_usage_sums_every_model_request() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (record, _) = run_native_tool_round_node(temp.path());
 
-    assert_eq!(record.token_usage, Some(320));
+    // The tool round, the unconstrained answer, and the decision-envelope
+    // node's final answer under its schema: three requests.
+    assert_eq!(record.token_usage, Some(530));
     let breakdown = record.token_usage_breakdown.expect("breakdown");
-    assert_eq!(breakdown["input_tokens"], 300);
-    assert_eq!(breakdown["output_tokens"], 20);
-    assert_eq!(breakdown["by_model"]["gpt-5.5"]["input_tokens"], 300);
+    assert_eq!(breakdown["input_tokens"], 500);
+    assert_eq!(breakdown["output_tokens"], 30);
+    assert_eq!(breakdown["by_model"]["gpt-5.5"]["input_tokens"], 500);
 }
 
 #[test]
@@ -795,6 +784,6 @@ fn a_native_nodes_live_usage_is_its_running_total_across_requests() {
             live.push(usage.breakdown().expect("live usage").totals.input_tokens);
         }
     }
-    assert_eq!(live, vec![100, 300]);
-    assert_eq!(usage.breakdown().expect("usage").totals.input_tokens, 300);
+    assert_eq!(live, vec![100, 300, 500]);
+    assert_eq!(usage.breakdown().expect("usage").totals.input_tokens, 500);
 }

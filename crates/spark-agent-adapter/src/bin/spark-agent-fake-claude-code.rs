@@ -405,15 +405,19 @@ fn main() {
                 json!({"type": "result", "subtype": "success", "is_error": false, "result": "Working.",
                     "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": []}),
             );
+            // Runtime callers set a decision envelope as the final answer.
+            let answer = std::env::var("SPARK_FAKE_FINAL_ANSWER")
+                .unwrap_or_else(|_| "Read your note.".to_string());
             emit(
                 &mut out,
-                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Read your note."}]}}),
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}}),
             );
-            emit(
-                &mut out,
-                json!({"type": "result", "subtype": "success", "is_error": false, "result": "Read your note.",
-                    "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]}),
-            );
+            let mut result = json!({"type": "result", "subtype": "success", "is_error": false, "result": answer,
+                "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]});
+            if let Ok(structured) = serde_json::from_str::<serde_json::Value>(&answer) {
+                result["structured_output"] = structured;
+            }
+            emit(&mut out, result);
         }
         drain_stdin();
         append_log("STDIN_CLOSED");
@@ -602,7 +606,7 @@ fn main() {
         };
         let model_usage = usage(if resumed { 15 } else { 10 });
         if mode.starts_with("structured-retries") && (!resumed || mode.ends_with("-always")) {
-            let leftover = json!({"outcome": "success", "preferred_label": "Rework"}).to_string();
+            let leftover = json!({"decision": "rework"}).to_string();
             let mut result = json!({"type": "result", "subtype": "error_max_structured_output_retries",
                 "is_error": true, "session_id": session_id, "modelUsage": model_usage});
             if mode.contains("result-text") {
@@ -619,9 +623,9 @@ fn main() {
             return;
         }
         let answer = if mode == "structured-violation" && !resumed {
-            json!({"outcome": "success", "context_updates": {"context.undeclared": 1}})
+            json!({"decision": "approve", "context_updates": {"context.undeclared": 1}})
         } else {
-            json!({"outcome": "success", "preferred_label": "Approve"})
+            json!({"decision": "approve"})
         };
         emit(
             &mut out,

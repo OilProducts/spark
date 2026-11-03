@@ -519,7 +519,7 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
 
 fn titled_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "titled",
         "title": "Implement Change",
         "goal": "Implement the requested change.",
@@ -527,8 +527,10 @@ fn titled_flow() -> Value {
             {"key": "context.request.objective", "label": "Objective"},
             {"key": "context.request.unused", "label": "Unused"}
         ],
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 

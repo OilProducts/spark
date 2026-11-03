@@ -13,14 +13,18 @@ const openGate = (name: string) => {
 }
 const closeGates = () => rmSync(path.join(tmpRoot, 'gates'), { recursive: true, force: true })
 const smokeFlow = {
-    schema_version: '1',
+    schema_version: '2',
     id: 'live-turn-smoke',
     title: 'Live turn smoke',
     nodes: {
-        start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-        done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+        start: {
+            kind: 'start',
+            label: 'Start',
+            config: { kind: 'start' },
+            routes: { next: { to: 'done', description: 'Enter the first workflow step.' } },
+        },
+        done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
     },
-    edges: [{ from: 'start', to: 'done' }],
 }
 
 test('a long chat turn keeps rendering live updates after it launches a flow partway through', async ({ page }) => {

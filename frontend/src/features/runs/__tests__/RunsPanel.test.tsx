@@ -686,18 +686,18 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'validate', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'validate', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
           errors: [],
           flow: {
             nodes: {
-              start: { kind: 'start', label: 'Start' },
-              validate: { kind: 'agent_task', label: 'Validate' },
+              start: { kind: 'start', label: 'Start', routes: { next: { to: 'validate', description: 'Continue.' } } },
+              validate: { kind: 'agent_task', label: 'Validate', routes: { next: { to: 'done', description: 'Continue.' } } },
               draft: { kind: 'agent_task', label: 'Draft' },
-              done: { kind: 'exit', label: 'Done' },
+              done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
           },
         })
@@ -940,7 +940,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -1007,8 +1007,8 @@ describe('RunsPanel', () => {
           { id: 'done', label: 'Done', shape: 'Msquare' },
         ],
         edges: [
-          { from: 'start', to: 'failed_node', label: null, condition: null, weight: null, loop_restart: false },
-          { from: 'failed_node', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+          { from: 'start', to: 'failed_node', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+          { from: 'failed_node', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
         ],
       },
       diagnostics: [],
@@ -1187,7 +1187,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -1268,8 +1268,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'task', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'task', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'task', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'task', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -1420,7 +1420,7 @@ describe('RunsPanel', () => {
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
     expect(useStore.getState().activeFlow).toBe(flowName)
     expect(useStore.getState().viewMode).toBe('editor')
-    expect(await saveFlowContent(flowName, { flow: { schema_version: '1', id: 'edited' } })).toBe(true)
+    expect(await saveFlowContent(flowName, { flow: { schema_version: '2', id: 'edited' } })).toBe(true)
     const saveCall = fetchMock.mock.calls.find(([input, init]) => (
       resolveRequestUrl(input).endsWith('/attractor/api/flows') && init?.method === 'POST'
     ))
@@ -1543,8 +1543,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'work', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'work', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'work', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'work', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -1588,6 +1588,7 @@ describe('RunsPanel', () => {
       flow_name: 'failure.dot',
       status: 'completed',
       outcome: 'failure',
+      outcome_reason_code: 'rejected',
       outcome_reason_message: 'Release gate rejected',
       last_error: '',
       working_directory: '/tmp/project-one',
@@ -1659,7 +1660,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -1689,7 +1690,9 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Release gate rejected')
     })
-    expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
+    // A completed run that reached a failure exit reads as its result, not as a success.
+    expect(screen.getByTestId('run-header-status')).toHaveTextContent('Rejected')
+    expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
     expect(screen.getByTestId('run-header-facts')).not.toHaveTextContent(/[0-9a-f]{7}$/)
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-fact-lineage')).not.toBeInTheDocument()
@@ -1760,7 +1763,7 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -1930,8 +1933,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'review', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'review', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2001,7 +2004,7 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
+      expect(screen.getByTestId('run-header-status')).toHaveTextContent('Live failure')
     })
     await openRunFacts()
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Live gate failed')
@@ -2060,8 +2063,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'validate', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'validate', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2212,8 +2215,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'review', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'review', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2436,8 +2439,8 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'work', label: null, condition: null, weight: null, loop_restart: false },
-                { from: 'work', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'work', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+                { from: 'work', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -2599,8 +2602,8 @@ describe('RunsPanel', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'validate', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'validate', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'validate', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'validate', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2745,6 +2748,8 @@ describe('RunsPanel', () => {
         3,
         {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 3,
           emitted_at: '2026-03-22T00:04:00Z',
           node_id: 'plan_current',
@@ -2779,6 +2784,8 @@ describe('RunsPanel', () => {
         1,
         {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 1,
           emitted_at: '2026-03-22T00:02:00Z',
           node_id: 'prepare',
@@ -2875,7 +2882,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -3011,6 +3018,8 @@ describe('RunsPanel', () => {
         resource: { kind: 'run', id: selectedRun.run_id },
         payload: {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 3,
           emitted_at: '2026-03-22T00:04:00Z',
           node_id: 'plan_current',
@@ -3025,6 +3034,8 @@ describe('RunsPanel', () => {
         resource: { kind: 'run', id: selectedRun.run_id },
         payload: {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 4,
           emitted_at: '2026-03-22T00:05:00Z',
           node_id: 'done',
@@ -3049,7 +3060,7 @@ describe('RunsPanel', () => {
       'Stage prepare completed',
       'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
       'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
-      'Stage done completed',
+      'Stage done completed (decision done)',
     ])
   })
 
@@ -3190,6 +3201,8 @@ describe('RunsPanel', () => {
         4,
         {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 4,
           emitted_at: '2026-03-22T00:05:00Z',
           node_id: 'done',
@@ -3205,6 +3218,8 @@ describe('RunsPanel', () => {
         3,
         {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 3,
           emitted_at: '2026-03-22T00:04:00Z',
           node_id: 'plan_current',
@@ -3237,6 +3252,8 @@ describe('RunsPanel', () => {
         1,
         {
           type: 'StageCompleted',
+          outcome: 'completed',
+          decision: 'done',
           sequence: 1,
           emitted_at: '2026-03-22T00:02:00Z',
           node_id: 'prepare',
@@ -3330,7 +3347,7 @@ describe('RunsPanel', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],

@@ -221,7 +221,7 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
             node_id: "task".to_string(),
             prompt: "Write the runtime note".to_string(),
             context: BTreeMap::new(),
-            response_contract: "status_envelope".to_string(),
+            response_contract: "decision_envelope".to_string(),
             contract_repair_attempts: 0,
             timeout_seconds: None,
             write_contract: Default::default(),
@@ -265,7 +265,7 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
     );
     assert_eq!(
         request.metadata["spark.runtime.response_contract"],
-        json!("status_envelope")
+        json!("decision_envelope")
     );
     assert_eq!(
         request.metadata["spark.runtime.provider_selector"],
@@ -536,7 +536,7 @@ fn codergen_backend_agent_mode_uses_rust_session_boundary() {
             node_id: "agent_task".to_string(),
             prompt: "Inspect the workspace before answering".to_string(),
             context: BTreeMap::new(),
-            response_contract: "status_envelope".to_string(),
+            response_contract: "decision_envelope".to_string(),
             contract_repair_attempts: 1,
             timeout_seconds: Some(30.0),
             write_contract: Default::default(),
@@ -603,7 +603,7 @@ fn codergen_backend_agent_mode_uses_rust_session_boundary() {
     assert_eq!(completion.payload["reasoning_effort"], json!("HIGH"));
     assert_eq!(
         completion.payload["response_contract"],
-        json!("status_envelope")
+        json!("decision_envelope")
     );
     assert_eq!(completion.payload["timeout_seconds"], json!(30.0));
     assert_eq!(completion.payload["runtime_mode"]["mode"], json!("agent"));
@@ -644,7 +644,7 @@ fn codergen_backend_agent_mode_uses_rust_session_boundary() {
     );
     assert_eq!(
         request.metadata["spark.runtime.codergen.response_contract"],
-        json!("status_envelope")
+        json!("decision_envelope")
     );
     assert_eq!(
         request.metadata["spark.runtime.codergen.timeout_seconds"],
@@ -1143,7 +1143,11 @@ fn codergen_backend_agent_mode_uses_model_usage_update_when_final_text_is_empty(
     else {
         panic!("empty final text should produce an observable failure outcome");
     };
-    assert_eq!(outcome.status, attractor_core::OutcomeStatus::Fail);
+    assert_eq!(outcome.status, attractor_core::OutcomeStatus::Error);
+    assert_eq!(
+        outcome.failure_kind,
+        Some(attractor_core::FailureKind::Runtime)
+    );
     assert!(outcome
         .failure_reason
         .contains("completed without assistant text"));
@@ -1170,7 +1174,7 @@ fn codergen_backend_agent_mode_keeps_tool_failures_model_visible_and_distinguish
             node_id: "agent_tool_task".to_string(),
             prompt: "Read the missing file and report back".to_string(),
             context: BTreeMap::new(),
-            response_contract: "status_envelope".to_string(),
+            response_contract: "decision_envelope".to_string(),
             contract_repair_attempts: 1,
             timeout_seconds: Some(30.0),
             write_contract: Default::default(),
@@ -1270,7 +1274,7 @@ fn codergen_backend_agent_mode_surfaces_provider_failures_with_session_error_eve
             node_id: "agent_auth_task".to_string(),
             prompt: "Use the agent path".to_string(),
             context: BTreeMap::new(),
-            response_contract: "status_envelope".to_string(),
+            response_contract: "decision_envelope".to_string(),
             contract_repair_attempts: 1,
             timeout_seconds: Some(10.0),
             write_contract: Default::default(),
@@ -1289,7 +1293,11 @@ fn codergen_backend_agent_mode_surfaces_provider_failures_with_session_error_eve
     else {
         panic!("provider failure should be a failure outcome");
     };
-    assert_eq!(outcome.status, attractor_core::OutcomeStatus::Fail);
+    assert_eq!(outcome.status, attractor_core::OutcomeStatus::Error);
+    assert_eq!(
+        outcome.failure_kind,
+        Some(attractor_core::FailureKind::Runtime)
+    );
     assert_eq!(outcome.retryable, Some(false));
     assert!(outcome
         .failure_reason

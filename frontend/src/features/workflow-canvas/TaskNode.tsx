@@ -130,25 +130,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftToolArtifactsStderr, setDraftToolArtifactsStderr] = useState<string>(
         (data['tool.artifacts.stderr'] as string) || '',
     )
-    const [draftJoinPolicy, setDraftJoinPolicy] = useState<string>((data.join_policy as string) || 'wait_all')
-    const [draftJoinK, setDraftJoinK] = useState<string>(data.join_k !== undefined ? String(data.join_k) : '')
-    const [draftJoinQuorum, setDraftJoinQuorum] = useState<string>(
-        data.join_quorum !== undefined ? String(data.join_quorum) : '',
-    )
-    const [draftErrorPolicy, setDraftErrorPolicy] = useState<string>((data.error_policy as string) || 'continue')
     const [draftMaxParallel, setDraftMaxParallel] = useState<string>(
         data.max_parallel !== undefined ? String(data.max_parallel) : '4',
     )
     const [showAdvanced, setShowAdvanced] = useState(false)
     const [draftMaxRetries, setDraftMaxRetries] = useState<string>(
         data.max_retries !== undefined ? String(data.max_retries) : '',
-    )
-    const [draftGoalGate, setDraftGoalGate] = useState<boolean>(
-        data.goal_gate === true || data.goal_gate === 'true',
-    )
-    const [draftRetryTarget, setDraftRetryTarget] = useState<string>((data.retry_target as string) || '')
-    const [draftFallbackRetryTarget, setDraftFallbackRetryTarget] = useState<string>(
-        (data.fallback_retry_target as string) || '',
     )
     const [draftClassName, setDraftClassName] = useState<string>((data.class as string) || '')
     const [draftTimeout, setDraftTimeout] = useState<string>((data.timeout as string) || '')
@@ -157,12 +144,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
     const [draftReasoningControls, setDraftReasoningControls] = useState({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
-    const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
-        data.auto_status === true || data.auto_status === 'true',
-    )
-    const [draftAllowPartial, setDraftAllowPartial] = useState<boolean>(
-        data.allow_partial === true || data.allow_partial === 'true',
-    )
     const [draftManagerPollInterval, setDraftManagerPollInterval] = useState<string>(
         (data['manager.poll_interval'] as string) || '',
     )
@@ -302,15 +283,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftToolArtifactsPaths((data['tool.artifacts.paths'] as string) || '')
         setDraftToolArtifactsStdout((data['tool.artifacts.stdout'] as string) || '')
         setDraftToolArtifactsStderr((data['tool.artifacts.stderr'] as string) || '')
-        setDraftJoinPolicy((data.join_policy as string) || 'wait_all')
-        setDraftJoinK(data.join_k !== undefined ? String(data.join_k) : '')
-        setDraftJoinQuorum(data.join_quorum !== undefined ? String(data.join_quorum) : '')
-        setDraftErrorPolicy((data.error_policy as string) || 'continue')
         setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4')
         setDraftMaxRetries(data.max_retries !== undefined ? String(data.max_retries) : '')
-        setDraftGoalGate(data.goal_gate === true || data.goal_gate === 'true')
-        setDraftRetryTarget((data.retry_target as string) || '')
-        setDraftFallbackRetryTarget((data.fallback_retry_target as string) || '')
         setDraftClassName((data.class as string) || '')
         setDraftTimeout((data.timeout as string) || '')
         setDraftLlmModel((data.llm_model as string) || '')
@@ -318,8 +292,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftLlmProfile((data.llm_profile as string) || '')
         setDraftReasoningEffort((data.reasoning_effort as string) || '')
         setDraftReasoningControls({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
-        setDraftAutoStatus(data.auto_status === true || data.auto_status === 'true')
-        setDraftAllowPartial(data.allow_partial === true || data.allow_partial === 'true')
         setDraftManagerPollInterval((data['manager.poll_interval'] as string) || '')
         setDraftManagerMaxCycles(data['manager.max_cycles'] !== undefined ? String(data['manager.max_cycles']) : '')
         setDraftManagerStopCondition((data['manager.stop_condition'] as string) || '')
@@ -333,16 +305,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setIsEditingDetails(false)
     }
 
-    const changeDraftJoinPolicy = (nextPolicy: string) => {
-        setDraftJoinPolicy(nextPolicy)
-        if (nextPolicy !== 'k_of_n') {
-            setDraftJoinK('')
-        }
-        if (nextPolicy !== 'quorum') {
-            setDraftJoinQuorum('')
-        }
-    }
-
     const saveDetails = () => {
         persistNodeData({
             shape: draftShape,
@@ -353,15 +315,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             'tool.artifacts.paths': draftToolArtifactsPaths,
             'tool.artifacts.stdout': draftToolArtifactsStdout,
             'tool.artifacts.stderr': draftToolArtifactsStderr,
-            join_policy: draftJoinPolicy,
-            join_k: draftJoinPolicy === 'k_of_n' ? draftJoinK : undefined,
-            join_quorum: draftJoinPolicy === 'quorum' ? draftJoinQuorum : undefined,
-            error_policy: draftErrorPolicy,
             max_parallel: draftMaxParallel,
             max_retries: draftMaxRetries,
-            goal_gate: draftGoalGate,
-            retry_target: draftRetryTarget,
-            fallback_retry_target: draftFallbackRetryTarget,
             class: draftClassName,
             timeout: draftTimeout,
             llm_model: draftLlmModel,
@@ -369,8 +324,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             llm_profile: draftLlmProfile,
             reasoning_effort: draftReasoningEffort,
             ...draftReasoningControls,
-            auto_status: draftAutoStatus,
-            allow_partial: draftAllowPartial,
             'manager.poll_interval': draftManagerPollInterval,
             'manager.max_cycles': draftManagerMaxCycles,
             'manager.stop_condition': draftManagerStopCondition,
@@ -548,55 +501,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showParallelOptions && (
                             <>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Join Policy</label>
-                                    <select
-                                        value={draftJoinPolicy}
-                                        onChange={(event) => changeDraftJoinPolicy(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    >
-                                        <option value="wait_all">Wait All</option>
-                                        <option value="first_success">First Success</option>
-                                        <option value="k_of_n">K of N</option>
-                                        <option value="quorum">Quorum</option>
-                                    </select>
-                                </div>
-                                {draftJoinPolicy === 'k_of_n' && (
-                                    <div className="space-y-1">
-                                        <label className="text-xs font-medium text-foreground">K Threshold</label>
-                                        <input
-                                            data-testid="node-toolbar-attr-input-join_k"
-                                            value={draftJoinK}
-                                            onChange={(event) => setDraftJoinK(event.target.value)}
-                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            placeholder="2"
-                                        />
-                                    </div>
-                                )}
-                                {draftJoinPolicy === 'quorum' && (
-                                    <div className="space-y-1">
-                                        <label className="text-xs font-medium text-foreground">Quorum Threshold</label>
-                                        <input
-                                            data-testid="node-toolbar-attr-input-join_quorum"
-                                            value={draftJoinQuorum}
-                                            onChange={(event) => setDraftJoinQuorum(event.target.value)}
-                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            placeholder="0.5"
-                                        />
-                                    </div>
-                                )}
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Error Policy</label>
-                                    <select
-                                        value={draftErrorPolicy}
-                                        onChange={(event) => setDraftErrorPolicy(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    >
-                                        <option value="continue">Continue</option>
-                                        <option value="fail_fast">Fail Fast</option>
-                                        <option value="ignore">Ignore</option>
-                                    </select>
-                                </div>
-                                <div className="space-y-1">
                                     <label className="text-xs font-medium text-foreground">Max Parallel</label>
                                     <input
                                         value={draftMaxParallel}
@@ -698,34 +602,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 />
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
-                                            <input
-                                                id={`goal-gate-${id}`}
-                                                type="checkbox"
-                                                checked={draftGoalGate}
-                                                onChange={(event) => setDraftGoalGate(event.target.checked)}
-                                                className="h-4 w-4 rounded border border-input"
-                                            />
-                                            <label htmlFor={`goal-gate-${id}`} className="text-xs font-medium">
-                                                Goal Gate
-                                            </label>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-medium text-foreground">Retry Target</label>
-                                            <input
-                                                value={draftRetryTarget}
-                                                onChange={(event) => setDraftRetryTarget(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-medium text-foreground">Fallback Retry Target</label>
-                                            <input
-                                                value={draftFallbackRetryTarget}
-                                                onChange={(event) => setDraftFallbackRetryTarget(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            />
-                                        </div>
                                         {visibility.showToolCommand && (
                                             <>
                                                 <div className="space-y-1">
@@ -815,28 +691,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             }} />
                                     </div>
                                 )}
-                                {visibility.showGeneralAdvanced && (
-                                    <div className="flex items-center gap-4">
-                                        <label className="flex items-center gap-2 text-xs font-medium">
-                                            <input
-                                                type="checkbox"
-                                                checked={draftAutoStatus}
-                                                onChange={(event) => setDraftAutoStatus(event.target.checked)}
-                                                className="h-4 w-4 rounded border border-input"
-                                            />
-                                            Auto Status
-                                        </label>
-                                        <label className="flex items-center gap-2 text-xs font-medium">
-                                            <input
-                                                type="checkbox"
-                                                checked={draftAllowPartial}
-                                                onChange={(event) => setDraftAllowPartial(event.target.checked)}
-                                                className="h-4 w-4 rounded border border-input"
-                                            />
-                                            Allow Partial
-                                        </label>
-                                    </div>
-                                )}
                             </div>
                         )}
                     </div>
@@ -876,7 +730,7 @@ export function HumanGateNode(props: NodeProps) {
     return <BaseWorkflowNode {...props} defaultShape="hexagon" />
 }
 
-export function ConditionalNode(props: NodeProps) {
+export function SwitchNode(props: NodeProps) {
     return <BaseWorkflowNode {...props} defaultShape="diamond" />
 }
 

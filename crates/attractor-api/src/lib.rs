@@ -1164,11 +1164,31 @@ impl AttractorApiService {
             .read_graph_source(&bundle.paths)
             .map_err(|e| format!("captured flow does not load: {e}"))?
             .ok_or_else(|| "captured flow unavailable".to_string())?;
-        let pause = flow
-            .nodes
-            .get(&checkpoint.current_node)
-            .and_then(|node| node.runtime.as_ref())
-            .is_some_and(|runtime| runtime.recovery_policy == RecoveryPolicy::Pause);
+        let attempt = attractor_runtime::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?;
+        // An interrupted pause node inside a fork's branch needs the same
+        // explicit decision as a root node.
+        let branch_node = attractor_runtime::fork_branch_requiring_recovery_decision(
+            &bundle.paths,
+            &flow,
+            &checkpoint.current_node,
+            checkpoint.completed_nodes.len() as u64,
+            attempt,
+        );
+        let pause = branch_node.is_some()
+            || flow
+                .nodes
+                .get(&checkpoint.current_node)
+                .and_then(|node| node.runtime.as_ref())
+                .is_some_and(|runtime| runtime.recovery_policy == RecoveryPolicy::Pause);
         let durable_response = attractor_runtime::durable_outcome(
             store,
             &bundle.paths,
@@ -1177,18 +1197,10 @@ impl AttractorApiService {
                 .get(&checkpoint.current_node)
                 .ok_or_else(|| "checkpoint node unavailable".to_string())?,
             checkpoint.completed_nodes.len() as u64,
-            attractor_runtime::retry::execution_attempt(
-                &checkpoint.context,
-                &checkpoint.current_node,
-                checkpoint
-                    .retry_counts
-                    .get(&checkpoint.current_node)
-                    .copied()
-                    .unwrap_or(0),
-            )
-            .map_err(|e| e.to_string())?,
+            attempt,
         )
         .is_some();
+        let pending_node = branch_node.unwrap_or_else(|| checkpoint.current_node.clone());
         if pause
             && !durable_response
             && !attractor_runtime::retry::retry_authorizes_checkpoint(
@@ -1208,8 +1220,7 @@ impl AttractorApiService {
                     record.status = "waiting".to_string();
                     record.outcome_reason_code = Some("recovery_decision_required".to_string());
                     record.outcome_reason_message = Some(format!(
-                        "Explicit retry is required to rerun node '{}'.",
-                        checkpoint.current_node
+                        "Explicit retry is required to rerun node '{pending_node}'."
                     ));
                     record.ended_at = None;
                 })
@@ -1217,10 +1228,7 @@ impl AttractorApiService {
             store
                 .append_event(
                     &bundle.paths,
-                    attractor_runtime::recovery_decision_required_event(
-                        run_id,
-                        &checkpoint.current_node,
-                    ),
+                    attractor_runtime::recovery_decision_required_event(run_id, &pending_node),
                 )
                 .map_err(|e| e.to_string())?;
             return Ok(());
@@ -1549,6 +1557,9 @@ impl AttractorApiService {
             Ok(resolved) => resolved,
             Err(error) => return flow_save_definition_error_response(error),
         };
+        if let Err(error) = attractor_dsl::validate_flow_children(&roots, Some(&req.name), &flow) {
+            return flow_save_definition_error_response(error.into());
+        }
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
             &json!(resolved),
@@ -2772,6 +2783,24 @@ impl AttractorApiService {
         if answer.is_empty() {
             return validation_error_response("selected_value is required.");
         }
+        // A gate's choices are its declared decisions: an answer naming none
+        // of them is rejected and the gate keeps waiting.
+        if question.get("origin").and_then(Value::as_str) != Some("agent_clarification") {
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            // Only a declared decision ID is an answer; labels and keys are display.
+            let declared = options
+                .iter()
+                .any(|option| option.get("value").and_then(Value::as_str) == Some(answer));
+            if !options.is_empty() && !declared {
+                return validation_error_response(format!(
+                    "{answer:?} is not one of this gate's choices."
+                ));
+            }
+        }
         let note = Some(request.note.trim().to_string()).filter(|note| !note.is_empty());
         let mut event = attractor_runtime::human_gate_answered_event(
             pipeline_id,
@@ -2948,6 +2977,15 @@ pub fn preview_with_config(
                 json!({"detail": "A preview takes flow, or flow_name to preview a saved flow."}),
             )
         }
+    };
+    // Subflows check against their effective children, as at save and launch.
+    let flow = match (flow, config.roots.as_ref()) {
+        (Ok(flow), Some(roots)) => {
+            attractor_dsl::validate_flow_children(roots, req.flow_name.as_deref(), &flow)
+                .map(|_| flow)
+                .map_err(FlowSourceError::from)
+        }
+        (flow, _) => flow,
     };
     match flow {
         Ok(flow) => PreviewRouteResponse::json(
@@ -3586,23 +3624,7 @@ fn flow_preview_payload(flow: &FlowDefinition, child_previews: Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            json!({
-                "source": edge.from,
-                "target": edge.to,
-                "from": edge.from,
-                "to": edge.to,
-                "label": edge.label,
-                "condition": edge.condition,
-                "weight": edge.weight,
-                "transition": edge.transition,
-                "extensions": edge.extensions,
-            })
-        })
-        .collect::<Vec<_>>();
+    let edges = preview_edges(flow);
     json!({
         "status": if diagnostics.is_empty() { "ok" } else { "validation_error" },
         "flow": flow.to_canonical_json_value(),
@@ -3622,6 +3644,25 @@ fn flow_preview_payload(flow: &FlowDefinition, child_previews: Value) -> Value {
         "errors": diagnostic_payloads,
         "child_previews": child_previews,
     })
+}
+
+/// Graph-view edges derived from the route maps and fork structure.
+fn preview_edges(flow: &FlowDefinition) -> Vec<Value> {
+    flow.edges()
+        .into_iter()
+        .map(|edge| {
+            json!({
+                "source": edge.from,
+                "target": edge.to,
+                "from": edge.from,
+                "to": edge.to,
+                "kind": edge.kind,
+                "decision": edge.decision,
+                "description": edge.description,
+                "label": edge.label,
+            })
+        })
+        .collect()
 }
 
 fn child_preview_map(
@@ -3682,23 +3723,7 @@ fn flow_preview_graph_payload(flow: &FlowDefinition) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            json!({
-                "source": edge.from,
-                "target": edge.to,
-                "from": edge.from,
-                "to": edge.to,
-                "label": edge.label,
-                "condition": edge.condition,
-                "weight": edge.weight,
-                "transition": edge.transition,
-                "extensions": edge.extensions,
-            })
-        })
-        .collect::<Vec<_>>();
+    let edges = preview_edges(flow);
     json!({
         "id": flow.id,
         "title": flow.title,
@@ -3724,6 +3749,7 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
                 "node": diagnostic.node_id,
                 "node_id": diagnostic.node_id,
                 "edge": diagnostic.edge,
+                "decision": diagnostic.decision,
             })
         })
         .collect()

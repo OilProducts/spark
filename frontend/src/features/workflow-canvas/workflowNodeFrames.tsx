@@ -209,7 +209,7 @@ function HumanGateNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFram
     );
 }
 
-function ConditionalNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
+function SwitchNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
             viewBoxWidth={dimensions.width}
@@ -289,7 +289,7 @@ export function WorkflowNodeFrame({
         case 'hexagon':
             return <HumanGateNodeFrame palette={palette} dimensions={dimensions} />;
         case 'diamond':
-            return <ConditionalNodeFrame palette={palette} dimensions={dimensions} />;
+            return <SwitchNodeFrame palette={palette} dimensions={dimensions} />;
         case 'component':
             return <ParallelNodeFrame palette={palette} dimensions={dimensions} />;
         case 'tripleoctagon':

@@ -8,7 +8,7 @@ import {
     cancelRunActionLabel,
     formatDuration,
     formatRunStatusLabel,
-    runStatusTone,
+    runRecordTone,
 } from '../model/shared'
 import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
 
@@ -62,8 +62,7 @@ export function RunHeaderBar({
     const title = runTitle(run)
     const flow = flowTitle || flowTitleFromName(run.flow_name)
     const showFlow = flow !== title
-    // A completed run that reports a failed outcome (a rejected gate) is a warning, not a success.
-    const tone = run.status === 'completed' && run.outcome === 'failure' ? 'warning' : runStatusTone(run.status)
+    const tone = runRecordTone(run)
 
     return (
         <header data-testid="run-summary-panel" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">

@@ -2,17 +2,12 @@
 type: parallel
 title: parallel_work
 config:
-  join_policy: wait_all
+  branches:
+  - branch_docs
+  - branch_tests
+  join: fan_in
   max_parallel: 2
-runtime:
-  error_policy: continue
+  tolerate_branch_execution_errors: true
 execution:
   reasoning_effort: xhigh
-routes:
-- to: branch_docs
-  extensions:
-    loop_restart: false
-- to: branch_tests
-  extensions:
-    loop_restart: false
 ---

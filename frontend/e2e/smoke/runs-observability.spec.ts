@@ -240,7 +240,8 @@ async function stubJson(page: Page, pattern: string, body: unknown) {
   })
 }
 
-function stageJournal(stages: Array<[string, number, 'success' | 'fail' | 'running']>): SmokeJournalEntry[] {
+// Each stage completes with a decision, ends in 'error', or is still 'running'.
+function stageJournal(stages: Array<[string, number, string]>): SmokeJournalEntry[] {
   return stages.flatMap(([node, index, outcome]) => [
     buildSmokeJournalEntry(index * 2 + 1, {
       kind: 'stage', raw_type: 'StageStarted', summary: `Stage ${node} started`, node_id: node, stage_index: index,
@@ -248,12 +249,12 @@ function stageJournal(stages: Array<[string, number, 'success' | 'fail' | 'runni
     }),
     ...(outcome === 'running' ? [] : [buildSmokeJournalEntry(index * 2 + 2, {
       kind: 'stage',
-      raw_type: outcome === 'fail' ? 'StageFailed' : 'StageCompleted',
-      summary: `Stage ${node} ${outcome === 'fail' ? 'failed' : 'completed'}`,
+      raw_type: outcome === 'error' ? 'StageFailed' : 'StageCompleted',
+      summary: `Stage ${node} ${outcome === 'error' ? 'failed' : 'completed'}`,
       node_id: node,
       stage_index: index,
       emitted_at: `2026-03-03T12:0${index}:42Z`,
-      payload: outcome === 'fail' ? { node_id: node, index, error: 'stage_failed' } : { node_id: node, index, outcome },
+      payload: outcome === 'error' ? { node_id: node, index, error: 'stage_failed' } : { node_id: node, index, outcome: 'completed', decision: outcome },
     })]),
   ]).reverse()
 }
@@ -287,8 +288,8 @@ test('a completed run opens on its status item with its result, source, what did
         pipeline_id: run.run_id,
         ...run,
         executions: [
-          { run_id: run.run_id, node_id: 'review', stage_index: 0, attempt: 0, status: { outcome: 'fail', failure_reason: 'Missing a regression test.' } },
-          { run_id: run.run_id, node_id: 'commit', stage_index: 1, attempt: 0, status: { outcome: 'success' } },
+          { run_id: run.run_id, node_id: 'review', stage_index: 0, attempt: 0, status: { status: 'error', decision: null, failure_kind: 'runtime', tolerable: true, failure_reason: 'Missing a regression test.' } },
+          { run_id: run.run_id, node_id: 'commit', stage_index: 1, attempt: 0, status: { status: 'completed', decision: 'done' } },
         ],
         child_runs: [],
       }),
@@ -296,7 +297,7 @@ test('a completed run opens on its status item with its result, source, what did
   })
   await stubJson(page, `**/attractor/pipelines/${run.run_id}/journal**`, {
     pipeline_id: run.run_id,
-    entries: stageJournal([['review', 0, 'fail'], ['commit', 1, 'success']]),
+    entries: stageJournal([['review', 0, 'error'], ['commit', 1, 'done']]),
     oldest_sequence: 1,
     newest_sequence: 4,
     has_older: false,
@@ -341,7 +342,7 @@ test('a completed run opens on its status item with its result, source, what did
   await expect(page.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('run-result-body')).toContainText('Committed the fix.')
   await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings, raw output')
-  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review: Missing a regression test.')
+  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review (runtime error, tolerable): Missing a regression test.')
   await expect(page.getByTestId('run-output-commit')).toHaveText('fedcba9 on feature/traceability')
   await expect(page.getByTestId('run-output-file')).toHaveText(['result.md', 'flow snapshot'])
 
@@ -379,18 +380,18 @@ test('run journal inspector hydrates durable history, pages older entries, and a
         node_id: 'approve_release',
         prompt: 'Approve production deploy?',
         question_id: 'gate-approve',
-        question_type: 'YES_NO',
+        question_type: 'MULTIPLE_CHOICE',
         options: [
           {
             label: 'Approve',
-            value: 'YES',
-            key: 'Y',
+            value: 'approve',
+            key: 'A',
             description: 'Ship the release',
           },
           {
             label: 'Hold',
-            value: 'NO',
-            key: 'N',
+            value: 'hold',
+            key: 'H',
             description: 'Keep the gate closed',
           },
         ],
@@ -414,7 +415,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
       stage_index: 2,
       payload: {
         node_id: 'build',
-        outcome: 'success',
+        outcome: 'completed',
+        decision: 'done',
       },
     }),
     buildSmokeJournalEntry(2, {
@@ -456,8 +458,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
       question_id: 'gate-approve',
       node_id: 'approve_release',
       prompt: 'Approve production deploy?',
-      question_type: 'YES_NO',
-      options: [{ label: 'Approve', value: 'YES' }, { label: 'Hold', value: 'NO' }],
+      question_type: 'MULTIPLE_CHOICE',
+      options: [{ label: 'Approve', value: 'approve', key: 'A' }, { label: 'Hold', value: 'hold', key: 'H' }],
     }],
   })
   await page.route(`**/attractor/pipelines/${run.run_id}/questions/gate-approve/answer`, async (route) => {
@@ -511,18 +513,39 @@ test('run journal inspector hydrates durable history, pages older entries, and a
         emitted_at: '2026-03-03T12:00:06Z',
         node_id: 'deploy',
         index: 4,
-        outcome: 'success',
+        outcome: 'completed',
+        decision: 'done',
+      },
+    })
+    ;(globalThis as typeof globalThis & {
+      __runEventSourceController?: {
+        emitLatest(pattern: string, payload: unknown): void
+      }
+    }).__runEventSourceController?.emitLatest('/workspace/api/live/events', {
+      type: 'run.journal_entry',
+      resource: { kind: 'run', id: runId },
+      payload: {
+        type: 'StageTransition',
+        sequence: 7,
+        emitted_at: '2026-03-03T12:00:07Z',
+        node_id: 'deploy',
+        index: 4,
+        decision: 'done',
+        target: 'approve_release',
+        visit: 2,
       },
     })
   }, { runId: run.run_id })
 
-  await expect(journalPanel).toContainText('Stage deploy completed (success)')
+  await expect(journalPanel).toContainText('Stage deploy completed (decision done)')
+  await expect(journalPanel).toContainText('deploy → approve_release on done (visit 2)')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 
-  // The question is answered in place on the status item.
+  // The question is answered in place on the status item: the choice reads as its label
+  // and answers with its decision id.
   await page.getByTestId('run-visit-item-status').click()
-  await pendingQuestionsPanel.getByTestId('run-pending-human-gate-answer-YES').click()
-  await expect.poll(() => answers).toEqual([expect.objectContaining({ question_id: 'gate-approve', selected_value: 'YES' })])
+  await pendingQuestionsPanel.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect.poll(() => answers).toEqual([expect.objectContaining({ question_id: 'gate-approve', selected_value: 'approve' })])
 })
 
 test('run checkpoint refreshes on revisit for item 9.2-01', async ({ page }) => {
@@ -641,8 +664,8 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
             { id: 'done', label: 'Done', shape: 'Msquare' },
           ],
           edges: [
-            { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
-            { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+            { from: 'start', to: 'review', kind: 'route', decision: 'next', description: 'Enter the first workflow step.', label: '' },
+            { from: 'review', to: 'done', kind: 'route', decision: 'done', description: 'The review is complete.', label: '' },
           ],
         },
         diagnostics: [],
@@ -676,7 +699,7 @@ test('a failed run shows its failure, the visit it stopped in, and that visit\'s
   await stubRunSummary(page, run)
   await stubJson(page, `**/attractor/pipelines/${run.run_id}/journal**`, {
     pipeline_id: run.run_id,
-    entries: stageJournal([['start', 0, 'success'], ['implement', 1, 'running']]),
+    entries: stageJournal([['start', 0, 'next'], ['implement', 1, 'running']]),
     oldest_sequence: 1,
     newest_sequence: 3,
     has_older: false,
@@ -747,13 +770,14 @@ test('run visits list a review loop and show one visit at a time', async ({ page
     run_id: `run-visits-${Date.now()}`,
     flow_name: 'LoopFlow',
   })
-  const stages: Array<[string, number, 'success' | 'fail']> = [
-    ['start', 0, 'success'],
-    ['implement', 1, 'success'],
-    ['evaluate', 2, 'fail'],
-    ['implement', 3, 'success'],
-    ['evaluate', 4, 'success'],
-    ['done', 5, 'success'],
+  // Each stage completes with a decision; Evaluate's first decision sends the work back.
+  const stages: Array<[string, number, string]> = [
+    ['start', 0, 'next'],
+    ['implement', 1, 'done'],
+    ['evaluate', 2, 'revise'],
+    ['implement', 3, 'done'],
+    ['evaluate', 4, 'approve'],
+    ['done', 5, 'done'],
   ]
   const journal = stages.flatMap(([node, index, outcome]) => [
     buildSmokeJournalEntry(index * 2 + 1, {
@@ -762,26 +786,27 @@ test('run visits list a review loop and show one visit at a time', async ({ page
     }),
     buildSmokeJournalEntry(index * 2 + 2, {
       kind: 'stage',
-      raw_type: outcome === 'fail' ? 'StageFailed' : 'StageCompleted',
-      summary: `Stage ${node} ${outcome === 'fail' ? 'failed' : 'completed'}`,
+      raw_type: 'StageCompleted',
+      summary: `Stage ${node} completed`,
       node_id: node,
       stage_index: index,
       emitted_at: `2026-03-03T12:0${index}:42Z`,
-      payload: outcome === 'fail' ? { node_id: node, index, error: 'stage_failed' } : { node_id: node, index, outcome },
+      payload: { node_id: node, index, outcome: 'completed', decision: outcome },
     }),
   ]).reverse()
   const rejection = {
-    outcome: 'fail',
-    failure_reason: 'Missing regression tests.',
-    notes: '',
+    status: 'completed',
+    decision: 'revise',
+    failure_reason: '',
+    notes: 'Missing regression tests.',
     context_updates: {
       'context.review.required_changes': 'Add a regression test for the loop.',
       'context.review.approved': null,
       last_stage: 'evaluate',
     },
   }
-  const draft = { outcome: 'success', notes: '', context_updates: { 'context.review.approved': 'draft looks fine' } }
-  const envelope = JSON.stringify({ outcome: 'fail', context_updates: rejection.context_updates })
+  const draft = { status: 'completed', decision: 'done', notes: '', context_updates: { 'context.review.approved': 'draft looks fine' } }
+  const envelope = JSON.stringify({ decision: 'revise', context_updates: rejection.context_updates })
   const segment = (id: string, order: number, content: string) => ({
     id, turn_id: 'response', order, kind: 'assistant_message', role: 'assistant', status: 'complete',
     timestamp: '2026-03-03T12:02:30Z', updated_at: '2026-03-03T12:02:30Z', content,
@@ -802,7 +827,7 @@ test('run visits list a review loop and show one visit at a time', async ({ page
           node_id: node,
           stage_index: index,
           attempt: 0,
-          status: index === 2 ? rejection : index === 1 ? draft : { outcome, notes: '', context_updates: {} },
+          status: index === 2 ? rejection : index === 1 ? draft : { status: 'completed', decision: outcome, notes: '', context_updates: {} },
         })),
         child_runs: [],
       }),
@@ -838,10 +863,18 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   })
   await page.route(`**/attractor/pipelines/${run.run_id}/graph-preview**`, async (route) => {
     const nodes = [
-      { id: 'start', label: 'Start', kind: 'start' },
-      { id: 'implement', label: 'Implement', kind: 'agent_task' },
-      { id: 'evaluate', label: 'Evaluate', kind: 'agent_task' },
-      { id: 'done', label: 'Done', kind: 'exit' },
+      { id: 'start', label: 'Start', kind: 'start', routes: { next: { to: 'implement', description: 'Enter the first workflow step.' } } },
+      { id: 'implement', label: 'Implement', kind: 'agent_task', routes: { done: { to: 'evaluate', description: 'The implementation pass is complete.' } } },
+      {
+        id: 'evaluate',
+        label: 'Evaluate',
+        kind: 'agent_task',
+        routes: {
+          fix: { to: 'implement', description: 'Required fixes remain.' },
+          ready: { to: 'done', description: 'The work is ready.' },
+        },
+      },
+      { id: 'done', label: 'Done', kind: 'exit', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
     ]
     await route.fulfill({
       status: 200,
@@ -856,12 +889,9 @@ test('run visits list a review loop and show one visit at a time', async ({ page
         },
         graph: {
           nodes: nodes.map((node) => ({ id: node.id, label: node.label, shape: 'box' })),
-          edges: [
-            { from: 'start', to: 'implement' },
-            { from: 'implement', to: 'evaluate' },
-            { from: 'evaluate', to: 'implement' },
-            { from: 'evaluate', to: 'done' },
-          ].map((edge) => ({ ...edge, label: null, condition: null, weight: null, loop_restart: false })),
+          edges: nodes.flatMap((node) => Object.entries(node.routes ?? {}).map(([decision, route]) => ({
+            from: node.id, to: route.to, kind: 'route', decision, description: route.description, label: '',
+          }))),
         },
         diagnostics: [],
         errors: [],
@@ -874,11 +904,11 @@ test('run visits list a review loop and show one visit at a time', async ({ page
 
   // One row per visit, a small visit number for repeated nodes, marks only where notable.
   const rows = page.getByTestId('run-visit-row')
-  // The exit node that simply succeeded is left out; each row has at most one mark.
+  // The exit node that simply completed is left out; each row has at most one mark.
   await expect(rows).toHaveCount(5)
   await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1', '1', '2', '2'])
   await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(1)
-  await expect(rows.nth(2).locator('[data-mark="did_not_pass"]')).toBeVisible()
+  await expect(rows.nth(2).locator('[data-mark="loop_back"]')).toBeVisible()
   // The visit that was sent back says where it went.
   await expect(rows.nth(2).getByTestId('run-visit-row-sent-back')).toHaveText('Sent back to Implement')
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
@@ -891,11 +921,12 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(work).toContainText('Step 6 of the draft.')
   await expect(page.getByTestId('run-visit-transcript-unfold')).toHaveCount(0)
 
-  // The Evaluate visit that didn't pass: instructions, transcript, reason, writes.
+  // The Evaluate visit that sent the work back: status and decision, instructions, transcript, notes, writes.
   await rows.nth(2).click()
   const view = page.getByTestId('run-visit-view')
   await expect(view).toContainText('Visit 1 of 2')
-  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText("Didn't pass")
+  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText('Completed')
+  await expect(page.getByTestId('run-visit-decision')).toHaveText('Decision revise')
   const instructions = page.getByTestId('run-visit-instructions')
   await expect(instructions).not.toHaveAttribute('open', '')
   // Collapsed, the instructions still show how they begin.
@@ -905,7 +936,7 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(instructions).toContainText('Judge the implementation against the contract.')
   await expect(page.getByTestId('run-visit-reads')).toContainText('task.objective')
   await expect(page.getByTestId('run-visit-work')).toContainText('the loop has no regression test')
-  await expect(page.getByTestId('run-visit-work')).not.toContainText('"outcome"')
+  await expect(page.getByTestId('run-visit-work')).not.toContainText('"decision"')
   await expect(page.getByTestId('run-visit-reason')).toHaveText('Missing regression tests.')
   await expect(page.getByTestId('run-visit-returned')).toContainText('Sent back to')
   await expect(page.getByTestId('run-visit-next')).toHaveText('Implement 2')
@@ -917,7 +948,8 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   // The picker jumps between this node's visits.
   await page.getByTestId('run-visit-picker').getByRole('button', { name: 'Visit 2 of 2' }).click()
   await expect(view).toContainText('Visit 2 of 2')
-  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText('Succeeded')
+  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText('Completed')
+  await expect(page.getByTestId('run-visit-decision')).toHaveText('Decision approve')
 
   // Keyboard: left/right step within the node, up/down and j/k move through the list.
   await rows.nth(4).focus()

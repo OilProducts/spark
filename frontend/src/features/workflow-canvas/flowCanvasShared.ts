@@ -21,13 +21,13 @@ import {
 } from '@/features/workflow-canvas/derivedPreview'
 
 import {
-    ConditionalNode,
     ExitNode,
     FanInNode,
     HumanGateNode,
     ManagerNode,
     ParallelNode,
     StartNode,
+    SwitchNode,
     TaskNode,
     ToolNode,
 } from './TaskNode'
@@ -40,7 +40,7 @@ export const nodeTypes = {
     exitNode: ExitNode,
     taskNode: TaskNode,
     humanGateNode: HumanGateNode,
-    conditionalNode: ConditionalNode,
+    switchNode: SwitchNode,
     parallelNode: ParallelNode,
     fanInNode: FanInNode,
     toolNode: ToolNode,
@@ -120,7 +120,7 @@ const NODE_KIND_TO_SHAPE: Record<string, string> = {
     exit: 'Msquare',
     agent_task: 'box',
     human_gate: 'hexagon',
-    conditional: 'diamond',
+    switch: 'diamond',
     parallel: 'component',
     fan_in: 'tripleoctagon',
     tool: 'parallelogram',
@@ -164,8 +164,6 @@ function buildHydratedNode(
         max_retries: typeof node.attrs.max_retries === 'number' || typeof node.attrs.max_retries === 'string'
             ? node.attrs.max_retries
             : '',
-        retry_target: typeof node.attrs.retry_target === 'string' ? node.attrs.retry_target : '',
-        fallback_retry_target: typeof node.attrs.fallback_retry_target === 'string' ? node.attrs.fallback_retry_target : '',
         session: typeof node.attrs.session === 'string' ? node.attrs.session : '',
         class: typeof node.attrs.class === 'string' ? node.attrs.class : '',
         timeout: typeof node.attrs.timeout === 'string' ? node.attrs.timeout : '',
@@ -232,10 +230,6 @@ function buildHydratedEdge(
     const edgeData: Record<string, unknown> = {
         ...edge.attrs,
         label: typeof edge.attrs.label === 'string' ? edge.attrs.label : '',
-        condition: typeof edge.attrs.condition === 'string' ? edge.attrs.condition : '',
-        weight: typeof edge.attrs.weight === 'number' || typeof edge.attrs.weight === 'string' ? edge.attrs.weight : '',
-        // Unset stays unset so saving does not add a default extension.
-        ...(edge.attrs.loop_restart === true || edge.attrs.loop_restart === 'true' ? { loop_restart: true } : {}),
     }
     const nextEdge: Edge = {
         id: options?.id ?? `e-${edge.source}-${edge.target}-${index}`,

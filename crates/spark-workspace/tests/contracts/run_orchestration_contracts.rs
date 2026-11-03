@@ -367,7 +367,7 @@ fn checkpoint(current_node: &str) -> CheckpointState {
             ("context.seed".to_string(), json!("workspace")),
             (
                 "_attractor.node_outcomes".to_string(),
-                json!({current_node: "fail"}),
+                json!({current_node: {"status": "error", "decision": null}}),
             ),
         ]
         .into_iter()
@@ -416,17 +416,22 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workspace-run",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}}
+            },
             "task": {
                 "kind": "agent_task",
-                "config": {"kind": "agent_task", "prompt": "Write a workspace note"}
+                "config": {"kind": "agent_task", "prompt": "Write a workspace note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The note is written."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 

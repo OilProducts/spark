@@ -3,7 +3,7 @@ type: Flow
 id: implement_review_loop
 title: Implement And Review Loop
 description: Plan a change, implement it, review the result, and loop on failures until the work is ready.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.summary
   label: Request Summary

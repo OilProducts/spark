@@ -186,10 +186,10 @@ describe('project scope store behavior', () => {
 
     store.setFlowMetadata({
       ...next.flowMetadata,
-      retry_target: 'retry-node',
+      owner: 'workflow-team',
     })
     next = useStore.getState()
-    expect(next.flowMetadata.retry_target).toBe('retry-node')
+    expect(next.flowMetadata.owner).toBe('workflow-team')
     expect(next.flowMetadataUserEditVersion).toBe(2)
   })
 

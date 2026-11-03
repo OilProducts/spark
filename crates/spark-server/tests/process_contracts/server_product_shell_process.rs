@@ -236,7 +236,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
         server.port,
         "POST",
         &format!("/attractor/pipelines/{leaf_id}/questions/{question_id}/answer"),
-        &json!({"selected_value": "Finish"}),
+        &json!({"selected_value": "finish"}),
     );
     assert_eq!(answer.status, 200, "{}", answer.body_text());
 
@@ -244,6 +244,13 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
         records.len() == 3 && records.iter().all(|record| record["status"] == "completed")
     });
     assert_eq!(lineage_ids(&completed), before_ids);
+    assert!(
+        completed
+            .iter()
+            .all(|record| record["outcome"] == "success"
+                && record["outcome_reason_code"] == "completed"),
+        "{completed:?}"
+    );
 }
 
 #[test]
@@ -320,34 +327,48 @@ fn write_flow(flows_dir: &Path, name: &str, flow: Value) {
 
 fn nested_flow(id: &str, node: &str, child: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": node, "description": "Enter the first workflow step."}}
+            },
             node: {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": child},
-                "manager": {"poll_interval": "10ms", "max_cycles": 10000}
+                "config": {"kind": "subflow", "flow_ref": child, "results": {"completed": "child_completed"}},
+                "manager": {"poll_interval": "10ms", "max_cycles": 10000},
+                "routes": {"child_completed": {"to": "done", "description": "The child flow completed."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": node}, {"from": node, "to": "done"}]
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+            }
+        }
     })
 }
 
 fn gate_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "leaf",
         "nodes": {
-            "start": {"kind": "start"},
-            "hold": {"kind": "human_gate", "config": {"kind": "human_gate", "prompt": "Continue?"}},
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "hold"},
-            {"from": "hold", "to": "done", "label": "Finish"}
-        ]
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "hold", "description": "Enter the first workflow step."}}
+            },
+            "hold": {
+                "kind": "human_gate",
+                "config": {"kind": "human_gate", "prompt": "Continue?"},
+                "routes": {"finish": {"to": "done", "label": "Finish", "description": "The operator chose to finish."}}
+            },
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+            }
+        }
     })
 }
 

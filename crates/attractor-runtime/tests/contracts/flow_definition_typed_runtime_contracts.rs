@@ -6,98 +6,285 @@ use std::sync::{
 };
 
 use attractor_core::{
-    attr_bool, attr_text, ContextMap, FlowDefinition, FlowEdge, FlowNode, LaunchContext,
-    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, Outcome,
-    OutcomeStatus, RunRecord,
+    attr_bool, attr_text, ContextMap, ExitOutcome, ExitResult, FailureKind, FlowDefinition,
+    FlowNode, FlowRoute, LaunchContext, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
+    NodeRuntimeConfig, Outcome, OutcomeStatus, RunRecord,
 };
 use attractor_runtime::{
     ChildRunResult, CreateRunRequest, ExecuteRunRequest, NodeExecutionRequest, NodeExecutor,
-    PipelineExecutor, RunStore, RuntimeHandlerRunner, HANDLER_CODERGEN,
+    PipelineExecutor, RunRootPaths, RunStore, RuntimeHandlerRunner, HANDLER_CODERGEN,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
-fn linear_flow(task: FlowNode) -> FlowDefinition {
+// ---------------------------------------------------------------------------
+// Schema-2 fixture builders
+// ---------------------------------------------------------------------------
+
+fn route(to: &str) -> FlowRoute {
+    FlowRoute {
+        to: to.to_string(),
+        description: format!("Continue to {to}."),
+        ..FlowRoute::default()
+    }
+}
+
+fn routes(entries: &[(&str, &str)]) -> BTreeMap<String, FlowRoute> {
+    entries
+        .iter()
+        .map(|(decision, to)| (decision.to_string(), route(to)))
+        .collect()
+}
+
+fn start_node(to: &str) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Start,
+        config: Some(NodeConfig::Start {}),
+        routes: routes(&[("next", to)]),
+        ..FlowNode::default()
+    }
+}
+
+fn exit_node(name: &str, outcome: ExitOutcome) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Exit,
+        config: Some(NodeConfig::Exit {
+            result: ExitResult {
+                name: name.to_string(),
+                outcome,
+            },
+            result_summary: false,
+            result_summary_prompt: None,
+        }),
+        ..FlowNode::default()
+    }
+}
+
+fn success_exit() -> FlowNode {
+    exit_node("completed", ExitOutcome::Success)
+}
+
+fn decision_envelope() -> Option<NodeContracts> {
+    Some(NodeContracts {
+        response: Some("decision_envelope".to_string()),
+        ..NodeContracts::default()
+    })
+}
+
+fn agent(prompt: &str, decisions: &[(&str, &str)]) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::AgentTask,
+        config: Some(NodeConfig::AgentTask {
+            prompt: prompt.to_string(),
+        }),
+        contracts: decision_envelope(),
+        routes: routes(decisions),
+        ..FlowNode::default()
+    }
+}
+
+fn fan_in(to: &str) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::FanIn,
+        config: Some(NodeConfig::FanIn {}),
+        routes: routes(&[("next", to)]),
+        ..FlowNode::default()
+    }
+}
+
+fn fork(branches: &[&str], join: &str, tolerate: bool) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Parallel,
+        config: Some(NodeConfig::Parallel {
+            branches: branches.iter().map(|branch| branch.to_string()).collect(),
+            join: join.to_string(),
+            max_parallel: None,
+            tolerate_branch_execution_errors: tolerate,
+        }),
+        ..FlowNode::default()
+    }
+}
+
+fn flow_of(id: &str, nodes: Vec<(&str, FlowNode)>) -> FlowDefinition {
     FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "typed-runtime".to_string(),
-        title: "Typed Runtime".to_string(),
-        nodes: [
-            (
-                "start".to_string(),
-                FlowNode {
-                    kind: NodeKind::Start,
-                    config: Some(NodeConfig::Start {}),
-                    ..FlowNode::default()
-                },
-            ),
-            ("task".to_string(), task),
-            (
-                "done".to_string(),
-                FlowNode {
-                    kind: NodeKind::Exit,
-                    config: Some(NodeConfig::Exit {
-                        result_summary: false,
-                        result_summary_prompt: None,
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "start".to_string(),
-                to: "task".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "task".to_string(),
-                to: "done".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
+        schema_version: "2".to_string(),
+        id: id.to_string(),
+        title: id.to_string(),
+        nodes: nodes
+            .into_iter()
+            .map(|(node_id, node)| (node_id.to_string(), node))
+            .collect(),
         ..FlowDefinition::default()
     }
 }
+
+/// `start -> task -> done`; a task without routes declares `done`.
+fn linear_flow(mut task: FlowNode) -> FlowDefinition {
+    if task.routes.is_empty() {
+        task.routes = routes(&[("done", "done")]);
+    }
+    flow_of(
+        "typed-runtime",
+        vec![
+            ("start", start_node("task")),
+            ("task", task),
+            ("done", success_exit()),
+        ],
+    )
+}
+
+/// A node's ordinary completion: start's `next`, every other node's `done`.
+fn step(node_id: &str) -> Outcome {
+    Outcome::completed(if node_id == "start" { "next" } else { "done" })
+}
+
+/// One handler-level invocation of `node_id`.
+fn node_request(
+    flow: &FlowDefinition,
+    node_id: &str,
+    context: ContextMap,
+    run_paths: Option<RunRootPaths>,
+    run_workdir: &std::path::Path,
+    run_id: &str,
+) -> NodeExecutionRequest {
+    NodeExecutionRequest {
+        node_id: node_id.to_string(),
+        stage_index: 0,
+        attempt: 0,
+        context,
+        prompt: String::new(),
+        node: flow.nodes[node_id].clone(),
+        node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
+            node_id,
+            &flow.nodes[node_id],
+        ),
+        flow: flow.clone(),
+        outgoing_edges: attractor_runtime::outgoing_routing_edges(flow, node_id).expect("outgoing"),
+        run_paths,
+        run_workdir: run_workdir.to_path_buf(),
+        run_id: run_id.to_string(),
+        fallback_model: None,
+        fallback_provider: None,
+        fallback_profile: None,
+        fallback_reasoning_effort: None,
+    }
+}
+
+fn create_run(store: &RunStore, run_id: &str, workdir: &std::path::Path) -> RunRootPaths {
+    store
+        .create_run(CreateRunRequest {
+            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+            checkpoint: None,
+            manifest: None,
+            flow_definition_json: None,
+            flow_files: None,
+        })
+        .expect("create run")
+}
+
+fn execute_request(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    max_steps: Option<usize>,
+    start: attractor_runtime::ExecutionStart,
+) -> ExecuteRunRequest {
+    ExecuteRunRequest {
+        store: store.clone(),
+        record: RunRecord::new(run_id, workdir.to_string_lossy()),
+        flow,
+        flow_definition_json: None,
+        launch_context: LaunchContext::empty(),
+        runtime_context: ContextMap::new(),
+        max_steps,
+        start,
+    }
+}
+
+/// The `status.json` of `node_id`'s latest execution in `run_id`.
+fn latest_status(store: &RunStore, run_id: &str, node_id: &str) -> Value {
+    let meta = store.read_run_meta(run_id).unwrap().unwrap();
+    let execution = store
+        .list_node_executions(&meta.paths)
+        .unwrap()
+        .into_iter()
+        .filter(|execution| execution.node_id == node_id)
+        .max_by_key(|execution| (execution.stage_index, execution.attempt))
+        .unwrap_or_else(|| panic!("{node_id} execution"));
+    serde_json::from_str(
+        &fs::read_to_string(
+            store
+                .node_execution_root(
+                    &meta.paths,
+                    node_id,
+                    execution.stage_index,
+                    execution.attempt,
+                )
+                .unwrap()
+                .join("status.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn events_of(store: &RunStore, run_id: &str) -> Vec<attractor_core::RawRuntimeEvent> {
+    let paths = store.find_run_root(run_id).unwrap().unwrap();
+    store.read_raw_events(&paths).unwrap()
+}
+
+fn visit_limit(node: &str, decision: &str, target: &str, used: u64, limit: u64) -> String {
+    format!(
+        "visit_limit_reached: node \"{node}\" decision \"{decision}\" selects \"{target}\", which used {used} of its {limit} visits"
+    )
+}
+
+fn no_matching_route(node: &str, decision: &str, declared: &[(&str, &str)]) -> String {
+    let declared = declared
+        .iter()
+        .map(|(decision, target)| format!("\"{decision}\" -> \"{target}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "no_matching_route: node \"{node}\" returned decision \"{decision}\"; declared decisions [{declared}]"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Typed configuration drives handlers
+// ---------------------------------------------------------------------------
 
 #[test]
 fn executor_enforces_typed_write_contract_without_extension_duplicate() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let flow = linear_flow(FlowNode {
-        kind: NodeKind::AgentTask,
-        config: Some(NodeConfig::AgentTask {
-            prompt: "write allowed context".to_string(),
-        }),
         contracts: Some(NodeContracts {
             writes_context: vec!["context.allowed".to_string()],
+            response: Some("decision_envelope".to_string()),
             ..NodeContracts::default()
         }),
-        ..FlowNode::default()
+        ..agent("write allowed context", &[])
     });
     let mut executor = PipelineExecutor::new(|request: NodeExecutionRequest| {
         if request.node_id == "task" {
             return Ok(Outcome {
                 context_updates: ContextMap::from([("context.denied".to_string(), json!(true))]),
-                ..Outcome::new(OutcomeStatus::Success)
+                ..Outcome::completed("done")
             });
         }
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(step(&request.node_id))
     });
-    let record = RunRecord::new("run-typed-contract", temp.path().to_string_lossy());
 
     let result = executor
-        .execute(ExecuteRunRequest {
-            store,
-            record,
+        .execute(execute_request(
+            &store,
+            "run-typed-contract",
+            temp.path(),
             flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: Default::default(),
-        })
+            None,
+            Default::default(),
+        ))
         .expect("execute typed contract flow");
 
     assert_eq!(result.status, "failed");
@@ -106,245 +293,150 @@ fn executor_enforces_typed_write_contract_without_extension_duplicate() {
         "failure reason should name the denied typed contract key: {}",
         result.failure_reason
     );
+    let status = latest_status(&store, "run-typed-contract", "task");
+    assert_eq!(status["status"], "error");
+    assert_eq!(status["failure_kind"], "contract");
 }
 
 #[test]
 fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "typed-parallel".to_string(),
-        nodes: [
-            (
-                "fan".to_string(),
-                FlowNode {
-                    kind: NodeKind::Parallel,
-                    config: Some(NodeConfig::Parallel {
-                        join_policy: Some("first_success".to_string()),
-                        max_parallel: Some(1),
-                        join_k: None,
-                        join_quorum: None,
-                    }),
-                    runtime: Some(NodeRuntimeConfig {
-                        error_policy: Some("ignore".to_string()),
-                        ..NodeRuntimeConfig::default()
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "good".to_string(),
-                FlowNode {
-                    kind: NodeKind::AgentTask,
-                    extensions: [("type".to_string(), json!("custom.success"))]
-                        .into_iter()
-                        .collect(),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "bad".to_string(),
-                FlowNode {
-                    kind: NodeKind::AgentTask,
-                    extensions: [("type".to_string(), json!("custom.fail"))]
-                        .into_iter()
-                        .collect(),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "join".to_string(),
-                FlowNode {
-                    kind: NodeKind::FanIn,
-                    ..FlowNode::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        edges: vec![
-            FlowEdge {
-                from: "bad".to_string(),
-                to: "join".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "good".to_string(),
-                to: "join".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "fan".to_string(),
-                to: "bad".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "fan".to_string(),
-                to: "good".to_string(),
-                ..FlowEdge::default()
-            },
-        ],
-        ..FlowDefinition::default()
+    let mut fan = fork(&["bad", "good"], "join", false);
+    if let Some(NodeConfig::Parallel { max_parallel, .. }) = fan.config.as_mut() {
+        *max_parallel = Some(1);
+    }
+    let with_type = |kind: &str| FlowNode {
+        extensions: [("type".to_string(), json!(kind))].into_iter().collect(),
+        ..agent("branch", &[("done", "join")])
     };
+    let flow = flow_of(
+        "typed-parallel",
+        vec![
+            ("start", start_node("fan")),
+            ("fan", fan),
+            ("good", with_type("custom.success")),
+            ("bad", with_type("custom.fail")),
+            ("join", fan_in("done")),
+            ("done", success_exit()),
+        ],
+    );
     let mut runner = RuntimeHandlerRunner::new();
+    runner.register_static_handler(
+        "custom.fail",
+        Outcome::error(FailureKind::Runtime, "extension type ran", Some(false)),
+    );
     runner.register_handler_fn(HANDLER_CODERGEN, |runtime| {
+        // A branch invocation's identity is the fork's stage, then its
+        // invocation number under the fork's prepared attempt.
+        assert_eq!(runtime.stage_index, 0);
         assert_eq!(
-            runtime.attempt, 3,
-            "branches inherit the prepared parallel attempt"
+            runtime.attempt, 3_000_000,
+            "branches number their invocations under the prepared parallel attempt"
         );
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(Outcome::completed("done"))
     });
     let temp = tempfile::tempdir().expect("tempdir");
-    let paths = RunStore::for_runs_dir(temp.path().join("runs"))
-        .create_run(CreateRunRequest {
-            record: RunRecord::new("run-typed-parallel", temp.path().to_string_lossy()),
-            checkpoint: None,
-            manifest: None,
-            flow_definition_json: None,
-            flow_files: None,
-        })
-        .expect("create run");
+    let paths = create_run(
+        &RunStore::for_runs_dir(temp.path().join("runs")),
+        "run-typed-parallel",
+        temp.path(),
+    );
 
-    let outcome = runner
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "fan".to_string(),
-            stage_index: 0,
-            attempt: 3,
-            context: ContextMap::new(),
-            prompt: String::new(),
-            node: flow.nodes["fan"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "fan",
-                &flow.nodes["fan"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: attractor_runtime::outgoing_routing_edges(&flow, "fan")
-                .expect("outgoing"),
-            run_paths: Some(paths),
-            run_workdir: temp.path().to_path_buf(),
-            run_id: "run-typed-parallel".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
-        .expect("parallel outcome");
+    let mut request = node_request(
+        &flow,
+        "fan",
+        ContextMap::new(),
+        Some(paths),
+        temp.path(),
+        "run-typed-parallel",
+    );
+    request.attempt = 3;
+    let outcome = runner.execute(request).expect("parallel outcome");
 
-    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+    assert!(outcome.terminal.is_none());
+    let results = outcome.context_updates["parallel.results"]
+        .as_array()
+        .expect("results")
+        .clone();
+    assert_eq!(
+        results
+            .iter()
+            .map(|record| (record["id"].clone(), record["status"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (json!("bad"), json!("completed")),
+            (json!("good"), json!("completed"))
+        ]
+    );
 }
 
-fn looping_branch_flow(max_visits: Option<u64>, route_to_fan_in: bool) -> FlowDefinition {
-    let mut nodes: BTreeMap<String, FlowNode> = [
-        (
-            "fan".to_string(),
-            FlowNode {
-                kind: NodeKind::Parallel,
-                ..FlowNode::default()
-            },
-        ),
-        (
-            "work".to_string(),
-            FlowNode {
-                kind: NodeKind::AgentTask,
-                runtime: Some(NodeRuntimeConfig {
-                    max_visits,
-                    ..NodeRuntimeConfig::default()
-                }),
-                ..FlowNode::default()
-            },
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let mut edges = vec![
-        FlowEdge {
-            from: "fan".to_string(),
-            to: "work".to_string(),
-            ..FlowEdge::default()
-        },
-        FlowEdge {
-            from: "work".to_string(),
-            to: "work".to_string(),
-            condition: "outcome=success".to_string(),
-            ..FlowEdge::default()
-        },
-    ];
-    if route_to_fan_in {
-        nodes.insert(
-            "join".to_string(),
-            FlowNode {
-                kind: NodeKind::FanIn,
-                ..FlowNode::default()
-            },
-        );
-        edges.push(FlowEdge {
-            from: "work".to_string(),
-            to: "join".to_string(),
-            ..FlowEdge::default()
-        });
+/// `fan` forks one branch, `work`, which loops on `again`; with
+/// `route_to_join` it may also choose `done` to reach the paired join.
+fn looping_branch_flow(max_visits: Option<u64>, route_to_join: bool) -> FlowDefinition {
+    let mut decisions = vec![("again", "work")];
+    if route_to_join {
+        decisions.push(("done", "join"));
     }
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "looping-branch".to_string(),
-        nodes: nodes.into_iter().collect(),
-        edges,
-        ..FlowDefinition::default()
-    }
+    flow_of(
+        "looping-branch",
+        vec![
+            ("start", start_node("fan")),
+            ("fan", fork(&["work"], "join", false)),
+            (
+                "work",
+                FlowNode {
+                    runtime: Some(NodeRuntimeConfig {
+                        max_visits,
+                        ..NodeRuntimeConfig::default()
+                    }),
+                    ..agent("work", &decisions)
+                },
+            ),
+            ("join", fan_in("done")),
+            ("done", success_exit()),
+        ],
+    )
 }
 
 /// Runs `fan` through the real parallel path and returns its single branch
-/// result plus how many times the branch ran `work`.
+/// record plus how many times the branch ran `work`.
 fn execute_looping_branch(
     runner: &mut RuntimeHandlerRunner,
     calls: &Arc<AtomicUsize>,
     flow: &FlowDefinition,
-) -> serde_json::Value {
+) -> Value {
     calls.store(0, Ordering::SeqCst);
     let temp = tempfile::tempdir().expect("tempdir");
-    let paths = RunStore::for_runs_dir(temp.path().join("runs"))
-        .create_run(CreateRunRequest {
-            record: RunRecord::new("run-looping-branch", temp.path().to_string_lossy()),
-            checkpoint: None,
-            manifest: None,
-            flow_definition_json: None,
-            flow_files: None,
-        })
-        .expect("create run");
+    let paths = create_run(
+        &RunStore::for_runs_dir(temp.path().join("runs")),
+        "run-looping-branch",
+        temp.path(),
+    );
     let outcome = runner
-        .execute(NodeExecutionRequest {
-            node_id: "fan".to_string(),
-            stage_index: 0,
-            attempt: 1,
-            context: ContextMap::new(),
-            prompt: String::new(),
-            node: flow.nodes["fan"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "fan",
-                &flow.nodes["fan"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: attractor_runtime::outgoing_routing_edges(flow, "fan")
-                .expect("outgoing"),
-            run_paths: Some(paths),
-            run_workdir: temp.path().to_path_buf(),
-            run_id: "run-looping-branch".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+        .execute(node_request(
+            flow,
+            "fan",
+            ContextMap::new(),
+            Some(paths),
+            temp.path(),
+            "run-looping-branch",
+        ))
         .expect("parallel outcome");
     let mut result = outcome.context_updates["parallel.results"][0].clone();
     result["work_calls"] = json!(calls.load(Ordering::SeqCst));
+    result["fork_status"] = json!(outcome.status.as_str());
     result
 }
 
-fn counting_runner() -> (RuntimeHandlerRunner, Arc<AtomicUsize>) {
+/// A runner whose agent answers `decide(n)` on its n-th call.
+fn counting_runner(
+    decide: impl Fn(usize) -> Outcome + Send + 'static,
+) -> (RuntimeHandlerRunner, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut runner = RuntimeHandlerRunner::new();
     let counter = calls.clone();
     runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(decide(counter.fetch_add(1, Ordering::SeqCst) + 1))
     });
     (runner, calls)
 }
@@ -352,33 +444,60 @@ fn counting_runner() -> (RuntimeHandlerRunner, Arc<AtomicUsize>) {
 #[test]
 fn parallel_branch_loop_without_alternative_fails_at_default_visit_limit() {
     let flow = looping_branch_flow(None, false);
-    let (mut runner, calls) = counting_runner();
+    let (mut runner, calls) = counting_runner(|_| Outcome::completed("again"));
 
     for _ in 0..2 {
         // Each branch execution starts its visit counts afresh.
         let result = execute_looping_branch(&mut runner, &calls, &flow);
-        assert_eq!(result["status"], "failed", "{result}");
+        assert_eq!(result["status"], "error", "{result}");
+        assert_eq!(result["fork_status"], "error", "{result}");
         assert_eq!(result["work_calls"], 32, "{result}");
         assert_eq!(
-            result["failure_reason"],
-            "visit_limit_reached: work used all 32 visits; no other route from work"
+            result["error"]["reason"],
+            visit_limit("work", "again", "work", 32, 32)
         );
+        assert_eq!(result["error"]["kind"], "routing");
+        assert_eq!(result["error"]["tolerable"], false);
     }
 }
 
+/// A branch decision selecting its exhausted loop target fails the branch
+/// even though a join route is declared: exhaustion never picks the other
+/// route. Choosing the join route itself completes the branch at the join.
 #[test]
-fn parallel_branch_loop_routes_to_fan_in_after_exhausting_its_target() {
-    // Both limits exceed nodes.len() + edges.len(), the old branch step cap.
-    for (max_visits, expected_calls) in [(None, 32), (Some(12), 12)] {
+fn parallel_branch_choosing_an_exhausted_loop_fails_despite_a_join_route() {
+    // Both limits exceed nodes.len() + edges, the old branch step cap.
+    for (max_visits, limit) in [(None, 32usize), (Some(12), 12)] {
         let flow = looping_branch_flow(max_visits, true);
-        assert!(expected_calls > flow.nodes.len() + flow.edges.len());
-        let (mut runner, calls) = counting_runner();
+        assert!(limit > flow.nodes.len() + flow.edges().len());
 
+        let (mut runner, calls) = counting_runner(|_| Outcome::completed("again"));
+        let result = execute_looping_branch(&mut runner, &calls, &flow);
+        assert_eq!(result["status"], "error", "{result}");
+        assert_eq!(result["work_calls"], limit, "{result}");
+        assert_eq!(
+            result["error"]["reason"],
+            visit_limit("work", "again", "work", limit as u64, limit as u64)
+        );
+        assert!(
+            !result["route_trace"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("join")),
+            "{result}"
+        );
+
+        let (mut runner, calls) = counting_runner(move |call| {
+            Outcome::completed(if call == limit { "done" } else { "again" })
+        });
         for _ in 0..2 {
             let result = execute_looping_branch(&mut runner, &calls, &flow);
             assert_eq!(result["status"], "completed", "{result}");
-            assert_eq!(result["current_node"], "join", "{result}");
-            assert_eq!(result["work_calls"], expected_calls, "{result}");
+            assert_eq!(
+                result["route_trace"].as_array().unwrap().last(),
+                Some(&json!("join"))
+            );
+            assert_eq!(result["work_calls"], limit, "{result}");
         }
     }
 }
@@ -386,150 +505,119 @@ fn parallel_branch_loop_routes_to_fan_in_after_exhausting_its_target() {
 #[test]
 fn handler_dispatch_ignores_legacy_extension_type_override() {
     let flow = linear_flow(FlowNode {
-        kind: NodeKind::AgentTask,
         extensions: [("type".to_string(), json!("custom.fail"))]
             .into_iter()
             .collect(),
-        ..FlowNode::default()
+        ..agent("task", &[])
     });
     let mut runner = RuntimeHandlerRunner::new();
-    runner.register_static_handler("custom.fail", Outcome::new(OutcomeStatus::Fail));
-    runner.register_static_handler(HANDLER_CODERGEN, Outcome::new(OutcomeStatus::Success));
+    runner.register_static_handler(
+        "custom.fail",
+        Outcome::error(FailureKind::Runtime, "extension type ran", Some(false)),
+    );
+    runner.register_static_handler(HANDLER_CODERGEN, Outcome::completed("done"));
 
     let outcome = runner
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "task".to_string(),
-            stage_index: 0,
-            attempt: 0,
-            context: ContextMap::new(),
-            prompt: String::new(),
-            node: flow.nodes["task"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "task",
-                &flow.nodes["task"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: attractor_runtime::outgoing_routing_edges(&flow, "task")
-                .expect("outgoing"),
-            run_paths: None,
-            run_workdir: std::env::current_dir().expect("current dir"),
-            run_id: "run-typed-dispatch".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+        .execute(node_request(
+            &flow,
+            "task",
+            ContextMap::new(),
+            None,
+            &std::env::current_dir().expect("current dir"),
+            "run-typed-dispatch",
+        ))
         .expect("typed handler outcome");
 
-    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.status, OutcomeStatus::Completed);
+    assert_eq!(outcome.decision, "done");
 }
 
+/// The removed retry-target, goal-gate and partial-acceptance settings are
+/// rejected wherever they appear, and never drive execution: an execution
+/// error fails the run without jumping to the node they name.
 #[test]
-fn extension_only_core_runtime_keys_do_not_drive_terminal_or_retry_behavior() {
+fn legacy_runtime_keys_in_extensions_are_rejected_and_never_drive_execution() {
+    let legacy = [
+        ("allow_partial", json!(true)),
+        ("goal_gate", json!(true)),
+        ("retry_target", json!("retry")),
+        ("fallback_retry_target", json!("retry")),
+    ];
     let node = FlowNode {
-        kind: NodeKind::AgentTask,
-        extensions: [
-            ("allow_partial".to_string(), json!(true)),
-            ("goal_gate".to_string(), json!(true)),
-            ("retry_target".to_string(), json!("retry")),
-            ("fallback_retry_target".to_string(), json!("retry")),
-        ]
-        .into_iter()
-        .collect(),
-        ..FlowNode::default()
+        extensions: legacy
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        ..agent("task", &[("done", "done")])
     };
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "extension-core-ignored".to_string(),
-        nodes: [
-            ("task".to_string(), node.clone()),
-            (
-                "retry".to_string(),
-                FlowNode {
-                    kind: NodeKind::AgentTask,
-                    ..FlowNode::default()
-                },
-            ),
-        ]
+    let mut flow = linear_flow(node);
+    flow.nodes
+        .insert("retry".to_string(), agent("retry", &[("done", "done")]));
+
+    let removed = flow
+        .diagnostics()
         .into_iter()
-        .collect(),
-        ..FlowDefinition::default()
-    };
+        .filter(|diagnostic| {
+            diagnostic.rule_id == "removed_field" && diagnostic.node_id.as_deref() == Some("task")
+        })
+        .count();
+    assert_eq!(removed, legacy.len());
 
-    assert!(!attractor_runtime::flow_runtime::node_attr_bool(
-        &node,
-        "allow_partial",
-        false
-    ));
-    assert!(!attractor_runtime::terminal::is_goal_gate_node(
-        &flow, "task"
-    ));
-    assert_eq!(
-        attractor_runtime::terminal::resolve_failure_retry_target(&flow, "task"),
-        None
-    );
-
-    let exhausted = attractor_runtime::retry::coerce_retry_exhausted_outcome(
-        &flow,
-        "task",
-        &Outcome::new(OutcomeStatus::Retry),
-        1,
-        1,
-    );
-    assert_eq!(exhausted.status, OutcomeStatus::Fail);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let result = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        seen.lock().unwrap().push(request.node_id.clone());
+        if request.node_id == "task" {
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "gate failed",
+                Some(false),
+            ));
+        }
+        Ok(step(&request.node_id))
+    })
+    .execute(execute_request(
+        &store,
+        "run-legacy-keys",
+        temp.path(),
+        flow,
+        None,
+        Default::default(),
+    ))
+    .expect("execute");
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_reason, "gate failed");
+    assert_eq!(*calls.lock().unwrap(), vec!["start", "task"]);
+    assert_durably_failed(&store, "run-legacy-keys", "gate failed");
 }
 
+/// The typed forms of the removed settings are not fields at all.
 #[test]
-fn typed_core_runtime_keys_still_drive_terminal_and_retry_behavior() {
-    let node = FlowNode {
-        kind: NodeKind::AgentTask,
-        runtime: Some(NodeRuntimeConfig {
-            allow_partial: true,
-            goal_gate: true,
-            retry_target: Some("retry".to_string()),
-            ..NodeRuntimeConfig::default()
-        }),
-        ..FlowNode::default()
-    };
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "typed-core-used".to_string(),
-        nodes: [
-            ("task".to_string(), node.clone()),
-            (
-                "retry".to_string(),
-                FlowNode {
-                    kind: NodeKind::AgentTask,
-                    ..FlowNode::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        ..FlowDefinition::default()
-    };
-
-    assert!(attractor_runtime::flow_runtime::node_attr_bool(
-        &node,
+fn typed_legacy_runtime_keys_are_rejected_by_name() {
+    for key in [
         "allow_partial",
-        false
-    ));
-    assert!(attractor_runtime::terminal::is_goal_gate_node(
-        &flow, "task"
-    ));
-    assert_eq!(
-        attractor_runtime::terminal::resolve_failure_retry_target(&flow, "task"),
-        Some("retry".to_string())
-    );
-
-    let exhausted = attractor_runtime::retry::coerce_retry_exhausted_outcome(
-        &flow,
-        "task",
-        &Outcome::new(OutcomeStatus::Retry),
-        1,
-        1,
-    );
-    assert_eq!(exhausted.status, OutcomeStatus::PartialSuccess);
+        "goal_gate",
+        "retry_target",
+        "fallback_retry_target",
+        "error_policy",
+    ] {
+        let error = serde_json::from_value::<NodeRuntimeConfig>(json!({ key: true }))
+            .expect_err("removed runtime setting");
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
+    for key in ["join_policy", "join_k", "join_quorum"] {
+        let error = serde_json::from_value::<NodeConfig>(json!({
+            "kind": "parallel",
+            "branches": ["a"],
+            "join": "join",
+            key: 1
+        }))
+        .expect_err("removed parallel setting");
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
 }
 
 #[test]
@@ -540,6 +628,7 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
             flow_ref: "typed-child".to_string(),
             output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
+            results: BTreeMap::from([("completed".to_string(), "done".to_string())]),
         }),
         manager: Some(ManagerLoopConfig {
             child_autostart: Some(false),
@@ -573,12 +662,10 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
 
 #[test]
 fn extension_only_subflow_child_ref_does_not_start_child_pipeline() {
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "extension-child-ref-ignored".to_string(),
-        title: "Extension Child Ref Ignored".to_string(),
-        nodes: [(
-            "run_child".to_string(),
+    let flow = flow_of(
+        "extension-child-ref-ignored",
+        vec![(
+            "run_child",
             FlowNode {
                 kind: NodeKind::Subflow,
                 manager: Some(ManagerLoopConfig {
@@ -589,142 +676,117 @@ fn extension_only_subflow_child_ref_does_not_start_child_pipeline() {
                 extensions: [("stack.child_flow_ref".to_string(), json!("child"))]
                     .into_iter()
                     .collect(),
+                routes: routes(&[("done", "run_child")]),
                 ..FlowNode::default()
             },
-        )]
-        .into_iter()
-        .collect(),
-        ..FlowDefinition::default()
-    };
-    let temp = tempfile::tempdir().expect("tempdir");
-    write_child_flow(
-        &temp.path().join("child"),
-        json!({
-            "schema_version": "1",
-            "id": "child",
-            "title": "Child",
-            "nodes": {
-                "start": { "kind": "start", "config": { "kind": "start" } },
-                "done": { "kind": "exit", "config": { "kind": "exit" } }
-            },
-            "edges": [{ "from": "start", "to": "done" }]
-        }),
+        )],
     );
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_child_flow(&temp.path().join("child"), child_flow_source());
     let launched = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&launched);
     let mut runner = RuntimeHandlerRunner::new();
     runner.set_child_run_launcher(move |_request| {
         observed.store(true, Ordering::SeqCst);
-        ChildRunResult {
-            status: "completed".to_string(),
-            outcome: Some("success".to_string()),
-            ..ChildRunResult::default()
-        }
+        completed_child("")
     });
 
     let outcome = runner
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "run_child".to_string(),
-            stage_index: 0,
-            attempt: 0,
-            context: ContextMap::from([(
+        .execute(node_request(
+            &flow,
+            "run_child",
+            ContextMap::from([(
                 "internal.run_workdir".to_string(),
                 json!(temp.path().to_string_lossy().to_string()),
             )]),
-            prompt: String::new(),
-            node: flow.nodes["run_child"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "run_child",
-                &flow.nodes["run_child"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: Vec::new(),
-            run_paths: None,
-            run_workdir: temp.path().to_path_buf(),
-            run_id: "parent-run".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            None,
+            temp.path(),
+            "parent-run",
+        ))
         .expect("subflow outcome");
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(!launched.load(Ordering::SeqCst));
+}
+
+/// A child that reached its `completed` exit.
+fn completed_child(run_id: &str) -> ChildRunResult {
+    ChildRunResult {
+        run_id: run_id.to_string(),
+        status: "completed".to_string(),
+        outcome: Some("success".to_string()),
+        outcome_reason_code: Some("completed".to_string()),
+        ..ChildRunResult::default()
+    }
+}
+
+fn subflow_node(input_map: BTreeMap<String, String>, manager: ManagerLoopConfig) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Subflow,
+        config: Some(NodeConfig::Subflow {
+            flow_ref: "child".to_string(),
+            output_map: BTreeMap::new(),
+            input_map,
+            results: BTreeMap::from([("completed".to_string(), "done".to_string())]),
+        }),
+        manager: Some(manager),
+        routes: routes(&[("done", "run_child")]),
+        ..FlowNode::default()
+    }
 }
 
 #[test]
 fn default_subflow_launch_applies_typed_input_map_to_child_context() {
     let temp = tempfile::tempdir().expect("tempdir");
     let child_source = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "child_input_map",
         "title": "Child Input Map",
         "nodes": {
-            "start": { "kind": "start", "config": { "kind": "start" } },
+            "start": {
+                "kind": "start",
+                "routes": { "next": { "to": "check", "description": "Check the mapped context." } }
+            },
             "check": {
                 "kind": "agent_task",
                 "config": {
                     "kind": "agent_task",
                     "prompt": "Check mapped context"
-                }
+                },
+                "contracts": { "response": "decision_envelope" },
+                "routes": { "done": { "to": "done", "description": "The context is mapped." } }
             },
-            "done": { "kind": "exit", "config": { "kind": "exit" } }
-        },
-        "edges": [{ "from": "start", "to": "check" }, { "from": "check", "to": "done" }]
+            "done": {
+                "kind": "exit",
+                "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } }
+            }
+        }
     });
     write_child_flow(&temp.path().join("child"), child_source);
 
-    let parent_flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "parent_input_map".to_string(),
-        title: "Parent Input Map".to_string(),
-        nodes: [(
-            "run_child".to_string(),
-            FlowNode {
-                kind: NodeKind::Subflow,
-                config: Some(NodeConfig::Subflow {
-                    flow_ref: "child".to_string(),
-                    output_map: BTreeMap::new(),
-                    input_map: [
-                        (
-                            "context.child_ticket".to_string(),
-                            "context.parent_ticket".to_string(),
-                        ),
-                        (
-                            "context.child_count".to_string(),
-                            "context.count".to_string(),
-                        ),
-                        (
-                            "context.child_nested".to_string(),
-                            "context.payload.ticket".to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                }),
-                manager: Some(ManagerLoopConfig {
+    let parent_flow = flow_of(
+        "parent_input_map",
+        vec![(
+            "run_child",
+            subflow_node(
+                [
+                    ("context.child_ticket", "context.parent_ticket"),
+                    ("context.child_count", "context.count"),
+                    ("context.child_nested", "context.payload.ticket"),
+                ]
+                .into_iter()
+                .map(|(child, parent)| (child.to_string(), parent.to_string()))
+                .collect(),
+                ManagerLoopConfig {
                     max_cycles: Some(1),
                     child_autostart: Some(true),
                     ..ManagerLoopConfig::default()
-                }),
-                ..FlowNode::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-        ..FlowDefinition::default()
-    };
+                },
+            ),
+        )],
+    );
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let paths = store
-        .create_run(CreateRunRequest {
-            record: RunRecord::new("parent-run", temp.path().to_string_lossy()),
-            checkpoint: None,
-            manifest: None,
-            flow_definition_json: None,
-            flow_files: None,
-        })
-        .expect("create parent run");
+    let paths = create_run(&store, "parent-run", temp.path());
     let child_handler_observed_map = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&child_handler_observed_map);
     let mut runner = RuntimeHandlerRunner::new();
@@ -734,25 +796,24 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
             && runtime.context.get("context.child_nested") == Some(&json!("nested-7"));
         observed.store(has_map, Ordering::SeqCst);
         if has_map {
-            Ok(Outcome::new(OutcomeStatus::Success))
+            Ok(Outcome::completed("done"))
         } else {
-            Ok(Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: format!(
+            Ok(Outcome::error(
+                FailureKind::Runtime,
+                format!(
                     "child context did not include mapped input values: {:?}",
                     runtime.context
                 ),
-                ..Outcome::new(OutcomeStatus::Fail)
-            })
+                Some(false),
+            ))
         }
     });
 
     let outcome = runner
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "run_child".to_string(),
-            stage_index: 0,
-            attempt: 0,
-            context: ContextMap::from([
+        .execute(node_request(
+            &parent_flow,
+            "run_child",
+            ContextMap::from([
                 ("context.parent_ticket".to_string(), json!("TICKET-7")),
                 ("context.count".to_string(), json!(42)),
                 (
@@ -768,32 +829,21 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
                     json!(temp.path().to_string_lossy().to_string()),
                 ),
             ]),
-            prompt: String::new(),
-            node: parent_flow.nodes["run_child"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "run_child",
-                &parent_flow.nodes["run_child"],
-            ),
-            flow: parent_flow.clone(),
-            outgoing_edges: Vec::new(),
-            run_paths: Some(paths),
-            run_workdir: temp.path().to_path_buf(),
-            run_id: "parent-run".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            Some(paths),
+            temp.path(),
+            "parent-run",
+        ))
         .expect("subflow outcome");
 
-    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.decision, "done", "the child's result maps to done");
     assert!(child_handler_observed_map.load(Ordering::SeqCst));
 }
 
 /// Writes a child flow as a bundled flow: `dir` is `<root>/<name>`, and the
 /// flow lands in `<root>/flows/<name>`, where `internal.bundled_root` =
 /// `<root>` finds it.
-fn write_child_flow(dir: &std::path::Path, source: serde_json::Value) {
+fn write_child_flow(dir: &std::path::Path, source: Value) {
     let root = dir.parent().expect("bundled root");
     attractor_dsl::write_flow_dir(
         &root.join("flows").join(dir.file_name().expect("flow name")),
@@ -803,16 +853,21 @@ fn write_child_flow(dir: &std::path::Path, source: serde_json::Value) {
     .expect("write flow");
 }
 
-fn child_flow_source() -> serde_json::Value {
+fn child_flow_source() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "child",
         "title": "Child",
         "nodes": {
-            "start": { "kind": "start", "config": { "kind": "start" } },
-            "done": { "kind": "exit", "config": { "kind": "exit" } }
-        },
-        "edges": [{ "from": "start", "to": "done" }]
+            "start": {
+                "kind": "start",
+                "routes": { "next": { "to": "done", "description": "Finish." } }
+            },
+            "done": {
+                "kind": "exit",
+                "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } }
+            }
+        }
     })
 }
 
@@ -837,47 +892,30 @@ fn git_in(dir: &std::path::Path, args: &[&str]) {
 }
 
 fn dynamic_workdir_subflow_node(child_workdir_from: &str) -> FlowNode {
-    FlowNode {
-        kind: NodeKind::Subflow,
-        config: Some(NodeConfig::Subflow {
-            flow_ref: "child".to_string(),
-            output_map: BTreeMap::new(),
-            input_map: BTreeMap::new(),
-        }),
-        manager: Some(ManagerLoopConfig {
+    subflow_node(
+        BTreeMap::new(),
+        ManagerLoopConfig {
             max_cycles: Some(1),
             child_autostart: Some(true),
             child_workdir_from: Some(child_workdir_from.to_string()),
             ..ManagerLoopConfig::default()
-        }),
-        ..FlowNode::default()
-    }
+        },
+    )
 }
 
 fn execute_dynamic_workdir_subflow(
     node: FlowNode,
     run_workdir: &std::path::Path,
     bundled_root: &std::path::Path,
-    context_entries: Vec<(String, serde_json::Value)>,
+    context_entries: Vec<(String, Value)>,
 ) -> (Outcome, Option<std::path::PathBuf>) {
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "dynamic-workdir".to_string(),
-        title: "Dynamic Workdir".to_string(),
-        nodes: [("run_child".to_string(), node)].into_iter().collect(),
-        ..FlowDefinition::default()
-    };
+    let flow = flow_of("dynamic-workdir", vec![("run_child", node)]);
     let observed_workdir = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
     let recorded = Arc::clone(&observed_workdir);
     let mut runner = RuntimeHandlerRunner::new();
     runner.set_child_run_launcher(move |request| {
         *recorded.lock().expect("record child workdir") = Some(request.child_workdir.clone());
-        ChildRunResult {
-            run_id: request.child_run_id,
-            status: "completed".to_string(),
-            outcome: Some("success".to_string()),
-            ..ChildRunResult::default()
-        }
+        completed_child(&request.child_run_id)
     });
     let mut context = ContextMap::from([
         (
@@ -891,27 +929,14 @@ fn execute_dynamic_workdir_subflow(
     ]);
     context.extend(context_entries);
     let outcome = runner
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "run_child".to_string(),
-            stage_index: 0,
-            attempt: 0,
+        .execute(node_request(
+            &flow,
+            "run_child",
             context,
-            prompt: String::new(),
-            node: flow.nodes["run_child"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "run_child",
-                &flow.nodes["run_child"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: Vec::new(),
-            run_paths: None,
-            run_workdir: run_workdir.to_path_buf(),
-            run_id: "parent-run".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            None,
+            run_workdir,
+            "parent-run",
+        ))
         .expect("subflow outcome");
     let observed = observed_workdir.lock().expect("read child workdir").clone();
     (outcome, observed)
@@ -934,7 +959,8 @@ fn subflow_child_workdir_from_launches_child_in_context_directory() {
         )],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.decision, "done");
     assert_eq!(
         observed.expect("child launched"),
         fs::canonicalize(&workspace).expect("canonical workspace")
@@ -958,56 +984,38 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
             ..CreateRunRequest::default()
         })
         .expect("create parent");
-    let node = FlowNode {
-        kind: NodeKind::Subflow,
-        config: Some(NodeConfig::Subflow {
-            flow_ref: "child".to_string(),
-            output_map: BTreeMap::new(),
-            input_map: BTreeMap::new(),
-        }),
-        manager: Some(ManagerLoopConfig {
-            max_cycles: Some(1),
-            child_autostart: Some(true),
-            child_workdir: Some("worktree".to_string()),
-            ..ManagerLoopConfig::default()
-        }),
-        ..FlowNode::default()
-    };
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "parent".to_string(),
-        title: "Parent".to_string(),
-        nodes: [("run_child".to_string(), node.clone())]
-            .into_iter()
-            .collect(),
-        ..FlowDefinition::default()
-    };
+    let flow = flow_of(
+        "parent",
+        vec![(
+            "run_child",
+            subflow_node(
+                BTreeMap::new(),
+                ManagerLoopConfig {
+                    max_cycles: Some(1),
+                    child_autostart: Some(true),
+                    child_workdir: Some("worktree".to_string()),
+                    ..ManagerLoopConfig::default()
+                },
+            ),
+        )],
+    );
     let outcome = RuntimeHandlerRunner::new()
-        .execute(NodeExecutionRequest {
-            node_id: "run_child".to_string(),
-            stage_index: 0,
-            attempt: 0,
-            context: ContextMap::from([
+        .execute(node_request(
+            &flow,
+            "run_child",
+            ContextMap::from([
                 ("internal.run_id".to_string(), json!("parent-run")),
                 ("internal.root_run_id".to_string(), json!("parent-run")),
                 ("internal.run_workdir".to_string(), json!(project)),
                 ("internal.bundled_root".to_string(), json!(project)),
             ]),
-            prompt: String::new(),
-            node: node.clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler("run_child", &node),
-            flow,
-            outgoing_edges: Vec::new(),
-            run_paths: Some(parent_paths),
-            run_workdir: project.clone(),
-            run_id: "parent-run".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            Some(parent_paths),
+            &project,
+            "parent-run",
+        ))
         .expect("launch child");
-    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.decision, "done");
 
     let child = store
         .list_run_records()
@@ -1018,6 +1026,7 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
     assert_eq!(child.project_path, project.to_string_lossy());
     assert_eq!(child.working_directory, worktree.to_string_lossy());
     assert_eq!(child.flow_name, "Child");
+    assert_eq!(child.outcome_reason_code.as_deref(), Some("completed"));
     assert!(store
         .list_run_records()
         .expect("list runs")
@@ -1058,7 +1067,7 @@ fn subflow_child_workdir_from_accepts_linked_worktree_of_same_repository() {
         )],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
     assert_eq!(
         observed.expect("child launched"),
         fs::canonicalize(&worktree).expect("canonical worktree")
@@ -1086,7 +1095,7 @@ fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
         )],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome.failure_reason.contains("child_workdir_from"),
         "{}",
@@ -1107,7 +1116,7 @@ fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
         Vec::new(),
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome
             .failure_reason
@@ -1137,7 +1146,7 @@ fn subflow_declaring_both_child_workdir_sources_fails() {
         )],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome
             .failure_reason
@@ -1148,61 +1157,71 @@ fn subflow_declaring_both_child_workdir_sources_fails() {
     assert!(observed.is_none(), "child must not launch");
 }
 
-fn tool_node(
+// ---------------------------------------------------------------------------
+// Tool adapters and bindings
+// ---------------------------------------------------------------------------
+
+fn tool_with_adapter(
     command: &str,
-    env_map: BTreeMap<String, String>,
-    output_map: BTreeMap<String, String>,
+    exit_codes: &[(&str, &str)],
+    decision_field: Option<&str>,
+    decisions: &[(&str, &str)],
 ) -> FlowNode {
     FlowNode {
         kind: NodeKind::Tool,
         config: Some(NodeConfig::Tool {
             command: command.to_string(),
-            env_map,
-            output_map,
+            env_map: BTreeMap::new(),
+            output_map: BTreeMap::new(),
+            exit_codes: exit_codes
+                .iter()
+                .map(|(code, decision)| (code.to_string(), decision.to_string()))
+                .collect(),
+            decision_field: decision_field.map(str::to_string),
         }),
+        routes: routes(decisions),
         ..FlowNode::default()
     }
+}
+
+fn tool_node(
+    command: &str,
+    env_map: BTreeMap<String, String>,
+    output_map: BTreeMap<String, String>,
+) -> FlowNode {
+    let mut node = tool_with_adapter(command, &[("0", "done")], None, &[("done", "run_tool")]);
+    if let Some(NodeConfig::Tool {
+        env_map: env,
+        output_map: output,
+        ..
+    }) = node.config.as_mut()
+    {
+        *env = env_map;
+        *output = output_map;
+    }
+    node
 }
 
 fn execute_tool_node(
     node: FlowNode,
     run_workdir: &std::path::Path,
-    context_entries: Vec<(String, serde_json::Value)>,
+    context_entries: Vec<(String, Value)>,
 ) -> Outcome {
-    let flow = FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "tool-bindings".to_string(),
-        title: "Tool Bindings".to_string(),
-        nodes: [("run_tool".to_string(), node)].into_iter().collect(),
-        ..FlowDefinition::default()
-    };
+    let flow = flow_of("tool-bindings", vec![("run_tool", node)]);
     let mut context = ContextMap::from([(
         "internal.run_workdir".to_string(),
         json!(run_workdir.to_string_lossy().to_string()),
     )]);
     context.extend(context_entries);
     RuntimeHandlerRunner::new()
-        .execute(attractor_runtime::NodeExecutionRequest {
-            node_id: "run_tool".to_string(),
-            stage_index: 0,
-            attempt: 0,
+        .execute(node_request(
+            &flow,
+            "run_tool",
             context,
-            prompt: String::new(),
-            node: flow.nodes["run_tool"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "run_tool",
-                &flow.nodes["run_tool"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: Vec::new(),
-            run_paths: None,
-            run_workdir: run_workdir.to_path_buf(),
-            run_id: "tool-run".to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            None,
+            run_workdir,
+            "tool-run",
+        ))
         .expect("tool outcome")
 }
 
@@ -1233,7 +1252,8 @@ fn tool_env_map_binds_context_values_as_environment_variables() {
         ],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.decision, "done");
     assert_eq!(outcome.notes, "/workspaces/run-9 3");
 }
 
@@ -1255,7 +1275,7 @@ fn tool_env_map_with_missing_context_value_fails_before_execution() {
         Vec::new(),
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome
             .failure_reason
@@ -1284,7 +1304,7 @@ fn tool_env_map_rejects_invalid_environment_variable_names() {
         vec![("context.value".to_string(), json!("x"))],
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome.failure_reason.contains("BAD-NAME"),
         "{}",
@@ -1321,7 +1341,7 @@ fn tool_output_map_parses_json_stdout_into_context_updates() {
         Vec::new(),
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
     assert_eq!(
         outcome.context_updates.get("context.workspace.path"),
         Some(&json!("/w/run-9"))
@@ -1358,7 +1378,7 @@ fn tool_output_map_with_non_json_stdout_fails() {
         Vec::new(),
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome.failure_reason.contains("JSON"),
         "{}",
@@ -1389,11 +1409,367 @@ fn tool_output_map_with_missing_json_path_fails() {
         Vec::new(),
     );
 
-    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert_eq!(outcome.status, OutcomeStatus::Error);
     assert!(
         outcome.failure_reason.contains("worktree_path"),
         "{}",
         outcome.failure_reason
+    );
+}
+
+/// A tool's one adapter is its only decision source: mapped exit codes and
+/// a declared JSON decision field complete; unmapped codes, nonzero JSON
+/// exits and undeclared decisions are execution errors with their evidence.
+#[test]
+fn tool_adapters_select_declared_decisions_and_reject_everything_else() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let exit_routes = [("passed", "run_tool"), ("rejected", "run_tool")];
+    let exit_map = [("0", "passed"), ("1", "rejected")];
+    for (command, expected) in [
+        ("true", Ok("passed")),
+        ("exit 1", Ok("rejected")),
+        (
+            "echo setup broke >&2; exit 2",
+            Err("tool exited with unmapped code 2; stderr: setup broke"),
+        ),
+    ] {
+        let outcome = execute_tool_node(
+            tool_with_adapter(command, &exit_map, None, &exit_routes),
+            temp.path(),
+            Vec::new(),
+        );
+        match expected {
+            Ok(decision) => {
+                assert_eq!(
+                    outcome.status,
+                    OutcomeStatus::Completed,
+                    "{command}: {outcome:?}"
+                );
+                assert_eq!(outcome.decision, decision, "{command}");
+            }
+            Err(reason) => {
+                assert_eq!(outcome.status, OutcomeStatus::Error, "{command}");
+                assert_eq!(outcome.decision, "", "{command}");
+                assert_eq!(outcome.failure_reason, reason, "{command}");
+                assert_eq!(outcome.failure_kind, Some(FailureKind::Runtime));
+            }
+        }
+    }
+    for (command, expected, kind) in [
+        (r#"printf '{"decision":"passed"}'"#, Ok("passed"), None),
+        (
+            r#"printf '{"decision":"maybe"}'"#,
+            Err("tool returned undeclared decision \"maybe\""),
+            Some(FailureKind::Contract),
+        ),
+        (
+            r#"printf '{"decision":"passed"}'; exit 3"#,
+            Err("tool exited with code 3 instead of 0 with a JSON decision decision"),
+            Some(FailureKind::Runtime),
+        ),
+        (
+            "printf 'passed'",
+            Err("tool stdout is not one JSON object with a decision decision"),
+            Some(FailureKind::Runtime),
+        ),
+    ] {
+        let outcome = execute_tool_node(
+            tool_with_adapter(command, &[], Some("decision"), &exit_routes),
+            temp.path(),
+            Vec::new(),
+        );
+        match expected {
+            Ok(decision) => {
+                assert_eq!(
+                    outcome.status,
+                    OutcomeStatus::Completed,
+                    "{command}: {outcome:?}"
+                );
+                assert_eq!(outcome.decision, decision, "{command}");
+            }
+            Err(reason) => {
+                assert_eq!(outcome.status, OutcomeStatus::Error, "{command}");
+                assert_eq!(outcome.failure_reason, reason, "{command}");
+                assert_eq!(outcome.failure_kind, kind, "{command}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Switch
+// ---------------------------------------------------------------------------
+
+fn switch_node(on: &str, cases: &[(&str, &str)], otherwise: &str) -> FlowNode {
+    let mut decisions = cases
+        .iter()
+        .map(|(_, decision)| *decision)
+        .collect::<Vec<_>>();
+    decisions.push(otherwise);
+    decisions.sort();
+    decisions.dedup();
+    FlowNode {
+        kind: NodeKind::Switch,
+        config: Some(NodeConfig::Switch {
+            on: on.to_string(),
+            cases: cases
+                .iter()
+                .map(|(key, decision)| (key.to_string(), decision.to_string()))
+                .collect(),
+            otherwise: otherwise.to_string(),
+        }),
+        contracts: Some(NodeContracts {
+            reads_context: vec![on.to_string()],
+            ..NodeContracts::default()
+        }),
+        routes: decisions
+            .into_iter()
+            .map(|decision| (decision.to_string(), route("check")))
+            .collect(),
+        ..FlowNode::default()
+    }
+}
+
+/// A switch compares one context value with its JSON-scalar case keys by
+/// exact equality, without coercion; only a supported scalar matching no
+/// case takes `otherwise`, and missing or unsupported values are errors.
+#[test]
+fn switch_compares_exact_scalars_without_coercion() {
+    let flow = flow_of(
+        "switch-scalars",
+        vec![(
+            "check",
+            switch_node(
+                "context.value",
+                &[("0", "clean"), ("true", "flagged"), ("\"ready\"", "ready")],
+                "other",
+            ),
+        )],
+    );
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut runner = RuntimeHandlerRunner::new();
+    for (value, expected) in [
+        (Some(json!(0)), Ok("clean")),
+        (Some(json!(0.0)), Ok("clean")),
+        (Some(json!("0")), Ok("other")),
+        (Some(json!(1)), Ok("other")),
+        (Some(json!(true)), Ok("flagged")),
+        (Some(json!("true")), Ok("other")),
+        (Some(json!(false)), Ok("other")),
+        (Some(json!("ready")), Ok("ready")),
+        (
+            Some(json!(null)),
+            Err("null is not a supported switch value"),
+        ),
+        (
+            Some(json!([0])),
+            Err("arrays are not supported switch values"),
+        ),
+        (
+            None,
+            Err("switch key context.value is missing from the context"),
+        ),
+    ] {
+        let context = value
+            .clone()
+            .map(|value| ContextMap::from([("context.value".to_string(), value)]))
+            .unwrap_or_default();
+        let outcome = runner
+            .execute(node_request(
+                &flow,
+                "check",
+                context,
+                None,
+                temp.path(),
+                "switch-run",
+            ))
+            .expect("switch outcome");
+        match expected {
+            Ok(decision) => {
+                assert_eq!(outcome.status, OutcomeStatus::Completed, "{value:?}");
+                assert_eq!(outcome.decision, decision, "{value:?}");
+            }
+            Err(reason) => {
+                assert_eq!(outcome.status, OutcomeStatus::Error, "{value:?}");
+                assert!(
+                    outcome.failure_reason.contains(reason),
+                    "{value:?}: {}",
+                    outcome.failure_reason
+                );
+                assert_eq!(outcome.failure_kind, Some(FailureKind::Contract));
+            }
+        }
+    }
+}
+
+/// `start -> implement -> check`; the switch reads implement's verdict:
+/// `"fix"` loops back to implement (three visits), anything else ships.
+fn switch_loop_flow() -> FlowDefinition {
+    let mut check = switch_node("context.review.verdict", &[("\"fix\"", "again")], "ship");
+    check.routes = routes(&[("again", "implement"), ("ship", "done")]);
+    flow_of(
+        "switch-loop",
+        vec![
+            ("start", start_node("implement")),
+            (
+                "implement",
+                FlowNode {
+                    contracts: Some(NodeContracts {
+                        writes_context: vec!["context.review.verdict".to_string()],
+                        response: Some("decision_envelope".to_string()),
+                        ..NodeContracts::default()
+                    }),
+                    runtime: Some(NodeRuntimeConfig {
+                        max_visits: Some(3),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                    ..agent("implement", &[("done", "check")])
+                },
+            ),
+            ("check", check),
+            ("done", success_exit()),
+        ],
+    )
+}
+
+/// A runner whose agent completes `done`, writing `verdict` when given.
+fn verdict_runner(
+    verdict: Option<&'static str>,
+) -> (RuntimeHandlerRunner, Arc<std::sync::Mutex<Vec<String>>>) {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
+        seen.lock().unwrap().push(runtime.node_id.clone());
+        Ok(Outcome {
+            context_updates: verdict
+                .map(|verdict| {
+                    ContextMap::from([("context.review.verdict".to_string(), json!(verdict))])
+                })
+                .unwrap_or_default(),
+            ..Outcome::completed("done")
+        })
+    });
+    (runner, calls)
+}
+
+/// A switch dispatches like any node: its selected decision's exhausted
+/// target fails the run (never `otherwise`), `otherwise` reaches the exit,
+/// and a missing key fails the run instead of selecting anything.
+#[test]
+fn switch_dispatch_uses_exact_lookup_and_visit_limits() {
+    for (verdict, status, reason, implement_runs) in [
+        (
+            Some("fix"),
+            "failed",
+            visit_limit("check", "again", "implement", 3, 3),
+            3,
+        ),
+        (Some("ship"), "completed", String::new(), 1),
+        (
+            None,
+            "failed",
+            "switch key context.review.verdict is missing from the context".to_string(),
+            1,
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (runner, calls) = verdict_runner(verdict);
+        let result = PipelineExecutor::new(runner)
+            .execute(execute_request(
+                &store,
+                "run-switch",
+                temp.path(),
+                switch_loop_flow(),
+                None,
+                Default::default(),
+            ))
+            .expect("execute");
+        assert_eq!(
+            result.status, status,
+            "{verdict:?}: {}",
+            result.failure_reason
+        );
+        assert_eq!(calls.lock().unwrap().len(), implement_runs, "{verdict:?}");
+        if status == "failed" {
+            assert_eq!(result.failure_reason, reason, "{verdict:?}");
+            assert!(!result.route_trace.contains(&"done".to_string()));
+            assert_durably_failed(&store, "run-switch", &reason);
+        } else {
+            assert_eq!(result.current_node, "done");
+            assert_eq!(result.node_outcomes["check"].decision, "ship");
+        }
+    }
+}
+
+/// Recovery of a completed switch visit takes its stored decision; it does
+/// not evaluate the switch again against the restored context.
+#[test]
+fn resume_of_a_completed_switch_visit_takes_its_stored_decision() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (runner, _) = verdict_runner(Some("ship"));
+    // Polls: before/after start, before/after implement, before/after check.
+    let mut polls = 0;
+    let paused = PipelineExecutor::with_control(runner, move || {
+        polls += 1;
+        (polls == 6).then_some(attractor_runtime::ExecutionControlAction::Pause)
+    })
+    .execute(execute_request(
+        &store,
+        "run-switch-resume",
+        temp.path(),
+        switch_loop_flow(),
+        None,
+        Default::default(),
+    ))
+    .expect("execute");
+    assert_eq!(paused.status, "paused");
+    let meta = store.read_run_meta("run-switch-resume").unwrap().unwrap();
+    let mut checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "check");
+    checkpoint
+        .context
+        .insert("context.review.verdict".to_string(), json!("fix"));
+
+    let (runner, calls) = verdict_runner(Some("fix"));
+    let resumed = PipelineExecutor::new(runner)
+        .execute(execute_request(
+            &store,
+            "run-switch-resume",
+            temp.path(),
+            switch_loop_flow(),
+            None,
+            attractor_runtime::ExecutionStart::Resume {
+                paths: meta.paths,
+                checkpoint,
+            },
+        ))
+        .expect("resume");
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(resumed.current_node, "done");
+    assert!(calls.lock().unwrap().is_empty());
+    let events = events_of(&store, "run-switch-resume");
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| event.event_type == "StageStarted" && event.payload["node_id"] == "check"
+            )
+            .count(),
+        1,
+        "the switch is not evaluated again"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "StageTransition"
+                && event.payload["node_id"] == "check")
+            .map(|event| event.payload["decision"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("ship")],
+        "the stored transition is taken exactly once"
     );
 }
 
@@ -1402,31 +1778,20 @@ fn tool_output_map_with_missing_json_path_fails() {
 // ---------------------------------------------------------------------------
 
 fn reentry_parent_flow() -> FlowDefinition {
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "parent_reentry".to_string(),
-        title: "Parent Reentry".to_string(),
-        nodes: [(
-            "run_child".to_string(),
-            FlowNode {
-                kind: NodeKind::Subflow,
-                config: Some(NodeConfig::Subflow {
-                    flow_ref: "child".to_string(),
-                    output_map: BTreeMap::new(),
-                    input_map: Default::default(),
-                }),
-                manager: Some(ManagerLoopConfig {
+    flow_of(
+        "parent_reentry",
+        vec![(
+            "run_child",
+            subflow_node(
+                Default::default(),
+                ManagerLoopConfig {
                     max_cycles: Some(1),
                     child_autostart: Some(true),
                     ..ManagerLoopConfig::default()
-                }),
-                ..FlowNode::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-        ..FlowDefinition::default()
-    }
+                },
+            ),
+        )],
+    )
 }
 
 fn reentry_context(temp: &std::path::Path, run_id: &str) -> ContextMap {
@@ -1455,32 +1820,19 @@ fn execute_reentry_node(
     runner: &mut RuntimeHandlerRunner,
     flow: &FlowDefinition,
     run_id: &str,
-    paths: &attractor_runtime::RunRootPaths,
+    paths: &RunRootPaths,
     temp: &std::path::Path,
     context: ContextMap,
 ) -> Outcome {
     runner
-        .execute(NodeExecutionRequest {
-            node_id: "run_child".to_string(),
-            stage_index: 0,
-            attempt: 0,
+        .execute(node_request(
+            flow,
+            "run_child",
             context,
-            prompt: String::new(),
-            node: flow.nodes["run_child"].clone(),
-            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
-                "run_child",
-                &flow.nodes["run_child"],
-            ),
-            flow: flow.clone(),
-            outgoing_edges: Vec::new(),
-            run_paths: Some(paths.clone()),
-            run_workdir: temp.to_path_buf(),
-            run_id: run_id.to_string(),
-            fallback_model: None,
-            fallback_provider: None,
-            fallback_profile: None,
-            fallback_reasoning_effort: None,
-        })
+            Some(paths.clone()),
+            temp,
+            run_id,
+        ))
         .expect("subflow outcome")
 }
 
@@ -1493,22 +1845,6 @@ fn linked_child_id(outcome: &Outcome) -> String {
         .to_string()
 }
 
-fn create_parent_run(
-    store: &RunStore,
-    run_id: &str,
-    temp: &std::path::Path,
-) -> attractor_runtime::RunRootPaths {
-    store
-        .create_run(CreateRunRequest {
-            record: RunRecord::new(run_id, temp.to_string_lossy()),
-            checkpoint: None,
-            manifest: None,
-            flow_definition_json: None,
-            flow_files: None,
-        })
-        .expect("create parent run")
-}
-
 /// Re-entry after the node already completed on its child (the executor
 /// checkpointed past it) is a new attempt: the stale completed child is
 /// history and a fresh invocation launches with an advanced index.
@@ -1518,7 +1854,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
     write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let paths = create_parent_run(&store, "parent-run", temp.path());
+    let paths = create_run(&store, "parent-run", temp.path());
     let mut runner = RuntimeHandlerRunner::new();
 
     let first = execute_reentry_node(
@@ -1529,7 +1865,8 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
         temp.path(),
         reentry_context(temp.path(), "parent-run"),
     );
-    assert_eq!(first.status, OutcomeStatus::Success);
+    assert_eq!(first.status, OutcomeStatus::Completed, "{first:?}");
+    assert_eq!(first.decision, "done");
     let first_child = linked_child_id(&first);
 
     // The executor completed this node and checkpointed past it, so the
@@ -1558,7 +1895,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
         temp.path(),
         with_outcome_updates(reentry_context(temp.path(), "parent-run"), &first),
     );
-    assert_eq!(second.status, OutcomeStatus::Success);
+    assert_eq!(second.status, OutcomeStatus::Completed, "{second:?}");
     let second_child = linked_child_id(&second);
     assert_ne!(
         first_child, second_child,
@@ -1595,7 +1932,7 @@ fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
     write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let paths = create_parent_run(&store, "parent-run", temp.path());
+    let paths = create_run(&store, "parent-run", temp.path());
     let mut runner = RuntimeHandlerRunner::new();
 
     let first = execute_reentry_node(
@@ -1616,7 +1953,8 @@ fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
         temp.path(),
         with_outcome_updates(reentry_context(temp.path(), "parent-run"), &first),
     );
-    assert_eq!(second.status, OutcomeStatus::Success);
+    assert_eq!(second.status, OutcomeStatus::Completed, "{second:?}");
+    assert_eq!(second.decision, "done");
     // The adopted child is unchanged, so it is absent from the context diff;
     // it must never be replaced by a different child.
     let relinked = second
@@ -1650,7 +1988,7 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     write_child_flow(&temp.path().join("child"), child_flow_source());
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let source_paths = create_parent_run(&store, "source-run", temp.path());
+    let source_paths = create_run(&store, "source-run", temp.path());
     let mut runner = RuntimeHandlerRunner::new();
     let source = execute_reentry_node(
         &mut runner,
@@ -1662,7 +2000,7 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     );
     let source_child = linked_child_id(&source);
 
-    let continuation_paths = create_parent_run(&store, "continuation-run", temp.path());
+    let continuation_paths = create_run(&store, "continuation-run", temp.path());
     let continued = execute_reentry_node(
         &mut runner,
         &flow,
@@ -1671,7 +2009,7 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
         temp.path(),
         with_outcome_updates(reentry_context(temp.path(), "continuation-run"), &source),
     );
-    assert_eq!(continued.status, OutcomeStatus::Success);
+    assert_eq!(continued.status, OutcomeStatus::Completed, "{continued:?}");
     assert_ne!(linked_child_id(&continued), source_child);
     assert_eq!(
         store
@@ -1682,134 +2020,67 @@ fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     );
 }
 
-/// `start → implement → evaluate`, with `implement` limited to three visits
+// ---------------------------------------------------------------------------
+// Dispatch: exact decision lookup, then the selected target's visit limit
+// ---------------------------------------------------------------------------
+
+/// `start -> implement -> evaluate`, with `implement` limited to three visits
 /// and `evaluate`'s routes given by the caller.
-fn visit_loop_flow(
-    evaluate_edges: Vec<FlowEdge>,
-    evaluate_retry_target: Option<&str>,
-) -> FlowDefinition {
-    let agent = |prompt: &str, runtime: Option<NodeRuntimeConfig>| FlowNode {
-        kind: NodeKind::AgentTask,
-        config: Some(NodeConfig::AgentTask {
-            prompt: prompt.to_string(),
-        }),
-        runtime,
-        ..FlowNode::default()
-    };
-    let mut edges = vec![
-        FlowEdge {
-            from: "start".to_string(),
-            to: "implement".to_string(),
-            ..FlowEdge::default()
-        },
-        FlowEdge {
-            from: "implement".to_string(),
-            to: "evaluate".to_string(),
-            ..FlowEdge::default()
-        },
-    ];
-    edges.extend(evaluate_edges);
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "visit-loop".to_string(),
-        title: "Visit Loop".to_string(),
-        nodes: [
+fn visit_loop_flow(evaluate_routes: &[(&str, &str)]) -> FlowDefinition {
+    flow_of(
+        "visit-loop",
+        vec![
+            ("start", start_node("implement")),
             (
-                "start".to_string(),
+                "implement",
                 FlowNode {
-                    kind: NodeKind::Start,
-                    config: Some(NodeConfig::Start {}),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "implement".to_string(),
-                agent(
-                    "implement",
-                    Some(NodeRuntimeConfig {
+                    runtime: Some(NodeRuntimeConfig {
                         max_visits: Some(3),
                         ..NodeRuntimeConfig::default()
                     }),
-                ),
-            ),
-            (
-                "evaluate".to_string(),
-                agent(
-                    "evaluate",
-                    evaluate_retry_target.map(|target| NodeRuntimeConfig {
-                        retry_target: Some(target.to_string()),
-                        ..NodeRuntimeConfig::default()
-                    }),
-                ),
-            ),
-            (
-                "done".to_string(),
-                FlowNode {
-                    kind: NodeKind::Exit,
-                    config: Some(NodeConfig::Exit {
-                        result_summary: false,
-                        result_summary_prompt: None,
-                    }),
-                    ..FlowNode::default()
+                    ..agent("implement", &[("done", "evaluate")])
                 },
             ),
-        ]
-        .into_iter()
-        .collect(),
-        edges,
-        ..FlowDefinition::default()
-    }
+            ("evaluate", agent("evaluate", evaluate_routes)),
+            ("done", success_exit()),
+        ],
+    )
 }
 
-fn edge(to: &str, label: &str, condition: &str) -> FlowEdge {
-    FlowEdge {
-        from: "evaluate".to_string(),
-        to: to.to_string(),
-        label: label.to_string(),
-        condition: condition.to_string(),
-        ..FlowEdge::default()
-    }
-}
-
-/// Runs `flow` with `evaluate` answering `evaluate_status` and the label
-/// `Again`; returns the result and the node ids executed, in order.
+/// Runs `flow` with `evaluate` answering `evaluate(n)` on its n-th call and
+/// every other node completing `step`; returns the result and the node ids
+/// executed, in order.
 fn run_visit_loop(
     store: &RunStore,
     run_id: &str,
     workdir: &std::path::Path,
     flow: FlowDefinition,
-    evaluate_status: OutcomeStatus,
+    evaluate: impl Fn(usize) -> Outcome + 'static,
     max_steps: Option<usize>,
     start: attractor_runtime::ExecutionStart,
 ) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
     let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen = calls.clone();
     let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
-        seen.lock().unwrap().push(request.node_id.clone());
+        let mut seen = seen.lock().unwrap();
+        seen.push(request.node_id.clone());
         if request.node_id == "evaluate" {
-            return Ok(Outcome {
-                status: evaluate_status,
-                preferred_label: "Again".to_string(),
-                failure_reason: "not good enough".to_string(),
-                ..Outcome::new(evaluate_status)
-            });
+            let evaluations = seen.iter().filter(|node| *node == "evaluate").count();
+            return Ok(evaluate(evaluations));
         }
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(step(&request.node_id))
     });
     let result = executor
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new(run_id, workdir.to_string_lossy()),
-            flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps,
-            start,
-        })
+        .execute(execute_request(
+            store, run_id, workdir, flow, max_steps, start,
+        ))
         .expect("execute visit loop");
     let calls = calls.lock().unwrap().clone();
     (result, calls)
+}
+
+fn again(_: usize) -> Outcome {
+    Outcome::completed("again")
 }
 
 fn implement_runs(calls: &[String]) -> usize {
@@ -1819,54 +2090,39 @@ fn implement_runs(calls: &[String]) -> usize {
         .count()
 }
 
-/// A loop with no other route fails at the target's visit limit, whatever
-/// the outcome and whether it loops by edge or by retry target.
+/// A loop fails at its target's visit limit; the reason names the selecting
+/// node, its decision, the target and the count.
 #[test]
 fn loop_without_another_route_fails_when_its_target_used_all_visits() {
-    for (evaluate_status, edges, retry_target) in [
-        (
-            OutcomeStatus::Fail,
-            vec![edge("implement", "Fix", "outcome=fail")],
-            None,
-        ),
-        (OutcomeStatus::Fail, Vec::new(), Some("implement")),
-        (
-            OutcomeStatus::Success,
-            vec![edge("implement", "", "")],
-            None,
-        ),
-    ] {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let store = RunStore::for_runs_dir(temp.path().join("runs"));
-        let (result, calls) = run_visit_loop(
-            &store,
-            "run-visit-loop",
-            temp.path(),
-            visit_loop_flow(edges, retry_target),
-            evaluate_status,
-            None,
-            Default::default(),
-        );
-        assert_eq!(result.status, "failed", "{evaluate_status:?}");
-        assert_eq!(
-            result.failure_reason,
-            "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
-        );
-        assert_eq!(implement_runs(&calls), 3);
-        assert_eq!(calls.iter().filter(|node| *node == "evaluate").count(), 3);
-    }
-}
-
-/// A node with a "loop again" route and a "done" route takes "done" once the
-/// loop target is exhausted, and its request names the unavailable target.
-#[test]
-fn loop_with_another_route_takes_it_when_its_target_used_all_visits() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = visit_loop_flow(
-        vec![edge("implement", "Again", ""), edge("done", "Done", "")],
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-visit-loop",
+        temp.path(),
+        visit_loop_flow(&[("again", "implement")]),
+        again,
         None,
+        Default::default(),
     );
+    let reason = visit_limit("evaluate", "again", "implement", 3, 3);
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_reason, reason);
+    assert_eq!(implement_runs(&calls), 3);
+    assert_eq!(calls.iter().filter(|node| *node == "evaluate").count(), 3);
+    assert_durably_failed(&store, "run-visit-loop", &reason);
+}
+
+/// A decision selecting an exhausted target fails the run with
+/// visit_limit_reached even though another route is declared: exhaustion
+/// never changes the decision. The request still offers the exhausted
+/// decision, marked as such, and the decision survives in the node's
+/// durable status.
+#[test]
+fn exhausted_loop_decision_fails_instead_of_taking_another_route() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = visit_loop_flow(&[("again", "implement"), ("done", "done")]);
     let unavailable = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = unavailable.clone();
     let mut executor = PipelineExecutor::new(move |request: NodeExecutionRequest| {
@@ -1877,256 +2133,267 @@ fn loop_with_another_route_takes_it_when_its_target_used_all_visits() {
                     .get(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY)
                     .cloned(),
             );
+            return Ok(Outcome {
+                notes: "still not good enough".to_string(),
+                ..Outcome::completed("again")
+            });
         }
-        Ok(Outcome {
-            preferred_label: "Again".to_string(),
-            ..Outcome::new(OutcomeStatus::Success)
-        })
+        Ok(step(&request.node_id))
     });
     let result = executor
-        .execute(ExecuteRunRequest {
-            store,
-            record: RunRecord::new("run-visit-done", temp.path().to_string_lossy()),
+        .execute(execute_request(
+            &store,
+            "run-visit-done",
+            temp.path(),
             flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: Default::default(),
-        })
+            None,
+            Default::default(),
+        ))
         .expect("execute");
-    assert_eq!(result.status, "completed", "{}", result.failure_reason);
-    assert_eq!(result.current_node, "done");
+    let reason = visit_limit("evaluate", "again", "implement", 3, 3);
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_reason, reason);
+    assert_eq!(result.current_node, "evaluate");
+    assert!(!result.route_trace.contains(&"done".to_string()));
     assert_eq!(
         *unavailable.lock().unwrap(),
         vec![None, None, Some(json!(["implement"]))]
     );
-    assert!(!result
-        .context
-        .contains_key(attractor_core::RUNTIME_UNAVAILABLE_ROUTES_KEY));
+    assert_durably_failed(&store, "run-visit-done", &reason);
+
+    let status = latest_status(&store, "run-visit-done", "evaluate");
+    assert_eq!(status["status"], "completed");
+    assert_eq!(status["decision"], "again");
+    assert_eq!(status["notes"], "still not good enough");
+    let events = events_of(&store, "run-visit-done");
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "StageTransition" && event.payload["target"] == "done"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "StageCompleted"
+                && event.payload["node_id"] == "evaluate")
+            .last()
+            .unwrap()
+            .payload["decision"],
+        "again"
+    );
 }
 
-/// A failed node whose conditional route is exhausted still takes its
-/// retry target.
+/// An execution error never selects a route, whatever the node declares:
+/// it fails the run with its own reason instead of looping or finishing.
 #[test]
-fn exhausted_conditional_route_falls_back_to_retry_target() {
+fn execution_error_fails_without_jumping_to_any_route() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let (result, calls) = run_visit_loop(
         &store,
-        "run-visit-fallback",
+        "run-error-no-jump",
         temp.path(),
-        visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done")),
-        OutcomeStatus::Fail,
-        None,
-        Default::default(),
-    );
-    assert_eq!(result.status, "completed", "{}", result.failure_reason);
-    assert_eq!(result.current_node, "done");
-    assert_eq!(implement_runs(&calls), 3);
-}
-
-/// A failed node whose retry target is exhausted still takes an
-/// unconditional route into a conditional node.
-#[test]
-fn exhausted_retry_target_falls_back_to_an_unconditional_route() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(vec![edge("check", "", "")], Some("implement"));
-    flow.nodes.insert(
-        "check".to_string(),
-        FlowNode {
-            kind: NodeKind::Conditional,
-            config: Some(NodeConfig::Conditional {}),
-            ..FlowNode::default()
-        },
-    );
-    flow.edges.push(FlowEdge {
-        from: "check".to_string(),
-        to: "done".to_string(),
-        ..FlowEdge::default()
-    });
-    let (result, calls) = run_visit_loop(
-        &store,
-        "run-visit-retry-fallback",
-        temp.path(),
-        flow,
-        OutcomeStatus::Fail,
-        None,
-        Default::default(),
-    );
-    assert_eq!(result.current_node, "done", "{}", result.failure_reason);
-    assert_eq!(implement_runs(&calls), 3);
-}
-
-/// A failed goal gate whose retry target is exhausted still takes its exit
-/// route; the exit's goal-gate check then reports the visit limit.
-#[test]
-fn exhausted_retry_target_falls_back_to_a_goal_gate_exit() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(vec![edge("done", "", "")], Some("implement"));
-    flow.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
-        goal_gate: true,
-        retry_target: Some("implement".to_string()),
-        ..NodeRuntimeConfig::default()
-    });
-    let (result, calls) = run_visit_loop(
-        &store,
-        "run-visit-gate-exit",
-        temp.path(),
-        flow,
-        OutcomeStatus::Fail,
+        visit_loop_flow(&[("again", "implement"), ("done", "done")]),
+        |_| Outcome::error(FailureKind::Runtime, "not good enough", Some(false)),
         None,
         Default::default(),
     );
     assert_eq!(result.status, "failed");
-    assert_eq!(
-        result.failure_reason,
-        "visit_limit_reached: implement used all 3 visits; no other route from done"
-    );
-    assert_eq!(implement_runs(&calls), 3);
+    assert_eq!(result.failure_reason, "not good enough");
+    assert_eq!(result.current_node, "evaluate");
+    assert_eq!(calls, vec!["start", "implement", "evaluate"]);
+    assert_durably_failed(&store, "run-error-no-jump", "not good enough");
+    let status = latest_status(&store, "run-error-no-jump", "evaluate");
+    assert_eq!(status["status"], "error");
+    assert_eq!(status["decision"], "");
+    assert!(!events_of(&store, "run-error-no-jump")
+        .iter()
+        .any(
+            |event| event.event_type == "StageTransition" && event.payload["node_id"] == "evaluate"
+        ));
 }
 
-/// A failed node whose unconditional route into a conditional node is
-/// exhausted fails with the visit-limit reason, not its own failure.
+/// The reached exit's declared result decides the run outcome: a blocked
+/// decision to a failure exit completes the run with outcome failure and the
+/// exit's result name, carrying the deciding node's evidence.
 #[test]
-fn exhausted_unconditional_fail_route_reports_the_visit_limit() {
+fn reached_exit_declares_the_run_outcome_and_result() {
+    for (decision, exit, outcome, code) in [
+        ("done", "done", "success", "completed"),
+        ("blocked", "failed", "failure", "blocked"),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let mut flow = visit_loop_flow(&[("done", "done"), ("blocked", "failed")]);
+        flow.nodes.insert(
+            "failed".to_string(),
+            exit_node("blocked", ExitOutcome::Failure),
+        );
+        let (result, _) = run_visit_loop(
+            &store,
+            "run-exit-result",
+            temp.path(),
+            flow,
+            move |_| Outcome {
+                notes: "credentials are missing".to_string(),
+                ..Outcome::completed(decision)
+            },
+            None,
+            Default::default(),
+        );
+        assert_eq!(
+            result.status, "completed",
+            "{decision}: {}",
+            result.failure_reason
+        );
+        assert_eq!(result.current_node, exit);
+        assert_eq!(result.outcome.as_deref(), Some(outcome));
+        assert_eq!(result.outcome_reason_code.as_deref(), Some(code));
+        let message = format!("evaluate chose {decision}: credentials are missing");
+        assert_eq!(
+            result.outcome_reason_message.as_deref(),
+            Some(message.as_str())
+        );
+        let record = store
+            .read_run_meta("run-exit-result")
+            .unwrap()
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(record.status, "completed");
+        assert_eq!(record.outcome.as_deref(), Some(outcome));
+        assert_eq!(record.outcome_reason_code.as_deref(), Some(code));
+        assert_eq!(
+            record.outcome_reason_message.as_deref(),
+            Some(message.as_str())
+        );
+        let completed = events_of(&store, "run-exit-result")
+            .into_iter()
+            .find(|event| event.event_type == "PipelineCompleted")
+            .expect("PipelineCompleted");
+        assert_eq!(completed.payload["outcome"], outcome);
+        assert_eq!(completed.payload["outcome_reason_code"], code);
+    }
+}
+
+/// A decision into an exhausted intermediate target fails with that target's
+/// visit limit, naming the selecting node, not some later node.
+#[test]
+fn exhausted_intermediate_target_reports_the_visit_limit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(vec![edge("check", "", "")], None);
+    let mut flow = visit_loop_flow(&[("recheck", "check")]);
     flow.nodes.insert(
         "check".to_string(),
         FlowNode {
-            kind: NodeKind::Conditional,
-            config: Some(NodeConfig::Conditional {}),
             runtime: Some(NodeRuntimeConfig {
                 max_visits: Some(1),
                 ..NodeRuntimeConfig::default()
             }),
-            ..FlowNode::default()
+            ..agent("check", &[("done", "implement")])
         },
     );
-    flow.edges.push(FlowEdge {
-        from: "check".to_string(),
-        to: "implement".to_string(),
-        condition: "outcome=fail".to_string(),
-        ..FlowEdge::default()
-    });
     let (result, calls) = run_visit_loop(
         &store,
-        "run-visit-unconditional",
+        "run-visit-intermediate",
         temp.path(),
         flow,
-        OutcomeStatus::Fail,
+        |_| Outcome::completed("recheck"),
         None,
         Default::default(),
     );
+    let reason = visit_limit("evaluate", "recheck", "check", 1, 1);
     assert_eq!(result.status, "failed");
-    assert_eq!(
-        result.failure_reason,
-        "visit_limit_reached: check used all 1 visits; no other route from evaluate"
-    );
+    assert_eq!(result.failure_reason, reason);
     assert_eq!(implement_runs(&calls), 2);
+    assert_durably_failed(&store, "run-visit-intermediate", &reason);
 }
 
-/// A failed node with no retry target whose unconditional route is exhausted
-/// fails with the visit-limit reason, not its own failure.
+/// The first selection of an exhausted target fails at once.
 #[test]
-fn exhausted_unconditional_route_from_a_failed_node_reports_the_visit_limit() {
+fn exhausted_target_on_first_selection_reports_the_visit_limit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(vec![edge("implement", "", "")], None);
+    let mut flow = visit_loop_flow(&[("again", "implement")]);
     flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
         max_visits: Some(1),
         ..NodeRuntimeConfig::default()
     });
     let (result, calls) = run_visit_loop(
         &store,
-        "run-visit-fail-unconditional",
+        "run-visit-first",
         temp.path(),
         flow,
-        OutcomeStatus::Fail,
+        again,
         None,
         Default::default(),
     );
     assert_eq!(result.status, "failed");
     assert_eq!(
         result.failure_reason,
-        "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+        visit_limit("evaluate", "again", "implement", 1, 1)
     );
     assert_eq!(implement_runs(&calls), 1);
 }
 
-/// A failed node whose exhausted `outcome=fail` route leaves only an
-/// unconditional route, which failure routing does not take, fails with the
-/// visit-limit reason naming the exhausted target.
+/// With an exhausted loop target beside a route to another agent or to an
+/// exit, the exhausted decision still fails and the other target never runs.
 #[test]
-fn exhausted_fail_condition_beside_an_unconditional_route_reports_the_visit_limit() {
+fn exhausted_decision_beside_another_target_never_reaches_it() {
     for (target, kind) in [("polish", NodeKind::AgentTask), ("done", NodeKind::Exit)] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
-        let mut flow = visit_loop_flow(
-            vec![edge("implement", "", "outcome=fail"), edge(target, "", "")],
-            None,
-        );
+        let mut flow = visit_loop_flow(&[("again", "implement"), ("finish", target)]);
         flow.nodes.get_mut("implement").unwrap().runtime = Some(NodeRuntimeConfig {
             max_visits: Some(1),
             ..NodeRuntimeConfig::default()
         });
         if kind == NodeKind::AgentTask {
-            flow.nodes.insert(
-                target.to_string(),
-                FlowNode {
-                    kind,
-                    config: Some(NodeConfig::AgentTask {
-                        prompt: target.to_string(),
-                    }),
-                    ..FlowNode::default()
-                },
-            );
+            flow.nodes
+                .insert(target.to_string(), agent(target, &[("done", "done")]));
         }
         let (result, calls) = run_visit_loop(
             &store,
-            "run-visit-fail-condition",
+            "run-visit-beside",
             temp.path(),
             flow,
-            OutcomeStatus::Fail,
+            again,
             None,
             Default::default(),
         );
         assert_eq!(result.status, "failed", "{target}");
         assert_eq!(
             result.failure_reason,
-            "visit_limit_reached: implement used all 1 visits; no other route from evaluate"
+            visit_limit("evaluate", "again", "implement", 1, 1)
         );
         assert_eq!(implement_runs(&calls), 1);
         assert!(!calls.iter().any(|node| node == target), "{target}");
+        assert!(
+            !result.route_trace.contains(&target.to_string()),
+            "{target}"
+        );
     }
 }
 
-/// Runs `flow` with `evaluate` answering `evaluate_status` and pauses right
+/// Runs `flow` with `evaluate` answering `evaluate(n)` and pauses right
 /// after evaluate's third execution completes; returns the resume start.
 fn pause_after_third_evaluate(
     store: &RunStore,
     run_id: &str,
     workdir: &std::path::Path,
     flow: FlowDefinition,
-    evaluate_status: OutcomeStatus,
+    evaluate: impl Fn(usize) -> Outcome + 'static,
 ) -> attractor_runtime::ExecutionStart {
     let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen = calls.clone();
     let polled = calls.clone();
     let mut executor = PipelineExecutor::with_control(
         move |request: NodeExecutionRequest| {
-            seen.lock().unwrap().push(request.node_id.clone());
+            let mut seen = seen.lock().unwrap();
+            seen.push(request.node_id.clone());
             if request.node_id == "evaluate" {
-                return Ok(Outcome {
-                    failure_reason: "not good enough".to_string(),
-                    ..Outcome::new(evaluate_status)
-                });
+                let evaluations = seen.iter().filter(|node| *node == "evaluate").count();
+                return Ok(evaluate(evaluations));
             }
-            Ok(Outcome::new(OutcomeStatus::Success))
+            Ok(step(&request.node_id))
         },
         move || {
             let calls = polled.lock().unwrap();
@@ -2135,16 +2402,14 @@ fn pause_after_third_evaluate(
         },
     );
     let paused = executor
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+        .execute(execute_request(
+            store,
+            run_id,
+            workdir,
             flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: Default::default(),
-        })
+            None,
+            Default::default(),
+        ))
         .expect("execute");
     assert_eq!(paused.status, "paused");
     let meta = store.read_run_meta(run_id).unwrap().unwrap();
@@ -2163,29 +2428,21 @@ fn pause_after_third_evaluate(
 fn resume_routing_into_an_exhausted_target_fails() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
-    let start = pause_after_third_evaluate(
-        &store,
-        "run-visit-resume",
-        temp.path(),
-        flow(),
-        OutcomeStatus::Success,
-    );
+    let flow = || visit_loop_flow(&[("again", "implement")]);
+    let start = pause_after_third_evaluate(&store, "run-visit-resume", temp.path(), flow(), again);
 
     let (resumed, calls) = run_visit_loop(
         &store,
         "run-visit-resume",
         temp.path(),
         flow(),
-        OutcomeStatus::Success,
+        again,
         None,
         start,
     );
+    let reason = visit_limit("evaluate", "again", "implement", 3, 3);
     assert_eq!(resumed.status, "failed");
-    assert_eq!(
-        resumed.failure_reason,
-        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
-    );
+    assert_eq!(resumed.failure_reason, reason);
     assert!(calls.is_empty(), "{calls:?}");
     let record = store
         .read_run_meta("run-visit-resume")
@@ -2197,75 +2454,66 @@ fn resume_routing_into_an_exhausted_target_fails() {
     assert_eq!(record.last_error, resumed.failure_reason);
 }
 
-/// Recovery of a completed failed visit routes like uninterrupted execution:
-/// an exhausted conditional target falls through to the retry target.
+/// Recovery of a completed visit whose stored decision selects an exhausted
+/// target fails like uninterrupted execution: it neither re-asks the node
+/// (which would now choose `done`) nor takes the other route.
 #[test]
-fn resume_of_a_failed_visit_falls_back_to_retry_target() {
+fn resume_of_a_completed_visit_keeps_its_exhausted_decision() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], Some("done"));
-    let start = pause_after_third_evaluate(
-        &store,
-        "run-visit-resume-retry",
-        temp.path(),
-        flow(),
-        OutcomeStatus::Fail,
-    );
+    let flow = || visit_loop_flow(&[("again", "implement"), ("done", "done")]);
+    let start =
+        pause_after_third_evaluate(&store, "run-visit-resume-keep", temp.path(), flow(), again);
 
     let (resumed, calls) = run_visit_loop(
         &store,
-        "run-visit-resume-retry",
+        "run-visit-resume-keep",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        |_| Outcome::completed("done"),
         None,
         start,
     );
-    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
-    assert_eq!(resumed.current_node, "done");
+    let reason = visit_limit("evaluate", "again", "implement", 3, 3);
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(resumed.failure_reason, reason);
     assert!(calls.is_empty(), "{calls:?}");
+    assert!(!resumed.route_trace.contains(&"done".to_string()));
+    assert_durably_failed(&store, "run-visit-resume-keep", &reason);
 }
 
-/// Recovery of a completed failed visit skips an exhausted retry target for
-/// an available fallback retry target.
+/// Recovery of a completed visit takes its stored transition exactly once,
+/// without executing the node again.
 #[test]
-fn resume_of_a_failed_visit_falls_back_to_fallback_retry_target() {
+fn resume_of_a_completed_visit_takes_its_stored_transition_once() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || {
-        let mut flow = visit_loop_flow(
-            vec![edge("implement", "Fix", "outcome=fail")],
-            Some("implement"),
-        );
-        flow.nodes
-            .get_mut("evaluate")
-            .unwrap()
-            .runtime
-            .as_mut()
-            .unwrap()
-            .fallback_retry_target = Some("done".to_string());
-        flow
-    };
+    let flow = || visit_loop_flow(&[("again", "implement"), ("done", "done")]);
     let start = pause_after_third_evaluate(
         &store,
-        "run-visit-resume-fallback",
+        "run-visit-resume-done",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        |call| Outcome::completed(if call == 3 { "done" } else { "again" }),
     );
 
     let (resumed, calls) = run_visit_loop(
         &store,
-        "run-visit-resume-fallback",
+        "run-visit-resume-done",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        again,
         None,
         start,
     );
     assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
     assert_eq!(resumed.current_node, "done");
     assert!(calls.is_empty(), "{calls:?}");
+    let transitions = events_of(&store, "run-visit-resume-done")
+        .into_iter()
+        .filter(|event| event.event_type == "StageTransition" && event.payload["target"] == "done")
+        .count();
+    assert_eq!(transitions, 1);
 }
 
 /// Recovery from a checkpoint taken after routing into a node runs that
@@ -2274,14 +2522,14 @@ fn resume_of_a_failed_visit_falls_back_to_fallback_retry_target() {
 fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("implement", "", "")], None);
+    let flow = || visit_loop_flow(&[("again", "implement")]);
     // Six steps end routed into evaluate's third visit, not yet executed.
     let (paused, _) = run_visit_loop(
         &store,
         "run-visit-pending",
         temp.path(),
         flow(),
-        OutcomeStatus::Success,
+        again,
         Some(6),
         Default::default(),
     );
@@ -2296,7 +2544,7 @@ fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
         "run-visit-pending",
         temp.path(),
         flow(),
-        OutcomeStatus::Success,
+        again,
         None,
         attractor_runtime::ExecutionStart::Resume {
             paths: meta.paths,
@@ -2306,7 +2554,7 @@ fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
     assert_eq!(resumed.status, "failed");
     assert_eq!(
         resumed.failure_reason,
-        "visit_limit_reached: implement used all 3 visits; no other route from evaluate"
+        visit_limit("evaluate", "again", "implement", 3, 3)
     );
     assert_eq!(calls, vec!["evaluate"]);
 }
@@ -2317,11 +2565,12 @@ fn resume_runs_a_pending_visit_to_a_previously_completed_node() {
 fn visit_counts_survive_resume_and_continue() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("implement", "Fix", "outcome=fail")], None);
+    let flow = || visit_loop_flow(&[("again", "implement")]);
     let read_checkpoint = |run_id: &str| {
         let meta = store.read_run_meta(run_id).unwrap().unwrap();
         (meta.paths, meta.checkpoint.unwrap())
     };
+    let exhausted = visit_limit("evaluate", "again", "implement", 3, 3);
 
     // Pause after routing back into implement: two of its three visits used.
     // Resume, as crash recovery does, and continue both start from here.
@@ -2330,7 +2579,7 @@ fn visit_counts_survive_resume_and_continue() {
         "run-visits",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        again,
         Some(3),
         Default::default(),
     );
@@ -2344,7 +2593,7 @@ fn visit_counts_survive_resume_and_continue() {
         "run-visits",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        again,
         None,
         attractor_runtime::ExecutionStart::Resume {
             paths,
@@ -2352,9 +2601,7 @@ fn visit_counts_survive_resume_and_continue() {
         },
     );
     assert_eq!(resumed.status, "failed");
-    assert!(resumed
-        .failure_reason
-        .starts_with("visit_limit_reached: implement"));
+    assert_eq!(resumed.failure_reason, exhausted);
     // The checkpointed second visit is pending: it runs, then the third.
     assert_eq!(
         calls,
@@ -2367,7 +2614,7 @@ fn visit_counts_survive_resume_and_continue() {
         "run-visits-continued",
         temp.path(),
         flow(),
-        OutcomeStatus::Fail,
+        again,
         None,
         attractor_runtime::ExecutionStart::FromCheckpoint {
             start_node: "implement".to_string(),
@@ -2376,9 +2623,7 @@ fn visit_counts_survive_resume_and_continue() {
         },
     );
     assert_eq!(continued.status, "failed");
-    assert!(continued
-        .failure_reason
-        .starts_with("visit_limit_reached: implement"));
+    assert_eq!(continued.failure_reason, exhausted);
     assert_eq!(calls, vec!["implement", "evaluate"]);
 }
 
@@ -2393,24 +2638,15 @@ fn max_entries_is_rejected_by_name() {
 
 #[test]
 fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
-    // Exercise all completion callers: dead end, successful exit, and failed goal gate.
-    for (with_exit, failed_goal) in [(false, false), (true, false), (true, true)] {
+    // Exercise every finalization caller: an undeclared decision, a reached
+    // exit, and an execution error.
+    for (with_exit, task_errors) in [(false, false), (true, false), (true, true)] {
         let temp = tempfile::tempdir().unwrap();
         let store = RunStore::for_runs_dir(temp.path());
-        let mut flow = linear_flow(FlowNode {
-            kind: NodeKind::AgentTask,
-            config: Some(NodeConfig::AgentTask {
-                prompt: "blocked".into(),
-            }),
-            runtime: Some(NodeRuntimeConfig {
-                goal_gate: failed_goal,
-                ..NodeRuntimeConfig::default()
-            }),
-            ..FlowNode::default()
-        });
+        let mut flow = linear_flow(agent("blocked", &[]));
         if !with_exit {
             flow.nodes.remove("done");
-            flow.edges.retain(|edge| edge.from != "task");
+            flow.nodes.get_mut("task").unwrap().routes.clear();
         }
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -2424,11 +2660,15 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
                     release_rx
                         .recv_timeout(std::time::Duration::from_secs(30))
                         .unwrap();
-                    if failed_goal {
-                        return Ok(Outcome::new(OutcomeStatus::Fail));
+                    if task_errors {
+                        return Ok(Outcome::error(
+                            FailureKind::Runtime,
+                            "task failed",
+                            Some(false),
+                        ));
                     }
                 }
-                Ok(Outcome::new(OutcomeStatus::Success))
+                Ok(step(&request.node_id))
             })
             .execute(ExecuteRunRequest {
                 store: executor_store,
@@ -2452,7 +2692,7 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
         let result = worker.join().unwrap().unwrap();
         assert_eq!(
             result.status, "canceled",
-            "with_exit={with_exit}, failed_goal={failed_goal}"
+            "with_exit={with_exit}, task_errors={task_errors}"
         );
         assert_eq!(result.failure_reason, "aborted_by_user");
         let paths = store.find_run_root("cancel-final-node").unwrap().unwrap();
@@ -2485,40 +2725,38 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
     for status in ["completed", "failed"] {
         let temp = tempfile::tempdir().expect("tempdir");
         write_child_flow(&temp.path().join("child"), child_flow_source());
-        let node = FlowNode {
-            kind: NodeKind::Subflow,
-            config: Some(NodeConfig::Subflow {
-                flow_ref: "child".to_string(),
-                input_map: BTreeMap::new(),
-                output_map: BTreeMap::from([
-                    ("context.child.a".to_string(), "context.a".to_string()),
-                    ("context.child.b".to_string(), "context.b".to_string()),
-                ]),
-            }),
-            contracts: Some(NodeContracts {
-                writes_context: vec!["context.a".to_string(), "context.b".to_string()],
-                ..NodeContracts::default()
-            }),
-            manager: Some(ManagerLoopConfig {
+        let mut node = subflow_node(
+            BTreeMap::new(),
+            ManagerLoopConfig {
                 max_cycles: Some(1),
                 child_autostart: Some(true),
                 ..ManagerLoopConfig::default()
-            }),
-            ..FlowNode::default()
-        };
-        let flow = FlowDefinition {
-            id: "output-map".to_string(),
-            nodes: [("run_child".to_string(), node.clone())]
-                .into_iter()
-                .collect(),
-            ..FlowDefinition::default()
-        };
+            },
+        );
+        if let Some(NodeConfig::Subflow { output_map, .. }) = node.config.as_mut() {
+            *output_map = BTreeMap::from([
+                ("context.child.a".to_string(), "context.a".to_string()),
+                ("context.child.b".to_string(), "context.b".to_string()),
+            ]);
+        }
+        node.contracts = Some(NodeContracts {
+            writes_context: vec!["context.a".to_string(), "context.b".to_string()],
+            ..NodeContracts::default()
+        });
+        let flow = flow_of("output-map", vec![("run_child", node.clone())]);
         let mut runner = RuntimeHandlerRunner::new();
         runner.set_child_run_launcher(move |request| ChildRunResult {
-            run_id: request.child_run_id,
-            status: status.to_string(),
             context: ContextMap::from([("context.child.a".to_string(), json!("A"))]),
-            ..ChildRunResult::default()
+            failure_reason: "child broke".to_string(),
+            ..if status == "completed" {
+                completed_child(&request.child_run_id)
+            } else {
+                ChildRunResult {
+                    run_id: request.child_run_id,
+                    status: status.to_string(),
+                    ..ChildRunResult::default()
+                }
+            }
         });
         let parent_context = ContextMap::from([
             ("context.b".to_string(), json!("stale")),
@@ -2530,24 +2768,14 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
         let node_attrs =
             attractor_runtime::flow_runtime::node_attrs_for_handler("run_child", &node);
         let outcome = runner
-            .execute(NodeExecutionRequest {
-                node_id: "run_child".to_string(),
-                stage_index: 0,
-                attempt: 0,
-                context: parent_context.clone(),
-                prompt: String::new(),
-                node,
-                node_attrs: node_attrs.clone(),
-                flow,
-                outgoing_edges: Vec::new(),
-                run_paths: None,
-                run_workdir: temp.path().to_path_buf(),
-                run_id: "parent-run".to_string(),
-                fallback_model: None,
-                fallback_provider: None,
-                fallback_profile: None,
-                fallback_reasoning_effort: None,
-            })
+            .execute(node_request(
+                &flow,
+                "run_child",
+                parent_context.clone(),
+                None,
+                temp.path(),
+                "parent-run",
+            ))
             .expect("subflow outcome");
         assert_eq!(outcome.context_updates["context.a"], json!("A"), "{status}");
         assert_eq!(
@@ -2555,6 +2783,18 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
             json!(null),
             "{status}"
         );
+        // A completed child maps its result to a decision; a failed child is
+        // an execution error, never a business result.
+        if status == "completed" {
+            assert_eq!(outcome.status, OutcomeStatus::Completed, "{outcome:?}");
+            assert_eq!(outcome.decision, "done");
+        } else {
+            assert_eq!(outcome.status, OutcomeStatus::Error, "{outcome:?}");
+            assert!(
+                outcome.failure_reason.contains("child broke"),
+                "{outcome:?}"
+            );
+        }
 
         // The parent's write contract admits them, and a null clears the key.
         let mut context = attractor_core::AttractorContext::from_map(parent_context).unwrap();
@@ -2565,50 +2805,38 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
             &outcome,
         )
         .expect("apply");
-        assert_ne!(
-            applied.failure_kind,
-            Some(attractor_core::FailureKind::Contract)
-        );
+        assert_ne!(applied.failure_kind, Some(FailureKind::Contract));
         assert_eq!(context.get("context.a"), Some(&json!("A")));
         assert_eq!(context.get("context.b"), None, "{status}");
     }
 }
 
+// ---------------------------------------------------------------------------
+// Execution errors: bounded retries, then failure, never a route
+// ---------------------------------------------------------------------------
+
 /// Resumes `visit_loop_flow` paused while routed into evaluate's first visit
-/// (no durable outcome), with evaluate's `outcome=fail` route leading back to
-/// implement. Evaluate raises a retryable runtime failure on its first
-/// `runtime_failures` calls, then succeeds. Returns the result, the node ids
-/// executed after resume, and the run id.
+/// (no durable outcome). Evaluate raises a retryable runtime failure on its
+/// first `runtime_failures` calls, then decides `done`. Returns the result
+/// and the node ids executed after resume.
 fn resume_into_runtime_failure(
     store: &RunStore,
     workdir: &std::path::Path,
     run_id: &str,
     max_retries: Option<u64>,
-    allow_partial: bool,
     runtime_failures: usize,
 ) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
-    let mut flow = visit_loop_flow(
-        vec![
-            edge("implement", "Fix", "outcome=fail"),
-            edge("done", "", ""),
-        ],
-        None,
-    );
-    let evaluate = flow.nodes.get_mut("evaluate").unwrap();
-    evaluate.retry = Some(attractor_core::RetryConfig {
+    let mut flow = visit_loop_flow(&[("again", "implement"), ("done", "done")]);
+    flow.nodes.get_mut("evaluate").unwrap().retry = Some(attractor_core::RetryConfig {
         policy: None,
         max_retries,
-    });
-    evaluate.runtime = Some(NodeRuntimeConfig {
-        allow_partial,
-        ..NodeRuntimeConfig::default()
     });
     let (paused, _) = run_visit_loop(
         store,
         run_id,
         workdir,
         flow.clone(),
-        OutcomeStatus::Success,
+        |_| Outcome::completed("done"),
         Some(2),
         Default::default(),
     );
@@ -2628,22 +2856,20 @@ fn resume_into_runtime_failure(
                 "failed to read activity transcript",
             ));
         }
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(step(&request.node_id))
     });
     let result = executor
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new(run_id, workdir.to_string_lossy()),
+        .execute(execute_request(
+            store,
+            run_id,
+            workdir,
             flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: attractor_runtime::ExecutionStart::Resume {
+            None,
+            attractor_runtime::ExecutionStart::Resume {
                 paths: meta.paths,
                 checkpoint,
             },
-        })
+        ))
         .expect("resume");
     let calls = calls.lock().unwrap().clone();
     (result, calls)
@@ -2651,37 +2877,23 @@ fn resume_into_runtime_failure(
 
 #[test]
 fn resumed_runtime_failure_is_retried_once_without_configured_retries() {
-    for allow_partial in [false, true] {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let store = RunStore::for_runs_dir(temp.path().join("runs"));
-        let (result, calls) =
-            resume_into_runtime_failure(&store, temp.path(), "run-rt-once", None, allow_partial, 1);
-        assert_eq!(result.status, "completed", "{}", result.failure_reason);
-        assert_eq!(result.current_node, "done");
-        assert_eq!(calls, vec!["evaluate", "evaluate"]);
-    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (result, calls) = resume_into_runtime_failure(&store, temp.path(), "run-rt-once", None, 1);
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.current_node, "done");
+    assert_eq!(calls, vec!["evaluate", "evaluate"]);
 }
 
 #[test]
-fn exhausted_runtime_failure_fails_the_run_instead_of_following_a_fail_route() {
-    for (max_retries, allow_partial, expected_attempts) in [
-        (None, false, 2),
-        (Some(0), true, 2),
-        (Some(3), false, 4),
-        (Some(3), true, 4),
-    ] {
+fn exhausted_runtime_failure_fails_the_run_instead_of_following_any_route() {
+    for (max_retries, expected_attempts) in [(None, 2), (Some(0), 2), (Some(3), 4)] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
         let run_id = "run-rt-exhausted";
-        let (result, calls) = resume_into_runtime_failure(
-            &store,
-            temp.path(),
-            run_id,
-            max_retries,
-            allow_partial,
-            usize::MAX,
-        );
-        let case = format!("max_retries={max_retries:?} allow_partial={allow_partial}");
+        let (result, calls) =
+            resume_into_runtime_failure(&store, temp.path(), run_id, max_retries, usize::MAX);
+        let case = format!("max_retries={max_retries:?}");
         assert_eq!(result.status, "failed", "{case}");
         assert_eq!(
             result.failure_reason, "failed to read activity transcript",
@@ -2698,89 +2910,79 @@ fn exhausted_runtime_failure_fails_the_run_instead_of_following_a_fail_route() {
         );
         assert_eq!(meta.record.unwrap().status, "failed", "{case}");
 
-        let execution = store
-            .list_node_executions(&meta.paths)
-            .unwrap()
-            .into_iter()
-            .filter(|execution| execution.node_id == "evaluate")
-            .max_by_key(|execution| execution.attempt)
-            .expect("evaluate execution");
-        let status: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(
-                store
-                    .node_execution_root(
-                        &meta.paths,
-                        "evaluate",
-                        execution.stage_index,
-                        execution.attempt,
-                    )
-                    .unwrap()
-                    .join("status.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(status["outcome"], "fail", "{case}");
+        let status = latest_status(&store, run_id, "evaluate");
+        assert_eq!(status["status"], "error", "{case}");
+        assert_eq!(status["decision"], "", "{case}");
         assert_eq!(status["failure_kind"], "runtime", "{case}");
+        assert_eq!(status["tolerable"], true, "{case}");
         assert_eq!(status["retryable"], true, "{case}");
         assert_eq!(
             status["failure_reason"], "failed to read activity transcript",
             "{case}"
         );
+        assert!(status.get("outcome").is_none(), "{case}: {status}");
+        let retries = events_of(&store, run_id)
+            .into_iter()
+            .filter(|event| event.event_type == "StageRetrying")
+            .count();
+        assert_eq!(retries, expected_attempts - 1, "{case}");
     }
 }
 
+/// A negative judgment is a completed decision: it is never retried and
+/// follows its route. A contract error is never retried either, even with
+/// retries configured, and fails the run instead of being accepted.
 #[test]
-fn ordinary_failures_keep_their_retry_count_routes_and_partial_acceptance() {
+fn negative_decisions_route_without_retry_and_contract_errors_never_retry() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(
-        vec![
-            edge("implement", "Fix", "outcome=fail"),
-            edge("done", "", ""),
-        ],
-        None,
-    );
+    let mut flow = visit_loop_flow(&[("again", "implement"), ("done", "done")]);
     flow.nodes.get_mut("implement").unwrap().runtime = None;
-    let (result, calls) = run_visit_loop(
-        &store,
-        "run-verdict-fail",
-        temp.path(),
-        flow.clone(),
-        OutcomeStatus::Fail,
-        Some(4),
-        Default::default(),
-    );
-    // A review verdict is not retried and follows its failure route.
-    assert_eq!(result.status, "paused");
-    assert_eq!(calls, vec!["start", "implement", "evaluate", "implement"]);
-
-    let mut partial = flow;
-    partial.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
-        allow_partial: true,
-        ..NodeRuntimeConfig::default()
+    flow.nodes.get_mut("evaluate").unwrap().retry = Some(attractor_core::RetryConfig {
+        policy: None,
+        max_retries: Some(2),
     });
     let (result, calls) = run_visit_loop(
         &store,
-        "run-verdict-partial",
+        "run-verdict-again",
         temp.path(),
-        partial,
-        OutcomeStatus::Retry,
+        flow.clone(),
+        again,
+        Some(4),
+        Default::default(),
+    );
+    assert_eq!(result.status, "paused");
+    assert_eq!(calls, vec!["start", "implement", "evaluate", "implement"]);
+
+    let (result, calls) = run_visit_loop(
+        &store,
+        "run-verdict-contract",
+        temp.path(),
+        flow,
+        |_| {
+            Outcome::error(
+                FailureKind::Contract,
+                "invalid decision envelope: decision \"partial\" is not declared",
+                None,
+            )
+        },
         None,
         Default::default(),
     );
-    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.status, "failed");
     assert_eq!(
-        result.node_outcomes["evaluate"].status,
-        OutcomeStatus::PartialSuccess
+        result.failure_reason,
+        "invalid decision envelope: decision \"partial\" is not declared"
     );
     assert_eq!(calls, vec!["start", "implement", "evaluate"]);
+    assert!(!events_of(&store, "run-verdict-contract")
+        .iter()
+        .any(|event| event.event_type == "StageRetrying"));
 }
 
 #[test]
-fn parallel_branch_runtime_failure_fails_the_branch_instead_of_following_a_fail_route() {
-    let mut flow = looping_branch_flow(None, true);
-    flow.edges[1].condition = "outcome=fail".to_string();
+fn parallel_branch_runtime_failure_fails_the_branch_after_its_retry() {
+    let flow = looping_branch_flow(None, true);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut runner = RuntimeHandlerRunner::new();
     let counter = calls.clone();
@@ -2791,24 +2993,35 @@ fn parallel_branch_runtime_failure_fails_the_branch_instead_of_following_a_fail_
         ))
     });
     let result = execute_looping_branch(&mut runner, &calls, &flow);
-    assert_eq!(result["status"], "failed", "{result}");
-    assert_eq!(result["work_calls"], 1, "{result}");
+    assert_eq!(result["status"], "error", "{result}");
+    // The branch applies the root's retry rule: one automatic retry.
+    assert_eq!(result["work_calls"], 2, "{result}");
     assert_eq!(
-        result["failure_reason"],
+        result["error"]["reason"],
         "failed to read activity transcript"
     );
+    assert_eq!(result["error"]["kind"], "runtime");
+    assert_eq!(result["error"]["attempts"], 2);
+    assert_eq!(result["decisions"], json!([]));
 
-    // A verdict failure still follows its outcome=fail route.
+    // A negative decision loops, then the branch reaches the join.
     let counter = calls.clone();
     runner.register_handler_fn(HANDLER_CODERGEN, move |_| {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-            return Ok(Outcome::new(OutcomeStatus::Fail));
+            return Ok(Outcome::completed("again"));
         }
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(Outcome::completed("done"))
     });
     let result = execute_looping_branch(&mut runner, &calls, &flow);
     assert_eq!(result["status"], "completed", "{result}");
     assert_eq!(result["work_calls"], 2, "{result}");
+    assert_eq!(
+        result["decisions"],
+        json!([
+            {"node": "work", "decision": "again", "target": "work"},
+            {"node": "work", "decision": "done", "target": "join"}
+        ])
+    );
 }
 
 /// The failed run's durable record, result and events all carry `reason`,
@@ -2835,36 +3048,32 @@ fn assert_durably_failed(store: &RunStore, run_id: &str, reason: &str) {
         .any(|event| event.event_type == "PipelineCompleted"));
 }
 
-/// A result no route matches fails the run with the node, its actual result
-/// and every declared route, keeps the recorded outcome, and never reaches a
-/// later node; a matching route still continues.
+// ---------------------------------------------------------------------------
+// Undeclared decisions never succeed
+// ---------------------------------------------------------------------------
+
+/// A decision the node does not declare fails the run with the node, the
+/// decision and every declared route, keeps the recorded decision, and never
+/// reaches a later node; a declared decision still continues.
 #[test]
-fn unmatched_result_fails_the_run_with_a_route_diagnostic() {
-    for (status, condition) in [
-        (OutcomeStatus::Success, "outcome=partial_success"),
-        (OutcomeStatus::PartialSuccess, "outcome=success"),
-        (OutcomeStatus::Skipped, "outcome=success"),
-    ] {
+fn undeclared_decision_fails_the_run_with_a_route_diagnostic() {
+    for decision in ["partial", "", "Done"] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
         let (result, calls) = run_visit_loop(
             &store,
             "run-unmatched",
             temp.path(),
-            visit_loop_flow(vec![edge("done", "Done", condition)], None),
-            status,
+            visit_loop_flow(&[("done", "done")]),
+            move |_| Outcome::completed(decision),
             None,
             Default::default(),
         );
-        let reason = format!(
-            "no_matching_route: node \"evaluate\" result status \"{}\" label \"Again\"; \
-             routes [-> \"done\" condition \"{condition}\" label \"Done\" weight 0]",
-            status.as_str()
-        );
-        assert_eq!(result.status, "failed", "{status:?}");
+        let reason = no_matching_route("evaluate", decision, &[("done", "done")]);
+        assert_eq!(result.status, "failed", "{decision:?}");
         assert_eq!(result.failure_reason, reason);
         assert_eq!(result.current_node, "evaluate");
-        assert_eq!(result.node_outcomes["evaluate"].status, status);
+        assert_eq!(result.node_outcomes["evaluate"].decision, decision);
         assert_eq!(calls, vec!["start", "implement", "evaluate"]);
         assert_durably_failed(&store, "run-unmatched", &reason);
         let checkpoint = store
@@ -2873,15 +3082,17 @@ fn unmatched_result_fails_the_run_with_a_route_diagnostic() {
             .unwrap()
             .checkpoint
             .unwrap();
-        assert_eq!(checkpoint.context["outcome"], status.as_str());
+        assert_eq!(
+            checkpoint.context["_attractor.node_outcomes"]["evaluate"],
+            json!({"status": "completed", "decision": decision})
+        );
 
-        let matching = format!("outcome={}", status.as_str());
         let (result, _) = run_visit_loop(
             &store,
             "run-matched",
             temp.path(),
-            visit_loop_flow(vec![edge("done", "Done", &matching)], None),
-            status,
+            visit_loop_flow(&[("done", "done")]),
+            |_| Outcome::completed("done"),
             None,
             Default::default(),
         );
@@ -2890,164 +3101,113 @@ fn unmatched_result_fails_the_run_with_a_route_diagnostic() {
     }
 }
 
-/// A failed or retry-exhausted result without a route keeps its own reason
-/// ahead of the unmatched-route details; allow_partial's coerced partial
-/// result is unmatched like any other.
+/// Execution errors keep their own reason and never consult the route map,
+/// whatever their kind; an error without a reason fails as stage_failed.
 #[test]
-fn unmatched_failed_and_retry_results_keep_their_reason() {
-    let routes = "routes [-> \"done\" condition \"outcome=success\" label \"Done\" weight 0]";
-    for (status, allow_partial, reason) in [
+fn execution_errors_keep_their_reason_without_route_details() {
+    for (outcome, reason) in [
         (
-            OutcomeStatus::Fail,
-            false,
-            format!("not good enough; no_matching_route: node \"evaluate\" result status \"fail\" label \"Again\"; {routes}"),
+            Outcome::error(FailureKind::Runtime, "not good enough", Some(false)),
+            "not good enough",
         ),
         (
-            OutcomeStatus::Retry,
-            false,
-            format!("max retries exceeded; no_matching_route: node \"evaluate\" result status \"fail\" label \"Again\"; {routes}"),
+            Outcome::error(FailureKind::Contract, "malformed envelope", None),
+            "malformed envelope",
         ),
         (
-            OutcomeStatus::Retry,
-            true,
-            format!("no_matching_route: node \"evaluate\" result status \"partial_success\" label \"Again\"; {routes}"),
+            Outcome::error(FailureKind::Runtime, "", Some(false)),
+            "stage_failed",
         ),
     ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
-        let mut flow = visit_loop_flow(vec![edge("done", "Done", "outcome=success")], None);
-        flow.nodes.get_mut("evaluate").unwrap().runtime = Some(NodeRuntimeConfig {
-            allow_partial,
-            ..NodeRuntimeConfig::default()
-        });
         let (result, calls) = run_visit_loop(
             &store,
-            "run-unmatched-fail",
+            "run-error-reason",
             temp.path(),
-            flow,
-            status,
+            visit_loop_flow(&[("done", "done")]),
+            move |_| outcome.clone(),
             None,
             Default::default(),
         );
-        assert_eq!(result.status, "failed", "{status:?}");
+        assert_eq!(result.status, "failed", "{reason}");
         assert_eq!(result.failure_reason, reason);
+        assert!(!result.failure_reason.contains("no_matching_route"));
         assert_eq!(calls, vec!["start", "implement", "evaluate"]);
-        assert_durably_failed(&store, "run-unmatched-fail", &reason);
+        assert_durably_failed(&store, "run-error-reason", reason);
     }
 }
 
-/// A conditional node routes on the result it inherits; the diagnostic names
-/// both its actual and its effective result.
-#[test]
-fn unmatched_conditional_node_reports_its_effective_result() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let mut flow = visit_loop_flow(vec![edge("done", "", "outcome=success")], None);
-    flow.nodes.get_mut("evaluate").unwrap().kind = NodeKind::Conditional;
-    flow.nodes.get_mut("evaluate").unwrap().config = None;
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let seen = calls.clone();
-    let result = PipelineExecutor::new(move |request: NodeExecutionRequest| {
-        seen.lock().unwrap().push(request.node_id.clone());
-        if request.node_id == "implement" {
-            return Ok(Outcome {
-                preferred_label: "Unfinished".to_string(),
-                ..Outcome::new(OutcomeStatus::PartialSuccess)
-            });
-        }
-        Ok(Outcome::new(OutcomeStatus::Success))
-    })
-    .execute(ExecuteRunRequest {
-        store: store.clone(),
-        record: RunRecord::new("run-conditional", temp.path().to_string_lossy()),
-        flow,
-        flow_definition_json: None,
-        launch_context: LaunchContext::empty(),
-        runtime_context: ContextMap::new(),
-        max_steps: None,
-        start: Default::default(),
-    })
-    .expect("execute");
-    let reason = "no_matching_route: node \"evaluate\" result status \"success\" label \"\"; \
-                  effective result status \"partial_success\" label \"Unfinished\"; \
-                  routes [-> \"done\" condition \"outcome=success\" label \"\" weight 0]";
-    assert_eq!(result.status, "failed");
-    assert_eq!(result.failure_reason, reason);
-    assert_eq!(
-        *calls.lock().unwrap(),
-        vec!["start", "implement", "evaluate"]
-    );
-    assert_durably_failed(&store, "run-conditional", reason);
-}
-
-/// Only an exit ends a run successfully: a route-free non-exit leaf fails.
+/// Only an exit ends a run: a route-free non-exit leaf fails with the
+/// unmatched decision, and an explicit exit completes with its result.
 #[test]
 fn non_exit_leaf_fails_while_explicit_exit_succeeds() {
     for with_exit in [false, true] {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
-        let mut flow = linear_flow(FlowNode {
-            kind: NodeKind::AgentTask,
-            config: Some(NodeConfig::AgentTask {
-                prompt: "task".into(),
-            }),
-            ..FlowNode::default()
-        });
+        let mut flow = linear_flow(agent("task", &[]));
         if !with_exit {
-            flow.edges.retain(|edge| edge.from != "task");
+            flow.nodes.get_mut("task").unwrap().routes.clear();
         }
-        let result = PipelineExecutor::new(|_: NodeExecutionRequest| {
-            Ok(Outcome::new(OutcomeStatus::Success))
-        })
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new("run-leaf", temp.path().to_string_lossy()),
-            flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: Default::default(),
-        })
-        .expect("execute");
+        let result =
+            PipelineExecutor::new(|request: NodeExecutionRequest| Ok(step(&request.node_id)))
+                .execute(execute_request(
+                    &store,
+                    "run-leaf",
+                    temp.path(),
+                    flow,
+                    None,
+                    Default::default(),
+                ))
+                .expect("execute");
         if with_exit {
             assert_eq!(result.status, "completed", "{}", result.failure_reason);
             assert_eq!(result.current_node, "done");
+            assert_eq!(result.outcome.as_deref(), Some("success"));
+            assert_eq!(result.outcome_reason_code.as_deref(), Some("completed"));
             continue;
         }
-        let reason =
-            "no_matching_route: node \"task\" result status \"success\" label \"\"; routes []";
+        let reason = no_matching_route("task", "done", &[]);
         assert_eq!(result.status, "failed");
         assert_eq!(result.failure_reason, reason);
-        assert_durably_failed(&store, "run-leaf", reason);
+        assert_durably_failed(&store, "run-leaf", &reason);
     }
 }
 
-/// An exhausted route keeps reporting the visit limit, not an unmatched result.
+/// Dispatch is exact: a route's display label or its target's node ID is
+/// not a decision, so neither selects the route.
 #[test]
-fn visit_limit_takes_precedence_over_an_unmatched_result() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let (result, calls) = run_visit_loop(
-        &store,
-        "run-visit-precedence",
-        temp.path(),
-        visit_loop_flow(
-            vec![
-                edge("implement", "Again", ""),
-                edge("done", "Done", "outcome=success"),
-            ],
+fn labels_and_target_ids_are_not_decisions() {
+    for decision in ["Again", "implement", " again", "AGAIN"] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let mut flow = visit_loop_flow(&[("again", "implement"), ("done", "done")]);
+        flow.nodes
+            .get_mut("evaluate")
+            .unwrap()
+            .routes
+            .get_mut("again")
+            .unwrap()
+            .label = "Again".to_string();
+        let (result, calls) = run_visit_loop(
+            &store,
+            "run-label",
+            temp.path(),
+            flow,
+            move |_| Outcome::completed(decision),
             None,
-        ),
-        OutcomeStatus::PartialSuccess,
-        None,
-        Default::default(),
-    );
-    let reason = "visit_limit_reached: implement used all 3 visits; no other route from evaluate";
-    assert_eq!(result.status, "failed");
-    assert_eq!(result.failure_reason, reason);
-    assert_eq!(implement_runs(&calls), 3);
-    assert_durably_failed(&store, "run-visit-precedence", reason);
+            Default::default(),
+        );
+        let reason = no_matching_route(
+            "evaluate",
+            decision,
+            &[("again", "implement"), ("done", "done")],
+        );
+        assert_eq!(result.status, "failed", "{decision:?}");
+        assert_eq!(result.failure_reason, reason);
+        assert_eq!(implement_runs(&calls), 1, "{decision:?}");
+        assert_durably_failed(&store, "run-label", &reason);
+    }
 }
 
 /// Runs `flow` with `outcome_for` answering each node, pauses right after
@@ -3076,16 +3236,14 @@ fn pause_after_evaluate_then_resume(
                 .then_some(attractor_runtime::ExecutionControlAction::Pause)
         },
     )
-    .execute(ExecuteRunRequest {
-        store: store.clone(),
-        record: RunRecord::new(run_id, workdir.to_string_lossy()),
-        flow: flow(),
-        flow_definition_json: None,
-        launch_context: LaunchContext::empty(),
-        runtime_context: ContextMap::new(),
-        max_steps: None,
-        start: Default::default(),
-    })
+    .execute(execute_request(
+        store,
+        run_id,
+        workdir,
+        flow(),
+        None,
+        Default::default(),
+    ))
     .expect("execute");
     assert_eq!(paused.status, "paused");
     let meta = store.read_run_meta(run_id).unwrap().unwrap();
@@ -3098,64 +3256,54 @@ fn pause_after_evaluate_then_resume(
         seen.lock().unwrap().push(request.node_id.clone());
         Ok(outcome_for(&request.node_id))
     })
-    .execute(ExecuteRunRequest {
-        store: store.clone(),
-        record: RunRecord::new(run_id, workdir.to_string_lossy()),
-        flow: flow(),
-        flow_definition_json: None,
-        launch_context: LaunchContext::empty(),
-        runtime_context: ContextMap::new(),
-        max_steps: None,
-        start: attractor_runtime::ExecutionStart::Resume {
+    .execute(execute_request(
+        store,
+        run_id,
+        workdir,
+        flow(),
+        None,
+        attractor_runtime::ExecutionStart::Resume {
             paths: meta.paths,
             checkpoint,
         },
-    })
+    ))
     .expect("resume");
     let resumed_calls = resumed_calls.lock().unwrap().clone();
     (resumed, resumed_calls)
 }
 
-/// Recovery of a completed visit whose result matches no route fails the run
+/// Recovery of a completed visit whose decision is undeclared fails the run
 /// from the stored visit, without executing the node again, with the same
 /// reason uninterrupted execution gives.
 #[test]
-fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
-    let routes = "routes [-> \"done\" condition \"outcome=success\" label \"Done\" weight 0]";
-    let cases: [(fn(&str) -> Outcome, String); 2] = [
+fn resume_of_an_undeclared_completed_visit_fails_without_reexecution() {
+    let cases: [(fn(&str) -> Outcome, &str); 2] = [
         (
-            |node| {
-                Outcome::new(if node == "evaluate" {
-                    OutcomeStatus::PartialSuccess
-                } else {
-                    OutcomeStatus::Success
-                })
+            |node| match node {
+                "evaluate" => Outcome::completed("partial"),
+                other => step(other),
             },
-            format!("no_matching_route: node \"evaluate\" result status \"partial_success\" label \"\"; {routes}"),
+            "partial",
         ),
         (
-            |node| {
-                if node == "evaluate" {
-                    return Outcome {
-                        failure_reason: "not good enough".to_string(),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    };
-                }
-                Outcome::new(OutcomeStatus::Success)
+            |node| match node {
+                "evaluate" => Outcome::completed(""),
+                other => step(other),
             },
-            format!("not good enough; no_matching_route: node \"evaluate\" result status \"fail\" label \"\"; {routes}"),
+            "",
         ),
     ];
-    for (outcome_for, reason) in cases {
+    for (outcome_for, decision) in cases {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = RunStore::for_runs_dir(temp.path().join("runs"));
         let (resumed, calls) = pause_after_evaluate_then_resume(
             &store,
             "run-unmatched-resume",
             temp.path(),
-            || visit_loop_flow(vec![edge("done", "Done", "outcome=success")], None),
+            || visit_loop_flow(&[("done", "done")]),
             outcome_for,
         );
+        let reason = no_matching_route("evaluate", decision, &[("done", "done")]);
         assert_eq!(resumed.status, "failed");
         assert_eq!(resumed.failure_reason, reason);
         assert!(calls.is_empty(), "{calls:?}");
@@ -3163,112 +3311,50 @@ fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
     }
 }
 
-/// Recovery of a completed conditional visit routes on the result it
-/// inherited, as uninterrupted execution does: an actual success inheriting
-/// partial_success with only an outcome=success route fails.
-#[test]
-fn resume_of_a_conditional_visit_routes_on_its_inherited_result() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let (resumed, calls) = pause_after_evaluate_then_resume(
-        &store,
-        "run-conditional-resume",
-        temp.path(),
-        || {
-            let mut flow = visit_loop_flow(vec![edge("done", "", "outcome=success")], None);
-            flow.nodes.get_mut("evaluate").unwrap().kind = NodeKind::Conditional;
-            flow.nodes.get_mut("evaluate").unwrap().config = None;
-            flow
-        },
-        |node| {
-            if node == "implement" {
-                return Outcome {
-                    preferred_label: "Unfinished".to_string(),
-                    ..Outcome::new(OutcomeStatus::PartialSuccess)
-                };
-            }
-            Outcome::new(OutcomeStatus::Success)
-        },
-    );
-    let reason = "no_matching_route: node \"evaluate\" result status \"success\" label \"\"; \
-                  effective result status \"partial_success\" label \"Unfinished\"; \
-                  routes [-> \"done\" condition \"outcome=success\" label \"\" weight 0]";
-    assert_eq!(resumed.status, "failed");
-    assert_eq!(resumed.failure_reason, reason);
-    assert!(calls.is_empty(), "{calls:?}");
-    assert_durably_failed(&store, "run-conditional-resume", reason);
-}
+// ---------------------------------------------------------------------------
+// Forks: wait_all, strict or tolerant of branch execution errors
+// ---------------------------------------------------------------------------
 
-/// start -> fan -> {good -> join, stray -> after}; join -> after -> done,
-/// where `stray`'s only route has `stray_condition`.
-fn branch_policy_flow(
-    join_policy: &str,
-    error_policy: &str,
-    stray_condition: &str,
-) -> FlowDefinition {
-    let task = |kind| FlowNode {
-        kind,
-        ..FlowNode::default()
-    };
-    let flow_edge = |from: &str, to: &str| FlowEdge {
-        from: from.to_string(),
-        to: to.to_string(),
-        ..FlowEdge::default()
-    };
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "unmatched-branch".to_string(),
-        nodes: [
-            ("start", task(NodeKind::Start)),
+/// start -> fan -> {good, stray} -> join -> after -> done; `stray` may also
+/// loop on itself (one visit) or choose `blocked` to the shared failure exit.
+fn branch_flow(tolerate: bool) -> FlowDefinition {
+    flow_of(
+        "branch-policy",
+        vec![
+            ("start", start_node("fan")),
+            ("fan", fork(&["good", "stray"], "join", tolerate)),
+            ("good", agent("good", &[("done", "join")])),
             (
-                "fan",
+                "stray",
                 FlowNode {
-                    kind: NodeKind::Parallel,
-                    config: Some(NodeConfig::Parallel {
-                        join_policy: Some(join_policy.to_string()),
-                        max_parallel: None,
-                        join_k: (join_policy == "k_of_n").then_some(1),
-                        join_quorum: None,
-                    }),
                     runtime: Some(NodeRuntimeConfig {
-                        error_policy: Some(error_policy.to_string()),
+                        max_visits: Some(1),
                         ..NodeRuntimeConfig::default()
                     }),
-                    ..FlowNode::default()
+                    ..agent(
+                        "stray",
+                        &[("done", "join"), ("again", "stray"), ("blocked", "failed")],
+                    )
                 },
             ),
-            ("good", task(NodeKind::AgentTask)),
-            ("stray", task(NodeKind::AgentTask)),
-            ("join", task(NodeKind::FanIn)),
-            ("after", task(NodeKind::AgentTask)),
-            ("done", task(NodeKind::Exit)),
-        ]
-        .into_iter()
-        .map(|(id, node)| (id.to_string(), node))
-        .collect(),
-        edges: vec![
-            flow_edge("start", "fan"),
-            flow_edge("fan", "good"),
-            flow_edge("fan", "stray"),
-            flow_edge("good", "join"),
-            FlowEdge {
-                condition: stray_condition.to_string(),
-                ..flow_edge("stray", "after")
-            },
-            flow_edge("join", "after"),
-            flow_edge("after", "done"),
+            ("join", fan_in("after")),
+            ("after", agent("after", &[("done", "done")])),
+            ("done", success_exit()),
+            ("failed", exit_node("blocked", ExitOutcome::Failure)),
         ],
-        ..FlowDefinition::default()
-    }
+    )
 }
 
-/// Runs `flow` with `stray` answering `stray_status` and every other agent
-/// succeeding; returns the result and the agent nodes executed.
-fn run_branch_policy_flow(
+const STRAY_ROUTES: [(&str, &str); 3] =
+    [("again", "stray"), ("blocked", "failed"), ("done", "join")];
+
+/// Runs `flow` with `stray` answering `stray` and every other agent
+/// completing `done`; returns the result and the agent nodes executed.
+fn run_branch_flow(
     store: &RunStore,
     workdir: &std::path::Path,
     flow: FlowDefinition,
-    stray_status: OutcomeStatus,
+    stray: Outcome,
 ) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
     let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen = calls.clone();
@@ -3276,150 +3362,184 @@ fn run_branch_policy_flow(
     runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
         seen.lock().unwrap().push(runtime.node_id.clone());
         if runtime.node_id == "stray" {
-            return Ok(Outcome {
-                failure_reason: "stray failed".to_string(),
-                ..Outcome::new(stray_status)
-            });
+            return Ok(stray.clone());
         }
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(Outcome {
+            context_updates: ContextMap::new(),
+            ..Outcome::completed("done")
+        })
     });
     let result = PipelineExecutor::new(runner)
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new("run-unmatched-branch", workdir.to_string_lossy()),
+        .execute(execute_request(
+            store,
+            "run-branch",
+            workdir,
             flow,
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: Default::default(),
-        })
+            None,
+            Default::default(),
+        ))
         .expect("execute");
     let calls = calls.lock().unwrap().clone();
     (result, calls)
 }
 
-/// A parallel branch whose result matches no route fails the owning run under
-/// every legacy join and error policy, whatever that result, before any route
-/// from the parallel node; a sibling reaching the join does not rescue it.
+fn stage_starts(store: &RunStore, node_id: &str) -> usize {
+    events_of(store, "run-branch")
+        .iter()
+        .filter(|event| event.event_type == "StageStarted" && event.payload["node_id"] == node_id)
+        .count()
+}
+
+/// An undeclared branch decision and an exhausted branch target are routing
+/// errors: they fail the owning run whether or not the fork tolerates branch
+/// execution errors, before the join; a sibling reaching the join does not
+/// rescue it.
 #[test]
-fn unmatched_parallel_branch_fails_the_parent_under_every_policy() {
-    for stray_status in [
-        OutcomeStatus::Success,
-        OutcomeStatus::PartialSuccess,
-        OutcomeStatus::Retry,
-        OutcomeStatus::Skipped,
-        OutcomeStatus::Fail,
+fn branch_routing_errors_fail_the_parent_strict_or_tolerant() {
+    for (decision, details) in [
+        (
+            "partial",
+            no_matching_route("stray", "partial", &STRAY_ROUTES),
+        ),
+        ("again", visit_limit("stray", "again", "stray", 1, 1)),
     ] {
-        let condition = if stray_status == OutcomeStatus::Success {
-            "outcome=partial_success"
-        } else {
-            "outcome=success"
-        };
-        let details = format!(
-            "no_matching_route: node \"stray\" result status \"{}\" label \"\"; \
-             routes [-> \"after\" condition \"{condition}\" label \"\" weight 0]",
-            stray_status.as_str()
-        );
-        let reason = if stray_status == OutcomeStatus::Fail {
-            format!("stray failed; {details}")
-        } else {
-            details
-        };
-        for join_policy in ["wait_all", "first_success", "k_of_n", "quorum"] {
-            for error_policy in ["fail_fast", "continue", "ignore"] {
-                let temp = tempfile::tempdir().expect("tempdir");
-                let store = RunStore::for_runs_dir(temp.path().join("runs"));
-                let (result, calls) = run_branch_policy_flow(
-                    &store,
-                    temp.path(),
-                    branch_policy_flow(join_policy, error_policy, condition),
-                    stray_status,
-                );
-                let case = format!("{stray_status:?} {join_policy}/{error_policy}");
-                assert_eq!(result.status, "failed", "{case}");
-                assert_eq!(result.failure_reason, reason, "{case}");
-                assert_eq!(result.current_node, "fan", "{case}");
-                assert!(!calls.contains(&"after".to_string()), "{case}: {calls:?}");
-                assert_eq!(
-                    calls.iter().filter(|node| *node == "stray").count(),
-                    1,
-                    "{case}: the parallel node is not retried"
-                );
-                assert_durably_failed(&store, "run-unmatched-branch", &reason);
-            }
+        let reason = format!("branch stray (index 1) failed at stray: {details}");
+        for tolerate in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let store = RunStore::for_runs_dir(temp.path().join("runs"));
+            let (result, calls) = run_branch_flow(
+                &store,
+                temp.path(),
+                branch_flow(tolerate),
+                Outcome::completed(decision),
+            );
+            let case = format!("{decision} tolerate={tolerate}");
+            assert_eq!(result.status, "failed", "{case}");
+            assert_eq!(result.failure_reason, reason, "{case}");
+            assert_eq!(result.current_node, "fan", "{case}");
+            assert!(!calls.contains(&"after".to_string()), "{case}: {calls:?}");
+            assert_eq!(
+                calls.iter().filter(|node| *node == "stray").count(),
+                1,
+                "{case}: the fork is not retried"
+            );
+            assert_eq!(stage_starts(&store, "join"), 0, "{case}");
+            assert_durably_failed(&store, "run-branch", &reason);
+            let status = latest_status(&store, "run-branch", "fan");
+            assert_eq!(status["failure_kind"], "routing", "{case}");
+            assert_eq!(status["tolerable"], false, "{case}");
         }
     }
 }
 
-/// A failed branch whose failure route matches keeps the legacy behavior: it
-/// follows that route and the policies weigh the branch, not the run.
+/// A branch execution error fails a strict fork; a tolerant fork keeps it
+/// as evidence in parallel.results and enters the join exactly once.
 #[test]
-fn failed_parallel_branch_with_a_matching_route_keeps_legacy_routing() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let (result, calls) = run_branch_policy_flow(
-        &store,
-        temp.path(),
-        branch_policy_flow("wait_all", "continue", "outcome=fail"),
-        OutcomeStatus::Fail,
-    );
-    assert_eq!(result.status, "completed", "{}", result.failure_reason);
-    assert!(calls.contains(&"after".to_string()), "{calls:?}");
+fn branch_execution_errors_fail_strict_forks_and_enter_the_join_of_tolerant_ones() {
+    let stray = Outcome::error(FailureKind::Runtime, "stray failed", Some(false));
+    for tolerate in [false, true] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (result, calls) =
+            run_branch_flow(&store, temp.path(), branch_flow(tolerate), stray.clone());
+        if !tolerate {
+            let reason = "branch stray (index 1) failed at stray: stray failed";
+            assert_eq!(result.status, "failed");
+            assert_eq!(result.failure_reason, reason);
+            assert!(!calls.contains(&"after".to_string()), "{calls:?}");
+            assert_eq!(stage_starts(&store, "join"), 0);
+            assert_durably_failed(&store, "run-branch", reason);
+            continue;
+        }
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        assert_eq!(result.current_node, "done");
+        assert_eq!(calls.iter().filter(|node| *node == "after").count(), 1);
+        assert_eq!(stage_starts(&store, "join"), 1);
+        let results = result.context["parallel.results"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(results[0]["id"], "good");
+        assert_eq!(results[0]["status"], "completed");
+        assert_eq!(results[1]["id"], "stray");
+        assert_eq!(results[1]["status"], "error");
+        assert_eq!(results[1]["error"]["kind"], "runtime");
+        assert_eq!(results[1]["error"]["tolerable"], true);
+        assert_eq!(results[1]["error"]["reason"], "stray failed");
+    }
 }
 
-/// Recovery that finds the parallel node's durable status written but the
-/// run not yet failed fails the run from that status: no branch runs again,
-/// no retry, and the parent's matching outcome=fail route is not taken.
+/// A branch choosing a failure exit finalizes the owner with that exit's
+/// result: completed/failure, the join and parent continuation never run.
 #[test]
-fn resume_after_an_unmatched_branch_status_write_fails_without_continuing() {
+fn branch_failure_exit_finalizes_the_owner_with_its_result() {
+    for tolerate in [false, true] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (result, calls) = run_branch_flow(
+            &store,
+            temp.path(),
+            branch_flow(tolerate),
+            Outcome {
+                notes: "no credentials".to_string(),
+                ..Outcome::completed("blocked")
+            },
+        );
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        assert_eq!(result.current_node, "failed");
+        assert_eq!(result.outcome.as_deref(), Some("failure"));
+        assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
+        assert_eq!(
+            result.outcome_reason_message.as_deref(),
+            Some("branch stray (index 1): stray chose blocked: no credentials")
+        );
+        assert!(!calls.contains(&"after".to_string()), "{calls:?}");
+        assert_eq!(stage_starts(&store, "join"), 0);
+        let record = store
+            .read_run_meta("run-branch")
+            .unwrap()
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(record.status, "completed");
+        assert_eq!(record.outcome.as_deref(), Some("failure"));
+        assert_eq!(record.outcome_reason_code.as_deref(), Some("blocked"));
+        let status = latest_status(&store, "run-branch", "fan");
+        assert_eq!(status["terminal"]["exit_id"], "failed");
+        assert_eq!(status["terminal"]["decision"], "blocked");
+    }
+}
+
+/// Recovery that finds the fork's durable routing-error status written but
+/// the run not yet failed fails the run from that status: no branch runs
+/// again, the retryable fork is not retried, and nothing continues.
+#[test]
+fn resume_after_a_branch_routing_error_status_write_fails_without_continuing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let flow = || {
-        let mut flow = branch_policy_flow("wait_all", "continue", "outcome=success");
-        flow.nodes.insert(
-            "rescue".to_string(),
-            FlowNode {
-                kind: NodeKind::AgentTask,
-                ..FlowNode::default()
-            },
-        );
-        flow.edges.extend([
-            FlowEdge {
-                from: "fan".to_string(),
-                to: "rescue".to_string(),
-                condition: "outcome=fail".to_string(),
-                ..FlowEdge::default()
-            },
-            FlowEdge {
-                from: "rescue".to_string(),
-                to: "done".to_string(),
-                ..FlowEdge::default()
-            },
-        ]);
+        let mut flow = branch_flow(true);
         flow.nodes.get_mut("fan").unwrap().retry = Some(attractor_core::RetryConfig {
             max_retries: Some(2),
             ..Default::default()
         });
         flow
     };
-    let (failed, _) =
-        run_branch_policy_flow(&store, temp.path(), flow(), OutcomeStatus::PartialSuccess);
-    let reason = "no_matching_route: node \"stray\" result status \"partial_success\" label \"\"; \
-                  routes [-> \"after\" condition \"outcome=success\" label \"\" weight 0]";
+    let (failed, _) = run_branch_flow(&store, temp.path(), flow(), Outcome::completed("partial"));
+    let reason = format!(
+        "branch stray (index 1) failed at stray: {}",
+        no_matching_route("stray", "partial", &STRAY_ROUTES)
+    );
     assert_eq!(failed.status, "failed");
     assert_eq!(failed.failure_reason, reason);
 
     // Rewind to the crash window: fan's status is durable, the run is not
     // failed, and the checkpoint still names fan's pending visit.
-    let meta = store
-        .read_run_meta("run-unmatched-branch")
-        .unwrap()
-        .unwrap();
+    let meta = store.read_run_meta("run-branch").unwrap().unwrap();
     let checkpoint = meta.checkpoint.unwrap();
     assert_eq!(checkpoint.current_node, "fan");
     store
-        .update_run_record("run-unmatched-branch", |record| {
+        .update_run_record("run-branch", |record| {
             record.status = "running".to_string();
             record.last_error.clear();
             record.ended_at = None;
@@ -3437,22 +3557,20 @@ fn resume_after_an_unmatched_branch_status_write_fails_without_continuing() {
     let mut runner = RuntimeHandlerRunner::new();
     runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
         seen.lock().unwrap().push(runtime.node_id.clone());
-        Ok(Outcome::new(OutcomeStatus::Success))
+        Ok(Outcome::completed("done"))
     });
     let resumed = PipelineExecutor::new(runner)
-        .execute(ExecuteRunRequest {
-            store: store.clone(),
-            record: RunRecord::new("run-unmatched-branch", temp.path().to_string_lossy()),
-            flow: flow(),
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: attractor_runtime::ExecutionStart::Resume {
+        .execute(execute_request(
+            &store,
+            "run-branch",
+            temp.path(),
+            flow(),
+            None,
+            attractor_runtime::ExecutionStart::Resume {
                 paths: meta.paths.clone(),
                 checkpoint,
             },
-        })
+        ))
         .expect("resume");
     assert_eq!(resumed.status, "failed");
     assert_eq!(resumed.failure_reason, reason);
@@ -3462,7 +3580,7 @@ fn resume_after_an_unmatched_branch_status_write_fails_without_continuing() {
         "{:?}",
         calls.lock().unwrap()
     );
-    assert_durably_failed(&store, "run-unmatched-branch", reason);
+    assert_durably_failed(&store, "run-branch", &reason);
     let failures_after = store
         .read_raw_events(&meta.paths)
         .unwrap()

@@ -314,10 +314,10 @@ describe('Frontend contract behavior', () => {
         source: 'start',
         target: 'task',
         data: {
-          label: 'success',
-          condition: 'outcome=success',
-          weight: 7,
-          loop_restart: true,
+          kind: 'route',
+          decision: 'begin',
+          description: 'Start the task.',
+          label: 'Begin',
         },
       },
     ]
@@ -803,7 +803,7 @@ describe('Frontend contract behavior', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Enter the first workflow step.', label: '' },
               ],
             },
             diagnostics: [],
@@ -2288,45 +2288,46 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(screen.queryByTestId('project-browser-error')).not.toBeInTheDocument()
   })
 
-  it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
+  it('[CID:6.3.01] renders edge inspector controls for the route decision, description and label', async () => {
     renderSelectedEdgeSidebar()
     const edgeForm = await screen.findByTestId('edge-structured-form')
     expect(edgeForm).toBeVisible()
-    expect(within(edgeForm).getByPlaceholderText('e.g. Approve')).toBeVisible()
-    expect(within(edgeForm).getByPlaceholderText('e.g. outcome = "success"')).toBeVisible()
-    expect(within(edgeForm).getByPlaceholderText('0')).toBeVisible()
-    expect(within(edgeForm).getByLabelText('Loop Restart')).toBeVisible()
+    expect(within(edgeForm).getByRole('textbox', { name: 'Decision ID' })).toHaveValue('begin')
+    expect(within(edgeForm).getByRole('textbox', { name: 'Description' })).toHaveValue('Start the task.')
+    expect(within(edgeForm).getByRole('textbox', { name: 'Display Label' })).toHaveValue('Begin')
+    for (const legacy of ['Condition', 'Weight', 'Loop Restart']) {
+      expect(within(edgeForm).queryByText(legacy)).not.toBeInTheDocument()
+    }
   })
 
-  it('[CID:6.3.02] renders edge condition syntax hints and diagnostics preview feedback', async () => {
+  it('[CID:6.3.02] shows route diagnostics for the selected decision', async () => {
     renderSelectedEdgeSidebar()
     await screen.findByTestId('edge-structured-form')
-
-    expect(screen.getByTestId('edge-condition-syntax-hints')).toHaveTextContent('Use && to join clauses')
-    expect(screen.getByTestId('edge-condition-syntax-hints')).toHaveTextContent(
-      'Supported keys: outcome, preferred_label, context.<path>',
-    )
-    expect(screen.getByTestId('edge-condition-syntax-hints')).toHaveTextContent('Operators: = or !=')
-    expect(screen.getByTestId('edge-condition-preview-feedback')).toHaveTextContent(
-      'Condition syntax looks valid in preview.',
-    )
+    expect(screen.queryByTestId('edge-field-diagnostics-description')).not.toBeInTheDocument()
 
     act(() => {
       useStore.getState().setDiagnostics([
         {
-          rule_id: 'condition_syntax',
+          rule_id: 'route_description',
           severity: 'error',
-          message: 'Condition parser failed near token.',
+          message: 'Route begin needs a description.',
           edge: ['start', 'task'],
+          decision: 'begin',
+        },
+        {
+          rule_id: 'route_description',
+          severity: 'error',
+          message: 'Route other needs a description.',
+          edge: ['start', 'task'],
+          decision: 'other',
         },
       ])
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('edge-condition-preview-feedback')).toHaveTextContent(
-        'Condition parser failed near token.',
-      )
+      expect(screen.getByTestId('edge-field-diagnostics-description')).toHaveTextContent('Route begin needs a description.')
     })
+    expect(screen.getByTestId('edge-field-diagnostics-description')).not.toHaveTextContent('Route other')
   })
 
   it('[CID:6.2.02] renders supported advanced node controls and omits wait.human defaults', async () => {
@@ -2365,16 +2366,14 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
     expect(screen.getByText('Max Retries')).toBeVisible()
-    expect(screen.getByText('Goal Gate')).toBeVisible()
-    expect(screen.getByText('Retry Target')).toBeVisible()
-    expect(screen.getByText('Fallback Retry Target')).toBeVisible()
     expect(screen.getByText('Session')).toBeVisible()
     expect(screen.getByText('Class')).toBeVisible()
     expect(screen.getByText('Timeout')).toBeVisible()
     expect(screen.getByText('Model')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
-    expect(screen.getByText('Auto Status')).toBeVisible()
-    expect(screen.getByText('Allow Partial')).toBeVisible()
+    for (const legacy of ['Goal Gate', 'Retry Target', 'Fallback Retry Target', 'Auto Status', 'Allow Partial']) {
+      expect(screen.queryByText(legacy)).not.toBeInTheDocument()
+    }
 
     act(() => {
       useStore.getState().setSelectedNodeId('gate')

@@ -157,7 +157,7 @@ models = ["launch-model"]
         flow_name: Some(crate::install_flow(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "api_launch_context",
                 "title": "API Launch Context",
                 "defaults": {
@@ -165,8 +165,25 @@ models = ["launch-model"]
                     "llm_provider": "Anthropic",
                     "llm_profile": "graph-profile"
                 },
-                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-                "edges": [{"from": "start", "to": "done"}]
+                "nodes": {
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "done",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         )),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -278,18 +295,40 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
         ..PipelineStartRequest::default()
     });
     assert_eq!(parse_error.body["status"], json!("failed"));
-    assert!(parse_error.body["error"]
-        .as_str()
-        .is_some_and(|error| error.starts_with("flow.md:")));
+    assert!(
+        parse_error.body["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("Flow directory ")
+                && error.contains("tests/unparseable: flow.md:")),
+        "{}",
+        parse_error.body
+    );
 
     let invalid = settings.bundled_dir().join("flows").join("tests/broken");
     attractor_dsl::write_flow_dir(
         &invalid,
         &serde_json::from_value::<attractor_core::FlowDefinition>(json!({
-                "schema_version": "1",
-                "id": "broken",
-                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-                "edges": [{"from": "start", "to": "missing"}]
+            "schema_version": "2",
+            "id": "broken",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "missing",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("flow definition JSON"),
     )
@@ -304,7 +343,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     assert_eq!(validation_error.body["status"], json!("validation_error"));
     assert_eq!(
         validation_error.body["errors"][0]["rule_id"],
-        json!("edge_target")
+        json!("route_target")
     );
     assert_eq!(
         validation_error.body["errors"][0]["edge"],
@@ -355,25 +394,32 @@ fn mounted_start_route_accepts_current_json_payload() {
 
 fn simple_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "api_lifecycle",
         "title": "API Lifecycle",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {
-                    "kind": "agent_task",
-                    "prompt": "Write a lifecycle note"
-                }
+                "config": {"kind": "agent_task", "prompt": "Write a lifecycle note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "task"},
-            {"from": "task", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -539,10 +585,24 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     .unwrap();
     let service = AttractorApiService::new(settings.clone());
     let flow = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "defaults",
-        "nodes": {"start": {"kind": "start"}, "end": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "end"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "end", "description": "Enter the first workflow step."}
+                }
+            },
+            "end": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     });
     for (id, explicit, context, authored, expected) in [
         (
@@ -734,7 +794,7 @@ fn workflow_executes_with_captured_connection(profile: bool) {
         }
         let mut request = vec![0; length];
         reader.read_exact(&mut request).unwrap();
-        let response = json!({"id":"captured", "object":"chat.completion", "model":"captured-model", "choices":[{"index":0,"message":{"role":"assistant","content":"captured workflow endpoint"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}).to_string();
+        let response = json!({"id":"captured", "object":"chat.completion", "model":"captured-model", "choices":[{"index":0,"message":{"role":"assistant","content":"{\"decision\":\"done\",\"notes\":\"captured workflow endpoint\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}).to_string();
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
         serde_json::from_slice::<serde_json::Value>(&request).unwrap()
     });

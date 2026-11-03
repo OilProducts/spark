@@ -33,78 +33,133 @@ fn settings(root: &Path) -> SparkSettings {
 
 fn gate_flow_json() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "recovery_gate",
         "title": "Recovery Gate",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "review", "description": "Enter the first workflow step."}
+                }
+            },
             "review": {
                 "kind": "human_gate",
-                "config": {"kind": "human_gate", "prompt": "Ship the report?"}
+                "config": {"kind": "human_gate", "prompt": "Ship the report?"},
+                "routes": {
+                    "finish": {
+                        "to": "done",
+                        "label": "Finish",
+                        "description": "The reviewer chose Finish."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "review"},
-            {"from": "review", "to": "done", "label": "Finish"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
 fn paused_recovery_flow_json() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "paused_recovery",
         "title": "Paused Recovery",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "review", "description": "Enter the first workflow step."}
+                }
+            },
             "review": {
                 "kind": "human_gate",
                 "runtime": {"recovery_policy": "pause"},
                 "config": {"kind": "human_gate", "prompt": "Retry me?"},
-                "contracts": {"writes_context": ["context.accepted"]}
+                "contracts": {"writes_context": ["context.accepted"]},
+                "routes": {
+                    "finish": {
+                        "to": "done",
+                        "label": "Finish",
+                        "description": "The reviewer chose Finish."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "review"},
-            {"from": "review", "to": "done", "label": "Finish"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
 fn tree_root_flow_json() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "tree_root",
         "title": "Tree Root",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "branch", "description": "Enter the first workflow step."}
+                }
+            },
             "branch": {
                 "kind": "subflow",
                 "runtime": {"recovery_policy": "pause"},
-                "config": {"kind": "subflow", "flow_ref": "child"},
-                "manager": {"poll_interval": "0s", "max_cycles": 1}
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "child",
+                    "results": {"completed": "done"}
+                },
+                "manager": {"poll_interval": "0s", "max_cycles": 1},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "branch"},
-            {"from": "branch", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
 fn tree_child_flow_json() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "tree_child",
         "title": "Tree Child",
         "nodes": {
-            "start": {"kind": "start", "runtime": {"recovery_policy": "pause"}},
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "done"}]
+            "start": {
+                "kind": "start",
+                "runtime": {"recovery_policy": "pause"},
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -312,9 +367,8 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
             &NodeArtifacts {
                 response: Some("accepted before the crash\n".to_string()),
                 status: Some(json!({
-                    "outcome": "success",
-                    "preferred_label": "",
-                    "suggested_next_ids": [],
+                    "status": "completed",
+                    "decision": "next",
                     "context_updates": {},
                     "notes": ""
                 })),
@@ -424,9 +478,8 @@ fn recovery_pause_with_checkpoint_lag_consumes_the_durable_response() {
             &NodeArtifacts {
                 response: Some("accepted before checkpoint\n".to_string()),
                 status: Some(json!({
-                    "outcome": "success",
-                    "preferred_label": "Finish",
-                    "suggested_next_ids": [],
+                    "status": "completed",
+                    "decision": "finish",
                     "context_updates": {},
                     "notes": ""
                 })),
@@ -472,9 +525,8 @@ fn recovery_rejects_incomplete_malformed_and_contract_invalid_durable_responses(
     .expect("prepare");
 
     let valid_status = json!({
-        "outcome": "success",
-        "preferred_label": "Finish",
-        "suggested_next_ids": [],
+        "status": "completed",
+        "decision": "finish",
         "context_updates": {},
         "notes": ""
     });
@@ -496,7 +548,7 @@ fn recovery_rejects_incomplete_malformed_and_contract_invalid_durable_responses(
     let mut contract_invalid_status = valid_status;
     contract_invalid_status["context_updates"] = json!({"context.forbidden": true});
     for (attempt, status) in [
-        (1, json!({"outcome": "success"})),
+        (1, json!({"status": "completed"})),
         (2, contract_invalid_status),
     ] {
         store
@@ -544,7 +596,7 @@ fn startup_recovery_resumes_orphaned_waiting_run_and_consumes_journaled_answer()
                 Some("review".to_string()),
                 Some("recovery-gate".to_string()),
                 Some("Ship the report?".to_string()),
-                "Finish",
+                "finish",
                 None,
             ),
         )
@@ -760,7 +812,7 @@ fn startup_recovery_resumes_unanswered_gate_back_into_waiting() {
                 Some("review".to_string()),
                 Some("recovery-gate".to_string()),
                 Some("Ship the report?".to_string()),
-                "Finish",
+                "finish",
                 None,
             ),
         )
@@ -956,7 +1008,10 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
         let mut context = attractor_core::ContextMap::from([
             ("internal.run_id".into(), json!(id)),
             ("internal.root_run_id".into(), json!("retry-root")),
-            ("_attractor.node_outcomes".into(), json!({node: "fail"})),
+            (
+                "_attractor.node_outcomes".into(),
+                json!({node: {"status": "error", "decision": ""}}),
+            ),
         ]);
         if let Some(child) = child {
             context.insert("context.stack.child.run_id".into(), json!(child));
@@ -986,7 +1041,7 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
             .unwrap();
         store.write_node_artifacts(&paths, node, u64::from(node == "branch"), 0, &NodeArtifacts {
             response: Some("prior failed attempt".into()),
-            status: Some(json!({"outcome":"fail", "preferred_label":"", "suggested_next_ids":[], "context_updates":{}, "notes":"", "retryable":false})),
+            status: Some(json!({"status":"error", "decision":"", "failure_kind":"runtime", "failure_reason":"prior failure", "context_updates":{}, "notes":"", "retryable":false})),
             under_logs: true, ..Default::default()
         }).unwrap();
         if let Some(child) = child {
@@ -997,7 +1052,7 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
                 "retry-root",
                 "child",
                 "failed",
-                Some("fail".into()),
+                None,
                 None,
                 None,
                 Some("prior failure".into()),
@@ -1096,9 +1151,10 @@ fn restart_finishes_partial_tree_preparation_once_and_consumes_successful_childr
     let mut checkpoint = controls.get_checkpoint("retry-root").unwrap();
     checkpoint.current_node = "branch".into();
     checkpoint.completed_nodes = vec!["start".into(), "branch".into()];
-    checkpoint
-        .context
-        .insert("_attractor.node_outcomes".into(), json!({"branch":"fail"}));
+    checkpoint.context.insert(
+        "_attractor.node_outcomes".into(),
+        json!({"branch": {"status": "error", "decision": ""}}),
+    );
     store
         .save_checkpoint(&root.paths, &checkpoint, Default::default())
         .unwrap();
@@ -1175,9 +1231,10 @@ fn replace_retry_leaf(store: &RunStore, source: Value, node: &str) {
     let mut checkpoint = bundle.checkpoint.unwrap();
     checkpoint.current_node = node.into();
     checkpoint.completed_nodes = vec!["start".into(), node.into()];
-    checkpoint
-        .context
-        .insert("_attractor.node_outcomes".into(), json!({node:"fail"}));
+    checkpoint.context.insert(
+        "_attractor.node_outcomes".into(),
+        json!({node: {"status": "error", "decision": ""}}),
+    );
     store
         .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
         .unwrap();
@@ -1216,7 +1273,7 @@ fn retry_preserves_human_wait_and_rejects_execution_overlap_across_ancestors() {
                 Some("review".into()),
                 None,
                 None,
-                "Finish",
+                "finish",
                 None,
             ),
         )
@@ -1232,8 +1289,12 @@ fn new_child_failure_propagates_once_and_direct_child_retry_gets_a_new_request()
     let settings = settings(temp.path());
     let store = seed_failed_retry_tree(&settings);
     let mut source = gate_flow_json();
-    source["nodes"]["review"] =
-        json!({"kind": "tool", "config": {"kind": "tool", "command": "exit 1"}});
+    // Exit code 1 is unmapped, so the tool ends with an execution error.
+    source["nodes"]["review"] = json!({
+        "kind": "tool",
+        "config": {"kind": "tool", "command": "exit 1", "exit_codes": {"0": "finish"}},
+        "routes": {"finish": {"to": "done", "description": "The review passed."}}
+    });
     replace_retry_leaf(&store, source, "review");
     let service = blocking_gate_service(&settings);
     assert_eq!(service.retry_pipeline_route("retry-root").status_code, 200);
@@ -1361,7 +1422,7 @@ fn direct_child_retry_recovers_all_crash_windows_with_failed_parent() {
         if window == "response" {
             store.write_node_artifacts(&bundle.paths, "review", 1, 1, &NodeArtifacts {
                 response: Some("durable new answer".into()),
-                status: Some(json!({"outcome":"success", "preferred_label":"Finish", "suggested_next_ids":[], "context_updates":{}, "notes":""})),
+                status: Some(json!({"status":"completed", "decision":"finish", "context_updates":{}, "notes":""})),
                 under_logs: true, ..Default::default()
             }).unwrap();
         }
@@ -1387,7 +1448,7 @@ fn direct_child_retry_recovers_all_crash_windows_with_failed_parent() {
                         Some("review".into()),
                         None,
                         None,
-                        "Finish",
+                        "finish",
                         None,
                     ),
                 )

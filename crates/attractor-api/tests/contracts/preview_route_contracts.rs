@@ -53,10 +53,27 @@ fn preview_without_a_flow_or_flow_name_is_a_bad_request() {
 fn preview_service_reports_validation_errors_with_http_success_status() {
     let response = preview(PreviewRequest {
         flow: Some(flow(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "broken",
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "missing"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "missing",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))),
         flow_name: None,
         expand_children: false,
@@ -65,11 +82,12 @@ fn preview_service_reports_validation_errors_with_http_success_status() {
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body["status"], json!("validation_error"));
-    assert_eq!(response.body["errors"][0]["rule_id"], json!("edge_target"));
+    assert_eq!(response.body["errors"][0]["rule_id"], json!("route_target"));
     assert_eq!(
         response.body["errors"][0]["edge"],
         json!(["start", "missing"])
     );
+    assert_eq!(response.body["errors"][0]["decision"], json!("next"));
 }
 
 #[test]
@@ -137,22 +155,35 @@ fn preview_service_expands_subflow_children_by_name_through_the_roots() {
 fn parent_request() -> PreviewRequest {
     PreviewRequest {
         flow: Some(flow(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "parent",
             "title": "Parent",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "child", "description": "Enter the first workflow step."}
+                    }
+                },
                 "child": {
                     "kind": "subflow",
                     "label": "Child",
-                    "config": {"kind": "subflow", "flow_ref": "child"}
+                    "config": {
+                        "kind": "subflow",
+                        "flow_ref": "child",
+                        "results": {"completed": "done"}
+                    },
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}}
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [
-                {"from": "start", "to": "child"},
-                {"from": "child", "to": "done"}
-            ]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))),
         flow_name: Some("nested/parent".to_string()),
         expand_children: true,
@@ -279,43 +310,68 @@ fn flow(value: Value) -> FlowDefinition {
 
 fn simple_flow() -> FlowDefinition {
     flow(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "preview",
         "title": "Preview",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {"kind": "agent_task", "prompt": "Preview task"}
+                "config": {"kind": "agent_task", "prompt": "Preview task"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "task"},
-            {"from": "task", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     }))
 }
 
 fn child_flow() -> FlowDefinition {
     flow(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "child",
         "title": "Child",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "human", "description": "Enter the first workflow step."}
+                }
+            },
             "human": {
                 "kind": "human_gate",
                 "label": "Human",
-                "config": {"kind": "human_gate", "prompt": "Review"}
+                "config": {"kind": "human_gate", "prompt": "Review"},
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "label": "done",
+                        "description": "The reviewer chose done."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "human"},
-            {"from": "human", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     }))
 }
 
@@ -337,4 +393,26 @@ fn settings(root: &Path) -> SparkSettings {
         ui_dir: None,
         project_roots: Vec::new(),
     }
+}
+
+#[test]
+fn preview_route_rejects_duplicate_decision_keys_in_raw_json() {
+    // Raw request text: building it with json! would drop the duplicate.
+    let body = r#"{"flow":{"schema_version":"2","id":"dup","nodes":{
+      "start":{"kind":"start","routes":{"next":{"to":"work","description":"Enter."}}},
+      "work":{"kind":"agent_task","contracts":{"response":"decision_envelope"},
+        "routes":{"done":{"to":"failed","description":"First."},"done":{"to":"done","description":"Second."}}},
+      "done":{"kind":"exit","config":{"kind":"exit","result":{"name":"completed","outcome":"success"}}},
+      "failed":{"kind":"exit","config":{"kind":"exit","result":{"name":"blocked","outcome":"failure"}}}}}}"#;
+    let response =
+        handle_preview_request("POST", "/preview", body, &PreviewServiceConfig::default());
+    assert_eq!(response.status_code, 400, "{}", response.body);
+    assert!(
+        response.body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate key \"done\""),
+        "{}",
+        response.body
+    );
 }

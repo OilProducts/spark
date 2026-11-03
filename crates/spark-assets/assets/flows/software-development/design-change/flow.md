@@ -3,7 +3,7 @@ type: Flow
 id: design_change
 title: Design Change
 description: Draft a design document, review it with isolated single-lens reviewers, resolve the findings in the drafter's session, and re-review once if anything changed. The run ends with a reviewed design at a known path.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.objective
   label: Objective

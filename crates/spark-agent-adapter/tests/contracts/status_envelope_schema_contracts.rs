@@ -1,23 +1,30 @@
-use attractor_core::{parse_context_write_contract, DotGraph};
+use attractor_core::{parse_context_write_contract, DotGraph, OutcomeStatus};
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    coerce_structured_text_outcome, status_envelope_json_schema, StructuredTextOutcome,
+    coerce_structured_text_outcome, decision_envelope_json_schema, declared_decisions,
+    StructuredTextOutcome,
 };
 
+const CONTRACT: &str = "decision_envelope";
+
+fn agent(prompt: &str, routes: Value) -> Value {
+    json!({"kind":"agent_task", "config":{"kind":"agent_task", "prompt":prompt},
+        "contracts":{"response":CONTRACT}, "routes":routes})
+}
+
 fn graph() -> DotGraph {
-    let source = json!({"schema_version":"1", "id":"flow",
+    let source = json!({"schema_version":"2", "id":"flow",
         "nodes":{
-            "start":{"kind":"start"},
-            "review":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"review"}},
-            "lone":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"lone"}},
-            "fix":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"fix"}},
-            "end":{"kind":"exit"}},
-        "edges":[
-            {"from":"start","to":"review"},
-            {"from":"review","to":"end","label":"Approve"},
-            {"from":"review","to":"fix","label":"Fix Evidence","condition":"outcome=fail && preferred_label=Rework"},
-            {"from":"fix","to":"lone"},
-            {"from":"lone","to":"end"}]
+            "start":{"kind":"start", "routes":{"next":{"to":"review", "description":"Enter review."}}},
+            "review":agent("review", json!({
+                "approve":{"to":"done", "description":"The change is ready."},
+                "rework":{"to":"fix", "description":"The change needs fixes.", "label":"Fix Evidence"},
+                "blocked":{"to":"failed", "description":"Review cannot proceed."}})),
+            "fix":agent("fix", json!({
+                "fixed":{"to":"review", "description":"The fixes are in."},
+                "blocked":{"to":"failed", "description":"Fixing cannot proceed."}})),
+            "done":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}},
+            "failed":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"blocked", "outcome":"failure"}}}}
     });
     attractor_dsl::validated_flow(serde_json::from_value(source).unwrap())
         .unwrap()
@@ -26,108 +33,174 @@ fn graph() -> DotGraph {
 
 fn schema(graph: &DotGraph, node_id: &str) -> Value {
     let writes = (node_id == "review").then_some(r#"["context.review.notes"]"#);
-    let contract = parse_context_write_contract(writes);
-    status_envelope_json_schema(graph, node_id, &contract)
+    decision_envelope_json_schema(graph, node_id, &parse_context_write_contract(writes))
 }
 
-fn parses(text: &str) -> bool {
-    matches!(
-        coerce_structured_text_outcome(text, "status_envelope"),
-        StructuredTextOutcome::ModeledOutcome(_)
-    )
+fn decisions(graph: &DotGraph, node_id: &str) -> Vec<String> {
+    declared_decisions(graph, node_id)
+        .into_iter()
+        .map(|decision| decision.decision)
+        .collect()
+}
+
+fn coerce(text: &str) -> StructuredTextOutcome {
+    coerce_structured_text_outcome(text, CONTRACT, &decisions(&graph(), "review"))
+}
+
+fn violation_reason(text: &str) -> String {
+    match coerce(text) {
+        StructuredTextOutcome::ContractViolation(violation) => violation.reason,
+        other => panic!("{text} must be a contract violation, got {other:?}"),
+    }
 }
 
 #[test]
-fn status_envelope_schema_comes_from_the_node_edges_and_write_contract() {
+fn declared_decisions_come_from_the_node_routes_with_descriptions_and_targets() {
+    let declared = declared_decisions(&graph(), "review")
+        .into_iter()
+        .map(|d| (d.decision, d.description, d.target))
+        .collect::<Vec<_>>();
+    let expected = [
+        ("approve", "The change is ready.", "done"),
+        ("blocked", "Review cannot proceed.", "failed"),
+        ("rework", "The change needs fixes.", "fix"),
+    ]
+    .map(|(d, desc, t)| (d.to_string(), desc.to_string(), t.to_string()));
+    assert_eq!(declared, expected);
+}
+
+#[test]
+fn decision_envelope_schema_enumerates_the_declared_decisions_and_write_contract() {
     let graph = graph();
+    let fix_schema = schema(&graph, "fix");
     let schema = schema(&graph, "review");
     assert_eq!(
         schema,
         json!({
             "type": "object",
             "properties": {
-                "outcome": {"type": "string", "enum": ["success", "fail", "partial_success", "retry"]},
-                "preferred_label": {"type": "string", "enum": ["Approve", "Fix Evidence", "Rework"]},
-                "suggested_next_ids": {"type": "array", "items": {"type": "string", "enum": ["end", "fix"]}},
+                "decision": {"type": "string", "enum": ["approve", "blocked", "rework"]},
                 "context_updates": {
                     "type": "object",
                     "properties": {"context.review.notes": {}},
                     "additionalProperties": false,
                 },
                 "notes": {"type": "string"},
-                "failure_reason": {"type": "string"},
-                "retryable": {"type": "boolean"},
             },
-            "required": ["outcome"],
+            "required": ["decision"],
             "additionalProperties": false,
         })
     );
-    let validator = jsonschema::validator_for(&schema).expect("valid schema");
+    // The provider enum and the parser's membership check are one set.
+    assert_eq!(
+        schema["properties"]["decision"]["enum"],
+        json!(decisions(&graph, "review"))
+    );
+    assert_eq!(
+        fix_schema["properties"]["decision"]["enum"],
+        json!(["blocked", "fixed"])
+    );
 
+    let validator = jsonschema::validator_for(&schema).expect("valid schema");
     for valid in [
-        r#"{"outcome":"success","preferred_label":"Approve","suggested_next_ids":["end"],"notes":"ok","retryable":false}"#,
-        r#"{"outcome":"fail","preferred_label":"Rework","failure_reason":"no","context_updates":{"context.review.notes":null}}"#,
+        r#"{"decision":"approve"}"#,
+        r#"{"decision":"rework","notes":"tests fail","context_updates":{"context.review.notes":null}}"#,
     ] {
         assert!(
             validator.is_valid(&serde_json::from_str(valid).unwrap()),
             "{valid}"
         );
-        assert!(parses(valid), "{valid}");
+        assert!(
+            matches!(coerce(valid), StructuredTextOutcome::ModeledOutcome(_)),
+            "{valid}"
+        );
     }
-    // The parser takes any label string; the schema keeps the model to the
-    // labels routing knows.
     for invalid in [
-        r#"{"outcome":"success","preferred_label":"Aprove"}"#,
-        r#"{"outcome":"success","suggested_next_ids":["elsewhere"]}"#,
-        r#"{"outcome":"success","context_updates":{"context.other":1}}"#,
-        r#"{"outcome":"done"}"#,
-        r#"{"outcome":"success","extra":1}"#,
-        r#"{"notes":"no outcome"}"#,
+        r#"{"decision":"aprove"}"#,
+        r#"{"notes":"no decision"}"#,
+        r#"{"decision":"approve","context_updates":{"context.other":1}}"#,
+        r#"{"decision":"approve","outcome":"success"}"#,
+        r#"{"decision":"approve","preferred_label":"Approve"}"#,
     ] {
         assert!(
             !validator.is_valid(&serde_json::from_str(invalid).unwrap()),
             "{invalid}"
         );
     }
-    assert!(parses(
-        r#"{"outcome":"success","preferred_label":"Aprove"}"#
-    ));
 }
 
 #[test]
-fn status_envelope_schema_omits_routing_and_context_updates_a_node_lacks() {
-    let graph = graph();
-    let schema = schema(&graph, "lone");
-    let properties = schema["properties"].as_object().unwrap();
-    assert_eq!(
-        properties.keys().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "failure_reason",
-            "notes",
-            "outcome",
-            "retryable",
-            "suggested_next_ids"
-        ]
-    );
-    assert_eq!(
-        properties["suggested_next_ids"]["items"]["enum"],
-        json!(["end"])
-    );
+fn a_node_without_writes_gets_a_schema_without_context_update_keys() {
+    let schema = schema(&graph(), "fix");
     let validator = jsonschema::validator_for(&schema).expect("valid schema");
-    assert!(validator.is_valid(&json!({"outcome": "success"})));
-    assert!(parses(r#"{"outcome":"success"}"#));
-    assert!(!validator.is_valid(&json!({"outcome": "success", "preferred_label": "Approve"})));
-    assert!(!validator.is_valid(&json!({"outcome": "success", "context_updates": {"x": 1}})));
-
-    let mut exit_only = graph.clone();
-    exit_only.edges.retain(|edge| edge.source != "lone");
-    let properties = schema_props(&exit_only, "lone");
-    assert!(!properties.contains_key("suggested_next_ids"));
+    assert!(validator.is_valid(&json!({"decision": "fixed"})));
+    assert!(!validator.is_valid(&json!({"decision": "fixed", "context_updates": {"x": 1}})));
 }
 
-fn schema_props(graph: &DotGraph, node_id: &str) -> serde_json::Map<String, Value> {
-    schema(graph, node_id)["properties"]
-        .as_object()
-        .unwrap()
-        .clone()
+#[test]
+fn a_valid_decision_keeps_its_context_updates_and_notes() {
+    let StructuredTextOutcome::ModeledOutcome(parsed) = coerce(
+        "```json\n{\"decision\":\"rework\",\"context_updates\":{\"context.review.notes\":\"fix tests\"},\"notes\":\"two failures\"}\n```",
+    ) else {
+        panic!("fenced envelope must parse");
+    };
+    let outcome = parsed.outcome;
+    assert_eq!(outcome.status, OutcomeStatus::Completed);
+    assert_eq!(outcome.decision, "rework");
+    assert_eq!(outcome.notes, "two failures");
+    assert_eq!(
+        outcome.context_updates["context.review.notes"],
+        json!("fix tests")
+    );
+    assert!(outcome.failure_reason.is_empty());
+}
+
+#[test]
+fn invalid_answers_are_contract_violations_never_a_default_decision() {
+    assert!(violation_reason(r#"{"notes":"done"}"#)
+        .contains("missing required top-level key \"decision\""));
+    assert!(violation_reason(r#"{"decision":"ship"}"#).contains("\"ship\" is not declared"));
+    assert!(violation_reason(r#"{"decision":true}"#).contains("decision must be a string"));
+    assert!(violation_reason("All done, looks good.").contains("invalid JSON"));
+    assert!(violation_reason(r#"{"decision":"approve""#).contains("invalid JSON"));
+    assert!(violation_reason("").contains("empty response"));
+    assert!(violation_reason(r#"["approve"]"#).contains("expected a JSON object"));
+    assert!(
+        violation_reason(r#"{"decision":"approve","context_updates":["x"]}"#)
+            .contains("context_updates must be an object")
+    );
+    assert!(
+        violation_reason(r#"{"decision":"approve","notes":1}"#).contains("notes must be a string")
+    );
+    for legacy in [
+        "outcome",
+        "preferred_label",
+        "suggested_next_ids",
+        "failure_reason",
+        "retryable",
+    ] {
+        let text = json!({"decision": "approve", legacy: "x"}).to_string();
+        assert!(
+            violation_reason(&text).contains(&format!("unexpected top-level keys {legacy}")),
+            "{legacy}"
+        );
+    }
+    // The old status envelope alone is rejected too.
+    assert!(matches!(
+        coerce(r#"{"outcome":"success","preferred_label":"Approve"}"#),
+        StructuredTextOutcome::ContractViolation(_)
+    ));
+    // The violation restates the declared decisions for repair.
+    let StructuredTextOutcome::ContractViolation(violation) = coerce("ok") else {
+        unreachable!()
+    };
+    assert_eq!(violation.decisions, ["approve", "blocked", "rework"]);
+}
+
+#[test]
+fn text_without_a_response_contract_is_plain_output() {
+    assert!(matches!(
+        coerce_structured_text_outcome("hello", "", &[]),
+        StructuredTextOutcome::PlainText(_)
+    ));
 }

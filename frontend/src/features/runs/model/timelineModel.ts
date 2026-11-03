@@ -20,6 +20,7 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     StageStarted: 'stage',
     StageCompleted: 'stage',
     StageFailed: 'stage',
+    StageTransition: 'stage',
     StageRetrying: 'stage',
     ParallelStarted: 'parallel',
     ParallelBranchStarted: 'parallel',
@@ -213,16 +214,18 @@ const timelineSummaryFromEvent = (
         return `${sourcePrefix}Stage ${nodeId || 'unknown'} started`
     }
     if (type === 'StageCompleted') {
-        const outcome = typeof payload.outcome === 'string' && payload.outcome.trim().length > 0
-            ? payload.outcome.trim()
-            : null
-        const notes = typeof payload.notes === 'string' && payload.notes.trim().length > 0
-            ? payload.notes.trim()
-            : null
-        const base = outcome
-            ? `${sourcePrefix}Stage ${nodeId || 'unknown'} completed (${outcome})`
+        const decision = asTrimmedString(payload.decision)
+        const notes = asTrimmedString(payload.notes)
+        const base = decision
+            ? `${sourcePrefix}Stage ${nodeId || 'unknown'} completed (decision ${decision})`
             : `${sourcePrefix}Stage ${nodeId || 'unknown'} completed`
         return notes ? `${base} — ${notes}` : base
+    }
+    if (type === 'StageTransition') {
+        const decision = asTrimmedString(payload.decision) ?? 'unknown'
+        const target = asTrimmedString(payload.target) ?? 'unknown'
+        const visit = asFiniteNumber(payload.visit)
+        return `${sourcePrefix}${nodeId || 'unknown'} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
     }
     if (type === 'StageFailed') {
         const error = typeof payload.error === 'string' && payload.error.trim().length > 0

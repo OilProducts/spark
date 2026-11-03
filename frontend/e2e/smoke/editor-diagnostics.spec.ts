@@ -369,8 +369,8 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
   const projectPath = `/tmp/ui-smoke-project-field-diags-${Date.now()}`
   const promptToken = `field-diags-${Date.now()}`
   const nodeDiagnosticMessage = `Prompt is required ${Date.now()}`
-  const edgeDiagnosticMessage = `Condition syntax is invalid ${Date.now()}`
-  const nodeFallbackDiagnosticMessage = `Fallback retry target missing ${Date.now()}`
+  const edgeDiagnosticMessage = `Route description is missing ${Date.now()}`
+  const nodeConfigDiagnosticMessage = `Response contract is invalid ${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-field-diags", projectPath)
   let selectedNodeId: string | null = null
   const selectedEdgeSource = "audit_human_gate"
@@ -393,15 +393,16 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
                 node_id: selectedNodeId,
               },
               {
-                rule_id: "condition_syntax",
+                rule_id: "route_description",
                 severity: "error",
                 message: edgeDiagnosticMessage,
                 edge: [selectedEdgeSource, selectedEdgeTarget],
+                decision: "rework",
               },
               {
-                rule_id: "retry_target_exists",
+                rule_id: "response_contract",
                 severity: "warning",
-                message: `node '${selectedNodeId}' fallback_retry_target references missing node '${nodeFallbackDiagnosticMessage}'`,
+                message: nodeConfigDiagnosticMessage,
                 node_id: selectedNodeId,
               },
             ],
@@ -444,13 +445,11 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
     await previewRequest
 
     await expect(page.getByTestId("node-field-diagnostics-prompt")).toContainText(nodeDiagnosticMessage)
-    await page.getByRole("button", { name: "Show Advanced" }).click()
-    await expect(page.getByTestId("node-field-diagnostics-fallback_retry_target")).toContainText(
-      nodeFallbackDiagnosticMessage,
-    )
+    await expect(page.getByTestId("node-field-diagnostics-config")).toContainText(nodeConfigDiagnosticMessage)
 
     await dispatchEdgeSelection(page, "Edge from audit_human_gate to audit_rework")
-    await expect(page.getByTestId("edge-field-diagnostics-condition")).toContainText(edgeDiagnosticMessage)
+    await expect(page.getByRole("textbox", { name: "Decision ID" })).toHaveValue("rework")
+    await expect(page.getByTestId("edge-field-diagnostics-description")).toContainText(edgeDiagnosticMessage)
     await page.screenshot({ path: screenshotPath("15-inspector-field-level-diagnostics.png"), fullPage: true })
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
@@ -488,6 +487,7 @@ test("validation diagnostics navigate to matching canvas entities for item 7.3-0
                 severity: "error",
                 message: edgeDiagnosticMessage,
                 edge: [edgeSource, edgeTarget],
+                decision: "rework",
               },
             ],
           }),

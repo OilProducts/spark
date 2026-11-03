@@ -711,10 +711,12 @@ fn plan_completed(content: &str) -> TurnStreamEvent {
 
 pub(super) fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "review",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 

@@ -278,7 +278,10 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     let request = &requests[0];
     assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
     assert_eq!(request.model, "gpt-route-boundary");
-    assert_eq!(request.messages, vec![Message::user("Write a route note")]);
+    assert_eq!(request.messages.len(), 1);
+    let prompt = request.messages[0].text();
+    assert!(prompt.starts_with("Write a route note\n\nStructured response contract:"));
+    assert!(prompt.contains("- \"done\": goes to \"done\". The route note is written."));
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(request.metadata["spark.runtime.source"], json!("codergen"));
     assert_eq!(
@@ -382,7 +385,7 @@ fn checkpoint(current_node: &str) -> CheckpointState {
             ("context.seed".to_string(), json!("workspace-route")),
             (
                 "_attractor.node_outcomes".to_string(),
-                json!({current_node: "fail"}),
+                json!({current_node: {"status": "error", "decision": null}}),
             ),
         ]
         .into_iter()
@@ -430,19 +433,27 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workspace-run-route",
         "title": "Workspace Run Route",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}}
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {"kind": "agent_task", "prompt": "Write a route note"}
+                "config": {"kind": "agent_task", "prompt": "Write a route note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The route note is written."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+            }
+        }
     })
 }
 
@@ -488,7 +499,7 @@ impl ProviderAdapter for RecordingAdapter {
         Ok(Response {
             model: request.model.clone(),
             provider: request.provider.clone().unwrap_or_default(),
-            message: Message::assistant("route adapter response"),
+            message: Message::assistant(r#"{"decision": "done"}"#),
             finish_reason: FinishReason::Stop,
             usage: Usage {
                 input_tokens: 2,

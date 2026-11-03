@@ -5,7 +5,7 @@ runtime: {}
 execution:
   reasoning_effort: xhigh
 routes:
-- to: prepare_milestone_state
-  extensions:
-    loop_restart: false
+  next:
+    to: prepare_milestone_state
+    description: Enter the first workflow step.
 ---

@@ -3,7 +3,7 @@ type: Flow
 id: implement_milestone
 title: Implement Milestone
 description: A child milestone worker for the software-development spec implementation program. The committed spec package lives under specs/<slug>/ and is surfaced to this flow through the stable .spark/state/spec-implementation/current/spec/ symlink. It keeps the authoritative live active-item binding in protected context.item.* keys and the durable child queue ledger under .spark/state/spec-implementation/current/milestones/<id>/state.json while shared runtime binding files and validation artifacts under .spark/state/spec-implementation/current/ remain runtime control data rather than the active item-control plane.
-schema_version: '1'
+schema_version: '2'
 defaults:
   llm_provider: codex
   llm_model: gpt-6.1-sol

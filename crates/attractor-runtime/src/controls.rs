@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::checkpoints::CheckpointWriteOptions;
-use crate::context::{
-    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, WORKFLOW_OUTCOME_KEY, WORKFLOW_OUTCOME_REASON_CODE_KEY,
-    WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
-};
+use crate::context::INTERNAL_PIPELINE_RETRY_RUN_ID_KEY;
 use crate::error::RuntimeStorageError;
 use crate::events::{
     cancel_requested_event, log_event, pipeline_paused_event, pipeline_retry_started_event,
@@ -187,13 +184,6 @@ impl RuntimeControls {
             INTERNAL_PIPELINE_RETRY_RUN_ID_KEY,
         ] {
             context.remove(key);
-        }
-        for key in [
-            WORKFLOW_OUTCOME_KEY,
-            WORKFLOW_OUTCOME_REASON_CODE_KEY,
-            WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
-        ] {
-            context.insert(key.to_string(), json!(""));
         }
         let new_run_id = request
             .new_run_id

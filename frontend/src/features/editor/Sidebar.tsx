@@ -53,7 +53,7 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'flow_ref',
     'input_map',
     'output_map',
-    'decisions',
+    'routes',
     'prompt',
     'tool.command',
     'tool.hooks.pre',
@@ -61,16 +61,9 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'tool.artifacts.paths',
     'tool.artifacts.stdout',
     'tool.artifacts.stderr',
-    'join_policy',
-    'join_k',
-    'join_quorum',
-    'error_policy',
     'max_parallel',
     'type',
     'max_retries',
-    'goal_gate',
-    'retry_target',
-    'fallback_retry_target',
     'session',
     'class',
     'timeout',
@@ -78,8 +71,6 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
-    'auto_status',
-    'allow_partial',
     'manager.poll_interval',
     'manager.max_cycles',
     'manager.stop_condition',
@@ -90,10 +81,10 @@ const CORE_NODE_ATTR_KEYS = new Set<string>([
     'spark.writes_context',
 ])
 const CORE_EDGE_ATTR_KEYS = new Set<string>([
+    'kind',
+    'decision',
+    'description',
     'label',
-    'condition',
-    'weight',
-    'loop_restart',
 ])
 const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])
 
@@ -102,7 +93,7 @@ const NODE_KIND_TO_SHAPE: Record<string, string> = {
     exit: 'Msquare',
     agent_task: 'box',
     human_gate: 'hexagon',
-    conditional: 'diamond',
+    switch: 'diamond',
     parallel: 'component',
     fan_in: 'tripleoctagon',
     tool: 'parallelogram',
@@ -124,28 +115,35 @@ function resolveInspectorScope({
     return 'none'
 }
 
+export type NodePropertyValue = string | boolean | Record<string, unknown>
+
+// `config.<field>` keys edit the node's typed config directly; an empty
+// value removes the field.
 export function applyNodePropertyChangeToData(
     data: Record<string, unknown>,
     key: string,
-    value: string | boolean,
+    value: NodePropertyValue,
 ): Record<string, unknown> {
+    const existingConfig = data.config && typeof data.config === 'object'
+        ? data.config as Record<string, unknown>
+        : {}
+    if (key.startsWith('config.')) {
+        const nextConfig = { ...existingConfig }
+        const field = key.slice('config.'.length)
+        if (value === '' || value === false) {
+            delete nextConfig[field]
+        } else {
+            nextConfig[field] = value
+        }
+        return { ...data, config: nextConfig }
+    }
     const nextData = { ...data, [key]: value }
     if (key === 'kind' && typeof value === 'string') {
         nextData.shape = NODE_KIND_TO_SHAPE[value] ?? 'box'
-        const existingConfig = nextData.config && typeof nextData.config === 'object'
-            ? nextData.config as Record<string, unknown>
-            : {}
-        nextData.config = { ...existingConfig, kind: value }
+        // Each kind has its own config fields; the server rejects foreign ones.
+        nextData.config = { kind: value }
         if (value === 'subflow' && typeof nextData.flow_ref !== 'string') {
             nextData.flow_ref = typeof existingConfig.flow_ref === 'string' ? existingConfig.flow_ref : 'child'
-        }
-    }
-    if (key === 'join_policy') {
-        if (value !== 'k_of_n') {
-            delete nextData.join_k
-        }
-        if (value !== 'quorum') {
-            delete nextData.join_quorum
         }
     }
     if (key === 'flow_ref') {
@@ -167,7 +165,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId)
     const isNarrowViewport = useNarrowViewport()
     const diagnostics = useStore((state) => state.diagnostics)
-    const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const flowMetadata = useStore((state) => state.flowMetadata)
     const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
     const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
@@ -205,7 +202,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         }
     }
 
-    const updateNodeProperty = (nodeId: string, key: string, value: string | boolean) => {
+    const updateNodeProperty = (nodeId: string, key: string, value: NodePropertyValue) => {
         if (!activeFlow) return;
 
         let newNodes: Node[] = [];
@@ -229,7 +226,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         }
     }
 
-    const handlePropertyChange = (key: string, value: string | boolean) => {
+    const handlePropertyChange = (key: string, value: NodePropertyValue) => {
         if (!selectedNodeId) return;
         updateNodeProperty(selectedNodeId, key, value)
     }
@@ -256,12 +253,15 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         ),
         [selectedEdge?.data],
     )
-    const selectedEdgeDiagnosticKey = selectedEdge ? `${selectedEdge.source}->${selectedEdge.target}` : null
-    const selectedEdgeConditionDiagnostics = selectedEdgeDiagnosticKey
-        ? (edgeDiagnostics[selectedEdgeDiagnosticKey] || []).filter((diag) => diag.rule_id === 'condition_syntax')
+    // A fork's branch and join edges are its structure; other edges are routes.
+    const selectedNodeForkEdges = selectedNode?.data?.kind === 'parallel'
+        ? edges.filter((edge) => edge.source === selectedNode.id)
         : []
-    const conditionPreviewHasError = selectedEdgeConditionDiagnostics.some((diag) => diag.severity === 'error')
-    const conditionPreviewHasWarning = selectedEdgeConditionDiagnostics.some((diag) => diag.severity === 'warning')
+    const selectedNodeFork = {
+        branches: selectedNodeForkEdges.filter((edge) => edge.data?.kind !== 'join').map((edge) => edge.target),
+        join: selectedNodeForkEdges.find((edge) => edge.data?.kind === 'join')?.target ?? null,
+    }
+    const selectedEdgeIsFork = nodes.find((node) => node.id === selectedEdge?.source)?.data?.kind === 'parallel'
     const handlerType = getHandlerType((selectedNode?.data?.kind as string) || '')
     const selectedNodeReadsContextRaw = typeof selectedNode?.data?.['spark.reads_context'] === 'string'
         ? selectedNode.data['spark.reads_context']
@@ -315,7 +315,12 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         if (!selectedEdge) {
             return {}
         }
-        return resolveEdgeFieldDiagnostics(diagnostics, selectedEdge.source, selectedEdge.target)
+        return resolveEdgeFieldDiagnostics(
+            diagnostics,
+            selectedEdge.source,
+            selectedEdge.target,
+            typeof selectedEdge.data?.decision === 'string' ? selectedEdge.data.decision : undefined,
+        )
     }, [diagnostics, selectedEdge])
     const activeInspectorScope = resolveInspectorScope({
         activeFlow,
@@ -333,7 +338,13 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
 
         let newEdges: Edge[] = [];
         updateEdges((eds) => {
+            const selected = eds.find((edge) => edge.id === selectedEdgeId);
             newEdges = eds.map((edge) => {
+                // A fork has one join; choosing a new one demotes the old to a branch.
+                if (key === 'kind' && value === 'join' && edge.id !== selectedEdgeId
+                    && edge.source === selected?.source && edge.data?.kind === 'join') {
+                    return { ...edge, data: { ...edge.data, kind: 'branch' } };
+                }
                 if (edge.id !== selectedEdgeId) return edge;
                 const nextData = { ...(edge.data || {}), [key]: value };
                 return {
@@ -538,6 +549,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         selectedNodeExtensionEntries={selectedNodeExtensionEntries}
                         selectedNodeToolHookPreWarning={selectedNodeToolHookPreWarning}
                         selectedNodeToolHookPostWarning={selectedNodeToolHookPostWarning}
+                        selectedNodeFork={selectedNodeFork}
                         onPropertyChange={handlePropertyChange}
                         onOpenGraphChildSettings={openGraphChildSettings}
                         onReadsContextChange={handleReadsContextChange}
@@ -564,9 +576,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         selectedEdge={selectedEdge}
                         selectedEdgeExtensionEntries={selectedEdgeExtensionEntries}
                         edgeFieldDiagnostics={edgeFieldDiagnostics}
-                        selectedEdgeConditionDiagnostics={selectedEdgeConditionDiagnostics}
-                        conditionPreviewHasError={conditionPreviewHasError}
-                        conditionPreviewHasWarning={conditionPreviewHasWarning}
+                        isForkEdge={selectedEdgeIsFork}
                         onPropertyChange={handleEdgePropertyChange}
                         onExtensionValueChange={handleEdgeExtensionValueChange}
                         onExtensionRemove={handleEdgeExtensionRemove}

@@ -1,32 +1,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use attractor_core::{
-    dot_value_to_json, AttractorContext, ContextMap, DotAttribute, DotEdge, DotGraph, DotNode,
-    DotScopeDefaults, DotValue, DotValueType, FlowDefinition, FlowEdge, FlowNode, NodeConfig,
-    NodeId, NodeKind, RoutingEdge,
+    dot_value_to_json, AttractorContext, ContextMap, DotAttribute, DotGraph, DotNode,
+    DotScopeDefaults, DotValue, DotValueType, FlowDefinition, FlowNode, NodeConfig, NodeId,
+    NodeKind, RoutingEdge,
 };
 use serde_json::{json, Value};
 
 use crate::error::{Result, RuntimeStorageError};
 use crate::handlers::{
-    HANDLER_CODERGEN, HANDLER_CONDITIONAL, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP,
-    HANDLER_PARALLEL, HANDLER_START, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
+    HANDLER_CODERGEN, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP, HANDLER_PARALLEL,
+    HANDLER_START, HANDLER_SWITCH, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
 
 const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
-    "allow_partial",
-    "auto_status",
     "class",
     "codergen.contract_repair_attempts",
     "codergen.execution_mode",
     "codergen.response_contract",
     "codergen.runtime_mode",
-    "error_policy",
-    "fallback_retry_target",
-    "goal_gate",
-    "join_k",
-    "join_policy",
-    "join_quorum",
     "kind",
     "label",
     "llm_model",
@@ -47,7 +39,6 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "reasoning_mode",
     "reasoning_summary",
     "retry_policy",
-    "retry_target",
     "shape",
     "spark.reads_context",
     "spark.writes_context",
@@ -87,36 +78,25 @@ pub fn is_exit_node(flow: &FlowDefinition, node_id: &str) -> bool {
         .is_some_and(|node| node.kind == NodeKind::Exit)
 }
 
-pub fn is_conditional_node(flow: &FlowDefinition, node_id: &str) -> bool {
-    flow.nodes
-        .get(node_id)
-        .is_some_and(|node| node.kind == NodeKind::Conditional)
-}
-
+/// The node's declared routes, in decision order.
 pub fn outgoing_routing_edges(flow: &FlowDefinition, node_id: &str) -> Result<Vec<RoutingEdge>> {
-    flow.edges
+    let Some(node) = flow.nodes.get(node_id) else {
+        return Ok(Vec::new());
+    };
+    node.routes
         .iter()
-        .filter(|edge| edge.from == node_id)
-        .map(routing_edge_from_flow_edge)
+        .map(|(decision, route)| {
+            let mut edge = RoutingEdge::new(
+                NodeId::try_from(node_id).map_err(RuntimeStorageError::from)?,
+                NodeId::try_from(route.to.as_str()).map_err(RuntimeStorageError::from)?,
+            );
+            edge.decision = decision.clone();
+            edge.description = route.description.clone();
+            edge.label = route.label.clone();
+            edge.attributes = route.extensions.clone();
+            Ok(edge)
+        })
         .collect()
-}
-
-pub fn routing_edge_from_flow_edge(edge: &FlowEdge) -> Result<RoutingEdge> {
-    let mut routing_edge = RoutingEdge::new(
-        NodeId::try_from(edge.from.as_str()).map_err(RuntimeStorageError::from)?,
-        NodeId::try_from(edge.to.as_str()).map_err(RuntimeStorageError::from)?,
-    );
-    routing_edge.label = edge.label.clone();
-    routing_edge.condition = edge.condition.clone();
-    routing_edge.weight = edge.weight;
-    routing_edge.attributes = edge.extensions.clone();
-    if let Some(transition) = edge.transition.as_deref() {
-        routing_edge.attributes.insert(
-            "transition".to_string(),
-            Value::String(transition.to_string()),
-        );
-    }
-    Ok(routing_edge)
 }
 
 pub fn flow_context_seed(flow: &FlowDefinition) -> ContextMap {
@@ -148,7 +128,7 @@ pub fn flow_context_seed(flow: &FlowDefinition) -> ContextMap {
 
 pub fn node_prompt(node: &FlowNode) -> String {
     match node.config.as_ref() {
-        Some(NodeConfig::AgentTask { prompt }) | Some(NodeConfig::HumanGate { prompt, .. }) => {
+        Some(NodeConfig::AgentTask { prompt }) | Some(NodeConfig::HumanGate { prompt }) => {
             prompt.trim().to_string()
         }
         _ => String::new(),
@@ -161,7 +141,7 @@ pub fn handler_type_for_node(node: &FlowNode) -> &'static str {
         NodeKind::Exit => HANDLER_EXIT,
         NodeKind::AgentTask => HANDLER_CODERGEN,
         NodeKind::HumanGate => HANDLER_WAIT_HUMAN,
-        NodeKind::Conditional => HANDLER_CONDITIONAL,
+        NodeKind::Switch => HANDLER_SWITCH,
         NodeKind::Parallel => HANDLER_PARALLEL,
         NodeKind::FanIn => HANDLER_FAN_IN,
         NodeKind::Tool => HANDLER_TOOL,
@@ -179,15 +159,11 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
     if !prompt.is_empty() {
         insert_string_attr(&mut attrs, "prompt", &prompt);
     }
-    if let Some(NodeConfig::HumanGate { decisions, .. }) = node.config.as_ref() {
-        if let Ok(value) = serde_json::to_string(decisions) {
-            insert_string_attr(&mut attrs, "options", &value);
-        }
-    }
     if let Some(NodeConfig::Tool {
         command,
         env_map,
         output_map,
+        ..
     }) = node.config.as_ref()
     {
         insert_string_attr(&mut attrs, "tool.command", command);
@@ -198,40 +174,15 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         insert_string_attr(&mut attrs, "stack.child_flow_ref", flow_ref);
     }
     if let Some(NodeConfig::Parallel {
-        join_policy,
-        max_parallel,
-        join_k,
-        join_quorum,
+        max_parallel: Some(value),
+        ..
     }) = node.config.as_ref()
     {
-        if let Some(value) = join_policy.as_deref() {
-            insert_string_attr(&mut attrs, "join_policy", value);
-        }
-        if let Some(value) = max_parallel {
-            insert_i64_attr(&mut attrs, "max_parallel", *value as i64);
-        }
-        if let Some(value) = join_k {
-            insert_i64_attr(&mut attrs, "join_k", *value as i64);
-        }
-        if let Some(value) = join_quorum {
-            insert_f64_attr(&mut attrs, "join_quorum", *value);
-        }
+        insert_i64_attr(&mut attrs, "max_parallel", *value as i64);
     }
     if let Some(runtime) = node.runtime.as_ref() {
-        insert_bool_attr(&mut attrs, "allow_partial", runtime.allow_partial);
-        insert_bool_attr(&mut attrs, "auto_status", runtime.auto_status);
-        insert_bool_attr(&mut attrs, "goal_gate", runtime.goal_gate);
-        if let Some(value) = runtime.error_policy.as_deref() {
-            insert_string_attr(&mut attrs, "error_policy", value);
-        }
         if let Some(value) = runtime.class.as_deref() {
             insert_string_attr(&mut attrs, "class", value);
-        }
-        if let Some(value) = runtime.retry_target.as_deref() {
-            insert_string_attr(&mut attrs, "retry_target", value);
-        }
-        if let Some(value) = runtime.fallback_retry_target.as_deref() {
-            insert_string_attr(&mut attrs, "fallback_retry_target", value);
         }
         if let Some(value) = runtime.max_visits {
             insert_i64_attr(&mut attrs, "max_visits", value as i64);
@@ -357,28 +308,7 @@ pub fn flow_graph_for_handler_compat(flow: &FlowDefinition) -> DotGraph {
             )
         })
         .collect();
-    let edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            let mut attrs = BTreeMap::new();
-            insert_string_attr(&mut attrs, "label", &edge.label);
-            insert_string_attr(&mut attrs, "condition", &edge.condition);
-            insert_i64_attr(&mut attrs, "weight", edge.weight);
-            if let Some(transition) = edge.transition.as_deref() {
-                insert_string_attr(&mut attrs, "transition", transition);
-            }
-            for (key, value) in &edge.extensions {
-                attrs.insert(key.clone(), json_attr(key, value.clone()));
-            }
-            DotEdge {
-                source: edge.from.clone(),
-                target: edge.to.clone(),
-                attrs,
-                line: 0,
-            }
-        })
-        .collect();
+    let edges = flow.edges().iter().map(attractor_core::dot_edge).collect();
     let mut graph = DotGraph {
         graph_id: flow.id.clone(),
         graph_attrs,
@@ -477,10 +407,7 @@ fn is_core_node_attr_key(key: &str) -> bool {
 
 fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
     let typed = match key {
-        "error_policy" => node.runtime.as_ref()?.error_policy.clone(),
         "class" => node.runtime.as_ref()?.class.clone(),
-        "retry_target" => node.runtime.as_ref()?.retry_target.clone(),
-        "fallback_retry_target" => node.runtime.as_ref()?.fallback_retry_target.clone(),
         "max_visits" => node
             .runtime
             .as_ref()?
@@ -492,22 +419,10 @@ fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
             .as_ref()?
             .max_retries
             .map(|value| value.to_string()),
-        "join_policy" => match node.config.as_ref()? {
-            NodeConfig::Parallel { join_policy, .. } => join_policy.clone(),
-            _ => None,
-        },
         "max_parallel" => match node.config.as_ref()? {
             NodeConfig::Parallel { max_parallel, .. } => {
                 max_parallel.map(|value| value.to_string())
             }
-            _ => None,
-        },
-        "join_k" => match node.config.as_ref()? {
-            NodeConfig::Parallel { join_k, .. } => join_k.map(|value| value.to_string()),
-            _ => None,
-        },
-        "join_quorum" => match node.config.as_ref()? {
-            NodeConfig::Parallel { join_quorum, .. } => join_quorum.map(|value| value.to_string()),
             _ => None,
         },
         "stack.child_flow_ref" => match node.config.as_ref()? {
@@ -544,7 +459,7 @@ fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
             _ => None,
         },
         "prompt" => match node.config.as_ref()? {
-            NodeConfig::AgentTask { prompt } | NodeConfig::HumanGate { prompt, .. } => {
+            NodeConfig::AgentTask { prompt } | NodeConfig::HumanGate { prompt } => {
                 Some(prompt.clone())
             }
             _ => None,
@@ -559,9 +474,6 @@ fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
 
 fn typed_node_attr_bool(node: &FlowNode, key: &str) -> Option<bool> {
     match key {
-        "allow_partial" => node.runtime.as_ref().map(|runtime| runtime.allow_partial),
-        "auto_status" => node.runtime.as_ref().map(|runtime| runtime.auto_status),
-        "goal_gate" => node.runtime.as_ref().map(|runtime| runtime.goal_gate),
         "stack.child_autostart" => node
             .manager
             .as_ref()
@@ -586,7 +498,7 @@ fn shape_for_node_kind(kind: &NodeKind) -> &'static str {
         NodeKind::Exit => "Msquare",
         NodeKind::AgentTask => "box",
         NodeKind::HumanGate => "hexagon",
-        NodeKind::Conditional => "diamond",
+        NodeKind::Switch => "diamond",
         NodeKind::Parallel => "component",
         NodeKind::FanIn => "tripleoctagon",
         NodeKind::Tool => "parallelogram",

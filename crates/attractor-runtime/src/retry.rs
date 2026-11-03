@@ -1,4 +1,4 @@
-use attractor_core::{FailureKind, FlowDefinition, FlowNode, Outcome, OutcomeStatus};
+use attractor_core::{FailureKind, FlowDefinition, FlowNode, Outcome};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,30 +154,17 @@ pub fn max_retries_for_node(flow: &FlowDefinition, node: &FlowNode) -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether an execution error may be retried at all: a runtime error not
+/// marked nonretryable. Contract and routing errors never retry; a completed
+/// invocation is never retried.
 pub fn should_retry_outcome(outcome: &Outcome) -> bool {
-    match outcome.status {
-        OutcomeStatus::Retry => true,
-        OutcomeStatus::Fail => {
-            if matches!(
-                outcome.failure_kind,
-                Some(FailureKind::Business | FailureKind::Contract)
-            ) {
-                return false;
-            }
-            outcome.retryable.unwrap_or(true)
-        }
-        _ => false,
-    }
+    outcome.error_kind() == Some(FailureKind::Runtime) && outcome.retryable.unwrap_or(true)
 }
 
 /// An infrastructure failure explicitly marked retryable (see
-/// `RuntimeNodeError::runtime`), as opposed to a node's own verdict. It never
-/// follows a failure route: it is retried, then fails the run. Runtime
-/// failures without the flag, such as a node timeout, route as before.
+/// `RuntimeNodeError::runtime`).
 pub fn is_runtime_failure(outcome: &Outcome) -> bool {
-    outcome.status == OutcomeStatus::Fail
-        && outcome.failure_kind == Some(FailureKind::Runtime)
-        && outcome.retryable == Some(true)
+    outcome.error_kind() == Some(FailureKind::Runtime) && outcome.retryable == Some(true)
 }
 
 /// Runtime failures get at least one automatic retry, even when none is configured.
@@ -199,59 +186,6 @@ pub fn retry_policy_for_outcome(
 
 pub fn should_retry_attempt(outcome: &Outcome, retries_so_far: u64, policy: &RetryPolicy) -> bool {
     retries_so_far.saturating_add(1) < policy.max_attempts && should_retry_outcome(outcome)
-}
-
-pub fn coerce_retry_exhausted_outcome(
-    flow: &FlowDefinition,
-    node_id: &str,
-    outcome: &Outcome,
-    retries_so_far: u64,
-    max_retries: u64,
-) -> Outcome {
-    if !matches!(outcome.status, OutcomeStatus::Retry | OutcomeStatus::Fail) {
-        return outcome.clone();
-    }
-    if retries_so_far < max_retries {
-        return outcome.clone();
-    }
-
-    let allow_partial = flow
-        .nodes
-        .get(node_id)
-        .is_some_and(|node| crate::flow_runtime::node_attr_bool(node, "allow_partial", false));
-    if !allow_partial {
-        if outcome.status == OutcomeStatus::Fail {
-            return outcome.clone();
-        }
-        return Outcome {
-            status: OutcomeStatus::Fail,
-            preferred_label: outcome.preferred_label.clone(),
-            suggested_next_ids: outcome.suggested_next_ids.clone(),
-            context_updates: outcome.context_updates.clone(),
-            failure_reason: "max retries exceeded".to_string(),
-            notes: outcome.notes.clone(),
-            raw_response_text: outcome.raw_response_text.clone(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        };
-    }
-
-    if outcome.status == OutcomeStatus::Fail && !should_retry_outcome(outcome) {
-        return outcome.clone();
-    }
-
-    Outcome {
-        status: OutcomeStatus::PartialSuccess,
-        preferred_label: outcome.preferred_label.clone(),
-        suggested_next_ids: outcome.suggested_next_ids.clone(),
-        context_updates: outcome.context_updates.clone(),
-        notes: if outcome.notes.trim().is_empty() {
-            "retries exhausted, partial accepted".to_string()
-        } else {
-            outcome.notes.clone()
-        },
-        raw_response_text: outcome.raw_response_text.clone(),
-        ..Outcome::new(OutcomeStatus::PartialSuccess)
-    }
 }
 
 pub const EXECUTION_BASES_KEY: &str = "internal.execution_attempt_bases";

@@ -16,7 +16,7 @@ export type WorkflowNodeType =
     | 'exitNode'
     | 'taskNode'
     | 'humanGateNode'
-    | 'conditionalNode'
+    | 'switchNode'
     | 'parallelNode'
     | 'fanInNode'
     | 'toolNode'
@@ -30,7 +30,7 @@ export type WorkflowNodeDimensions = {
 export const WORKFLOW_NODE_SHAPE_OPTIONS: Array<{ value: WorkflowNodeShape; label: string }> = [
     { value: 'box', label: 'Codergen (Task)' },
     { value: 'hexagon', label: 'Wait for Human' },
-    { value: 'diamond', label: 'Condition' },
+    { value: 'diamond', label: 'Switch' },
     { value: 'component', label: 'Parallel (Fan Out)' },
     { value: 'tripleoctagon', label: 'Parallel (Fan In)' },
     { value: 'parallelogram', label: 'Tool' },
@@ -46,7 +46,7 @@ const SHAPE_NODE_TYPE: Record<WorkflowNodeShape, WorkflowNodeType> = {
     Msquare: 'exitNode',
     box: 'taskNode',
     hexagon: 'humanGateNode',
-    diamond: 'conditionalNode',
+    diamond: 'switchNode',
     component: 'parallelNode',
     tripleoctagon: 'fanInNode',
     parallelogram: 'toolNode',

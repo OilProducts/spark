@@ -25,3 +25,28 @@ it('offers suggested choices and a custom answer for the owning child run', () =
   fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'Designers')
 })
+
+it('labels human gate choices with their display text and answers with the decision id', () => {
+  const gate: PendingInterviewGate = {
+    eventId: 'question:gate', questionId: 'gate', sequence: 1, receivedAt: '2026-09-08T00:00:00Z',
+    nodeId: 'review_gate', stageIndex: 2, sourceScope: 'root', sourceParentNodeId: null, sourceFlowName: null,
+    prompt: 'Ship this change?', details: null, questionType: 'MULTIPLE_CHOICE',
+    options: [
+      { label: 'Approve and ship', value: 'approve', key: 'A', description: null },
+      { label: 'Send back for changes', value: 'revise', key: 'S', description: null },
+    ],
+  }
+  const submit = vi.fn()
+  render(<RunQuestionsPanel
+    confirmedQuestionIds={['gate']}
+    freeformAnswersByGateId={{}} gateNotesByGateId={{ gate: 'add a test' }}
+    groupedPendingInterviewGates={[{ key: 'root', heading: 'This run', gates: [gate] }]}
+    onFreeformAnswerChange={vi.fn()} onGateNoteChange={vi.fn()}
+    onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
+  />)
+  expect(screen.queryByRole('button', { name: 'approve' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Send back for changes' }))
+  expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
+  fireEvent.click(screen.getByRole('button', { name: 'Approve and ship' }))
+  expect(submit).toHaveBeenLastCalledWith(gate, 'approve', 'add a test')
+})

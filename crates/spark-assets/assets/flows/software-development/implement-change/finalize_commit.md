@@ -5,14 +5,17 @@ config:
   env_map:
     SPARK_RUN_ID: internal.run_id
     SPARK_WORKSPACE_PATH: context.workspace.path
+  exit_codes:
+    '0': done
   output_map:
     context.workspace.commit: commit
 contracts:
   writes_context:
   - context.workspace.commit
 routes:
-- to: cleanup_workspace
-  condition: outcome=success
+  done:
+    to: cleanup_workspace
+    description: The bounded work required by this node’s prompt is complete, including its required outputs; this does not assert that the whole workflow objective is achieved.
 ---
 
 ```sh

@@ -696,11 +696,11 @@ fn unique_suffix() -> String {
 
 fn _failure_outcome(message: impl Into<String>) -> Outcome {
     Outcome {
-        status: OutcomeStatus::Fail,
+        status: OutcomeStatus::Error,
         failure_reason: message.into(),
         retryable: Some(false),
         failure_kind: Some(FailureKind::Runtime),
-        ..Outcome::new(OutcomeStatus::Fail)
+        ..Outcome::new(OutcomeStatus::Error)
     }
 }
 

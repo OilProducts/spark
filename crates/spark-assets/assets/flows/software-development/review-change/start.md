@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: find_issues
+  next:
+    to: find_issues
+    description: Enter the first workflow step.
 ---

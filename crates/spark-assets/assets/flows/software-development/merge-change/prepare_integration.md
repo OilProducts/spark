@@ -5,6 +5,8 @@ config:
   env_map:
     SPARK_RUN_ID: internal.run_id
     SPARK_SOURCE_REF: context.task.source_ref
+  exit_codes:
+    '0': next
   output_map:
     context.integration.conflict_count: conflict_count
     context.integration.path: path
@@ -19,10 +21,9 @@ contracts:
   - context.integration.source_commit
   - context.integration.conflict_count
 routes:
-- to: finish_merge
-  condition: outcome=success && context.integration.conflict_count=0
-- to: resolve_conflicts
-  condition: outcome=success && context.integration.conflict_count!=0
+  next:
+    to: check_conflicts
+    description: Integration preparation completed; inspect its conflict count.
 ---
 
 ```sh
@@ -59,7 +60,17 @@ if [ ! -f "$merge_head" ]; then
   echo "no merge in progress; source may already be integrated" >&2
   exit 1
 fi
-conflicts=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')
+unresolved=$(git diff --name-only --diff-filter=U)
+conflicts=0
+if [ -n "$unresolved" ]; then
+  conflicts=$(printf '%s\n' "$unresolved" | wc -l | tr -d ' ')
+fi
+case "$conflicts" in
+  ''|*[!0-9]*)
+    echo "could not count unresolved paths: '$conflicts'" >&2
+    exit 1
+    ;;
+esac
 printf '{"path":"%s","target_branch":"%s","target_commit":"%s","source_commit":"%s","conflict_count":%s}' \
   "$worktree" "$target_branch" "$target_commit" "$source_commit" "$conflicts"
 ```

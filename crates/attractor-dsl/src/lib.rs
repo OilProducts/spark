@@ -17,8 +17,9 @@ pub use flow_files::{
     LoadedFlow, Role, RoleBudget, FLOW_FILE, RESERVED_FILES,
 };
 pub use flow_sources::{
-    flow_ref_name, normalize_flow_name, validate_flow_definition, validated_flow, FlowManifest,
-    FlowRoots, FlowSourceError, NamedFlowSource, ResolvedFlowDir, BUNDLED_LAYER, ORG_LAYER,
+    flow_ref_name, normalize_flow_name, validate_flow_children, validate_flow_definition,
+    validated_flow, FlowManifest, FlowRoots, FlowSourceError, NamedFlowSource, ResolvedFlowDir,
+    BUNDLED_LAYER, ORG_LAYER,
 };
 pub use transforms::{
     apply_graph_transforms, apply_graph_transforms_with_extra, build_transform_pipeline,

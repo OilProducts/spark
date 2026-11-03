@@ -7,7 +7,6 @@ use attractor_core::{
     attr_bool, attr_string, attr_text, dot_value_text, node_has_explicit_attr,
     resolve_context_read_contract, resolve_context_write_contract, ContextMap,
     ContextWriteContract, DotAttribute, DotGraph, DotNode, DotValue, FailureKind, Outcome,
-    OutcomeStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,19 +20,19 @@ use unified_llm_adapter::{
 
 use crate::session::SessionSteeringHandle;
 use crate::status_envelope::{
-    build_contract_repair_prompt, build_in_session_contract_repair_prompt,
-    build_status_envelope_prompt_appendix, coerce_structured_text_outcome,
-    contract_failure_outcome, status_envelope_json_schema, validate_write_contract_violation,
-    StructuredContractViolation, StructuredTextOutcome,
+    build_contract_repair_prompt, build_decision_envelope_prompt_appendix,
+    build_in_session_contract_repair_prompt, coerce_structured_text_outcome,
+    contract_failure_outcome, decision_envelope_json_schema, declared_decisions,
+    validate_write_contract_violation, StructuredContractViolation, StructuredTextOutcome,
 };
 
 pub const DECLARED_CONTEXT_MISSING_SENTINEL: &str = "<missing>";
-pub const STATUS_ENVELOPE_RESPONSE_CONTRACT: &str = "status_envelope";
+pub const DECISION_ENVELOPE_RESPONSE_CONTRACT: &str = attractor_core::DECISION_ENVELOPE;
 pub const DEFAULT_CONTRACT_REPAIR_ATTEMPTS: u32 = 1;
-/// JSON Schema of a status-envelope node's response, for backends that can
-/// enforce it.
-pub const STATUS_ENVELOPE_SCHEMA_METADATA_KEY: &str =
-    "spark.runtime.codergen.status_envelope_schema";
+/// JSON Schema of a decision-envelope node's response, for backends that
+/// can enforce it.
+pub const DECISION_ENVELOPE_SCHEMA_METADATA_KEY: &str =
+    "spark.runtime.codergen.decision_envelope_schema";
 /// Names the node's session; a Codex session node keeps a resumable thread.
 pub const SESSION_NAME_METADATA_KEY: &str = "spark.runtime.session.name";
 /// Where a native provider saves a session node's history after its turn.
@@ -810,13 +809,7 @@ impl CodergenHandler {
                 read_contract.parse_error
             );
             let outcome = with_builtin_response_context(
-                Outcome {
-                    status: OutcomeStatus::Fail,
-                    failure_reason: failure_reason.clone(),
-                    retryable: Some(false),
-                    failure_kind: Some(FailureKind::Contract),
-                    ..Outcome::new(OutcomeStatus::Fail)
-                },
+                Outcome::error(FailureKind::Contract, failure_reason.clone(), Some(false)),
                 &request.node_id,
                 &failure_reason,
             );
@@ -840,10 +833,14 @@ impl CodergenHandler {
         let contract_repair_attempts =
             contract_repair_attempts(&request.node.attrs, &response_contract);
         let runtime_mode = runtime_mode_for_node(&request.node.attrs);
-        if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
+        let decisions = declared_decisions(&request.graph, &request.node_id)
+            .into_iter()
+            .map(|decision| decision.decision)
+            .collect::<Vec<_>>();
+        if response_contract == DECISION_ENVELOPE_RESPONSE_CONTRACT {
             prompt = format!(
                 "{prompt}\n\n{}",
-                build_status_envelope_prompt_appendix(
+                build_decision_envelope_prompt_appendix(
                     Some(&write_contract),
                     &request.graph,
                     &request.node_id,
@@ -887,10 +884,10 @@ impl CodergenHandler {
         )
         .map_err(CodergenError::Backend)?;
         metadata.insert("spark.execution.reasoning".into(), reasoning);
-        if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
+        if response_contract == DECISION_ENVELOPE_RESPONSE_CONTRACT {
             metadata.insert(
-                STATUS_ENVELOPE_SCHEMA_METADATA_KEY.to_string(),
-                status_envelope_json_schema(&request.graph, &request.node_id, &write_contract),
+                DECISION_ENVELOPE_SCHEMA_METADATA_KEY.to_string(),
+                decision_envelope_json_schema(&request.graph, &request.node_id, &write_contract),
             );
         }
         if let Some(stage_dir) = stage_dir.as_ref() {
@@ -918,13 +915,7 @@ impl CodergenHandler {
                         session.name, handle.provider, request.node_id
                     );
                     let outcome = with_builtin_response_context(
-                        Outcome {
-                            status: OutcomeStatus::Fail,
-                            failure_reason: failure_reason.clone(),
-                            retryable: Some(false),
-                            failure_kind: Some(FailureKind::Runtime),
-                            ..Outcome::new(OutcomeStatus::Fail)
-                        },
+                        Outcome::error(FailureKind::Runtime, failure_reason.clone(), Some(false)),
                         &request.node_id,
                         &failure_reason,
                     );
@@ -997,15 +988,27 @@ impl CodergenHandler {
                 crate::initial_context::capture_if_configured(&backend_request.metadata, &prompt)
                     .map_err(|source| CodergenError::Artifact(source.to_string()))?;
                 let response_text = format!("[Simulated] Response for stage: {}", request.node_id);
-                let outcome = with_builtin_response_context(
-                    Outcome {
-                        status: OutcomeStatus::Success,
+                // Simulation never guesses among several decisions.
+                let outcome = match decisions.as_slice() {
+                    [decision] => Outcome {
                         notes: format!("Stage completed: {}", request.node_id),
-                        ..Outcome::new(OutcomeStatus::Success)
+                        ..Outcome::completed(decision.clone())
                     },
-                    &request.node_id,
-                    &response_text,
-                );
+                    [] if response_contract.is_empty() => Outcome {
+                        notes: format!("Stage completed: {}", request.node_id),
+                        ..Outcome::completed("")
+                    },
+                    _ => Outcome::error(
+                        FailureKind::Contract,
+                        format!(
+                            "simulated codergen cannot choose among {} declared decisions",
+                            decisions.len()
+                        ),
+                        Some(false),
+                    ),
+                };
+                let outcome =
+                    with_builtin_response_context(outcome, &request.node_id, &response_text);
                 events.push(event(
                     "simulated_llm_request_completed",
                     [
@@ -1018,6 +1021,7 @@ impl CodergenHandler {
                 self.run_backend_with_contract(
                     backend_request,
                     &write_contract,
+                    &decisions,
                     &mut events,
                     &request.node_id,
                 )?
@@ -1058,6 +1062,7 @@ impl CodergenHandler {
         &mut self,
         request: CodergenBackendRequest,
         write_contract: &ContextWriteContract,
+        decisions: &[String],
         events: &mut CodergenEventLog,
         node_id: &str,
     ) -> Result<
@@ -1101,6 +1106,7 @@ impl CodergenHandler {
                 output.response,
                 &current_request.response_contract,
                 write_contract,
+                decisions,
                 node_id,
             ) {
                 CoercedBackendResponse::Accepted(outcome, response_text) => {
@@ -1221,55 +1227,65 @@ fn coerce_backend_response(
     response: CodergenBackendResponse,
     response_contract: &str,
     write_contract: &ContextWriteContract,
+    decisions: &[String],
     node_id: &str,
 ) -> CoercedBackendResponse {
+    let contracted = !response_contract.trim().is_empty();
+    let violation = |raw_text: &str, reason: String| {
+        CoercedBackendResponse::Violation(StructuredContractViolation {
+            response_contract: response_contract.to_string(),
+            raw_text: raw_text.trim().to_string(),
+            reason,
+            write_contract: Some(write_contract.clone()),
+            decisions: decisions.to_vec(),
+        })
+    };
+    let accept = |outcome: Outcome, response_text: String| {
+        if let Some(violation) = validate_write_contract_violation(
+            &outcome,
+            Some(write_contract),
+            response_contract,
+            &response_text,
+        ) {
+            return CoercedBackendResponse::Violation(StructuredContractViolation {
+                decisions: decisions.to_vec(),
+                ..violation
+            });
+        }
+        CoercedBackendResponse::Accepted(
+            with_builtin_response_context(outcome, node_id, &response_text),
+            response_text,
+        )
+    };
     match response {
         CodergenBackendResponse::Outcome(outcome) => {
             let response_text = response_text_for_outcome(&outcome);
-            if let Some(violation) = validate_write_contract_violation(
-                &outcome,
-                Some(write_contract),
-                response_contract,
-                &response_text,
-            ) {
-                return CoercedBackendResponse::Violation(violation);
+            if contracted && !outcome.is_error() && !decisions.contains(&outcome.decision) {
+                return violation(
+                    &response_text,
+                    format!(
+                        "invalid decision envelope: decision {} is not declared",
+                        json!(outcome.decision)
+                    ),
+                );
             }
-            CoercedBackendResponse::Accepted(
-                with_builtin_response_context(outcome, node_id, &response_text),
-                response_text,
-            )
+            accept(outcome, response_text)
         }
         CodergenBackendResponse::Text(text) => {
-            match coerce_structured_text_outcome(&text, response_contract) {
+            match coerce_structured_text_outcome(&text, response_contract, decisions) {
                 StructuredTextOutcome::PlainText(result) => {
                     let response_text = result.raw_text;
-                    CoercedBackendResponse::Accepted(
-                        with_builtin_response_context(
-                            Outcome {
-                                status: OutcomeStatus::Success,
-                                notes: response_text.clone(),
-                                ..Outcome::new(OutcomeStatus::Success)
-                            },
-                            node_id,
-                            &response_text,
-                        ),
+                    accept(
+                        Outcome {
+                            notes: response_text.clone(),
+                            ..Outcome::completed("")
+                        },
                         response_text,
                     )
                 }
                 StructuredTextOutcome::ModeledOutcome(result) => {
                     let response_text = result.outcome.raw_response_text.clone();
-                    if let Some(violation) = validate_write_contract_violation(
-                        &result.outcome,
-                        Some(write_contract),
-                        response_contract,
-                        &response_text,
-                    ) {
-                        return CoercedBackendResponse::Violation(violation);
-                    }
-                    CoercedBackendResponse::Accepted(
-                        with_builtin_response_context(result.outcome, node_id, &response_text),
-                        response_text,
-                    )
+                    accept(result.outcome, response_text)
                 }
                 StructuredTextOutcome::ContractViolation(mut violation) => {
                     if violation.write_contract.is_none() {
@@ -1277,39 +1293,25 @@ fn coerce_backend_response(
                     }
                     CoercedBackendResponse::Violation(violation)
                 }
-                StructuredTextOutcome::InvalidOutcome(outcome) => {
-                    let response_text = response_text_for_outcome(&outcome);
-                    CoercedBackendResponse::Accepted(
-                        with_builtin_response_context(outcome, node_id, &response_text),
-                        response_text,
-                    )
-                }
             }
         }
-        CodergenBackendResponse::Boolean(true) => {
-            let response_text = "codergen backend success".to_string();
-            CoercedBackendResponse::Accepted(
-                with_builtin_response_context(
-                    Outcome {
-                        status: OutcomeStatus::Success,
-                        notes: response_text.clone(),
-                        ..Outcome::new(OutcomeStatus::Success)
-                    },
-                    node_id,
-                    &response_text,
-                ),
-                response_text,
-            )
-        }
+        // A bare boolean carries no decision.
+        CodergenBackendResponse::Boolean(true) if contracted => violation(
+            "codergen backend success",
+            "invalid decision envelope: the backend returned no decision".to_string(),
+        ),
+        CodergenBackendResponse::Boolean(true) => accept(
+            Outcome {
+                notes: "codergen backend success".to_string(),
+                ..Outcome::completed("")
+            },
+            "codergen backend success".to_string(),
+        ),
         CodergenBackendResponse::Boolean(false) => {
             let response_text = "codergen backend failure".to_string();
             CoercedBackendResponse::Accepted(
                 with_builtin_response_context(
-                    Outcome {
-                        status: OutcomeStatus::Fail,
-                        failure_reason: response_text.clone(),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    },
+                    Outcome::error(FailureKind::Runtime, response_text.clone(), None),
                     node_id,
                     &response_text,
                 ),
@@ -1532,9 +1534,8 @@ fn write_status_file(
         return Ok(());
     };
     let mut payload = json!({
-        "outcome": outcome.status.as_str(),
-        "preferred_label": &outcome.preferred_label,
-        "suggested_next_ids": &outcome.suggested_next_ids,
+        "status": outcome.status.as_str(),
+        "decision": &outcome.decision,
         "context_updates": &outcome.context_updates,
         "notes": &outcome.notes,
         "contract_repair_attempts": repair_attempts,

@@ -161,11 +161,25 @@ fn continue_reseeds_identity_context_for_the_new_run() {
     fs::create_dir_all(&project_path).expect("project dir");
     let store = RunStore::for_settings(&settings);
     let exit_flow = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "api_identity",
         "title": "API Identity",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     });
     // The source checkpoint names the source run, exactly as a real
     // checkpoint does; the continued run must not inherit that identity.
@@ -244,8 +258,10 @@ fn continue_reseeds_identity_context_for_the_new_run() {
         context.get("internal.run_workdir"),
         Some(&json!(record.working_directory)),
     );
+    // The reached exit's declared result decides the outcome; stale
+    // context.workflow_outcome* keys carry no termination authority.
     assert_eq!(record.outcome.as_deref(), Some("success"));
-    assert_eq!(record.outcome_reason_code, None);
+    assert_eq!(record.outcome_reason_code.as_deref(), Some("completed"));
     assert_eq!(record.outcome_reason_message, None);
 }
 
@@ -382,25 +398,32 @@ fn checkpoint(current_node: &str) -> CheckpointState {
 
 fn simple_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "api_controls",
         "title": "API Controls",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {
-                    "kind": "agent_task",
-                    "prompt": "Write a control note"
-                }
+                "config": {"kind": "agent_task", "prompt": "Write a control note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "task"},
-            {"from": "task", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 

@@ -13,43 +13,43 @@ use spark_common::settings::SparkSettings;
 
 fn flow_value() -> Value {
     json!({
-    "schema_version": "1",
+    "schema_version": "2",
     "id": "review",
     "title": "Review",
     "goal": "Review the work.",
     "nodes": {
-        "start": {"kind": "start", "label": "Start"},
+        "start": {
+            "kind": "start",
+            "label": "Start",
+            "config": {"kind": "start"},
+            "routes": {"next": {"to": "check", "description": "Enter the first workflow step."}}
+        },
         "check": {
             "kind": "tool",
             "label": "Check",
-            "config": {"kind": "tool", "command": "echo ``` && true"}
+            "config": {"kind": "tool", "command": "echo ``` && true", "exit_codes": {"0": "passed"}},
+            "routes": {"passed": {"to": "review", "description": "The check passed."}}
         },
         "review": {
             "kind": "agent_task",
             "label": "Review",
             "role": "reviewer",
             "config": {"kind": "agent_task", "prompt": "Review the diff."},
-            "execution": {"llm_model": "node-model"}
+            "contracts": {"response": "decision_envelope"},
+            "execution": {"llm_model": "node-model"},
+            "routes": {"done": {"to": "done", "description": "The review is complete."}}
         },
         "done": {
             "kind": "exit",
             "label": "Done",
             "config": {
                 "kind": "exit",
+                "result": {"name": "completed", "outcome": "success"},
                 "result_summary": true,
                 "result_summary_prompt": "Summarize."
             }
         }
-    },
-    "edges": [
-        {"from": "start", "to": "check"},
-        {
-            "from": "check",
-            "to": "review",
-            "condition": "outcome=success"
-        },
-        {"from": "review", "to": "done"}
-    ]
+    }
     })
 }
 
@@ -115,11 +115,15 @@ fn node_bodies_follow_their_kind_and_routes_live_on_the_source_node() {
     assert!(texts["flow.md"].ends_with("---\n\nReview the work.\n"));
     // The command holds a ``` run, so its fence is longer.
     assert!(texts["check.md"].ends_with("---\n\n````sh\necho ``` && true\n````\n"));
-    assert!(texts["check.md"].contains("routes:\n- to: review\n  condition: outcome=success\n"));
+    assert!(texts["check.md"].contains("config:\n  exit_codes:\n    '0': passed\n"));
+    assert!(texts["check.md"]
+        .contains("routes:\n  passed:\n    to: review\n    description: The check passed.\n"));
     assert!(texts["review.md"].contains("role: reviewer\n"));
     assert!(texts["review.md"].ends_with("---\n\nReview the diff.\n"));
     assert!(texts["done.md"].ends_with("---\n\nSummarize.\n"));
-    assert!(texts["start.md"].ends_with("routes:\n- to: check\n---\n"));
+    assert!(texts["start.md"].ends_with(
+        "routes:\n  next:\n    to: check\n    description: Enter the first workflow step.\n---\n"
+    ));
 
     assert_eq!(read_flow_dir(&dir).expect("load"), flow());
 }
@@ -180,6 +184,20 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
         "{}",
         error.detail()
     );
+}
+
+#[test]
+fn role_files_reject_unknown_and_misplaced_fields() {
+    assert!(attractor_dsl::parse_role("reviewer", ROLE).is_ok());
+    for (frontmatter, field) in [
+        ("type: Role\nexecuton: {}\n", "executon"),
+        ("type: Role\nexecution: {llm_modle: fast}\n", "llm_modle"),
+        ("type: Role\nretry_target: done\n", "retry_target"),
+    ] {
+        let error = attractor_dsl::parse_role("reviewer", &format!("---\n{frontmatter}---\n"))
+            .expect_err(frontmatter);
+        assert!(error.contains(field), "{frontmatter}: {error}");
+    }
 }
 
 #[test]
@@ -391,13 +409,13 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     let mut removed = edited.clone();
     removed.nodes.remove("check");
     removed
-        .edges
-        .retain(|edge| edge.from != "check" && edge.to != "check");
-    removed.edges.push(attractor_core::FlowEdge {
-        from: "start".to_string(),
-        to: "review".to_string(),
-        ..Default::default()
-    });
+        .nodes
+        .get_mut("start")
+        .expect("start")
+        .routes
+        .get_mut("next")
+        .expect("next")
+        .to = "review".to_string();
     save(&removed);
     assert!(!dir.join("check.md").exists());
     assert_eq!((read_flow_dir(&dir).expect("load")), removed.normalize());
@@ -417,26 +435,78 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
     let child = flow_json(json!({
+        "schema_version": "2",
         "id": "child",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "done",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("child");
     write_flow_dir(&flows_dir.join("team/workers/child"), &child).expect("child");
     let parent = flow_json(json!({
+        "schema_version": "2",
         "id": "parent",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "run",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "run": {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": "workers/child"}
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "workers/child",
+                    "results": {
+                        "completed": "done"
+                    }
+                },
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "description": "The step is complete."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "run"},
-            {"from": "run", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("parent");
     write_flow_dir(&flows_dir.join("team/parent"), &parent).expect("parent");
@@ -473,6 +543,7 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
             flow_ref: "workers/child.yaml".to_string(),
             output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
+            results: BTreeMap::from([("completed".to_string(), "done".to_string())]),
         });
         stale
     })
@@ -484,37 +555,87 @@ fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_reso
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
     let child = flow_json(json!({
+        "schema_version": "2",
         "id": "child",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "done",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("child");
     write_flow_dir(&flows_dir.join("team/workers/child"), &child).expect("child");
     write_flow_dir(&flows_dir.join("outside"), &child).expect("outside");
     let parent_with = |flow_ref: &str| {
         let mut parent = flow_json(json!({
+            "schema_version": "2",
             "id": "parent",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {
+                        "kind": "start"
+                    },
+                    "routes": {
+                        "next": {
+                            "to": "run",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
                 "run": {
                     "kind": "subflow",
                     "config": {
                         "kind": "subflow",
-                        "flow_ref": "workers/child"
+                        "flow_ref": "workers/child",
+                        "results": {
+                            "completed": "done"
+                        }
+                    },
+                    "routes": {
+                        "done": {
+                            "to": "done",
+                            "description": "The step is complete."
+                        }
                     }
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [
-                {"from": "start", "to": "run"},
-                {"from": "run", "to": "done"}
-            ]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {
+                            "name": "completed",
+                            "outcome": "success"
+                        }
+                    }
+                }
+            }
         }))
         .expect("parent");
         parent.nodes.get_mut("run").expect("run").config = Some(NodeConfig::Subflow {
             flow_ref: flow_ref.to_string(),
             output_map: BTreeMap::new(),
             input_map: BTreeMap::new(),
+            results: BTreeMap::from([("completed".to_string(), "done".to_string())]),
         });
         parent
     };
@@ -563,10 +684,33 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let child = flow_json(json!({
+        "schema_version": "2",
         "id": "child",
         "title": "Child",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "done",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("child");
     write_flow_dir(
@@ -578,24 +722,53 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
     )
     .expect("child");
     let parent = flow_json(json!({
+        "schema_version": "2",
         "id": "parent",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "run",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "run": {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": "workers/child"},
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "workers/child",
+                    "results": {
+                        "completed": "done"
+                    }
+                },
                 "manager": {
                     "max_cycles": 1,
                     "child_autostart": true,
                     "child_workdir": "worktree"
+                },
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "description": "The step is complete."
+                    }
                 }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "run"},
-            {"from": "run", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("parent");
     write_flow_dir(
@@ -698,15 +871,36 @@ fn named_launches_execute_the_resolved_form() {
         }),
     );
     let flow = json!({
+        "schema_version": "2",
         "id": "inline-review",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "first",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "first": {
                 "kind": "agent_task",
                 "role": "reviewer",
                 "config": {
                     "kind": "agent_task",
                     "prompt": "Review the first part."
+                },
+                "contracts": {
+                    "response": "decision_envelope"
+                },
+                "routes": {
+                    "done": {
+                        "to": "second",
+                        "description": "The step is complete."
+                    }
                 }
             },
             "second": {
@@ -716,15 +910,30 @@ fn named_launches_execute_the_resolved_form() {
                     "kind": "agent_task",
                     "prompt": "Review the second part."
                 },
-                "execution": {"llm_model": "node-model"}
+                "execution": {
+                    "llm_model": "node-model"
+                },
+                "contracts": {
+                    "response": "decision_envelope"
+                },
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "description": "The step is complete."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "first"},
-            {"from": "first", "to": "second"},
-            {"from": "second", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     });
     // Runs launch the flow on disk by name.
     let name = crate::install_flow(&settings, flow);
@@ -787,7 +996,7 @@ fn named_launches_execute_the_resolved_form() {
             let mut body = vec![0; length];
             reader.read_exact(&mut body).expect("body");
             let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
-            let response = json!({"id":"r","object":"chat.completion","model":body["model"],"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}).to_string();
+            let response = json!({"id":"r","object":"chat.completion","model":body["model"],"choices":[{"index":0,"message":{"role":"assistant","content":"{\"decision\":\"done\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}).to_string();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).expect("respond");
             requests.push(body);
         }
@@ -838,29 +1047,76 @@ fn launches_resolve_child_flows_by_name_to_the_project_copy() {
     let bundled = settings.bundled_dir().join("flows");
     let child = |title: &str| {
         flow_json(json!({
+            "schema_version": "2",
             "id": "child",
             "title": title,
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "done"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "done", "description": "Enter the first workflow step."}
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("child")
     };
     write_flow_dir(&bundled.join("team/workers/child"), &child("Bundled Child")).expect("child");
     let parent = flow_json(json!({
+        "schema_version": "2",
         "id": "parent",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "run",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "run": {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": "workers/child"},
-                "manager": {"max_cycles": 1, "child_autostart": true}
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "workers/child",
+                    "results": {
+                        "completed": "done"
+                    }
+                },
+                "manager": {
+                    "max_cycles": 1,
+                    "child_autostart": true
+                },
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "description": "The step is complete."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "run"},
-            {"from": "run", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("parent");
     write_flow_dir(&bundled.join("team/parent"), &parent).expect("parent");
@@ -982,29 +1238,58 @@ fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
     let settings = settings(temp.path());
     let parent = |child: &str| {
         flow_json(json!({
+            "schema_version": "2",
             "id": "parent",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "run", "description": "Enter the first workflow step."}
+                    }
+                },
                 "run": {
                     "kind": "subflow",
-                    "config": {"kind": "subflow", "flow_ref": child},
-                    "manager": {"max_cycles": 1, "child_autostart": true}
+                    "config": {
+                        "kind": "subflow",
+                        "flow_ref": child,
+                        "results": {"completed": "done"}
+                    },
+                    "manager": {"max_cycles": 1, "child_autostart": true},
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}}
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [
-                {"from": "start", "to": "run"},
-                {"from": "run", "to": "done"}
-            ]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("parent")
     };
     let child = |title: &str| {
         flow_json(json!({
+            "schema_version": "2",
             "id": "child",
             "title": title,
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "done"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "done", "description": "Enter the first workflow step."}
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("child")
     };
@@ -1120,28 +1405,75 @@ fn bundled_only_runs_continue_bundled_only_when_the_project_has_overrides() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let parent = flow_json(json!({
+        "schema_version": "2",
         "id": "parent",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {
+                    "kind": "start"
+                },
+                "routes": {
+                    "next": {
+                        "to": "run",
+                        "description": "Enter the first workflow step."
+                    }
+                }
+            },
             "run": {
                 "kind": "subflow",
-                "config": {"kind": "subflow", "flow_ref": "child"},
-                "manager": {"max_cycles": 1, "child_autostart": true}
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "child",
+                    "results": {
+                        "completed": "done"
+                    }
+                },
+                "manager": {
+                    "max_cycles": 1,
+                    "child_autostart": true
+                },
+                "routes": {
+                    "done": {
+                        "to": "done",
+                        "description": "The step is complete."
+                    }
+                }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "run"},
-            {"from": "run", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {
+                        "name": "completed",
+                        "outcome": "success"
+                    }
+                }
+            }
+        }
     }))
     .expect("parent");
     let child = |title: &str| {
         flow_json(json!({
+            "schema_version": "2",
             "id": "child",
             "title": title,
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "done"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {"to": "done", "description": "Enter the first workflow step."}
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("child")
     };

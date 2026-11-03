@@ -1,26 +1,22 @@
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use attractor_core::{
-    attr_text, AttractorContext, ContextMap, DotAttribute, DotGraph, DotValue, FailureKind,
-    FlowDefinition, FlowNode, NodeKind, Outcome, OutcomeStatus, RoutingEdge,
+    attr_text, AttractorContext, BranchTerminal, ContextMap, DotAttribute, DotGraph, DotValue,
+    FailureKind, FlowDefinition, FlowNode, NodeConfig, Outcome, RoutingEdge,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_agent_adapter::codergen::CodergenEvent;
 use spark_common::debug::{agent_trace_enabled, AGENT_TRACE_FILE_NAME};
 use spark_storage::append_jsonl;
-use unified_llm_adapter::{
-    resolve_effective_llm_model, resolve_effective_llm_profile, resolve_effective_llm_provider,
-    resolve_effective_reasoning_effort, LlmResolutionInputs,
-};
 
 use crate::artifacts::{
     append_tool_hook_failure, copy_tool_artifact_matches, write_tool_output_log,
@@ -36,19 +32,21 @@ use crate::events::{
     parallel_started_event,
 };
 use crate::executor::{
-    panic_payload_message, NodeExecutionRequest, NodeExecutor, RuntimeNodeError,
+    outcome_from_node_error, panic_payload_message, NodeExecutionRequest, NodeExecutor,
+    RuntimeNodeError,
 };
 use crate::paths::RunRootPaths;
+use crate::retry::{retry_policy_for_outcome, should_retry_attempt};
 use crate::routing::{
-    is_exit_node, mark_unavailable_routes, outgoing_routing_edges, select_next_node_with_prior,
-    stage_failure_reason, unmatched_route_reason, VISIT_LIMIT_REACHED,
+    is_exit_node, mark_unavailable_routes, outgoing_routing_edges, select_transition,
+    stage_failure_reason,
 };
 
 pub const HANDLER_START: &str = "start";
 pub const HANDLER_EXIT: &str = "exit";
 pub const HANDLER_CODERGEN: &str = "codergen";
 pub const HANDLER_WAIT_HUMAN: &str = "wait.human";
-pub const HANDLER_CONDITIONAL: &str = "conditional";
+pub const HANDLER_SWITCH: &str = "switch";
 pub const HANDLER_PARALLEL: &str = "parallel";
 pub const HANDLER_FAN_IN: &str = "parallel.fan_in";
 pub const HANDLER_TOOL: &str = "tool";
@@ -258,7 +256,6 @@ pub type RuntimeHandlerFn =
 pub type RuntimeThreadSafeHandlerFn =
     dyn Fn(HandlerRuntime) -> std::result::Result<Outcome, RuntimeNodeError> + Send + Sync;
 
-pub type FanInRanker = Box<dyn FnMut(FanInRankingRequest) -> Option<String> + Send>;
 pub type CodergenBackendFactory =
     Arc<dyn Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync>;
 pub type ChildRunLauncher = Arc<dyn Fn(ChildRunRequest) -> ChildRunResult + Send + Sync>;
@@ -316,7 +313,7 @@ impl Drop for SessionLease {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct HandlerRuntime {
     pub node_id: String,
     pub node: FlowNode,
@@ -337,6 +334,13 @@ pub struct HandlerRuntime {
     pub fallback_provider: Option<String>,
     pub fallback_profile: Option<String>,
     pub fallback_reasoning_effort: Option<String>,
+    /// Set by the owning fork when this node runs in a branch: raised when
+    /// the fork stops its remaining branches.
+    pub cancel: Option<Arc<AtomicBool>>,
+    /// Raised when this invocation was actually interrupted by its fork's
+    /// cancellation or the run's, so its error is the cancellation and not
+    /// an execution error of its own.
+    pub interrupted: Arc<AtomicBool>,
 }
 
 impl HandlerRuntime {
@@ -369,7 +373,29 @@ impl HandlerRuntime {
             fallback_provider: request.fallback_provider,
             fallback_profile: request.fallback_profile,
             fallback_reasoning_effort: request.fallback_reasoning_effort,
+            cancel: None,
+            interrupted: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn canceled_by_owner(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+    }
+
+    /// Whether the owning fork or the user canceled this invocation; a
+    /// positive answer marks the invocation interrupted.
+    fn stop_requested(&self) -> bool {
+        let stop = self.canceled_by_owner()
+            || self
+                .run_paths
+                .as_ref()
+                .is_some_and(|paths| run_record_cancel_requested(paths));
+        if stop {
+            self.interrupted.store(true, Ordering::SeqCst);
+        }
+        stop
     }
 }
 
@@ -465,32 +491,6 @@ impl Interviewer for AutoApproveInterviewer {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FanInRankingRequest {
-    pub node_id: String,
-    pub prompt: String,
-    #[serde(default)]
-    pub context: ContextMap,
-    #[serde(default)]
-    pub candidates: Vec<Value>,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub llm_profile: String,
-    #[serde(default)]
-    pub reasoning_effort: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_budget_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_summary: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChildRunRequest {
     pub child_run_id: String,
     pub child_flow: FlowDefinition,
@@ -525,6 +525,9 @@ pub struct ChildRunResult {
     pub route_trace: Vec<String>,
     #[serde(default)]
     pub failure_reason: String,
+    /// A failed child's error class, from its run record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FailureKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u64>,
     #[serde(default)]
@@ -644,7 +647,6 @@ fn adapter_intervention_result_to_runtime(
 pub struct RuntimeHandlerRunner {
     custom_handlers: BTreeMap<String, RegisteredRuntimeHandler>,
     interviewer: Arc<Mutex<Box<dyn Interviewer + Send>>>,
-    fan_in_ranker: Option<Arc<Mutex<FanInRanker>>>,
     codergen_backend_factory: Option<CodergenBackendFactory>,
     rust_llm_client: Option<unified_llm_adapter::Client>,
     codergen_intervention_broker: Option<spark_agent_adapter::CodergenSessionInterventionBroker>,
@@ -659,7 +661,7 @@ pub struct RuntimeHandlerRunner {
 }
 
 struct BranchCompletion {
-    result: std::result::Result<Value, RuntimeNodeError>,
+    record: Value,
 }
 
 impl Default for RuntimeHandlerRunner {
@@ -673,7 +675,6 @@ impl RuntimeHandlerRunner {
         Self {
             custom_handlers: BTreeMap::new(),
             interviewer: Arc::new(Mutex::new(Box::<QueueInterviewer>::default())),
-            fan_in_ranker: None,
             codergen_backend_factory: None,
             rust_llm_client: None,
             codergen_intervention_broker: None,
@@ -750,14 +751,6 @@ impl RuntimeHandlerRunner {
             interviewer: Arc::new(Mutex::new(Box::new(interviewer))),
             ..Self::new()
         }
-    }
-
-    pub fn with_fan_in_ranker(
-        mut self,
-        ranker: impl FnMut(FanInRankingRequest) -> Option<String> + Send + 'static,
-    ) -> Self {
-        self.fan_in_ranker = Some(Arc::new(Mutex::new(Box::new(ranker))));
-        self
     }
 
     pub fn with_codergen_backend_factory(
@@ -946,9 +939,9 @@ impl RuntimeHandlerRunner {
         }
 
         match handler_type.as_str() {
-            HANDLER_START | HANDLER_EXIT | HANDLER_CONDITIONAL => {
-                Ok(Outcome::new(OutcomeStatus::Success))
-            }
+            HANDLER_START => Ok(Outcome::completed(attractor_core::NEXT_DECISION)),
+            HANDLER_EXIT => Ok(Outcome::completed("")),
+            HANDLER_SWITCH => Ok(execute_switch(&runtime)),
             HANDLER_TOOL => self.execute_tool(runtime),
             HANDLER_WAIT_HUMAN => self.execute_human(runtime),
             HANDLER_PARALLEL => self.execute_parallel(runtime),
@@ -1062,13 +1055,7 @@ impl RuntimeHandlerRunner {
             ) {
                 Ok(path) => path,
                 Err(reason) => {
-                    return Ok(Outcome {
-                        status: OutcomeStatus::Fail,
-                        failure_reason: reason,
-                        retryable: Some(false),
-                        failure_kind: Some(attractor_core::FailureKind::Runtime),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    });
+                    return Ok(Outcome::error(FailureKind::Runtime, reason, Some(false)));
                 }
             },
             None => runtime.run_workdir.clone(),
@@ -1082,15 +1069,11 @@ impl RuntimeHandlerRunner {
             Some(name) => match SessionLease::acquire(&runtime.run_id, name, &runtime.node_id) {
                 Ok(lease) => Some(lease),
                 Err(holder) => {
-                    return Ok(Outcome {
-                        status: OutcomeStatus::Fail,
-                        failure_reason: format!(
-                            "session '{name}' is already in use by running node '{holder}'"
-                        ),
-                        retryable: Some(false),
-                        failure_kind: Some(attractor_core::FailureKind::Runtime),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    });
+                    return Ok(Outcome::error(
+                        FailureKind::Runtime,
+                        format!("session '{name}' is already in use by running node '{holder}'"),
+                        Some(false),
+                    ));
                 }
             },
             None => None,
@@ -1150,19 +1133,9 @@ impl RuntimeHandlerRunner {
                         .is_some_and(|mode| {
                             mode.trim().to_ascii_lowercase().replace('-', "_") == "text_only"
                         });
-                    if let Some(paths) = runtime.run_paths.clone() {
-                        backend.set_cancel_check(Arc::new(move || {
-                            crate::records::read_run_record(&paths)
-                                .ok()
-                                .flatten()
-                                .is_some_and(|record| {
-                                    matches!(
-                                        crate::records::normalize_run_status(&record.status)
-                                            .as_str(),
-                                        "cancel_requested" | "canceled"
-                                    )
-                                })
-                        }));
+                    if runtime.run_paths.is_some() || runtime.cancel.is_some() {
+                        let check_runtime = runtime.clone();
+                        backend.set_cancel_check(Arc::new(move || check_runtime.stop_requested()));
                     }
                     if runtime.run_paths.is_some() && !text_only {
                         let runner = self.clone();
@@ -1385,11 +1358,11 @@ impl RuntimeHandlerRunner {
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
         let Some(command) = attr_text(&runtime.node_attrs, "tool.command") else {
-            return Ok(Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: "No tool.command specified".to_string(),
-                ..Outcome::new(OutcomeStatus::Fail)
-            });
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "No tool.command specified",
+                Some(false),
+            ));
         };
         let cwd = tool_cwd(&runtime);
         let tool_env = match resolve_tool_env_map(&runtime) {
@@ -1397,20 +1370,11 @@ impl RuntimeHandlerRunner {
             Err(reason) => {
                 write_tool_output_if_available(&runtime, "")?;
                 return Ok(Outcome {
-                    status: OutcomeStatus::Fail,
-                    failure_reason: reason,
-                    retryable: Some(false),
-                    failure_kind: Some(FailureKind::Contract),
                     context_updates: tool_context_updates("", -1),
-                    ..Outcome::new(OutcomeStatus::Fail)
+                    ..Outcome::error(FailureKind::Contract, reason, Some(false))
                 });
             }
         };
-        let hook_metadata = json!({
-            "hook_phase": "",
-            "node_id": runtime.node_id,
-            "tool_command": command,
-        });
 
         if let Some(pre_hook) = resolve_hook_command(&runtime, "tool.hooks.pre") {
             let pre_hook_result = run_hook(&pre_hook, "pre", &runtime, &command, &cwd);
@@ -1418,70 +1382,78 @@ impl RuntimeHandlerRunner {
             if pre_hook_result.exit_code != 0 {
                 write_tool_output_if_available(&runtime, "")?;
                 return Ok(Outcome {
-                    status: OutcomeStatus::Fail,
-                    failure_reason: pre_hook_failure_reason(&pre_hook, &pre_hook_result),
                     context_updates: tool_context_updates("", -1),
-                    ..Outcome::new(OutcomeStatus::Fail)
+                    ..Outcome::error(
+                        FailureKind::Runtime,
+                        pre_hook_failure_reason(&pre_hook, &pre_hook_result),
+                        None,
+                    )
                 });
             }
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
-        let command_output = match run_shell_command(&command, &cwd, timeout, tool_env, None) {
+        // Branch tools stop when their fork or the user cancels; the run
+        // record is read at most every 250 ms.
+        let mut last_check = Instant::now();
+        let mut stop_check = || {
+            if runtime.canceled_by_owner() {
+                runtime.interrupted.store(true, Ordering::SeqCst);
+                return true;
+            }
+            if last_check.elapsed() < Duration::from_millis(250) {
+                return false;
+            }
+            last_check = Instant::now();
+            runtime.stop_requested()
+        };
+        let spawned = run_shell_command(
+            &command,
+            &cwd,
+            timeout,
+            tool_env,
+            None,
+            runtime
+                .cancel
+                .is_some()
+                .then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+        );
+        let command_output = match spawned {
             Ok(output) => output,
-            Err(error) => ShellOutput {
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: error.to_string(),
-                timed_out: false,
-            },
+            Err(error) => {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(Outcome {
+                    context_updates: tool_context_updates("", -1),
+                    ..Outcome::error(
+                        FailureKind::Runtime,
+                        format!("tool command could not be launched: {error}"),
+                        None,
+                    )
+                });
+            }
         };
         write_tool_output_if_available(&runtime, &command_output.stdout)?;
 
-        let mut outcome = if command_output.timed_out {
+        let mut outcome = if command_output.interrupted {
             Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: timeout_failure_reason(&command, timeout),
                 context_updates: tool_context_updates(command_output.stdout.trim(), -1),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::error(
+                    FailureKind::Runtime,
+                    "tool command stopped by cancellation",
+                    Some(false),
+                )
             }
-        } else if command_output.exit_code == 0 {
-            let notes = command_output.stdout.trim().to_string();
-            let mut context_updates = tool_context_updates(&notes, 0);
-            match resolve_tool_output_updates(&runtime, &command_output.stdout) {
-                Ok(output_updates) => {
-                    context_updates.extend(output_updates);
-                    Outcome {
-                        status: OutcomeStatus::Success,
-                        notes: notes.clone(),
-                        context_updates,
-                        ..Outcome::new(OutcomeStatus::Success)
-                    }
-                }
-                Err(reason) => Outcome {
-                    status: OutcomeStatus::Fail,
-                    failure_reason: reason,
-                    retryable: Some(false),
-                    failure_kind: Some(FailureKind::Contract),
-                    context_updates,
-                    ..Outcome::new(OutcomeStatus::Fail)
-                },
+        } else if command_output.timed_out {
+            Outcome {
+                context_updates: tool_context_updates(command_output.stdout.trim(), -1),
+                ..Outcome::error(
+                    FailureKind::Runtime,
+                    timeout_failure_reason(&command, timeout),
+                    None,
+                )
             }
         } else {
-            let reason = command_output.stderr.trim();
-            Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: if reason.is_empty() {
-                    format!("tool command failed with code {}", command_output.exit_code)
-                } else {
-                    reason.to_string()
-                },
-                context_updates: tool_context_updates(
-                    command_output.stdout.trim(),
-                    command_output.exit_code,
-                ),
-                ..Outcome::new(OutcomeStatus::Fail)
-            }
+            tool_decision_outcome(&runtime, &command_output)
         };
 
         if let Some(post_hook) = resolve_hook_command(&runtime, "tool.hooks.post") {
@@ -1495,13 +1467,11 @@ impl RuntimeHandlerRunner {
             &command_output.stdout,
             &command_output.stderr,
         )? {
-            outcome.status = OutcomeStatus::Fail;
-            outcome.failure_reason = reason;
-            outcome.retryable = Some(false);
-            outcome.failure_kind = Some(FailureKind::Runtime);
+            outcome = Outcome {
+                context_updates: outcome.context_updates,
+                ..Outcome::error(FailureKind::Runtime, reason, Some(false))
+            };
         }
-
-        let _ = hook_metadata;
         Ok(outcome)
     }
 
@@ -1617,27 +1587,16 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
-        if runtime.outgoing_edges.is_empty() {
-            return Ok(Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: "No outgoing edges for human gate".to_string(),
-                ..Outcome::new(OutcomeStatus::Fail)
-            });
-        }
-
+        // The choices are the gate's declared decisions; labels are display.
         let choices = runtime
             .outgoing_edges
             .iter()
             .map(|edge| {
-                let label = if edge.label.trim().is_empty() {
-                    edge.target.as_str().to_string()
-                } else {
-                    edge.label.clone()
-                };
+                let label = edge.display_label().to_string();
                 Choice {
                     key: parse_accelerator_key(&label),
                     label,
-                    target: edge.target.as_str().to_string(),
+                    decision: edge.decision.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -1650,14 +1609,7 @@ impl RuntimeHandlerRunner {
         let question = HumanQuestion {
             text: question_text.clone(),
             stage: runtime.node_id.clone(),
-            options: choices
-                .iter()
-                .map(|choice| HumanOption {
-                    label: choice.label.clone(),
-                    value: choice.label.clone(),
-                    key: choice.key.clone(),
-                })
-                .collect(),
+            options: choices.iter().map(Choice::option).collect(),
         };
 
         self.emit(
@@ -1665,77 +1617,50 @@ impl RuntimeHandlerRunner {
             interview_started_event(&runtime.run_id, &runtime.node_id, &question_text),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        let mut answer = self
+        let answer = self
             .interviewer
             .lock()
             .map_err(|_| RuntimeNodeError::runtime("interviewer lock poisoned"))?
             .ask(question);
-        if (answer.skipped || answer.value == "skipped")
-            && self.human_gate_blocking
-            && runtime.run_paths.is_some()
-        {
+        let mut selected = select_choice(&answer, &choices).map(|choice| (choice, answer.note));
+        // Absent, skipped or invalid answers leave the gate waiting.
+        if selected.is_none() && self.human_gate_blocking && runtime.run_paths.is_some() {
             match self.wait_for_human_gate_answer(&runtime, &question_text, details, &choices)? {
-                HumanGateWaitResult::Answered(waited_answer) => {
-                    answer = waited_answer;
-                }
-                HumanGateWaitResult::Interrupted(outcome) => {
-                    return Ok(outcome);
-                }
+                HumanGateWaitResult::Answered(choice, note) => selected = Some((choice, note)),
+                HumanGateWaitResult::Interrupted(outcome) => return Ok(outcome),
             }
         }
-        if answer.skipped || answer.value == "skipped" {
-            self.emit_transcript_event(
-                &runtime,
-                interview_completed_event(
-                    &runtime.run_id,
-                    &runtime.node_id,
-                    &question_text,
-                    answer.value,
-                    "skipped",
-                ),
-            )
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            return Ok(human_skipped_outcome());
-        }
-
-        let selected = select_choice(&answer, &choices);
-        let emitted_answer = selected
-            .as_ref()
-            .map(|choice| choice.label.clone())
-            .unwrap_or_else(|| answer.value.clone());
+        let Some((selected, note)) = selected else {
+            // Nothing can deliver an answer to this gate: an execution
+            // error, never a decision.
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "human gate received no valid answer and cannot wait for one",
+                Some(false),
+            ));
+        };
         self.emit_transcript_event(
             &runtime,
             interview_completed_event(
                 &runtime.run_id,
                 &runtime.node_id,
                 &question_text,
-                emitted_answer,
-                if selected.is_some() {
-                    "accepted"
-                } else {
-                    "skipped"
-                },
+                selected.label.clone(),
+                "accepted",
             ),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-
-        let Some(selected) = selected else {
-            return Ok(human_skipped_outcome());
-        };
         // Always write the note key so a note from an earlier gate cannot
         // leak past a later gate answered without one.
         let context_updates = ContextMap::from([
-            ("human.gate.selected".to_string(), json!(selected.key)),
+            ("human.gate.selected".to_string(), json!(selected.decision)),
             ("human.gate.label".to_string(), json!(selected.label)),
-            ("human.gate.note".to_string(), json!(answer.note.trim())),
+            ("human.gate.note".to_string(), json!(note.trim())),
         ]);
         Ok(Outcome {
-            status: OutcomeStatus::Success,
-            preferred_label: selected.label.clone(),
-            suggested_next_ids: vec![selected.target.clone()],
             context_updates,
-            notes: "human selection applied".to_string(),
-            ..Outcome::new(OutcomeStatus::Success)
+            notes: note.trim().to_string(),
+            ..Outcome::completed(selected.decision)
         })
     }
 
@@ -1761,13 +1686,7 @@ impl RuntimeHandlerRunner {
             .unwrap_or_default();
         let options = choices
             .iter()
-            .map(|choice| {
-                json!({
-                    "label": choice.label,
-                    "value": choice.label,
-                    "key": choice.key,
-                })
-            })
+            .map(|choice| json!(choice.option()))
             .collect::<Vec<_>>();
         self.emit(
             runtime,
@@ -1791,15 +1710,21 @@ impl RuntimeHandlerRunner {
         // block until answered, by design.
         let mut scan_offset: Option<u64> = None;
         loop {
+            // Answers naming no declared decision are rejected and skipped;
+            // the gate keeps waiting.
             let answer = match scan_offset {
                 None => {
                     scan_offset = Some(events_length(&paths));
-                    journaled_gate_answer(&paths, &question_id)
+                    crate::events::read_raw_events(&paths)
+                        .ok()
+                        .and_then(|events| {
+                            valid_gate_answer(events.iter().rev(), &question_id, choices)
+                        })
                 }
                 Some(offset) => match crate::events::read_raw_events_after(&paths, offset) {
                     Ok(Some((appended, consumed))) => {
                         scan_offset = Some(consumed);
-                        gate_answer_in(appended.iter(), &question_id)
+                        valid_gate_answer(appended.iter(), &question_id, choices)
                     }
                     // Shrunk or unreadable log: rescan from scratch next poll.
                     _ => {
@@ -1808,16 +1733,17 @@ impl RuntimeHandlerRunner {
                     }
                 },
             };
-            if let Some((answer_value, note)) = answer {
+            if let Some((choice, note)) = answer {
                 self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)?;
-                return Ok(HumanGateWaitResult::Answered(HumanAnswer {
-                    value: answer_value.clone(),
-                    selected_values: vec![answer_value.clone()],
-                    selected_option: None,
-                    text: answer_value,
-                    note,
-                    skipped: false,
-                }));
+                return Ok(HumanGateWaitResult::Answered(choice, note));
+            }
+            if runtime.canceled_by_owner() {
+                runtime.interrupted.store(true, Ordering::SeqCst);
+                return Ok(HumanGateWaitResult::Interrupted(Outcome::error(
+                    FailureKind::Runtime,
+                    "Branch canceled by its fork while waiting for human input",
+                    Some(false),
+                )));
             }
             let status = crate::records::read_run_record(&paths)
                 .ok()
@@ -1828,23 +1754,19 @@ impl RuntimeHandlerRunner {
                 "cancel_requested" | "canceled" => {
                     // Fail non-retryably; the executor's post-stage control
                     // poll then finalizes the run as canceled.
-                    return Ok(HumanGateWaitResult::Interrupted(Outcome {
-                        status: OutcomeStatus::Fail,
-                        failure_reason: "Run cancel requested while waiting for human input"
-                            .to_string(),
-                        retryable: Some(false),
-                        failure_kind: Some(FailureKind::Runtime),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    }));
+                    runtime.interrupted.store(true, Ordering::SeqCst);
+                    return Ok(HumanGateWaitResult::Interrupted(Outcome::error(
+                        FailureKind::Runtime,
+                        "Run cancel requested while waiting for human input",
+                        Some(false),
+                    )));
                 }
                 "pause_requested" | "paused" => {
-                    return Ok(HumanGateWaitResult::Interrupted(Outcome {
-                        status: OutcomeStatus::Fail,
-                        failure_reason: "Run paused while waiting for human input".to_string(),
-                        retryable: Some(false),
-                        failure_kind: Some(FailureKind::Runtime),
-                        ..Outcome::new(OutcomeStatus::Fail)
-                    }));
+                    return Ok(HumanGateWaitResult::Interrupted(Outcome::error(
+                        FailureKind::Runtime,
+                        "Run paused while waiting for human input",
+                        Some(false),
+                    )));
                 }
                 _ => {}
             }
@@ -1887,370 +1809,426 @@ impl RuntimeHandlerRunner {
         Ok(())
     }
 
+    /// Runs a fork's declared branches and settles every one before
+    /// returning. Each branch ends completed (at the paired join), with a
+    /// terminal result (a failure exit), with an execution error, or
+    /// canceled by the fork. Records persist as they settle, and each
+    /// unsettled branch saves its progress around every invocation, so a
+    /// resumed fork never reruns a settled branch or an accepted invocation.
     fn execute_parallel(
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
-        if runtime.outgoing_edges.is_empty() {
-            return Ok(fail_outcome("parallel node has no outgoing edges"));
-        }
-
-        let parallel_config = match runtime.node.config.as_ref() {
-            Some(attractor_core::NodeConfig::Parallel {
-                join_policy,
-                max_parallel,
-                join_k,
-                join_quorum,
-            }) => (join_policy.clone(), *max_parallel, *join_k, *join_quorum),
-            _ => (None, None, None, None),
+        let Some(NodeConfig::Parallel {
+            branches,
+            join,
+            max_parallel,
+            tolerate_branch_execution_errors: tolerate,
+        }) = runtime.node.config.clone()
+        else {
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "parallel node has no parallel config",
+                Some(false),
+            ));
         };
-        let join_policy = parallel_config.0.unwrap_or_else(|| "wait_all".to_string());
-        if !matches!(
-            join_policy.as_str(),
-            "wait_all" | "k_of_n" | "first_success" | "quorum"
-        ) {
-            return Ok(fail_outcome(format!(
-                "unsupported join_policy: {join_policy}"
-            )));
-        }
-        let error_policy = runtime
-            .node
-            .runtime
-            .as_ref()
-            .and_then(|config| config.error_policy.clone())
-            .unwrap_or_else(|| "continue".to_string());
-        if !matches!(error_policy.as_str(), "fail_fast" | "continue" | "ignore") {
-            return Ok(fail_outcome(format!(
-                "unsupported error_policy: {error_policy}"
-            )));
-        }
-        let max_parallel = parallel_config.1.unwrap_or(4) as i64;
-        if max_parallel < 1 {
-            return Ok(fail_outcome("max_parallel must be >= 1"));
-        }
-        if let Some(error) = validate_join_thresholds_for_config(
-            &join_policy,
-            parallel_config.2,
-            parallel_config.3,
-            runtime.outgoing_edges.len(),
-        ) {
-            return Ok(fail_outcome(error));
-        }
-
+        let state_dir = runtime.run_paths.as_ref().map(|paths| {
+            paths
+                .logs_dir()
+                .join(&runtime.node_id)
+                .join("executions")
+                .join(format!("{}-{}", runtime.stage_index, runtime.attempt))
+                .join("branches")
+        });
+        let mut records = branches
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                state_dir
+                    .as_ref()
+                    .and_then(|dir| fs::read_to_string(dir.join(format!("{index}.json"))).ok())
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            })
+            .collect::<Vec<_>>();
+        let stopped = records
+            .iter()
+            .flatten()
+            .any(|record| record_stops_fork(record, tolerate));
+        let cancel = Arc::new(AtomicBool::new(stopped));
         self.emit(
             &runtime,
-            parallel_started_event(
-                &runtime.run_id,
-                &runtime.node_id,
-                runtime.outgoing_edges.len(),
-            ),
+            parallel_started_event(&runtime.run_id, &runtime.node_id, branches.len()),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
 
-        let branches = runtime
-            .outgoing_edges
-            .iter()
-            .enumerate()
-            .map(|(index, edge)| (index, edge.target.as_str().to_string()))
+        let pending = (0..branches.len())
+            .filter(|index| records[*index].is_none() && !stopped)
             .collect::<Vec<_>>();
-        let mut results = self.execute_parallel_branches(
-            runtime.clone(),
-            branches,
-            max_parallel as usize,
-            &join_policy,
-            &error_policy,
-        )?;
-        let sessions = take_branch_sessions(&runtime.context, &mut results);
+        let max_parallel = (max_parallel.unwrap_or(4) as usize).clamp(1, branches.len().max(1));
+        let (tx, rx) = mpsc::channel::<(usize, BranchCompletion)>();
+        thread::scope(|scope| -> std::result::Result<(), RuntimeNodeError> {
+            let mut next = 0_usize;
+            let mut in_flight = 0_usize;
+            let launch = |index: usize| {
+                let tx = tx.clone();
+                let runtime = &runtime;
+                let entry = branches[index].clone();
+                let join = join.clone();
+                let cancel = cancel.clone();
+                let progress = state_dir
+                    .as_ref()
+                    .map(|dir| branch_progress_path(dir, index));
+                scope.spawn(move || {
+                    let _ = self.emit(
+                        runtime,
+                        parallel_branch_started_event(
+                            &runtime.run_id,
+                            &runtime.node_id,
+                            &entry,
+                            index,
+                        ),
+                    );
+                    let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.execute_branch(
+                            runtime,
+                            &entry,
+                            index,
+                            &join,
+                            &cancel,
+                            progress.as_deref(),
+                        )
+                    }))
+                    .unwrap_or_else(|payload| {
+                        branch_error_record(
+                            &entry,
+                            index,
+                            &entry,
+                            FailureKind::Runtime,
+                            &panic_payload_message(payload),
+                            1,
+                        )
+                    });
+                    let _ = tx.send((index, BranchCompletion { record }));
+                });
+            };
+            while in_flight < max_parallel && next < pending.len() {
+                launch(pending[next]);
+                next += 1;
+                in_flight += 1;
+            }
+            while in_flight > 0 {
+                let (index, completion) = rx.recv().map_err(|_| {
+                    RuntimeNodeError::runtime("parallel branch worker disconnected")
+                })?;
+                in_flight -= 1;
+                let record = completion.record;
+                // Persist first: a terminal result or fatal error is durable
+                // before the fork cancels its siblings.
+                if let Some(dir) = state_dir.as_ref() {
+                    fs::create_dir_all(dir)
+                        .and_then(|_| {
+                            fs::write(
+                                dir.join(format!("{index}.json")),
+                                serde_json::to_vec_pretty(&record).unwrap_or_default(),
+                            )
+                        })
+                        .map_err(|error| {
+                            // Settle the siblings before failing the fork.
+                            cancel.store(true, Ordering::SeqCst);
+                            RuntimeNodeError::terminal(error.to_string())
+                        })?;
+                }
+                if record_stops_fork(&record, tolerate) {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                let _ = self.emit(
+                    &runtime,
+                    parallel_branch_completed_event(
+                        &runtime.run_id,
+                        &runtime.node_id,
+                        &branches[index],
+                        index,
+                        record_status(&record) == "completed",
+                    ),
+                );
+                records[index] = Some(record);
+                while !cancel.load(Ordering::SeqCst)
+                    && in_flight < max_parallel
+                    && next < pending.len()
+                {
+                    launch(pending[next]);
+                    next += 1;
+                    in_flight += 1;
+                }
+            }
+            Ok(())
+        })?;
 
-        let event_success_count = results
+        let mut results = records
+            .into_iter()
+            .enumerate()
+            .map(|(index, record)| {
+                record.unwrap_or_else(|| {
+                    json!({
+                        "id": branches[index],
+                        "index": index,
+                        "status": "canceled",
+                        "started": false,
+                        "context": {},
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let sessions = take_branch_sessions(&runtime.context, &mut results);
+        let completed = results
             .iter()
-            .filter(|result| branch_succeeded(result))
-            .count();
-        let event_fail_count = results
-            .iter()
-            .filter(|result| branch_failed(result))
+            .filter(|record| record_status(record) == "completed")
             .count();
         self.emit(
             &runtime,
             parallel_completed_event(
                 &runtime.run_id,
                 &runtime.node_id,
-                event_success_count,
-                event_fail_count,
+                completed,
+                results.len() - completed,
             ),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
 
-        let results_for_policy = if error_policy == "ignore" {
-            results
-                .iter()
-                .filter(|result| branch_succeeded(result))
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            results.clone()
-        };
-        let success_count = results_for_policy
-            .iter()
-            .filter(|result| branch_succeeded(result))
-            .count();
-        let fail_count = results_for_policy
-            .iter()
-            .filter(|result| branch_failed(result))
-            .count();
-        let status = match join_policy.as_str() {
-            "wait_all" => {
-                if fail_count == 0 {
-                    OutcomeStatus::Success
-                } else {
-                    OutcomeStatus::PartialSuccess
-                }
-            }
-            "first_success" => {
-                if success_count > 0 {
-                    OutcomeStatus::Success
-                } else {
-                    OutcomeStatus::Fail
-                }
-            }
-            "k_of_n" => {
-                let required = parallel_config
-                    .2
-                    .map(|value| value as i64)
-                    .unwrap_or(results_for_policy.len() as i64);
-                if success_count as i64 >= required {
-                    OutcomeStatus::Success
-                } else {
-                    OutcomeStatus::Fail
-                }
-            }
-            "quorum" => {
-                let quorum = parallel_config.3.unwrap_or(0.5);
-                let required = ((results_for_policy.len() as f64) * quorum).ceil().max(1.0);
-                if (success_count as f64) >= required {
-                    OutcomeStatus::Success
-                } else {
-                    OutcomeStatus::Fail
-                }
-            }
-            _ => OutcomeStatus::Fail,
-        };
-
         let mut context_updates =
-            ContextMap::from([("parallel.results".to_string(), json!(results_for_policy))]);
+            ContextMap::from([("parallel.results".to_string(), json!(results))]);
         if let Some(sessions) = sessions {
             context_updates.insert(crate::context::RUNTIME_SESSIONS_KEY.to_string(), sessions);
         }
+        // After settlement: a fatal error wins over a failure exit, which
+        // wins over completion; the lowest branch index decides ties.
+        if let Some(record) = results
+            .iter()
+            .find(|record| record_status(record) == "error" && !record_tolerated(record, tolerate))
+        {
+            let error = &record["error"];
+            let kind = serde_json::from_value::<FailureKind>(error["kind"].clone())
+                .unwrap_or(FailureKind::Runtime);
+            return Ok(Outcome {
+                context_updates,
+                ..Outcome::error(
+                    kind,
+                    format!(
+                        "branch {} (index {}) failed at {}: {}",
+                        object_string(record, "id"),
+                        record["index"],
+                        object_string(error, "node"),
+                        object_string(error, "reason")
+                    ),
+                    Some(false),
+                )
+            });
+        }
+        if let Some(record) = results
+            .iter()
+            .find(|record| record_status(record) == "terminal_result")
+        {
+            let terminal = serde_json::from_value::<BranchTerminal>(record["terminal"].clone())
+                .map_err(|error| RuntimeNodeError::terminal(error.to_string()))?;
+            return Ok(Outcome {
+                context_updates,
+                notes: format!("branch {} reached {}", terminal.branch, terminal.exit_id),
+                terminal: Some(terminal),
+                ..Outcome::completed("")
+            });
+        }
         Ok(Outcome {
-            status,
             context_updates,
-            notes: "parallel fan-out completed".to_string(),
-            ..Outcome::new(status)
+            notes: format!("{completed} of {} branches completed", results.len()),
+            ..Outcome::completed("")
         })
     }
 
-    fn execute_parallel_branches(
-        &self,
-        runtime: HandlerRuntime,
-        branches: Vec<(usize, String)>,
-        max_parallel: usize,
-        join_policy: &str,
-        error_policy: &str,
-    ) -> std::result::Result<Vec<Value>, RuntimeNodeError> {
-        let max_parallel = max_parallel.min(branches.len()).max(1);
-        let (tx, rx) = mpsc::channel::<BranchCompletion>();
-
-        thread::scope(
-            |scope| -> std::result::Result<Vec<Value>, RuntimeNodeError> {
-                let mut next_branch = 0_usize;
-                let mut in_flight = 0_usize;
-                let mut accepting_results = true;
-                let mut results = Vec::<Value>::new();
-
-                macro_rules! launch_branch {
-                    ($index:expr, $branch:expr) => {{
-                        let branch_runtime = runtime.clone();
-                        let branch_tx = tx.clone();
-                        let branch_id = $branch;
-                        let branch_index = $index;
-                        scope.spawn(move || {
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                                || -> std::result::Result<Value, RuntimeNodeError> {
-                                    self.emit(
-                                        &branch_runtime,
-                                        parallel_branch_started_event(
-                                            &branch_runtime.run_id,
-                                            &branch_runtime.node_id,
-                                            &branch_id,
-                                            branch_index,
-                                        ),
-                                    )
-                                    .map_err(|error| {
-                                        RuntimeNodeError::runtime(error.to_string())
-                                    })?;
-                                    let payload = self.execute_branch_from(
-                                        &branch_runtime,
-                                        &branch_id,
-                                        branch_index,
-                                    )?;
-                                    let success = branch_succeeded(&payload);
-                                    self.emit(
-                                        &branch_runtime,
-                                        parallel_branch_completed_event(
-                                            &branch_runtime.run_id,
-                                            &branch_runtime.node_id,
-                                            &branch_id,
-                                            branch_index,
-                                            success,
-                                        ),
-                                    )
-                                    .map_err(|error| {
-                                        RuntimeNodeError::runtime(error.to_string())
-                                    })?;
-                                    Ok(payload)
-                                },
-                            ))
-                            .unwrap_or_else(|payload| {
-                                Err(RuntimeNodeError::runtime(panic_payload_message(payload)))
-                            });
-                            let _ = branch_tx.send(BranchCompletion { result });
-                        });
-                    }};
-                }
-
-                while accepting_results && in_flight < max_parallel && next_branch < branches.len()
-                {
-                    let (index, branch) = branches[next_branch].clone();
-                    launch_branch!(index, branch);
-                    next_branch += 1;
-                    in_flight += 1;
-                }
-
-                while in_flight > 0 {
-                    let completion = rx.recv().map_err(|_| {
-                        RuntimeNodeError::runtime("parallel branch worker disconnected")
-                    })?;
-                    in_flight -= 1;
-
-                    // A branch without a route fails the parallel node even
-                    // after its policies stopped accepting results.
-                    if let Err(error) = &completion.result {
-                        if error.unmatched_route {
-                            return Err(error.clone());
-                        }
-                    }
-                    if accepting_results {
-                        let payload = completion.result?;
-                        let success = branch_succeeded(&payload);
-                        let failed = branch_failed(&payload);
-                        results.push(payload);
-
-                        if error_policy == "fail_fast" && failed {
-                            accepting_results = false;
-                        }
-                        if join_policy == "first_success" && success {
-                            accepting_results = false;
-                        }
-                    }
-
-                    while accepting_results
-                        && in_flight < max_parallel
-                        && next_branch < branches.len()
-                    {
-                        let (index, branch) = branches[next_branch].clone();
-                        launch_branch!(index, branch);
-                        next_branch += 1;
-                        in_flight += 1;
-                    }
-                }
-
-                Ok(results)
-            },
-        )
-    }
-
-    fn execute_branch_from(
+    /// One branch invocation with the root's rules: the same retry policy,
+    /// exact dispatch and visit limits (counted per branch). It stops at its
+    /// fork's join or at a failure exit and never executes either.
+    fn execute_branch(
         &self,
         runtime: &HandlerRuntime,
-        start_node: &str,
-        branch_index: usize,
-    ) -> std::result::Result<Value, RuntimeNodeError> {
-        let fan_in_nodes = fan_in_nodes(&runtime.flow);
-        let mut values = crate::flow_runtime::flow_context_seed(&runtime.flow);
-        for (key, value) in &runtime.context {
-            values.insert(key.clone(), value.clone());
-        }
-        let mut context = AttractorContext::from_map(values)
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        seed_builtin_context(&mut context, start_node)
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        clear_runtime_retry_context(&mut context)
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-
-        let mut current_node = start_node.to_string();
-        let mut completed_nodes = Vec::<String>::new();
-        let mut node_outcomes = BTreeMap::<String, Outcome>::new();
-        // Each branch execution counts its own visits from zero.
-        // Visit-limit routing bounds the loop: every step enters a node with visits left.
-        let mut visits = BTreeMap::from([(current_node.clone(), 1u64)]);
-        loop {
-            if fan_in_nodes.contains(&current_node) {
-                return Ok(branch_payload(
-                    start_node,
-                    "completed",
-                    Some("success"),
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &node_outcomes,
-                    "",
-                ));
+        entry: &str,
+        index: usize,
+        join: &str,
+        cancel: &Arc<AtomicBool>,
+        progress_path: Option<&Path>,
+    ) -> Value {
+        let flow = &runtime.flow;
+        let saved = progress_path.and_then(read_branch_progress);
+        let mut values = crate::flow_runtime::flow_context_seed(flow);
+        values.extend(runtime.context.clone());
+        let mut context = match AttractorContext::from_map(values)
+            .map_err(crate::error::RuntimeStorageError::from)
+            .and_then(|mut context| {
+                seed_builtin_context(&mut context, entry)?;
+                clear_runtime_retry_context(&mut context)?;
+                Ok(context)
+            }) {
+            Ok(context) => context,
+            Err(error) => {
+                return branch_error_record(
+                    entry,
+                    index,
+                    entry,
+                    FailureKind::Runtime,
+                    &error.to_string(),
+                    0,
+                )
             }
-            let Some(node) = runtime.flow.nodes.get(&current_node).cloned() else {
-                return Ok(branch_payload(
-                    start_node,
-                    "failed",
-                    None,
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &node_outcomes,
-                    &format!("Unknown runtime node: {current_node}"),
-                ));
+        };
+        let mut current = entry.to_string();
+        let mut visits = BTreeMap::from([(current.clone(), 1u64)]);
+        let mut retries = BTreeMap::<String, u64>::new();
+        let mut trace = vec![current.clone()];
+        let mut decisions = Vec::<Value>::new();
+        let mut steps = 0_u64;
+        let mut invocations = 0_u64;
+        let mut last: Option<(String, String, String)> = None;
+        // A resumed fork continues each unsettled branch where it stopped:
+        // the same context, position, budgets and, for an invocation that
+        // completed before the interruption, its accepted result.
+        let mut accepted = None;
+        if let Some(saved) = saved {
+            match AttractorContext::from_map(saved.context) {
+                Ok(restored) => context = restored,
+                Err(error) => {
+                    return branch_error_record(
+                        entry,
+                        index,
+                        &saved.current,
+                        FailureKind::Runtime,
+                        &error.to_string(),
+                        0,
+                    )
+                }
+            }
+            current = saved.current;
+            visits = saved.visits;
+            retries = saved.retries;
+            trace = saved.trace;
+            decisions = saved.decisions;
+            steps = saved.steps;
+            invocations = saved.invocations;
+            last = saved.last;
+            accepted = saved.accepted;
+        }
+        macro_rules! save_progress {
+            ($started:expr, $accepted:expr) => {{
+                let progress = BranchProgress {
+                    context: context.snapshot(),
+                    current: current.clone(),
+                    visits: visits.clone(),
+                    retries: retries.clone(),
+                    trace: trace.clone(),
+                    decisions: decisions.clone(),
+                    steps,
+                    invocations,
+                    last: last.clone(),
+                    started: $started,
+                    accepted: $accepted,
+                };
+                match progress_path.map(|path| write_branch_progress(path, &progress)) {
+                    Some(Err(error)) => Err(error),
+                    _ => Ok(()),
+                }
+            }};
+        }
+        macro_rules! record {
+            ($status:expr, $extra:expr $(,)?) => {{
+                let mut record = json!({
+                    "id": entry,
+                    "index": index,
+                    "status": $status,
+                    "started": true,
+                    "context": context.snapshot(),
+                    "route_trace": trace,
+                    "decisions": decisions,
+                    "visits": visits,
+                    "fork_attempt": runtime.attempt,
+                    "notes": last.as_ref().map(|(_, _, notes): &(String, String, String)| notes.clone()).unwrap_or_default(),
+                });
+                if let (Some(record), Value::Object(extra)) = (record.as_object_mut(), $extra) {
+                    record.extend(extra);
+                }
+                record
+            }};
+        }
+        loop {
+            if current == join {
+                return record!("completed", json!({}));
+            }
+            if is_exit_node(flow, &current) {
+                // Validation forbids success exits in branches; a branch can
+                // never end its owner successfully before the join.
+                if flow
+                    .exit_result(&current)
+                    .is_some_and(|result| result.outcome == attractor_core::ExitOutcome::Success)
+                {
+                    return record!(
+                        "error",
+                        error_value(
+                            &current,
+                            FailureKind::Routing,
+                            &format!("branch reached success exit {current} before its join"),
+                            0
+                        )
+                    );
+                }
+                let Some(result) = flow.exit_result(&current).cloned() else {
+                    return record!(
+                        "error",
+                        error_value(&current, FailureKind::Routing, "exit declares no result", 0)
+                    );
+                };
+                let (node, decision, notes) = last.clone().unwrap_or_default();
+                let terminal = BranchTerminal {
+                    exit_id: current.clone(),
+                    result,
+                    branch: entry.to_string(),
+                    branch_index: index,
+                    node,
+                    decision,
+                    notes,
+                };
+                return record!("terminal_result", json!({ "terminal": terminal }));
+            }
+            if cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime) {
+                return record!("canceled", json!({"canceled_at": current}));
+            }
+            let Some(node) = flow.nodes.get(&current).cloned() else {
+                return record!(
+                    "error",
+                    error_value(
+                        &current,
+                        FailureKind::Routing,
+                        &format!("unknown node {current}"),
+                        0
+                    )
+                );
             };
-            context
-                .set("current_node", json!(current_node.clone()))
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            let prior_status = context
-                .get("outcome")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<OutcomeStatus>().ok());
-            let prior_preferred_label = context
-                .get("preferred_label")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let outgoing_edges = outgoing_routing_edges(&runtime.flow, &current_node)
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current_node, &node);
-            let prompt = crate::flow_runtime::node_prompt(&node);
+            // Every branch invocation has its own execution directory: the
+            // fork invocation's stage, then the branch's invocation number
+            // (under the fork's attempt). An interrupted invocation keeps
+            // its number on resume.
+            // ponytail: one million invocations per branch per fork attempt.
+            let attempt = runtime.attempt * BRANCH_INVOCATIONS_PER_ATTEMPT + invocations;
+            let _ = context.set("current_node", json!(current.clone()));
+            let outgoing_edges = outgoing_routing_edges(flow, &current).unwrap_or_default();
+            let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current, &node);
             let mut request_context = context.snapshot();
-            mark_unavailable_routes(
-                &mut request_context,
-                &runtime.flow,
-                &outgoing_edges,
-                &visits,
-            );
+            mark_unavailable_routes(&mut request_context, flow, &outgoing_edges, &visits);
             let request = NodeExecutionRequest {
-                node_id: current_node.clone(),
-                stage_index: completed_nodes.len() as u64,
-                // Branch artifacts belong to the owning parallel execution attempt.
-                attempt: runtime.attempt,
+                node_id: current.clone(),
+                stage_index: runtime.stage_index,
+                attempt,
                 context: request_context,
-                prompt,
+                prompt: crate::flow_runtime::node_prompt(&node),
                 node: node.clone(),
                 node_attrs: node_attrs.clone(),
-                flow: runtime.flow.clone(),
+                flow: flow.clone(),
                 outgoing_edges,
                 run_paths: runtime.run_paths.clone(),
                 run_workdir: runtime.run_workdir.clone(),
@@ -2260,201 +2238,176 @@ impl RuntimeHandlerRunner {
                 fallback_profile: runtime.fallback_profile.clone(),
                 fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
             };
-            let emit_node_event = |event| {
-                self.emit(runtime, event)
-                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))
+            let _ = self.emit(
+                runtime,
+                parallel_branch_node_started_event(
+                    &runtime.run_id,
+                    &runtime.node_id,
+                    entry,
+                    index,
+                    &current,
+                ),
+            );
+            // An invocation accepted before an interruption is never run
+            // again; its context updates are already in the saved context.
+            let mut interrupted = Arc::new(AtomicBool::new(false));
+            let (raw, already_applied) = match accepted.take() {
+                Some(outcome) => (outcome, true),
+                None => {
+                    if let Err(error) = save_progress!(Some(current.clone()), None) {
+                        return record!(
+                            "error",
+                            error_value(&current, FailureKind::Runtime, &error, 0)
+                        );
+                    }
+                    let mut node_runtime = HandlerRuntime::from_request(request);
+                    node_runtime.cancel = Some(cancel.clone());
+                    interrupted = node_runtime.interrupted.clone();
+                    let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.execute_runtime(node_runtime)
+                    })) {
+                        Ok(Ok(outcome)) => outcome,
+                        Ok(Err(error)) => outcome_from_node_error(error),
+                        Err(payload) => outcome_from_node_error(RuntimeNodeError::terminal(
+                            panic_payload_message(payload),
+                        )),
+                    };
+                    invocations += 1;
+                    (raw, false)
+                }
             };
-            emit_node_event(parallel_branch_node_started_event(
-                &runtime.run_id,
-                &runtime.node_id,
-                start_node,
-                branch_index,
-                &current_node,
-            ))?;
-            let raw_outcome = match self.execute_request(request) {
-                Ok(outcome) => outcome,
-                // A nested branch without a route fails this one's owner too.
-                Err(error) if error.unmatched_route => return Err(error),
-                Err(error) => handler_error_outcome(error),
+            let _ = self.emit(
+                runtime,
+                parallel_branch_node_completed_event(
+                    &runtime.run_id,
+                    &runtime.node_id,
+                    entry,
+                    index,
+                    &current,
+                    raw.status.to_string(),
+                ),
+            );
+            let outcome = if already_applied {
+                raw
+            } else {
+                match crate::context::apply_outcome_context_updates(
+                    &current,
+                    &node_attrs,
+                    &mut context,
+                    &raw,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        outcome_from_node_error(RuntimeNodeError::terminal(error.to_string()))
+                    }
+                }
             };
-            emit_node_event(parallel_branch_node_completed_event(
-                &runtime.run_id,
-                &runtime.node_id,
-                start_node,
-                branch_index,
-                &current_node,
-                raw_outcome.status.to_string(),
-            ))?;
-            let outcome = crate::context::apply_outcome_context_updates(
-                &current_node,
-                &node_attrs,
-                &mut context,
-                &raw_outcome,
-            )
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            node_outcomes.insert(current_node.clone(), outcome.clone());
-            // Infrastructure failures fail the branch rather than follow a verdict route.
-            if crate::retry::is_runtime_failure(&outcome) {
-                return Ok(branch_payload(
-                    start_node,
-                    "failed",
-                    None,
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &node_outcomes,
-                    &stage_failure_reason(&outcome),
-                ));
+            if outcome.is_error() {
+                // An invocation the fork's or the user's cancellation actually
+                // interrupted is canceled, with the interruption as evidence.
+                // Any other error, of any kind, is the branch's own and keeps
+                // its kind, reason and precedence.
+                let kind = outcome.error_kind().unwrap_or(FailureKind::Runtime);
+                if interrupted.load(Ordering::SeqCst) {
+                    return record!(
+                        "canceled",
+                        json!({
+                            "canceled_at": current,
+                            "interruption": stage_failure_reason(&outcome),
+                        })
+                    );
+                }
+                let retries_so_far = retries.get(&current).copied().unwrap_or(0);
+                let policy = retry_policy_for_outcome(flow, &current, &outcome);
+                if should_retry_attempt(&outcome, retries_so_far, &policy) {
+                    retries.insert(current.clone(), retries_so_far + 1);
+                    if let Err(error) = save_progress!(None, None) {
+                        return record!(
+                            "error",
+                            error_value(&current, FailureKind::Runtime, &error, 0)
+                        );
+                    }
+                    continue;
+                }
+                return record!(
+                    "error",
+                    error_value(
+                        &current,
+                        kind,
+                        &stage_failure_reason(&outcome),
+                        retries_so_far + 1
+                    ),
+                );
             }
-            completed_nodes.push(current_node.clone());
-
-            let selection = select_next_node_with_prior(
-                &runtime.flow,
-                &current_node,
-                &outcome,
-                &context,
-                prior_status,
-                &prior_preferred_label,
-                &visits,
-            )
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            let Some(next_node) = selection.selected_node.clone() else {
-                if is_exit_node(&runtime.flow, &current_node) {
-                    return Ok(branch_payload(
-                        start_node,
-                        "completed",
-                        Some("success"),
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &node_outcomes,
-                        "",
-                    ));
+            if !already_applied {
+                // The accepted result is durable before its transition.
+                let stored = Outcome {
+                    context_updates: ContextMap::new(),
+                    raw_response_text: String::new(),
+                    ..outcome.clone()
+                };
+                if let Err(error) = save_progress!(Some(current.clone()), Some(stored)) {
+                    return record!(
+                        "error",
+                        error_value(&current, FailureKind::Runtime, &error, 0)
+                    );
                 }
-                let reason = unmatched_route_reason(
-                    &runtime.flow,
-                    &current_node,
-                    &outcome,
-                    prior_status,
-                    &prior_preferred_label,
-                    &selection,
-                )
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-                // A visit limit keeps its legacy failed branch, which the join
-                // and error policies weigh. Any unmatched result, failed or
-                // not, fails the owning run whatever its policies.
-                if !selection.reason.starts_with(VISIT_LIMIT_REACHED) {
-                    return Err(RuntimeNodeError::unmatched_route(reason));
+            }
+            retries.remove(&current);
+            steps += 1;
+            let transition = match select_transition(flow, &current, &outcome, &visits) {
+                Ok(transition) => transition,
+                Err(reason) => {
+                    return record!(
+                        "error",
+                        error_value(&current, FailureKind::Routing, &reason, 1)
+                    )
                 }
-                return Ok(branch_payload(
-                    start_node,
-                    "failed",
-                    None,
-                    &current_node,
-                    &completed_nodes,
-                    &context,
-                    &node_outcomes,
-                    &reason,
-                ));
             };
-            current_node = next_node;
-            *visits.entry(current_node.clone()).or_default() += 1;
+            decisions.push(json!({
+                "node": current,
+                "decision": transition.decision,
+                "target": transition.target,
+            }));
+            last = Some((
+                current.clone(),
+                transition.decision.clone(),
+                outcome.notes.clone(),
+            ));
+            *visits.entry(transition.target.clone()).or_default() += 1;
+            trace.push(transition.target.clone());
+            current = transition.target;
+            if let Err(error) = save_progress!(None, None) {
+                return record!(
+                    "error",
+                    error_value(&current, FailureKind::Runtime, &error, 0)
+                );
+            }
         }
     }
 
+    /// A join is a structural barrier: the fork already settled every
+    /// branch, so it continues with `next`.
     fn execute_fan_in(
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
-        let raw_results = runtime
+        let results = runtime
             .context
             .get("parallel.results")
+            .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_else(|| json!([]));
-        let results = normalize_parallel_results(&raw_results);
-        if results.is_empty() {
-            return Ok(fail_outcome("No parallel results to evaluate"));
-        }
-        let mut candidates = results
-            .into_iter()
-            .filter(|result| {
-                result_status_rank(&result_status(result)) < result_status_rank("fail")
-            })
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            return Ok(fail_outcome("All parallel branches failed"));
-        }
-
-        let mut selected: Option<Value> = None;
-        if !runtime.prompt.trim().is_empty() {
-            if let Some(ranker) = self.fan_in_ranker.as_ref() {
-                let resolution = fan_in_llm_resolution_inputs(&runtime);
-                let attrs = &runtime.handler_graph.nodes[&runtime.node_id].attrs;
-                let defaults = runtime
-                    .context
-                    .get("internal.model_defaults_snapshot")
-                    .and_then(|v| v.get("reasoning_controls").or_else(|| v.get("group")));
-                let control = |key: &str| {
-                    attr_text(attrs, key)
-                        .or_else(|| defaults.and_then(|v| v[key].as_str()).map(str::to_string))
-                };
-                let request = FanInRankingRequest {
-                    node_id: runtime.node_id.clone(),
-                    prompt: runtime.prompt.clone(),
-                    context: runtime.context.clone(),
-                    candidates: candidates.clone(),
-                    thinking: control("thinking"),
-                    thinking_budget_tokens: attr_text(attrs, "thinking_budget_tokens")
-                        .and_then(|v| v.parse().ok())
-                        .or_else(|| defaults.and_then(|v| v["thinking_budget_tokens"].as_u64()))
-                        .filter(|_| control("thinking").as_deref() == Some("budget")),
-                    reasoning_mode: control("reasoning_mode"),
-                    reasoning_summary: control("reasoning_summary"),
-                    provider: resolve_effective_llm_provider(&resolution, &runtime.context),
-                    model: resolve_effective_llm_model(&resolution, &runtime.context),
-                    llm_profile: resolve_effective_llm_profile(&resolution, &runtime.context)
-                        .unwrap_or_default(),
-                    reasoning_effort: resolve_effective_reasoning_effort(
-                        &resolution,
-                        &runtime.context,
-                    )
-                    .unwrap_or_default(),
-                };
-                let best_id = {
-                    let mut ranker = ranker
-                        .lock()
-                        .map_err(|_| RuntimeNodeError::runtime("fan-in ranker lock poisoned"))?;
-                    ranker(request).and_then(|value| extract_best_id(&value))
-                };
-                if let Some(best_id) = best_id {
-                    selected = candidates
-                        .iter()
-                        .find(|candidate| object_string(candidate, "id") == best_id)
-                        .cloned();
-                }
-            }
-        }
-
-        let best = selected.unwrap_or_else(|| {
-            candidates.sort_by(compare_fan_in_candidates);
-            candidates.remove(0)
-        });
-        let best_id = object_string(&best, "id");
-        let best_outcome = result_status(&best);
+            .unwrap_or_default();
+        let completed = results
+            .iter()
+            .filter(|record| record_status(record) == "completed")
+            .count();
         Ok(Outcome {
-            status: OutcomeStatus::Success,
-            context_updates: ContextMap::from([
-                (
-                    "parallel.fan_in.best_id".to_string(),
-                    json!(best_id.clone()),
-                ),
-                (
-                    "parallel.fan_in.best_outcome".to_string(),
-                    json!(best_outcome),
-                ),
-            ]),
-            notes: format!("Selected best candidate: {best_id}"),
-            ..Outcome::new(OutcomeStatus::Success)
+            notes: format!(
+                "{completed} of {} branches completed; see parallel.results",
+                results.len()
+            ),
+            ..Outcome::completed(attractor_core::NEXT_DECISION)
         })
     }
 }
@@ -2468,32 +2421,13 @@ impl NodeExecutor for RuntimeHandlerRunner {
             self.execute_request(request)
         })) {
             Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(error)) if error.unmatched_route => Err(error),
-            Ok(Err(error)) => Ok(handler_error_outcome(error)),
-            Err(payload) => Ok(Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: panic_payload_message(payload),
-                retryable: Some(false),
-                failure_kind: Some(FailureKind::Runtime),
-                ..Outcome::new(OutcomeStatus::Fail)
-            }),
+            Ok(Err(error)) => Ok(outcome_from_node_error(error)),
+            Err(payload) => Ok(Outcome::error(
+                FailureKind::Runtime,
+                panic_payload_message(payload),
+                Some(false),
+            )),
         }
-    }
-}
-
-fn fan_in_llm_resolution_inputs(runtime: &HandlerRuntime) -> LlmResolutionInputs {
-    let node_attrs = &runtime.node_attrs;
-    let reasoning_attr = node_attrs.get("reasoning_effort");
-    LlmResolutionInputs {
-        node_model: attr_text(node_attrs, "llm_model"),
-        node_provider: attr_text(node_attrs, "llm_provider"),
-        node_profile: attr_text(node_attrs, "llm_profile"),
-        node_reasoning_effort: attr_text(node_attrs, "reasoning_effort"),
-        node_reasoning_is_default_placeholder: reasoning_attr.is_some_and(|attr| attr.line == 0),
-        fallback_model: runtime.fallback_model.clone(),
-        fallback_provider: runtime.fallback_provider.clone(),
-        fallback_profile: runtime.fallback_profile.clone(),
-        fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
     }
 }
 
@@ -2501,7 +2435,18 @@ fn fan_in_llm_resolution_inputs(runtime: &HandlerRuntime) -> LlmResolutionInputs
 struct Choice {
     key: String,
     label: String,
-    target: String,
+    decision: String,
+}
+
+impl Choice {
+    /// The published option: its value is the decision ID.
+    fn option(&self) -> HumanOption {
+        HumanOption {
+            label: self.label.clone(),
+            value: self.decision.clone(),
+            key: self.key.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2510,23 +2455,128 @@ struct ShellOutput {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    interrupted: bool,
 }
 
-fn handler_error_outcome(error: RuntimeNodeError) -> Outcome {
-    Outcome {
-        status: OutcomeStatus::Fail,
-        failure_reason: error.message,
-        retryable: error.retryable,
-        failure_kind: Some(error.failure_kind.unwrap_or(FailureKind::Runtime)),
-        ..Outcome::new(OutcomeStatus::Fail)
+/// The decision a finished tool command selects through its node's one
+/// adapter, with `context.tool.*` and any `output_map` values applied
+/// together. Unmapped exits, malformed JSON and undeclared decisions are
+/// execution errors carrying the exit code and stderr.
+fn tool_decision_outcome(runtime: &HandlerRuntime, output: &ShellOutput) -> Outcome {
+    let Some(NodeConfig::Tool {
+        exit_codes,
+        decision_field,
+        ..
+    }) = runtime.node.config.as_ref()
+    else {
+        return Outcome::error(
+            FailureKind::Runtime,
+            "tool node has no tool config",
+            Some(false),
+        );
+    };
+    let mut context_updates = tool_context_updates(output.stdout.trim(), output.exit_code);
+    let evidence = |message: String| {
+        let stderr = output.stderr.trim();
+        if stderr.is_empty() {
+            message
+        } else {
+            format!("{message}; stderr: {stderr}")
+        }
+    };
+    let decision = match decision_field.as_deref() {
+        Some(field) if output.exit_code != 0 => Err(evidence(format!(
+            "tool exited with code {} instead of 0 with a JSON {field} decision",
+            output.exit_code
+        ))),
+        Some(field) => match serde_json::from_str::<Value>(output.stdout.trim()) {
+            Ok(Value::Object(object)) => match object.get(field) {
+                Some(Value::String(decision)) => Ok(decision.clone()),
+                Some(_) => Err(evidence(format!("tool JSON field {field} is not a string"))),
+                None => Err(evidence(format!("tool JSON output has no {field} field"))),
+            },
+            _ => Err(evidence(format!(
+                "tool stdout is not one JSON object with a {field} decision"
+            ))),
+        },
+        None => exit_codes
+            .iter()
+            .find(|(code, _)| code.trim().parse::<i32>().ok() == Some(output.exit_code))
+            .map(|(_, decision)| decision.clone())
+            .ok_or_else(|| {
+                evidence(format!(
+                    "tool exited with unmapped code {}",
+                    output.exit_code
+                ))
+            }),
+    };
+    let decision = match decision {
+        Ok(decision) if runtime.node.routes.contains_key(&decision) => decision,
+        Ok(decision) => {
+            return Outcome {
+                context_updates,
+                ..Outcome::error(
+                    FailureKind::Contract,
+                    evidence(format!("tool returned undeclared decision {decision:?}")),
+                    Some(false),
+                )
+            }
+        }
+        Err(reason) => {
+            return Outcome {
+                context_updates,
+                ..Outcome::error(FailureKind::Runtime, reason, None)
+            }
+        }
+    };
+    match resolve_tool_output_updates(runtime, &output.stdout) {
+        Ok(output_updates) => {
+            context_updates.extend(output_updates);
+            Outcome {
+                context_updates,
+                notes: output.stdout.trim().to_string(),
+                ..Outcome::completed(decision)
+            }
+        }
+        Err(reason) => Outcome {
+            context_updates,
+            ..Outcome::error(FailureKind::Contract, reason, Some(false))
+        },
     }
 }
 
-fn fail_outcome(reason: impl Into<String>) -> Outcome {
-    Outcome {
-        status: OutcomeStatus::Fail,
-        failure_reason: reason.into(),
-        ..Outcome::new(OutcomeStatus::Fail)
+/// A switch reads its key once and compares exact scalars. A missing key
+/// or an unsupported value is an execution error, never `otherwise`.
+fn execute_switch(runtime: &HandlerRuntime) -> Outcome {
+    let Some(NodeConfig::Switch {
+        on,
+        cases,
+        otherwise,
+    }) = runtime.node.config.as_ref()
+    else {
+        return Outcome::error(
+            FailureKind::Runtime,
+            "switch node has no switch config",
+            Some(false),
+        );
+    };
+    let Some(value) = runtime.context.get(on) else {
+        return Outcome::error(
+            FailureKind::Contract,
+            format!("switch key {on} is missing from the context"),
+            Some(false),
+        );
+    };
+    match attractor_core::switch_decision(cases, otherwise, value) {
+        Ok(decision) => Outcome {
+            notes: format!("{on} = {value}"),
+            ..Outcome::completed(decision)
+        },
+        Err(reason) => Outcome::error(
+            FailureKind::Contract,
+            format!("switch key {on}: {reason}"),
+            Some(false),
+        ),
     }
 }
 
@@ -2703,14 +2753,15 @@ fn run_hook(
         "ATTRACTOR_TOOL_COMMAND".to_string(),
         tool_command.to_string(),
     );
-    run_shell_command(command, cwd, None, env, Some(payload.to_string())).unwrap_or_else(|error| {
-        ShellOutput {
+    run_shell_command(command, cwd, None, env, Some(payload.to_string()), None).unwrap_or_else(
+        |error| ShellOutput {
             exit_code: -1,
             stdout: String::new(),
             stderr: error.to_string(),
             timed_out: false,
-        }
-    })
+            interrupted: false,
+        },
+    )
 }
 
 fn record_hook_failure(
@@ -2839,14 +2890,22 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
         .unwrap_or_else(|| "tool command timed out".to_string())
 }
 
+/// Runs `command`, draining stdout and stderr concurrently so a chatty
+/// command never blocks on a full pipe, and kills it at `timeout` or when
+/// `stop` answers true.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
     timeout: Option<Duration>,
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
+    mut stop: Option<&mut dyn FnMut() -> bool>,
 ) -> std::io::Result<ShellOutput> {
-    let mut child = Command::new("sh")
+    let mut command_line = Command::new("sh");
+    // Its own process group, so a timeout or cancellation stops every
+    // descendant, not just the shell.
+    spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
+    let mut child = command_line
         .arg("-c")
         .arg(command)
         .current_dir(cwd)
@@ -2866,47 +2925,65 @@ fn run_shell_command(
         }
     }
 
-    let Some(timeout) = timeout else {
+    if timeout.is_none() && stop.is_none() {
         let output = child.wait_with_output()?;
-        return Ok(shell_output_from_process(output, false));
-    };
+        return Ok(shell_output_from_process(output, false, false));
+    }
 
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
     let started_at = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            let output = child.wait_with_output()?;
-            return Ok(shell_output_from_process(output, false));
+    let (status, timed_out, interrupted) = loop {
+        if let Some(status) = child.try_wait()? {
+            break (status, false, false);
         }
-        if started_at.elapsed() >= timeout {
+        let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
+        let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
+        if timed_out || interrupted {
+            spark_agent_adapter::local_environment::terminate_process_group(
+                child.id(),
+                Some(&mut child),
+            );
             let _ = child.kill();
-            let output = child.wait_with_output()?;
-            return Ok(shell_output_from_process(output, true));
+            break (child.wait()?, timed_out, interrupted);
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
+    };
+    let output = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    };
+    Ok(shell_output_from_process(output, timed_out, interrupted))
 }
 
-fn shell_output_from_process(output: std::process::Output, timed_out: bool) -> ShellOutput {
+fn shell_output_from_process(
+    output: std::process::Output,
+    timed_out: bool,
+    interrupted: bool,
+) -> ShellOutput {
     ShellOutput {
         exit_code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         timed_out,
-    }
-}
-
-fn human_skipped_outcome() -> Outcome {
-    Outcome {
-        status: OutcomeStatus::Fail,
-        failure_reason: "human skipped interaction".to_string(),
-        ..Outcome::new(OutcomeStatus::Fail)
+        interrupted,
     }
 }
 
 const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
 
 enum HumanGateWaitResult {
-    Answered(HumanAnswer),
+    Answered(Choice, String),
     Interrupted(Outcome),
 }
 
@@ -2921,9 +2998,16 @@ fn events_length(paths: &RunRootPaths) -> u64 {
         .unwrap_or(0)
 }
 
-fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<(String, String)> {
-    let events = crate::events::read_raw_events(paths).ok()?;
-    gate_answer_in(events.iter().rev(), question_id)
+/// The first answer to `question_id` in `events` that names a declared choice.
+fn valid_gate_answer<'a>(
+    events: impl Iterator<Item = &'a attractor_core::RawRuntimeEvent>,
+    question_id: &str,
+    choices: &[Choice],
+) -> Option<(Choice, String)> {
+    let mut events = events;
+    std::iter::from_fn(|| gate_answer_in(&mut events, question_id)).find_map(|(answer, note)| {
+        select_choice(&HumanAnswer::selected(answer), choices).map(|choice| (choice, note))
+    })
 }
 
 /// Latest-first scan for a completed answer to `question_id`; callers pass
@@ -2957,6 +3041,9 @@ fn gate_answer_in<'a>(
     })
 }
 
+/// The declared decision an answer names. Only exact decision IDs count:
+/// labels and accelerator keys are display, translated to the decision by
+/// the UI before submission, so a label can never capture another decision.
 fn select_choice(answer: &HumanAnswer, choices: &[Choice]) -> Option<Choice> {
     let mut tokens = answer
         .selected_values
@@ -2964,65 +3051,19 @@ fn select_choice(answer: &HumanAnswer, choices: &[Choice]) -> Option<Choice> {
         .filter_map(|value| trimmed_nonempty(value))
         .collect::<Vec<_>>();
     if let Some(option) = &answer.selected_option {
-        tokens.extend([
-            option.value.trim().to_string(),
-            option.label.trim().to_string(),
-            option.key.trim().to_string(),
-        ]);
+        tokens.extend(trimmed_nonempty(&option.value));
     }
-    if let Some(text) = trimmed_nonempty(&answer.text) {
-        tokens.push(text);
-    }
-    if let Some(value) = trimmed_nonempty(&answer.value) {
-        tokens.push(value);
-    }
-    tokens.retain(|value| !value.is_empty() && value != "skipped");
-
-    for token in tokens {
-        let normalized_token = token.to_ascii_lowercase();
-        for choice in choices {
-            if choice.target == token
-                || choice.label == token
-                || normalize_label(&choice.label) == normalize_label(&token)
-                || (!choice.key.is_empty() && choice.key.eq_ignore_ascii_case(&token))
-                || choice.target.to_ascii_lowercase() == normalized_token
-            {
-                return Some(choice.clone());
-            }
-        }
-    }
-    None
+    tokens.extend(trimmed_nonempty(&answer.text));
+    tokens.extend(trimmed_nonempty(&answer.value));
+    tokens
+        .iter()
+        .find_map(|token| choices.iter().find(|choice| choice.decision == *token))
+        .cloned()
 }
 
 fn trimmed_nonempty(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
-}
-
-fn normalize_label(label: &str) -> String {
-    let mut text = label.trim().to_ascii_lowercase();
-    if text.starts_with('[') {
-        if let Some(index) = text.find(']') {
-            text = text[index + 1..].trim().to_string();
-        }
-    }
-    let mut chars = text.chars();
-    let first = chars.next();
-    let second = chars.next();
-    if matches!(second, Some(')')) && first.is_some_and(|ch| ch.is_ascii_alphanumeric()) {
-        text = chars.as_str().trim().to_string();
-    }
-    let mut chars = text.chars();
-    let first = chars.next();
-    let second = chars.next();
-    let third = chars.next();
-    if first.is_some_and(|ch| ch.is_ascii_alphanumeric())
-        && matches!(second, Some(' '))
-        && matches!(third, Some('-'))
-    {
-        text = chars.as_str().trim().to_string();
-    }
-    text
 }
 
 fn parse_accelerator_key(label: &str) -> String {
@@ -3057,76 +3098,6 @@ fn parse_accelerator_key(label: &str) -> String {
         .unwrap_or_default()
 }
 
-fn validate_join_thresholds_for_config(
-    join_policy: &str,
-    join_k: Option<u64>,
-    join_quorum: Option<f64>,
-    branch_count: usize,
-) -> Option<String> {
-    if join_policy != "k_of_n" && join_k.is_some() {
-        return Some("join_k is only supported when join_policy is k_of_n".to_string());
-    }
-    if join_policy != "quorum" && join_quorum.is_some() {
-        return Some("join_quorum is only supported when join_policy is quorum".to_string());
-    }
-    if join_policy == "k_of_n" {
-        let Some(join_k) = join_k else {
-            return Some("join_k is required and must be an integer >= 1".to_string());
-        };
-        if join_k == 0 {
-            return Some("join_k is required and must be an integer >= 1".to_string());
-        }
-        if join_k > branch_count as u64 {
-            return Some(format!(
-                "join_k must be <= outgoing branch count ({branch_count})"
-            ));
-        }
-    }
-    if join_policy == "quorum" {
-        let join_quorum = join_quorum.unwrap_or(0.5);
-        if !join_quorum.is_finite() || join_quorum <= 0.0 || join_quorum > 1.0 {
-            return Some("join_quorum must be finite and > 0 and <= 1".to_string());
-        }
-    }
-    None
-}
-
-fn fan_in_nodes(flow: &FlowDefinition) -> BTreeSet<String> {
-    flow.nodes
-        .iter()
-        .filter(|(_, node)| node.kind == NodeKind::FanIn)
-        .map(|(node_id, _)| node_id.clone())
-        .collect()
-}
-
-fn branch_payload(
-    id: &str,
-    status: &str,
-    outcome: Option<&str>,
-    current_node: &str,
-    completed_nodes: &[String],
-    context: &AttractorContext,
-    node_outcomes: &BTreeMap<String, Outcome>,
-    failure_reason: &str,
-) -> Value {
-    let node_outcomes = node_outcomes
-        .iter()
-        .map(|(node_id, outcome)| (node_id.clone(), json!(outcome.status.as_str())))
-        .collect::<serde_json::Map<_, _>>();
-    json!({
-        "id": id,
-        "status": status,
-        "outcome": outcome.map(Value::from).unwrap_or(Value::Null),
-        "outcome_reason_code": Value::Null,
-        "outcome_reason_message": Value::Null,
-        "current_node": current_node,
-        "completed_nodes": completed_nodes,
-        "context": context.snapshot(),
-        "node_outcomes": node_outcomes,
-        "failure_reason": failure_reason,
-    })
-}
-
 /// Removes the runtime's session handles from each branch payload, which
 /// agents can read, and returns the parent's sessions with every entry a
 /// branch started or continued, or `None` when no branch changed one.
@@ -3154,93 +3125,161 @@ fn take_branch_sessions(parent: &ContextMap, results: &mut [Value]) -> Option<Va
     (merged != before).then_some(merged)
 }
 
-fn branch_succeeded(payload: &Value) -> bool {
-    object_string(payload, "status").eq_ignore_ascii_case("completed")
-        && object_string(payload, "outcome").eq_ignore_ascii_case("success")
+const BRANCH_INVOCATIONS_PER_ATTEMPT: u64 = 1_000_000;
+
+/// An unsettled branch's position, saved in its fork's execution directory
+/// before and after every invocation and transition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BranchProgress {
+    context: ContextMap,
+    current: String,
+    visits: BTreeMap<String, u64>,
+    retries: BTreeMap<String, u64>,
+    trace: Vec<String>,
+    decisions: Vec<Value>,
+    steps: u64,
+    /// Invocations this branch finished, retries included; numbers the
+    /// next invocation's execution identity.
+    #[serde(default)]
+    invocations: u64,
+    last: Option<(String, String, String)>,
+    /// The node whose invocation began and has not been accepted yet.
+    #[serde(default)]
+    started: Option<String>,
+    /// That node's accepted result, saved before its transition.
+    #[serde(default)]
+    accepted: Option<Outcome>,
 }
 
-fn branch_failed(payload: &Value) -> bool {
-    let status = object_string(payload, "status");
-    let outcome = object_string(payload, "outcome");
-    status.eq_ignore_ascii_case("failed")
-        || (status.eq_ignore_ascii_case("completed") && outcome.eq_ignore_ascii_case("failure"))
+fn branch_progress_path(dir: &Path, index: usize) -> PathBuf {
+    dir.join(format!("{index}.progress.json"))
 }
 
-fn normalize_parallel_results(raw: &Value) -> Vec<Value> {
-    if let Some(items) = raw.as_array() {
-        return items
-            .iter()
-            .filter(|item| item.is_object())
-            .cloned()
-            .collect();
-    }
-    if let Some(text) = raw.as_str() {
-        if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(text) {
-            return items.into_iter().filter(Value::is_object).collect();
+fn read_branch_progress(path: &Path) -> Option<BranchProgress> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_branch_progress(
+    path: &Path,
+    progress: &BranchProgress,
+) -> std::result::Result<(), String> {
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
         }
-    }
-    Vec::new()
-}
-
-fn result_status(result: &Value) -> String {
-    let status = object_string(result, "status").to_ascii_lowercase();
-    let outcome = object_string(result, "outcome").to_ascii_lowercase();
-    if status == "completed" && !outcome.is_empty() {
-        return outcome;
-    }
-    if status == "failed" {
-        return "fail".to_string();
-    }
-    status
-}
-
-fn result_status_rank(status: &str) -> i32 {
-    match status.to_ascii_lowercase().as_str() {
-        "success" => 0,
-        "partial_success" | "paused" => 1,
-        "retry" => 2,
-        "fail" => 3,
-        _ => 4,
-    }
-}
-
-fn compare_fan_in_candidates(left: &Value, right: &Value) -> Ordering {
-    result_status_rank(&result_status(left))
-        .cmp(&result_status_rank(&result_status(right)))
-        .then_with(|| {
-            score_value(right)
-                .partial_cmp(&score_value(left))
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| object_string(left, "id").cmp(&object_string(right, "id")))
-}
-
-fn score_value(result: &Value) -> f64 {
-    let Some(score) = result.get("score") else {
-        return 0.0;
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, serde_json::to_vec(progress).unwrap_or_default())?;
+        fs::rename(&temp, path)
     };
-    score
-        .as_f64()
-        .or_else(|| score.as_str().and_then(|value| value.parse::<f64>().ok()))
-        .unwrap_or(0.0)
+    write().map_err(|error| format!("could not save branch progress: {error}"))
 }
 
-fn extract_best_id(text: &str) -> Option<String> {
-    let raw = text.trim();
-    if raw.is_empty() {
+/// The branch node of the fork at `fork_id` (stage/attempt) whose invocation
+/// was interrupted before it was accepted and whose `recovery_policy` is
+/// `pause`: resuming would rerun it, so recovery needs an explicit decision,
+/// as for a root node.
+pub fn fork_branch_requiring_recovery_decision(
+    paths: &RunRootPaths,
+    flow: &FlowDefinition,
+    fork_id: &str,
+    stage_index: u64,
+    attempt: u64,
+) -> Option<String> {
+    let Some(NodeConfig::Parallel { branches, .. }) = flow.nodes.get(fork_id)?.config.as_ref()
+    else {
         return None;
+    };
+    let dir = paths
+        .logs_dir()
+        .join(fork_id)
+        .join("executions")
+        .join(format!("{stage_index}-{attempt}"))
+        .join("branches");
+    (0..branches.len()).find_map(|index| {
+        if dir.join(format!("{index}.json")).exists() {
+            return None;
+        }
+        let progress = read_branch_progress(&branch_progress_path(&dir, index))?;
+        let node = progress.started.filter(|_| progress.accepted.is_none())?;
+        flow.nodes
+            .get(&node)?
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause)
+            .then_some(node)
+    })
+}
+
+/// Whether the user asked to cancel the run this branch belongs to.
+fn run_cancel_requested(runtime: &HandlerRuntime) -> bool {
+    runtime
+        .run_paths
+        .as_ref()
+        .is_some_and(run_record_cancel_requested)
+}
+
+fn run_record_cancel_requested(paths: &RunRootPaths) -> bool {
+    crate::records::read_run_record(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|record| {
+            matches!(
+                crate::records::normalize_run_status(&record.status).as_str(),
+                "cancel_requested" | "canceled"
+            )
+        })
+}
+
+fn record_status(record: &Value) -> &str {
+    record
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// An execution error a tolerant fork keeps.
+fn record_tolerated(record: &Value, tolerate: bool) -> bool {
+    tolerate && record["error"]["tolerable"].as_bool() == Some(true)
+}
+
+/// A settled branch that stops the fork launching more work.
+fn record_stops_fork(record: &Value, tolerate: bool) -> bool {
+    match record_status(record) {
+        "terminal_result" => true,
+        "error" => !record_tolerated(record, tolerate),
+        _ => false,
     }
-    match serde_json::from_str::<Value>(raw) {
-        Ok(Value::Object(object)) => object
-            .get("best_id")
-            .or_else(|| object.get("id"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        Ok(Value::String(value)) => trimmed_nonempty(&value),
-        _ => Some(raw.to_string()),
-    }
+}
+
+fn error_value(node: &str, kind: FailureKind, reason: &str, attempts: u64) -> Value {
+    json!({
+        "error": {
+            "node": node,
+            "kind": kind,
+            "tolerable": kind.is_tolerable(),
+            "reason": reason,
+            "attempts": attempts,
+        }
+    })
+}
+
+fn branch_error_record(
+    entry: &str,
+    index: usize,
+    node: &str,
+    kind: FailureKind,
+    reason: &str,
+    attempts: u64,
+) -> Value {
+    let mut record = json!({
+        "id": entry,
+        "index": index,
+        "status": "error",
+        "started": true,
+        "context": {},
+    });
+    record["error"] = error_value(node, kind, reason, attempts)["error"].clone();
+    record
 }
 
 fn object_string(value: &Value, key: &str) -> String {

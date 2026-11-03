@@ -15,23 +15,41 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
         &settings,
         "ops/review/inspectable",
         json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "inspectable",
             "title": "Inspectable Graph",
             "goal": "Inspect graph behavior",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "human_review",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
                 "human_review": {
                     "kind": "human_gate",
                     "label": "Human Review",
-                    "config": {"kind": "human_gate", "prompt": "Review the result"}
+                    "config": {"kind": "human_gate", "prompt": "Review the result"},
+                    "routes": {
+                        "done": {
+                            "to": "done",
+                            "label": "done",
+                            "description": "The reviewer chose done."
+                        }
+                    }
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [
-                {"from": "start", "to": "human_review"},
-                {"from": "human_review", "to": "done"}
-            ]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }),
     );
     let inspectable = settings.bundled_dir().join("flows/ops/review/inspectable");
@@ -53,18 +71,34 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
     write_flow_at(
         &org_flows.join("roleless"),
         json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "roleless",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "review",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
                 "review": {
                     "kind": "agent_task",
                     "role": "nobody",
-                    "config": {"kind": "agent_task", "prompt": "Review."}
+                    "config": {"kind": "agent_task", "prompt": "Review."},
+                    "contracts": {"response": "decision_envelope"},
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}}
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [{"from": "start", "to": "review"}, {"from": "review", "to": "done"}]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }),
     );
     let app = build_app(settings.clone()).expect("app");
@@ -825,30 +859,33 @@ fn write_flow_at(dir: &Path, flow: Value) {
 
 fn simple_flow(id: &str, title: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "title": title,
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 
 /// A flow whose `review` node uses the reviewer role.
 fn reviewed_flow(id: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "title": id,
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "review", "description": "Enter the first workflow step."}}},
             "review": {
                 "kind": "agent_task",
                 "role": "reviewer",
-                "config": {"kind": "agent_task", "prompt": "Review."}
+                "config": {"kind": "agent_task", "prompt": "Review."},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The review is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "review"}, {"from": "review", "to": "done"}]
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 

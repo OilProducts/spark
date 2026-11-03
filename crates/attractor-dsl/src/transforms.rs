@@ -127,16 +127,6 @@ impl GraphTransform for AttributeDefaultsTransform {
                 DotValue::Integer(0),
             ),
             (
-                "retry_target",
-                DotValueType::String,
-                DotValue::String(String::new()),
-            ),
-            (
-                "fallback_retry_target",
-                DotValueType::String,
-                DotValue::String(String::new()),
-            ),
-            (
                 "stack.child_dotfile",
                 DotValueType::String,
                 DotValue::String(String::new()),
@@ -184,17 +174,6 @@ impl GraphTransform for AttributeDefaultsTransform {
                     DotValue::String(String::new()),
                 ),
                 ("max_retries", DotValueType::Integer, DotValue::Integer(0)),
-                ("goal_gate", DotValueType::Boolean, DotValue::Boolean(false)),
-                (
-                    "retry_target",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
-                (
-                    "fallback_retry_target",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
                 (
                     "class",
                     DotValueType::String,
@@ -216,40 +195,17 @@ impl GraphTransform for AttributeDefaultsTransform {
                     DotValueType::String,
                     DotValue::String("high".to_string()),
                 ),
-                (
-                    "auto_status",
-                    DotValueType::Boolean,
-                    DotValue::Boolean(false),
-                ),
-                (
-                    "allow_partial",
-                    DotValueType::Boolean,
-                    DotValue::Boolean(false),
-                ),
             ] {
                 set_default(&mut node.attrs, key, value_type, value);
             }
         }
 
         for edge in &mut graph.edges {
-            for (key, value_type, value) in [
-                (
-                    "label",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
-                (
-                    "condition",
-                    DotValueType::String,
-                    DotValue::String(String::new()),
-                ),
-                ("weight", DotValueType::Integer, DotValue::Integer(0)),
-                (
-                    "loop_restart",
-                    DotValueType::Boolean,
-                    DotValue::Boolean(false),
-                ),
-            ] {
+            for (key, value_type, value) in [(
+                "label",
+                DotValueType::String,
+                DotValue::String(String::new()),
+            )] {
                 set_default(&mut edge.attrs, key, value_type, value);
             }
         }

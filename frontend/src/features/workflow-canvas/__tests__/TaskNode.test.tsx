@@ -233,7 +233,7 @@ describe('TaskNode', () => {
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 
-    it('shows and clears parallel threshold drafts in the node toolbar', async () => {
+    it('edits max parallel for a fork without legacy join or error policies ', () => {
         renderWithFlowProvider(
             <SingleNodeHarness
                 node={{
@@ -244,46 +244,27 @@ describe('TaskNode', () => {
                     data: {
                         label: 'Parallel',
                         kind: 'parallel',
-                        config: { kind: 'parallel' },
+                        config: { kind: 'parallel', branches: ['a', 'b'], join: 'join' },
                         shape: 'component',
-                        join_policy: 'k_of_n',
-                        join_k: '2',
-                        join_quorum: '0.75',
                         max_parallel: '3',
                     },
                 }}
                 edges={[
-                    { id: 'e1', source: 'fan', target: 'a' },
-                    { id: 'e2', source: 'fan', target: 'b' },
+                    { id: 'e1', source: 'fan', target: 'a', data: { kind: 'branch' } },
+                    { id: 'e2', source: 'fan', target: 'b', data: { kind: 'branch' } },
+                    { id: 'e3', source: 'fan', target: 'join', data: { kind: 'join' } },
                 ]}
             />,
         )
 
         fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
 
-        expect(screen.getByText('K Threshold')).toBeInTheDocument()
-        expect(screen.queryByText('Quorum Threshold')).not.toBeInTheDocument()
-
+        for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
+            expect(screen.queryByText(legacy)).not.toBeInTheDocument()
+        }
         const toolbar = screen.getByText('Node Properties').parentElement?.parentElement
-        const selects = toolbar?.querySelectorAll('select')
-        expect(selects?.length).toBeGreaterThanOrEqual(2)
-        fireEvent.change(selects?.[1] as HTMLSelectElement, { target: { value: 'quorum' } })
-
-        expect(screen.queryByText('K Threshold')).not.toBeInTheDocument()
-        expect(screen.getByText('Quorum Threshold')).toBeInTheDocument()
-        expect(screen.getByTestId('node-toolbar-attr-input-join_quorum')).toHaveValue('0.75')
-
-        fireEvent.change(screen.getByTestId('node-toolbar-attr-input-join_quorum'), {
-            target: { value: '0.6' },
-        })
-
-        fireEvent.change(selects?.[1] as HTMLSelectElement, { target: { value: 'wait_all' } })
-        expect(screen.queryByText('K Threshold')).not.toBeInTheDocument()
-        expect(screen.queryByText('Quorum Threshold')).not.toBeInTheDocument()
-
-        fireEvent.change(selects?.[1] as HTMLSelectElement, { target: { value: 'k_of_n' } })
-        expect(screen.getByText('K Threshold')).toBeInTheDocument()
-        expect(screen.getByTestId('node-toolbar-attr-input-join_k')).toHaveValue('')
+        const maxParallel = Array.from(toolbar?.querySelectorAll('input') ?? []).find((input) => input.value === '3')
+        expect(maxParallel).toBeTruthy()
     })
 
     it('hides editor affordances while expanded child-flow preview mode is active', () => {

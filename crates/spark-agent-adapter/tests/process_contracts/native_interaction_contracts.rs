@@ -1,10 +1,12 @@
-//! Native providers' questions, plan mode, status envelopes and subagents.
+//! Native providers' questions, plan mode, decision envelopes and subagents.
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use spark_agent_adapter::codergen::{CodergenBackendResponse, STATUS_ENVELOPE_SCHEMA_METADATA_KEY};
+use spark_agent_adapter::codergen::{
+    CodergenBackendResponse, DECISION_ENVELOPE_SCHEMA_METADATA_KEY,
+};
 use spark_agent_adapter::{
     AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnRequest, CodergenBackend,
     CodergenBackendRequest, CodergenRuntimeMode, RustLlmAgentTurnBackend, RustLlmCodergenBackend,
@@ -85,7 +87,7 @@ impl ProviderAdapter for Scripted {
         if text == STREAM_ERROR {
             return Ok(stream_events(
                 vec![
-                    Ok(StreamEvent::text_delta("{\"outcome\"")),
+                    Ok(StreamEvent::text_delta("{\"decision\"")),
                     Err(AdapterError::new(
                         unified_llm_adapter::AdapterErrorKind::Stream,
                         "connection reset",
@@ -403,18 +405,18 @@ fn native_plan_mode_proposes_a_plan_with_write_tools_unavailable() {
 fn envelope_schema() -> Value {
     json!({
         "type": "object",
-        "properties": {"outcome": {"type": "string", "enum": ["success", "fail"]}},
-        "required": ["outcome"],
+        "properties": {"decision": {"type": "string", "enum": ["blocked", "done"]}},
+        "required": ["decision"],
         "additionalProperties": false
     })
 }
 
 fn envelope_request(prompt: &str, runtime_mode: CodergenRuntimeMode) -> CodergenBackendRequest {
     let mut request = node_request(prompt, runtime_mode);
-    request.response_contract = "status_envelope".to_string();
+    request.response_contract = "decision_envelope".to_string();
     request.contract_repair_attempts = 1;
     request.metadata.insert(
-        STATUS_ENVELOPE_SCHEMA_METADATA_KEY.to_string(),
+        DECISION_ENVELOPE_SCHEMA_METADATA_KEY.to_string(),
         envelope_schema(),
     );
     request
@@ -432,9 +434,9 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
     let (client, adapter) = Scripted::client(|request| {
         let results = tool_results(request);
         if request.messages.last().map(Message::text).as_deref() == Some("Repair your envelope") {
-            text(r#"{"outcome":"success"}"#)
+            text(r#"{"decision":"done"}"#)
         } else if request.response_format.is_some() {
-            text(r#"{"outcome":"bogus"}"#)
+            text(r#"{"decision":"bogus"}"#)
         } else if results.contains_key("glob-1") {
             text("All done.")
         } else {
@@ -458,7 +460,7 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
     assert_eq!(schema_of(&requests[1]), None);
     assert_eq!(schema_of(&requests[2]), Some(envelope_schema()));
     assert!(tool_names(&requests[2]).contains(&"glob".to_string()));
-    assert_eq!(response_text(&output.response), r#"{"outcome":"bogus"}"#);
+    assert_eq!(response_text(&output.response), r#"{"decision":"bogus"}"#);
     assert!(!output.resume_metadata.is_empty());
 
     let mut repair = envelope_request("Repair your envelope", CodergenRuntimeMode::agent());
@@ -466,10 +468,7 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
     repair.repair_attempt = Some(1);
     let repaired = backend.run(repair).expect("repair attempt");
 
-    assert_eq!(
-        response_text(&repaired.response),
-        r#"{"outcome":"success"}"#
-    );
+    assert_eq!(response_text(&repaired.response), r#"{"decision":"done"}"#);
     let repair_request = adapter.requests().pop().unwrap();
     // The same conversation continues: the first attempt's prompt, its tool
     // round and its answer precede the repair prompt.
@@ -479,7 +478,7 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
         .map(Message::text)
         .collect::<Vec<_>>();
     assert_eq!(texts[1], "Do it");
-    assert!(texts.contains(&r#"{"outcome":"bogus"}"#.to_string()));
+    assert!(texts.contains(&r#"{"decision":"bogus"}"#.to_string()));
     assert_eq!(texts.last().unwrap(), "Repair your envelope");
     assert!(tool_results(&repair_request).contains_key("glob-1"));
     // The repair's conforming answer is still asked for under the schema.
@@ -490,7 +489,7 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
 fn native_agent_node_asks_for_the_envelope_even_when_its_answer_already_conforms() {
     let (client, adapter) = Scripted::client(|request| {
         if tool_results(request).contains_key("glob-1") {
-            text(r#"{"outcome":"success"}"#)
+            text(r#"{"decision":"done"}"#)
         } else {
             (
                 String::new(),
@@ -509,7 +508,7 @@ fn native_agent_node_asks_for_the_envelope_even_when_its_answer_already_conforms
     assert_eq!(schema_of(&requests[1]), None);
     assert_eq!(schema_of(&requests[2]), Some(envelope_schema()));
     assert!(tool_names(&requests[2]).contains(&"glob".to_string()));
-    assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+    assert_eq!(response_text(&output.response), r#"{"decision":"done"}"#);
 }
 
 #[test]
@@ -565,7 +564,7 @@ fn native_text_only_node_requests_the_envelope_schema_and_repairs_in_session() {
         if request.messages.len() == 1 {
             text("not json")
         } else {
-            text(r#"{"outcome":"success"}"#)
+            text(r#"{"decision":"done"}"#)
         }
     });
     let mut backend = RustLlmCodergenBackend::new(client);
@@ -582,10 +581,7 @@ fn native_text_only_node_requests_the_envelope_schema_and_repairs_in_session() {
     repair.metadata.extend(output.resume_metadata);
     let repaired = backend.run(repair).expect("repair attempt");
 
-    assert_eq!(
-        response_text(&repaired.response),
-        r#"{"outcome":"success"}"#
-    );
+    assert_eq!(response_text(&repaired.response), r#"{"decision":"done"}"#);
     let repair_request = adapter.requests().pop().unwrap();
     assert_eq!(
         repair_request
@@ -708,7 +704,7 @@ fn native_subagent_work_nests_under_the_spawn_call() {
 fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
     let (client, adapter) = Scripted::client(|request| {
         if request.response_format.is_some() {
-            text(r#"{"outcome":"success"}"#)
+            text(r#"{"decision":"done"}"#)
         } else if first_user_text(request) == "Answer now" || !tool_results(request).is_empty() {
             text("All done.")
         } else {
@@ -734,7 +730,7 @@ fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
         let sent = adapter.requests().split_off(before);
         assert_eq!(sent.len(), requests, "{prompt}");
         assert_eq!(schema_of(sent.last().unwrap()), Some(envelope_schema()));
-        assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+        assert_eq!(response_text(&output.response), r#"{"decision":"done"}"#);
     }
 }
 
@@ -804,7 +800,7 @@ fn native_agent_node_steered_while_asked_for_the_envelope_sends_no_further_reque
                 "note-1",
                 "Also check the docs."
             ));
-            text(r#"{"outcome":"success"}"#)
+            text(r#"{"decision":"done"}"#)
         } else {
             (
                 String::new(),
@@ -832,7 +828,7 @@ fn native_agent_node_steered_while_asked_for_the_envelope_sends_no_further_reque
     let requests = adapter.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(schema_of(&requests[1]), Some(envelope_schema()));
-    assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+    assert_eq!(response_text(&output.response), r#"{"decision":"done"}"#);
     let not_delivered = output
         .events
         .iter()

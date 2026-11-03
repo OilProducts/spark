@@ -104,9 +104,9 @@ export function classifyRunFailure(run: Pick<RunRecord, 'last_error' | 'outcome_
     return INFRASTRUCTURE_ERROR.test(run.last_error ?? '') ? 'infrastructure' : 'flow'
 }
 
-/** Visits whose work came back as not passing, in run order. */
-export const didNotPassVisits = (visits: RunVisit[]): RunVisit[] => (
-    visits.filter((visit) => visit.outcome === 'did_not_pass')
+/** Visits that ended in an error the run continued past, in run order. */
+export const errorVisits = (visits: RunVisit[]): RunVisit[] => (
+    visits.filter((visit) => visit.outcome === 'error')
 )
 
 export interface ContextHistoryEntry {

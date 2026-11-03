@@ -36,12 +36,11 @@ pub use checkpoints::{
 pub use codergen::{codergen_outcome, RuntimeCodergen};
 pub use context::{
     apply_outcome_context_updates, checkpoint_from_context, clear_runtime_retry_context,
-    graph_attr_context_seed, initialize_runtime_context, reset_workflow_outcome_context,
-    seed_builtin_context, set_runtime_retry_context, CURRENT_NODE_KEY, DEFAULT_MAX_RETRIES_KEY,
-    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, OUTCOME_KEY, PREFERRED_LABEL_KEY,
-    RUNTIME_RETRY_ATTEMPT_KEY, RUNTIME_RETRY_FAILURE_REASON_KEY, RUNTIME_RETRY_MAX_ATTEMPTS_KEY,
-    RUNTIME_RETRY_NODE_ID_KEY, RUNTIME_SESSIONS_KEY, WORKFLOW_OUTCOME_KEY,
-    WORKFLOW_OUTCOME_REASON_CODE_KEY, WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
+    graph_attr_context_seed, initialize_runtime_context, seed_builtin_context,
+    set_runtime_retry_context, CURRENT_NODE_KEY, DEFAULT_MAX_RETRIES_KEY,
+    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, RUNTIME_RETRY_ATTEMPT_KEY,
+    RUNTIME_RETRY_FAILURE_REASON_KEY, RUNTIME_RETRY_MAX_ATTEMPTS_KEY, RUNTIME_RETRY_NODE_ID_KEY,
+    RUNTIME_SESSIONS_KEY,
 };
 pub use controls::disk_execution_control;
 pub use controls::{
@@ -62,7 +61,7 @@ pub use events::{
     pipeline_retry_started_event, pipeline_started_event, read_raw_events,
     recovery_decision_required_event, run_metadata_event, run_metadata_event_with_graph_paths,
     runtime_status_event, stage_completed_event, stage_failed_event, stage_retrying_event,
-    stage_started_event, state_event, utc_timestamp,
+    stage_started_event, stage_transition_event, state_event, utc_timestamp,
 };
 pub use executor::{
     durable_outcome, prepare_fresh_run, ExecuteRunRequest, ExecutionControlAction, ExecutionStart,
@@ -70,11 +69,11 @@ pub use executor::{
     RuntimeNodeError,
 };
 pub use handlers::{
-    AutoApproveInterviewer, ChildInterventionRequest, ChildInterventionResult, ChildRunRequest,
-    ChildRunResult, FanInRankingRequest, HandlerRuntime, HumanAnswer, HumanOption, HumanQuestion,
-    Interviewer, QueueInterviewer, RuntimeHandlerFn, RuntimeHandlerRunner, HANDLER_CODERGEN,
-    HANDLER_CONDITIONAL, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP, HANDLER_PARALLEL,
-    HANDLER_START, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
+    fork_branch_requiring_recovery_decision, AutoApproveInterviewer, ChildInterventionRequest,
+    ChildInterventionResult, ChildRunRequest, ChildRunResult, HandlerRuntime, HumanAnswer,
+    HumanOption, HumanQuestion, Interviewer, QueueInterviewer, RuntimeHandlerFn,
+    RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP,
+    HANDLER_PARALLEL, HANDLER_START, HANDLER_SWITCH, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
 pub use journals::{journal_entries_from_events, journal_entry_from_event};
 pub use paths::{RunRootPaths, RuntimePaths};
@@ -87,21 +86,15 @@ pub use results::{
     ResultSummaryAttempt, DEFAULT_RESULT_SUMMARY_PROMPT,
 };
 pub use retry::{
-    coerce_retry_exhausted_outcome, max_retries_for_node, retry_policy_for_node,
-    should_retry_attempt, should_retry_outcome, BackoffConfig, RetryPolicy, RetryPreset,
+    max_retries_for_node, retry_policy_for_node, should_retry_attempt, should_retry_outcome,
+    BackoffConfig, RetryPolicy, RetryPreset,
 };
 pub use routing::{
-    is_conditional_node, is_exit_node, outgoing_routing_edges, resolve_start_node,
-    routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node_with_prior,
-    NextNodeSelection,
+    is_exit_node, outgoing_routing_edges, resolve_start_node, select_transition, Transition,
+    NO_MATCHING_ROUTE, VISIT_LIMIT_REACHED,
 };
 pub use store::{
     CreateRunRequest, NodeExecution, RunArtifactFile, RunBundle, RunEventObserver, RunMeta,
     RunStore, FLOW_FILES_MANIFEST,
 };
-pub use terminal::{
-    check_goal_gates, failure_retry_targets, goal_gate_retry_targets,
-    invalid_workflow_outcome_reason, is_goal_gate_node, resolve_failure_retry_target,
-    resolve_terminal_workflow_outcome, GoalGateCheck, TerminalWorkflowOutcome,
-    GOAL_GATE_NO_RETRY_TARGET_REASON, GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
-};
+pub use terminal::{exit_terminal_outcome, TerminalWorkflowOutcome};

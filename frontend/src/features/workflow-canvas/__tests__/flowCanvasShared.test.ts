@@ -9,9 +9,11 @@ import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
     buildCanonicalFlowModelFromEditorState,
     buildFlowDefinitionFromCanonicalFlowModel,
+    duplicateDecisionsInFlow,
     type CanonicalEditorStateInput,
 } from '@/lib/canonicalFlowModel'
 import type { EdgeRoute } from '@/lib/edgeRouting'
+import { formatDecisionMap, parseDecisionMap } from '@/lib/flowContracts'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = resolve(process.cwd(), '..')
@@ -41,16 +43,16 @@ type LooseRecord = Record<string, unknown>
 interface LooseFlowNode extends LooseRecord {
     kind?: string
     label?: string
-    config?: LooseRecord & { kind?: string; flow_ref?: string; prompt?: string }
+    config?: LooseRecord & { kind?: string; flow_ref?: string; prompt?: string; branches?: string[]; join?: string }
     extensions?: LooseRecord
     execution?: LooseRecord
+    routes?: Record<string, LooseFlowRoute>
 }
 
-interface LooseFlowEdge extends LooseRecord {
-    from?: string
-    to?: string
+interface LooseFlowRoute extends LooseRecord {
+    to: string
+    description?: string
     label?: string
-    condition?: string
     extensions?: LooseRecord
 }
 
@@ -64,7 +66,6 @@ interface LooseFlowDefinition extends LooseRecord {
         reasoning_effort?: string
     }
     nodes?: Record<string, LooseFlowNode>
-    edges?: LooseFlowEdge[]
 }
 
 // The FlowDefinition the editor saves for this canvas state.
@@ -78,7 +79,7 @@ function buildFlow(
     return buildFlowDefinitionFromCanonicalFlowModel(
         flowName,
         buildCanonicalFlowModelFromEditorState(flowName, { nodes, edges, flowMetadata, flow }),
-    ) as LooseFlowDefinition & { nodes: Record<string, LooseFlowNode>; edges: LooseFlowEdge[]; inputs?: unknown }
+    ) as LooseFlowDefinition & { nodes: Record<string, LooseFlowNode>; inputs?: unknown }
 }
 
 function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
@@ -133,7 +134,6 @@ function readFlowDirectory(flowPath: string): LooseFlowDefinition {
     }
     const header = readMarkdown('flow.md')
     const nodes: Record<string, LooseFlowNode> = {}
-    const edges: LooseFlowEdge[] = []
     for (const file of readdirSync(flowPath).filter((name) => name.endsWith('.md') && name !== 'flow.md')) {
         const nodeId = file.slice(0, -'.md'.length)
         const { meta, body } = readMarkdown(file)
@@ -146,12 +146,26 @@ function readFlowDirectory(flowPath: string): LooseFlowDefinition {
             kind,
             label: typeof title === 'string' ? title : '',
             config: { ...(config as LooseRecord | undefined), kind, ...(bodyKey && bodyValue ? { [bodyKey]: bodyValue } : {}) },
-        }
-        for (const route of (routes as LooseFlowEdge[] | undefined) ?? []) {
-            edges.push({ from: nodeId, ...route })
+            ...(routes ? { routes: routes as Record<string, LooseFlowRoute> } : {}),
         }
     }
-    return { ...header.meta, goal: header.body, nodes, edges }
+    return { ...header.meta, goal: header.body, nodes }
+}
+
+// The server's derived preview edges: every route, then a fork's branches and join.
+function previewEdges(flow: LooseFlowDefinition) {
+    return Object.entries(flow.nodes ?? {}).flatMap(([from, node]) => [
+        ...Object.entries(node.routes ?? {}).map(([decision, route]) => ({
+            source: from, target: route.to, from, to: route.to, kind: 'route', decision,
+            description: route.description ?? '', label: route.label ?? '',
+        })),
+        ...(node.kind === 'parallel'
+            ? [
+                ...(node.config?.branches ?? []).map((to) => ({ source: from, target: to, from, to, kind: 'branch', decision: null, description: '', label: '' })),
+                { source: from, target: node.config?.join, from, to: node.config?.join, kind: 'join', decision: null, description: '', label: '' },
+            ]
+            : []),
+    ])
 }
 
 function flowDefinitionToPreviewGraph(flow: LooseFlowDefinition): NonNullable<PreviewResponsePayload['graph']> {
@@ -174,19 +188,10 @@ function flowDefinitionToPreviewGraph(flow: LooseFlowDefinition): NonNullable<Pr
             prompt: typedNode.config?.prompt,
         }
     })
-    const edges = Array.isArray(flow.edges)
-        ? flow.edges.map((edge) => ({
-            ...(edge.extensions ?? {}),
-            from: edge.from,
-            to: edge.to,
-            label: edge.label,
-            condition: edge.condition,
-        }))
-        : []
     return {
         metadata: graphAttrs,
         nodes,
-        edges,
+        edges: previewEdges(flow),
     }
 }
 
@@ -482,7 +487,7 @@ describe('flowCanvasShared', () => {
 
     it('hydrates typed FlowDefinition previews, expands children, and round-trips the FlowDefinition without metadata loss', () => {
         const flow = {
-            schema_version: '1.0',
+            schema_version: '2',
             id: 'typed_parent',
             title: 'Typed Parent',
             description: 'Typed description',
@@ -509,6 +514,7 @@ describe('flowCanvasShared', () => {
                     label: 'Start',
                     config: { kind: 'start' },
                     ui: { x: 10, y: 20 },
+                    routes: { next: { to: 'review', description: 'Enter the first workflow step.', extensions: { lane: 'main' } } },
                 },
                 review: {
                     kind: 'human_gate',
@@ -517,10 +523,13 @@ describe('flowCanvasShared', () => {
                     config: {
                         kind: 'human_gate',
                         prompt: 'Approve?',
-                        decisions: [{ label: 'Approve', value: 'approve' }],
                     },
                     retry: { max_retries: 1 },
                     execution: { llm_model: 'gpt-5.4-mini' },
+                    routes: {
+                        approve: { to: 'child', label: 'Approve', description: 'The proposal is approved.' },
+                        reject: { to: 'done', label: 'Reject', description: 'The proposal is rejected.' },
+                    },
                 },
                 child: {
                     kind: 'subflow',
@@ -530,30 +539,31 @@ describe('flowCanvasShared', () => {
                         flow_ref: 'child.yaml',
                         input_map: { 'context.ticket': 'context.ticket' },
                         output_map: { 'context.verdict': 'context.child_verdict' },
+                        results: { completed: 'child_completed' },
                     },
+                    routes: { child_completed: { to: 'done', description: 'The child flow completed.' } },
                 },
                 done: {
                     kind: 'exit',
                     label: 'Done',
-                    config: { kind: 'exit' },
+                    config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } },
                 },
             },
-            edges: [
-                { from: 'start', to: 'review', label: 'begin', condition: '', weight: 3, transition: 'next' },
-                { from: 'review', to: 'child', label: 'approved', condition: 'decision == "approve"', weight: 4 },
-                { from: 'child', to: 'done', label: 'complete', condition: '', weight: 5 },
-            ],
             metadata: { owner: 'workflow-team' },
         }
         const childFlow = {
-            schema_version: '1.0',
+            schema_version: '2',
             id: 'typed_child',
             title: 'Typed Child',
             nodes: {
-                child_start: { kind: 'start', label: 'Child Start', config: { kind: 'start' } },
-                child_done: { kind: 'exit', label: 'Child Done', config: { kind: 'exit' } },
+                child_start: {
+                    kind: 'start',
+                    label: 'Child Start',
+                    config: { kind: 'start' },
+                    routes: { next: { to: 'child_done', description: 'Enter the first workflow step.' } },
+                },
+                child_done: { kind: 'exit', label: 'Child Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
-            edges: [{ from: 'child_start', to: 'child_done' }],
         }
         const preview: PreviewResponsePayload = {
             status: 'ok',
@@ -612,7 +622,7 @@ describe('flowCanvasShared', () => {
         )
 
         expect(roundTripped).toMatchObject({
-            schema_version: '1.0',
+            schema_version: '2',
             id: 'typed_parent',
             title: 'Typed Parent',
             description: 'Typed description',
@@ -633,42 +643,30 @@ describe('flowCanvasShared', () => {
             config: {
                 kind: 'human_gate',
                 prompt: 'Approve?',
-                decisions: [{ label: 'Approve', value: 'approve' }],
             },
             retry: { max_retries: 1 },
             execution: { llm_model: 'gpt-5.4-mini' },
         })
-        expect(roundTripped.nodes.child.config).toEqual({
-            kind: 'subflow',
-            flow_ref: 'child.yaml',
-            input_map: { 'context.ticket': 'context.ticket' },
-            output_map: { 'context.verdict': 'context.child_verdict' },
-        })
-        expect(roundTripped.edges[0]).toMatchObject({
-            from: 'start',
-            to: 'review',
-            label: 'begin',
-            weight: 3,
-            transition: 'next',
-        })
+        expect(roundTripped.nodes.child.config).toEqual(flow.nodes.child.config)
+        for (const [nodeId, node] of Object.entries(flow.nodes)) {
+            expect(roundTripped.nodes[nodeId].routes).toEqual((node as LooseFlowNode).routes)
+        }
+        expect(roundTripped.nodes.done.config).toEqual(flow.nodes.done.config)
+        expect(roundTripped).not.toHaveProperty('edges')
     })
 
     it('keeps role a node field so editing one role-bearing node leaves the others unchanged', () => {
+        const done = { done: { to: 'done', description: 'Reviewed.' } }
         const flow = {
-            schema_version: '1',
+            schema_version: '2',
             id: 'roles',
             title: 'Roles',
             nodes: {
-                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' } },
-                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' } },
-                done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'first', description: 'Enter the first workflow step.' } } },
+                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' }, routes: { done: { to: 'second', description: 'Reviewed.' } } },
+                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' }, routes: done },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
-            edges: [
-                { from: 'start', to: 'first' },
-                { from: 'first', to: 'second' },
-                { from: 'second', to: 'done' },
-            ],
         }
         const hydrated = buildHydratedFlowGraph('roles', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {
             llm_model: '',
@@ -681,24 +679,20 @@ describe('flowCanvasShared', () => {
         const saved = buildFlow('roles', edited, hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, hydrated?.flow)
 
         expect(saved.nodes.second).toEqual(flow.nodes.second)
-        expect(saved.edges).toEqual(flow.edges)
+        expect(saved.nodes.done).toEqual(flow.nodes.done)
         expect(saved.nodes.first).toEqual({ ...flow.nodes.first, config: { kind: 'agent_task', prompt: 'Review A twice.' } })
     })
 
     it('saves a cleared Session as absent while preserving or renaming it otherwise', () => {
         const flow = {
-            schema_version: '1',
+            schema_version: '2',
             id: 'sessions',
             title: 'Sessions',
             nodes: {
-                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-                work: { kind: 'agent_task', label: 'Work', runtime: { session: 'implementer' }, config: { kind: 'agent_task', prompt: 'Work.' } },
-                done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'work', description: 'Enter the first workflow step.' } } },
+                work: { kind: 'agent_task', label: 'Work', runtime: { session: 'implementer' }, config: { kind: 'agent_task', prompt: 'Work.' }, routes: { done: { to: 'done', description: 'Worked.' } } },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
-            edges: [
-                { from: 'start', to: 'work' },
-                { from: 'work', to: 'done' },
-            ],
         }
         const saveWith = (source: typeof flow, edit: (data: Record<string, unknown>) => Record<string, unknown>) => {
             const hydrated = buildHydratedFlowGraph('sessions', { status: 'ok', flow: source, graph: flowDefinitionToPreviewGraph(source) }, {
@@ -906,4 +900,174 @@ it('serializes and clears reasoning controls in node execution and graph default
     const cleared = { thinking: '', thinking_budget_tokens: '', reasoning_mode: '', reasoning_summary: '' }
     const updated = JSON.stringify(buildFlow('reasoning.yaml', [{ ...nodes[0], data: { ...nodes[0].data, ...cleared } }], [], cleared, flow))
     for (const field of Object.keys(controls)) expect(updated).not.toContain(`"${field}"`)
+})
+
+describe('schema-2 routes and fork structure', () => {
+    const hydrate = (flow: LooseFlowDefinition) => {
+        const hydrated = buildHydratedFlowGraph('routes', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {
+            llm_model: '',
+            llm_provider: '',
+            reasoning_effort: '',
+        })
+        if (!hydrated) throw new Error('expected a hydrated graph')
+        return hydrated
+    }
+    const exitNode = (name: string, outcome: string) => ({ kind: 'exit', label: name, config: { kind: 'exit', result: { name, outcome } } })
+    const reviewFlow = {
+        schema_version: '2',
+        id: 'review_loop',
+        title: 'Review loop',
+        nodes: {
+            start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'review', description: 'Enter the first workflow step.' } } },
+            review: {
+                kind: 'human_gate',
+                label: 'Review',
+                config: { kind: 'human_gate', prompt: 'Ship it?' },
+                routes: {
+                    approve: { to: 'done', label: 'Approve', description: 'Approved for shipping.' },
+                    waive: { to: 'done', label: 'Waive', description: 'Shipped without review.' },
+                    reject: { to: 'failed', label: 'Reject', description: 'Rejected.' },
+                },
+            },
+            done: exitNode('completed', 'success'),
+            failed: exitNode('blocked', 'failure'),
+        },
+    }
+
+    it('derives one edge per decision, including two decisions to the same node, and saves them back into the routes map', () => {
+        const hydrated = hydrate(reviewFlow)
+        const reviewEdges = hydrated.edges.filter((edge) => edge.source === 'review')
+        expect(reviewEdges.map((edge) => [edge.target, edge.data?.decision, edge.data?.label])).toEqual([
+            ['done', 'approve', 'Approve'],
+            ['done', 'waive', 'Waive'],
+            ['failed', 'reject', 'Reject'],
+        ])
+        expect(new Set(reviewEdges.map((edge) => edge.id)).size).toBe(3)
+
+        const saved = buildFlow('routes', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)
+        expect(saved.nodes).toEqual(reviewFlow.nodes)
+        expect(saved.schema_version).toBe('2')
+        expect(saved).not.toHaveProperty('edges')
+        expect(JSON.stringify(saved)).not.toMatch(/"(condition|weight|transition|loop_restart)"/)
+
+        const edited = hydrated.edges.map((edge) => (
+            edge.source === 'review' && edge.data?.decision === 'waive'
+                ? { ...edge, target: 'failed', data: { ...edge.data, decision: 'defer', description: 'Deferred.', label: 'Defer' } }
+                : edge
+        ))
+        const drawn = { id: 'new-edge', source: 'done', target: 'failed' }
+        const resaved = buildFlow('routes', hydrated.nodes, [...edited, drawn], hydrated.flowMetadata, hydrated.flow)
+        expect(resaved.nodes.review.routes).toEqual({
+            approve: reviewFlow.nodes.review.routes.approve,
+            defer: { to: 'failed', label: 'Defer', description: 'Deferred.' },
+            reject: reviewFlow.nodes.review.routes.reject,
+        })
+        // A drawn edge gets a free decision ID and an empty description for validation to flag.
+        expect(resaved.nodes.done.routes).toEqual({ next: { to: 'failed', description: '' } })
+    })
+
+    it('keeps decision IDs that name object properties, such as constructor', () => {
+        const hydrated = hydrate(reviewFlow)
+        const renamed = hydrated.edges.map((edge) => (
+            edge.source === 'review' && edge.data?.decision === 'waive'
+                ? { ...edge, data: { ...edge.data, decision: 'constructor' } }
+                : edge.source === 'review' && edge.data?.decision === 'reject'
+                    ? { ...edge, data: { ...edge.data, decision: 'hasOwnProperty'.toLowerCase() } }
+                    : edge
+        ))
+        const saved = buildFlow('routes', hydrated.nodes, renamed, hydrated.flowMetadata, hydrated.flow)
+        expect(Object.keys(saved.nodes.review.routes).sort()).toEqual(['approve', 'constructor', 'hasownproperty'])
+        expect(saved.nodes.review.routes.constructor).toEqual({ ...reviewFlow.nodes.review.routes.waive })
+        const rehydrated = hydrate(saved)
+        expect(rehydrated.edges.filter((edge) => edge.source === 'review').map((edge) => edge.data?.decision).sort())
+            .toEqual(['approve', 'constructor', 'hasownproperty'])
+    })
+
+    it('never renames a duplicated explicit decision; preview reports it and save refuses it', () => {
+        const hydrated = hydrate(reviewFlow)
+        const duplicated = hydrated.edges.map((edge) => (
+            edge.source === 'review' && edge.data?.decision === 'waive'
+                ? { ...edge, data: { ...edge.data, decision: 'approve' } }
+                : edge
+        ))
+        const saved = buildFlow('routes', hydrated.nodes, duplicated, hydrated.flowMetadata, hydrated.flow)
+        const keys = Object.keys(saved.nodes.review.routes).sort()
+        expect(keys).toContain('approve')
+        expect(keys).not.toContain('next')
+        // The second declaration keeps a key that can never validate.
+        expect(keys).toContain('approve (duplicate 2)')
+        expect(duplicateDecisionsInFlow(saved)).toEqual(['review.approve'])
+        expect(duplicateDecisionsInFlow(buildFlow('routes', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)))
+            .toEqual([])
+    })
+
+    it('round-trips switch configuration and case keys with their JSON scalar types', () => {
+        const switchFlow = {
+            schema_version: '2',
+            id: 'switching',
+            title: 'Switching',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'route', description: 'Enter the first workflow step.' } } },
+                route: {
+                    kind: 'switch',
+                    label: 'Route',
+                    contracts: { reads_context: ['context.count'] },
+                    config: { kind: 'switch', on: 'context.count', cases: { '0': 'zero', '"0"': 'text_zero', 'true': 'zero' }, otherwise: 'other' },
+                    routes: {
+                        other: { to: 'failed', description: 'Any other value.' },
+                        text_zero: { to: 'done', description: 'The string "0".' },
+                        zero: { to: 'done', description: 'Number zero or true.' },
+                    },
+                },
+                done: exitNode('completed', 'success'),
+                failed: exitNode('blocked', 'failure'),
+            },
+        }
+        const hydrated = hydrate(switchFlow)
+        expect(hydrated.nodes.find((node) => node.id === 'route')?.type).toBe('switchNode')
+        expect(hydrated.edges.filter((edge) => edge.source === 'route').map((edge) => edge.data?.decision)).toEqual(['other', 'text_zero', 'zero'])
+
+        const saved = buildFlow('switching', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)
+        expect(saved.nodes.route).toEqual(switchFlow.nodes.route)
+        expect(Object.keys(saved.nodes.route.config?.cases as object)).toEqual(['0', '"0"', 'true'])
+
+        const text = formatDecisionMap(switchFlow.nodes.route.config.cases)
+        expect(text).toBe('0 = zero\n"0" = text_zero\ntrue = zero')
+        expect(parseDecisionMap(`${text}\n"a=b" = other\n\n`)).toEqual({
+            map: { ...switchFlow.nodes.route.config.cases, '"a=b"': 'other' },
+            errors: [],
+        })
+        // Incomplete or repeated lines are errors, never a silently reduced map.
+        expect(parseDecisionMap('0 = clean\n0 = conflicts').errors).toEqual(['Line 2 repeats key 0.'])
+        expect(parseDecisionMap('0 = clean\n"ready" =').errors).toEqual(['Line 2 needs `key = decision`.'])
+        expect(parseDecisionMap('incomplete').errors).toEqual(['Line 1 needs `key = decision`.'])
+    })
+
+    it('derives fork branch and join edges and saves them as the fork config, never as routes', () => {
+        const forkFlow = {
+            schema_version: '2',
+            id: 'forking',
+            title: 'Forking',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'fork', description: 'Enter the first workflow step.' } } },
+                fork: { kind: 'parallel', label: 'Fork', config: { kind: 'parallel', branches: ['a', 'b'], join: 'join', tolerate_branch_execution_errors: true } },
+                a: { kind: 'agent_task', label: 'A', config: { kind: 'agent_task', prompt: 'A.' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                b: { kind: 'agent_task', label: 'B', config: { kind: 'agent_task', prompt: 'B.' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                join: { kind: 'fan_in', label: 'Join', config: { kind: 'fan_in' }, routes: { next: { to: 'done', description: 'All branches settled.' } } },
+                done: exitNode('completed', 'success'),
+            },
+        }
+        const hydrated = hydrate(forkFlow)
+        expect(hydrated.edges.filter((edge) => edge.source === 'fork').map((edge) => [edge.target, edge.data?.kind])).toEqual([
+            ['a', 'branch'],
+            ['b', 'branch'],
+            ['join', 'join'],
+        ])
+        const saved = buildFlow('forking', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)
+        expect(saved.nodes).toEqual(forkFlow.nodes)
+
+        const withoutB = hydrated.edges.filter((edge) => !(edge.source === 'fork' && edge.target === 'b'))
+        expect(buildFlow('forking', hydrated.nodes, withoutB, hydrated.flowMetadata, hydrated.flow).nodes.fork.config)
+            .toEqual({ ...forkFlow.nodes.fork.config, branches: ['a'] })
+    })
 })

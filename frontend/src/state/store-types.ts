@@ -98,6 +98,7 @@ export interface DiagnosticEntry {
     line?: number
     node_id?: string | null
     edge?: [string, string] | null
+    decision?: string | null
     fix?: string | null
 }
 
