@@ -1,7 +1,5 @@
 import type { UiDefaults } from '@/state/store-types'
-import type {
-    ConversationChatMode,
-} from '@/lib/workspaceClient'
+import { compareRevisions, type ConversationChatMode } from '@/lib/workspaceClient'
 
 import type { PendingConversationTurnState, PendingUserMessage } from './conversationState'
 import type { ProjectGitMetadata } from './presentation'
@@ -103,7 +101,7 @@ export function buildProjectsHomeViewModel({
     const isConversationTurnStarting = Boolean(
         pendingConversationTurn
             && pendingConversationTurn.conversationId === activeConversationId
-            && (!activeConversationRecord || activeConversationRecord.revision <= pendingConversationTurn.afterRevision),
+            && (!activeConversationRecord || compareRevisions(activeConversationRecord.latestRevision, pendingConversationTurn.afterRevision) <= 0),
     )
 
     return {

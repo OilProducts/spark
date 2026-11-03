@@ -2,12 +2,14 @@ import type { Dispatch, SetStateAction } from 'react'
 import {
     retryConversationTurnValidated,
     sendConversationTurnValidated,
+    type ConversationAcceptance,
+    type ConversationBatch,
     type ConversationChatMode,
-    type ConversationSnapshotResponse,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
+import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments } from './useComposerAttachments'
 
@@ -51,10 +53,13 @@ type UseConversationComposerArgs = {
     isChatInputDisabled: boolean
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
-    getCurrentConversationRevision: (conversationId: string) => number
-    applyConversationSnapshot: (
+    getConversationRecord: (conversationId: string) => NormalizedConversationRecord | undefined
+    /** Merges a request's own result rows; they never move the live cursor. */
+    applyConversationBatch: (
         projectPath: string,
-        snapshot: ConversationSnapshotResponse,
+        conversationId: string,
+        batch: ConversationBatch,
+        kind: 'live' | 'mutation',
         source?: string,
         options?: { forceWorkspaceSync?: boolean },
     ) => void
@@ -72,8 +77,8 @@ export function useConversationComposer({
     isChatInputDisabled,
     ensureConversationId,
     getCurrentConversationId,
-    getCurrentConversationRevision,
-    applyConversationSnapshot,
+    getConversationRecord,
+    applyConversationBatch,
     formatErrorMessage,
     setChatDraft,
     setPanelError,
@@ -86,12 +91,14 @@ export function useConversationComposer({
         }
         setPanelError(null)
         try {
-            const snapshot = await updateConversationSettingsValidated(conversationId, {
+            // Changed and unchanged settings both answer with the conversation row; the reducer
+            // keeps whichever of it and a live update is newer.
+            const ack = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
                 chat_mode: chatMode,
-                expected_revision: String(getCurrentConversationRevision(conversationId)),
+                expected_revision: getConversationRecord(conversationId)?.settingsRevision ?? '0',
             })
-            applyConversationSnapshot(activeProjectPath, snapshot, 'settings-response', {
+            applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'settings-response', {
                 forceWorkspaceSync: true,
             })
         } catch (error) {
@@ -193,23 +200,25 @@ export function useConversationComposer({
     const runTurn = async (
         conversationId: string,
         failure: string,
-        start: () => Promise<ConversationSnapshotResponse>,
+        start: () => Promise<ConversationAcceptance>,
         onAccepted?: () => void,
     ): Promise<boolean> => {
         if (!activeProjectPath) {
             return false
         }
-        const afterRevision = getCurrentConversationRevision(conversationId)
+        const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
         // The activity bar follows the turn even after the chat is left.
         const { setSendingChat } = useStore.getState()
         setSendingChat(conversationId, true)
         try {
-            const snapshot = await start()
+            const acceptance = await start()
             onAccepted?.()
             setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
-            applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
+            // The accepted user turn carries the sent client_turn_id, so it replaces the pending
+            // message in place; a resend of that id returns the same acceptance and rows.
+            applyConversationBatch(activeProjectPath, conversationId, acceptance.changes, 'mutation', 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
             return true

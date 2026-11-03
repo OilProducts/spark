@@ -1,9 +1,13 @@
 import { buildProjectsHomeViewModel } from '@/features/projects/model/projectsHomeViewModel'
-import { hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
-import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { applyConversationPage } from '@/features/projects/model/projectsHomeState'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationPage } from '@/test/conversationWire'
 
-const snapshot: ConversationSnapshotResponse = {
-  schema_version: 5,
+const hydrateConversationRecordFromSnapshot = (fixture: typeof snapshot) => (
+  applyConversationPage(undefined, parseConversationPageResponse(conversationPage(fixture)), 'window')!
+)
+
+const snapshot = {
   revision: 0,
   conversation_id: 'conversation-1',
   conversation_handle: 'thread-1',
@@ -32,8 +36,7 @@ const snapshot: ConversationSnapshotResponse = {
       artifact_id: null,
     },
   ],
-  segments: [],
-  event_log: [],
+  segments: [] as Record<string, unknown>[],
   flow_run_requests: [
     {
       id: 'request-1',
@@ -129,7 +132,7 @@ describe('buildProjectsHomeViewModel', () => {
       activeProjectPath: '/tmp/project-alpha',
       pendingConversationTurn: {
         conversationId: 'conversation-1',
-        afterRevision: record.revision,
+        afterRevision: record.latestRevision,
       },
       pendingMessages: [],
       projectGitMetadata: {},
@@ -158,7 +161,7 @@ describe('buildProjectsHomeViewModel', () => {
       timestamp: '2026-03-24T18:02:00Z',
       status: 'pending' as const,
     }
-    const build = (changes: Partial<ConversationSnapshotResponse>) => buildProjectsHomeViewModel({
+    const build = (changes: Partial<typeof snapshot>) => buildProjectsHomeViewModel({
       activeConversationId: 'conversation-1',
       activeConversationRecord: hydrateConversationRecordFromSnapshot({ ...snapshot, ...changes }),
       activeProjectPath: '/tmp/project-alpha',
@@ -175,14 +178,17 @@ describe('buildProjectsHomeViewModel', () => {
       turns: [snapshot.turns[0], { ...pendingMessage, status: 'complete', artifact_id: null }],
     }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
       .toEqual([['turn-user', 'complete'], ['turn-sent', 'complete']])
-    // Delivered into the running turn: its segment renders under the same id.
-    expect(build({
+    // Accepted into the running turn: its segment renders under the same id, pending until the
+    // delivery resolves, then delivered or failed.
+    const sent = (status: string, error: string | null = null) => build({
       segments: [{
         id: 'segment-user-message-turn-sent', turn_id: 'turn-assistant', order: 1, kind: 'user_message', role: 'user',
-        status: 'complete', content: 'Next step?', timestamp: '2026-03-24T18:02:01Z', updated_at: '2026-03-24T18:02:01Z',
-        completed_at: null, artifact_id: null, error: null, source: null, tool_call: null,
-      }],
-    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
-      .toEqual([['turn-user', 'complete'], ['turn-sent', 'delivered']])
+        status, content: 'Next step?', timestamp: '2026-03-24T18:02:01Z', updated_at: '2026-03-24T18:02:01Z',
+        completed_at: null, artifact_id: null, error, source: null, tool_call: null,
+      }] as typeof snapshot.segments,
+    }).map((entry) => [entry.id, entry.kind === 'message' && entry.status])
+    expect(sent('delivery_pending')).toEqual([['turn-user', 'complete'], ['turn-sent', 'delivery_pending']])
+    expect(sent('complete')).toEqual([['turn-user', 'complete'], ['turn-sent', 'delivered']])
+    expect(sent('failed', 'Spark restarted while delivering this message.')).toEqual([['turn-user', 'complete'], ['turn-sent', 'failed']])
   })
 })

@@ -7,55 +7,47 @@ import { usePersistProjectState } from '@/features/projects/hooks/usePersistProj
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
 import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { useProjectGitMetadata } from '@/features/projects/hooks/useProjectGitMetadata'
-import { extractApiErrorMessage, setProjectConversationSummaryList } from '@/features/projects/model/projectsHomeState'
+import {
+    applySummaryBatchToCache,
+    applySummarySnapshotToCache,
+    extractApiErrorMessage,
+    resetConversationInCache,
+    type ConversationSummaryResponse,
+} from '@/features/projects/model/projectsHomeState'
 import { useRunDetailResources } from '@/features/runs/hooks/useRunDetailResources'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
-import { buildWorkspaceLiveEventsUrl } from '@/features/workspace/services/liveEvents'
-import type {
-    ApplyConversationStreamEventResult,
-    ConversationSnapshotResponse,
-    ConversationStreamEvent,
-    ConversationSummaryResponse,
-} from '@/features/projects/model/projectsHomeState'
-import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
-import { fetchProjectConversationListValidated } from '@/lib/workspaceClient'
+import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@/features/workspace/services/liveEvents'
+import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import { parseConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
 
-type HomeConversationSyncControllerProps = {
+type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
+
+type HomeConversationSyncControllerProps = Pick<
+    ConversationStreamArgs,
+    | 'applyConversationPage'
+    | 'applyConversationBatch'
+    | 'applyTransientConversationEvent'
+    | 'resetConversation'
+    | 'markConversationUnavailable'
+> & {
     projectPath: string
     conversationId: string | null
     isForegroundProject: boolean
-    applyConversationSnapshot: (
-        projectPath: string,
-        snapshot: ConversationSnapshotResponse,
-        source?: string,
-    ) => void
-    applyConversationStreamEvent: (
-        projectPath: string,
-        event: ConversationStreamEvent,
-        source?: string,
-    ) => ApplyConversationStreamEventResult | undefined
-    applyTransientConversationEvent: (
-        projectPath: string,
-        event: ConversationStreamDeltaEventResponse,
-        source?: string,
-    ) => unknown
     setProjectPanelError: (projectPath: string, value: string | null) => void
 }
+
+const getConversationRecord = (conversationId: string) => useStore.getState().homeConversationCache.conversationsById[conversationId]
 
 function HomeConversationSyncController({
     projectPath,
     conversationId,
     isForegroundProject,
-    applyConversationSnapshot,
-    applyConversationStreamEvent,
-    applyTransientConversationEvent,
     setProjectPanelError,
+    ...handlers
 }: HomeConversationSyncControllerProps) {
     const setPanelError = useCallback((value: string | null) => {
         setProjectPanelError(projectPath, value)
@@ -64,9 +56,8 @@ function HomeConversationSyncController({
     useConversationStream({
         activeConversationId: isForegroundProject ? conversationId : null,
         activeProjectPath: isForegroundProject ? projectPath : null,
-        applyConversationSnapshot,
-        applyConversationStreamEvent,
-        applyTransientConversationEvent,
+        getConversationRecord,
+        ...handlers,
         formatErrorMessage: extractApiErrorMessage,
         setPanelError,
     })
@@ -140,10 +131,12 @@ export function HomeSessionController() {
     const updateHomeProjectSession = useStore((state) => state.updateHomeProjectSession)
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
     const {
-        applyConversationSnapshot,
-        applyConversationStreamEvent,
+        applyConversationBatch,
+        applyConversationPage,
         applyTransientConversationEvent,
         loadProjectConversationSummaries,
+        markConversationUnavailable,
+        resetConversation,
     } = useProjectConversationCache({
         persistProjectState,
         projectSessionsByPath,
@@ -234,9 +227,11 @@ export function HomeSessionController() {
                     projectPath={projectPath}
                     conversationId={projectSessionsByPath[projectPath]?.conversationId ?? null}
                     isForegroundProject={isHomeVisible && activeProjectPath === projectPath}
-                    applyConversationSnapshot={applyConversationSnapshot}
-                    applyConversationStreamEvent={applyConversationStreamEvent}
+                    applyConversationPage={applyConversationPage}
+                    applyConversationBatch={applyConversationBatch}
                     applyTransientConversationEvent={applyTransientConversationEvent}
+                    resetConversation={resetConversation}
+                    markConversationUnavailable={markConversationUnavailable}
                     setProjectPanelError={setProjectPanelError}
                 />
             ))}
@@ -257,11 +252,9 @@ export function TriggersSessionController() {
 }
 
 export function WorkspaceLiveEventsController() {
-    const summaryUpsertsRef = useRef<Record<string, number>>({})
     const reconnectSignal = useRunsTransportReconnectSignal(true)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
-    const homeConversationCache = useStore((state) => state.homeConversationCache)
     const selectedRunId = useStore(selectSelectedRunId)
     const selectedRunLifetime = useStore((state) => (
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId]?.lifetime : undefined
@@ -273,22 +266,8 @@ export function WorkspaceLiveEventsController() {
     const activeConversationId = activeProjectPath
         ? projectSessionsByPath[activeProjectPath]?.conversationId ?? null
         : null
-    const activeConversationRevision = activeConversationId
-        ? homeConversationCache.conversationsById[activeConversationId]?.revision ?? null
-        : null
-    const latestConversationRevisionById = useRef<Record<string, number>>({})
     const latestRunSequenceById = useRef<Record<string, number>>({})
     const conversationProjectPath = activeConversationId ? activeProjectPath : null
-
-    useEffect(() => {
-        if (
-            activeConversationId
-            && typeof activeConversationRevision === 'number'
-            && Number.isFinite(activeConversationRevision)
-        ) {
-            latestConversationRevisionById.current[activeConversationId] = activeConversationRevision
-        }
-    }, [activeConversationId, activeConversationRevision])
 
     useEffect(() => {
         if (
@@ -333,14 +312,25 @@ export function WorkspaceLiveEventsController() {
         let reconnectTimer: ReturnType<typeof window.setTimeout> | null = null
         let closed = false
 
+        // Summary changes that arrive before a cursorless connection's snapshot wait for it.
+        let awaitingSummarySnapshot = false
+        let bufferedSummaryChanges: ConversationBatch[] = []
+
         const buildUrlWithCursors = () => {
             const url = new URL(liveEventsUrl, window.location.href)
-            if (activeConversationId) {
-                const revision = latestConversationRevisionById.current[activeConversationId]
-                if (typeof revision === 'number' && Number.isFinite(revision)) {
-                    url.searchParams.set('conversation_revision', String(revision))
-                }
+            const cache = useStore.getState().homeConversationCache
+            // Each scope resumes from its own watermark; without one the server sends its initial state.
+            const record = activeConversationId ? cache.conversationsById[activeConversationId] : undefined
+            if (record && record.watermark !== null && !record.resetting) {
+                url.searchParams.set('conversation_generation', record.generation)
+                url.searchParams.set('conversation_revision', record.watermark)
             }
+            if (cache.summaryCursor) {
+                url.searchParams.set('conversations_generation', cache.summaryCursor.generation)
+                url.searchParams.set('conversations_revision', cache.summaryCursor.watermark)
+            }
+            awaitingSummarySnapshot = !cache.summaryCursor
+            bufferedSummaryChanges = []
             if (selectedRunId) {
                 const sequence = latestRunSequenceById.current[selectedRunId]
                 if (typeof sequence === 'number' && Number.isFinite(sequence)) {
@@ -348,6 +338,34 @@ export function WorkspaceLiveEventsController() {
                 }
             }
             return `${url.pathname}${url.search}`
+        }
+
+        const commitCache = useStore.getState().commitHomeConversationCache
+        const conversationHandlers = {
+            onSummarySnapshot: (snapshot: Parameters<typeof applySummarySnapshotToCache>[1]) => {
+                const buffered = bufferedSummaryChanges
+                awaitingSummarySnapshot = false
+                bufferedSummaryChanges = []
+                commitCache((current) => buffered.reduce(
+                    applySummaryBatchToCache,
+                    applySummarySnapshotToCache(current, snapshot, 'live'),
+                ))
+            },
+            onSummaryChanges: (batch: ConversationBatch) => {
+                if (awaitingSummarySnapshot) {
+                    bufferedSummaryChanges.push(batch)
+                    return
+                }
+                commitCache((current) => applySummaryBatchToCache(current, batch))
+            },
+            onSummaryReset: () => {
+                commitCache((current) => ({ ...current, summaryCursor: null }))
+                open()
+            },
+            onConversationReset: (conversationId: string) => {
+                commitCache((current) => resetConversationInCache(current, conversationId))
+                open()
+            },
         }
 
         const isCurrent = (source: EventSource) => !closed && eventSource === source && (
@@ -364,15 +382,6 @@ export function WorkspaceLiveEventsController() {
                     cursor?: { kind?: string; value?: number } | null
                     payload?: unknown
                     sequence?: number
-                }
-                if (
-                    envelope.resource?.kind === 'conversation'
-                    && envelope.resource.id
-                    && envelope.cursor?.kind === 'conversation_revision'
-                    && typeof envelope.cursor.value === 'number'
-                    && Number.isFinite(envelope.cursor.value)
-                ) {
-                    latestConversationRevisionById.current[envelope.resource.id] = envelope.cursor.value
                 }
                 if (
                     envelope.resource?.kind === 'run'
@@ -403,16 +412,7 @@ export function WorkspaceLiveEventsController() {
                     return
                 }
                 if (envelope.type === 'resync_required') {
-                    if (envelope.resource?.kind === 'conversation' && envelope.resource.id) {
-                        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
-                            detail: {
-                                type: envelope.type,
-                                conversationId: envelope.resource.id,
-                                projectPath: envelope.project_path ?? null,
-                                payload,
-                            },
-                        }))
-                    } else if (envelope.resource?.kind === 'run' && envelope.resource.id) {
+                    if (envelope.resource?.kind === 'run' && envelope.resource.id) {
                         window.dispatchEvent(new CustomEvent('spark:run-resync-required', {
                             detail: { runId: envelope.resource.id, reason: payload.reason },
                         }))
@@ -428,17 +428,10 @@ export function WorkspaceLiveEventsController() {
                         window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
                             detail: { projectPath: envelope.project_path ?? null, reason: payload.reason },
                         }))
-                    } else if (envelope.resource?.kind === 'conversation_summary') {
-                        resyncConversationSummaries(source)
                     }
                     return
                 }
-                if (envelope.type === 'conversation.summary_upsert' && envelope.resource?.kind === 'conversation_summary') {
-                    const summary = parseConversationSummaryResponse(payload.conversation)
-                    if (summary) {
-                        summaryUpsertsRef.current[summary.project_path] = (summaryUpsertsRef.current[summary.project_path] ?? 0) + 1
-                        useStore.getState().upsertHomeConversationSummary(summary)
-                    }
+                if (dispatchConversationLiveEnvelope(envelope, conversationHandlers)) {
                     return
                 }
                 if (envelope.type === 'mission.upsert' && envelope.resource?.kind === 'mission') {
@@ -484,17 +477,6 @@ export function WorkspaceLiveEventsController() {
                     }))
                     return
                 }
-                if (envelope.resource?.kind === 'conversation' && envelope.resource.id) {
-                    window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
-                        detail: {
-                            type: envelope.type,
-                            conversationId: envelope.resource.id,
-                            projectPath: envelope.project_path ?? null,
-                            payload,
-                        },
-                    }))
-                    return
-                }
                 if (
                     (envelope.type === 'trigger.snapshot'
                         || envelope.type === 'trigger.upsert'
@@ -514,33 +496,6 @@ export function WorkspaceLiveEventsController() {
             }
         }
 
-        // A summary published while no stream was open (as when opening a chat
-        // reconnects it) never arrives, so each open refetches the summaries
-        // this client holds. A response from a superseded stream is dropped,
-        // and one that an upsert overtook is fetched again.
-        const resyncConversationSummaries = (source: EventSource) => {
-            const resync = async (projectPath: string, attempts: number): Promise<void> => {
-                const upserts = summaryUpsertsRef.current[projectPath] ?? 0
-                let summaries: ConversationSummaryResponse[]
-                try {
-                    summaries = await fetchProjectConversationListValidated(projectPath)
-                } catch {
-                    return
-                }
-                if (!isCurrent(source)) return
-                if ((summaryUpsertsRef.current[projectPath] ?? 0) !== upserts) {
-                    if (attempts > 1) await resync(projectPath, attempts - 1)
-                    return
-                }
-                const state = useStore.getState()
-                if (!state.homeConversationCache.summariesByProjectPath[projectPath]) return
-                state.commitHomeConversationCache(setProjectConversationSummaryList(state.homeConversationCache, projectPath, summaries))
-            }
-            for (const projectPath of Object.keys(useStore.getState().homeConversationCache.summariesByProjectPath)) {
-                void resync(projectPath, 3)
-            }
-        }
-
         const open = () => {
             if (closed) {
                 return
@@ -551,7 +506,6 @@ export function WorkspaceLiveEventsController() {
             source.onopen = () => {
                 if (!isCurrent(source)) return
                 window.dispatchEvent(new Event('spark:settings-live-event'))
-                resyncConversationSummaries(source)
             }
             source.onmessage = (event) => handleMessage(event, source)
             source.onerror = () => {

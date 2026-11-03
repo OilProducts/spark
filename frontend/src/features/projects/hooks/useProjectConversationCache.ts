@@ -2,17 +2,18 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import { useStore } from '@/store'
 import type {
-    ConversationSummaryResponse,
-    ConversationSnapshotResponse,
+    ConversationBatch,
+    ConversationPage,
     ConversationStreamDeltaEventResponse,
 } from '@/lib/workspaceClient'
 import { fetchProjectConversationListValidated } from '@/lib/workspaceClient'
 import {
-    applyConversationSnapshotToCache,
-    applyConversationStreamEventToCache,
+    applyConversationBatchToCache,
+    applyConversationPageToCache,
+    applySummarySnapshotToCache,
     applyTransientConversationEventToCache,
-    setProjectConversationSummaryList,
-    type ConversationStreamEvent,
+    markConversationUnavailableInCache,
+    resetConversationInCache,
 } from '../model/projectsHomeState'
 import { debugProjectChat, summarizeConversationTurnsForDebug } from '../model/projectChatDebug'
 
@@ -36,6 +37,9 @@ type UseProjectConversationCacheArgs = {
     updateProjectSessionState: UpdateProjectSessionState
 }
 
+// Every caller commits to the store, so it, not a render's snapshot, is current.
+const currentCache = () => useStore.getState().homeConversationCache
+
 export function useProjectConversationCache({
     persistProjectState,
     projectSessionsByPath,
@@ -44,12 +48,7 @@ export function useProjectConversationCache({
     const conversationCache = useStore((state) => state.homeConversationCache)
     const commitHomeConversationCache = useStore((state) => state.commitHomeConversationCache)
     const setHomeThreadSummariesStatus = useStore((state) => state.setHomeThreadSummariesStatus)
-    const conversationCacheRef = useRef(conversationCache)
     const projectSessionsRef = useRef(projectSessionsByPath)
-
-    useEffect(() => {
-        conversationCacheRef.current = conversationCache
-    }, [conversationCache])
 
     useEffect(() => {
         projectSessionsRef.current = projectSessionsByPath
@@ -60,134 +59,95 @@ export function useProjectConversationCache({
             | typeof conversationCache
             | ((current: typeof conversationCache) => typeof conversationCache),
     ) => {
-        const nextCache = typeof next === 'function'
-            ? next(conversationCacheRef.current)
-            : next
-        conversationCacheRef.current = nextCache
-        commitHomeConversationCache(nextCache)
+        commitHomeConversationCache(typeof next === 'function' ? next(currentCache()) : next)
     }, [commitHomeConversationCache])
 
-    const setConversationSummaryList = useCallback((projectPath: string, summaries: ConversationSummaryResponse[]) => {
-        const nextCache = setProjectConversationSummaryList(conversationCacheRef.current, projectPath, summaries)
-        commitConversationCache(nextCache)
-    }, [commitConversationCache])
+    // A newer request for the same project supersedes an older one, whatever order they land in.
+    const summaryRequestEpochs = useRef<Record<string, number>>({})
 
     const loadProjectConversationSummaries = useCallback(async (projectPath: string) => {
+        const epoch = (summaryRequestEpochs.current[projectPath] ?? 0) + 1
+        summaryRequestEpochs.current[projectPath] = epoch
         setHomeThreadSummariesStatus(projectPath, 'loading', null)
         try {
-            const fetched = await fetchProjectConversationListValidated(projectPath)
-            // Summaries upserted while the request was in flight: the higher revision wins,
-            // and chats the response predates are kept.
-            const latestCache = useStore.getState().homeConversationCache
-            const cached = latestCache.summariesByProjectPath[projectPath] ?? []
-            const fetchedIds = new Set(fetched.map((summary) => summary.conversation_id))
-            const summaries = [
-                ...fetched.map((summary) => {
-                    const upserted = cached.find((entry) => entry.conversation_id === summary.conversation_id)
-                    return upserted && upserted.revision > summary.revision ? upserted : summary
-                }),
-                ...cached.filter((entry) => !fetchedIds.has(entry.conversation_id)),
-            ]
-            conversationCacheRef.current = latestCache
-            setConversationSummaryList(projectPath, summaries)
-            setHomeThreadSummariesStatus(projectPath, 'ready', null)
-            return conversationCacheRef.current.summariesByProjectPath[projectPath] ?? []
+            const snapshot = await fetchProjectConversationListValidated(projectPath)
+            if (summaryRequestEpochs.current[projectPath] === epoch) {
+                // Rows the live feed applied while the request was in flight outrank it by revision.
+                commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
+                setHomeThreadSummariesStatus(projectPath, 'ready', null)
+            }
         } catch {
-            setHomeThreadSummariesStatus(projectPath, 'error', 'Unable to load threads.')
-            return conversationCacheRef.current.summariesByProjectPath[projectPath] || []
-        }
-    }, [setConversationSummaryList, setHomeThreadSummariesStatus])
-
-    const applyConversationSnapshot = useCallback((
-        projectPath: string,
-        snapshot: ConversationSnapshotResponse,
-        source = 'unknown',
-        options?: {
-            forceWorkspaceSync?: boolean
-        },
-    ) => {
-        const latestProjectScope = projectSessionsRef.current[projectPath]
-        const shouldSyncActiveWorkspace = options?.forceWorkspaceSync === true
-            || latestProjectScope?.conversationId === snapshot.conversation_id
-        const result = applyConversationSnapshotToCache(
-            conversationCacheRef.current,
-            projectPath,
-            snapshot,
-        )
-        if (!result.applied) {
-            debugProjectChat('skip stale conversation snapshot', {
-                source,
-                projectPath,
-                conversationId: snapshot.conversation_id,
-                snapshotUpdatedAt: snapshot.updated_at,
-            })
-            return result
-        }
-        const { cache } = result
-        const record = cache.conversationsById[snapshot.conversation_id]
-        if (!record) {
-            return result
-        }
-        debugProjectChat('apply conversation snapshot', {
-            source,
-            projectPath,
-            snapshotProjectPath: snapshot.project_path,
-            conversationId: snapshot.conversation_id,
-            shouldSyncActiveWorkspace,
-            turnCount: record.orderedTurnIds.length,
-            turns: summarizeConversationTurnsForDebug(record.orderedTurnIds.map((turnId) => record.turnsById[turnId])),
-        })
-        commitConversationCache(cache)
-
-        if (shouldSyncActiveWorkspace) {
-            updateProjectSessionState(projectPath, {
-                conversationId: snapshot.conversation_id,
-            })
-            if (latestProjectScope?.conversationId !== snapshot.conversation_id) {
-                void persistProjectState(projectPath, {
-                    active_conversation_id: snapshot.conversation_id,
-                    last_accessed_at: new Date().toISOString(),
-                })
+            if (summaryRequestEpochs.current[projectPath] === epoch) {
+                setHomeThreadSummariesStatus(projectPath, 'error', 'Unable to load threads.')
             }
         }
-        return result
-    }, [commitConversationCache, persistProjectState, updateProjectSessionState])
+        return currentCache().summariesByProjectPath[projectPath] ?? []
+    }, [commitConversationCache, setHomeThreadSummariesStatus])
 
-    const applyConversationStreamEvent = useCallback((
+    // A response that answers the open chat keeps it open in its project.
+    const syncActiveConversation = useCallback((projectPath: string, conversationId: string) => {
+        const latestProjectScope = projectSessionsRef.current[projectPath]
+        updateProjectSessionState(projectPath, { conversationId })
+        if (latestProjectScope?.conversationId !== conversationId) {
+            void persistProjectState(projectPath, {
+                active_conversation_id: conversationId,
+                last_accessed_at: new Date().toISOString(),
+            })
+        }
+    }, [persistProjectState, updateProjectSessionState])
+
+    /** A `window` page replaces the loaded window; an `older` page extends it. */
+    const applyConversationPage = useCallback((
         projectPath: string,
-        event: ConversationStreamEvent,
+        page: ConversationPage,
+        mode: 'window' | 'older',
         source = 'unknown',
     ) => {
-        debugProjectChat('apply conversation stream event', {
+        commitConversationCache((current) => applyConversationPageToCache(current, page, mode, projectPath))
+        const record = currentCache().conversationsById[page.conversation_id]
+        debugProjectChat('apply conversation page', {
             source,
             projectPath,
-            eventType: event.type,
-            conversationId: event.conversation_id,
+            mode,
+            conversationId: page.conversation_id,
+            watermark: page.watermark,
+            turns: record ? summarizeConversationTurnsForDebug(record.orderedTurnIds.map((turnId) => record.turnsById[turnId])) : [],
         })
-        const result = applyConversationStreamEventToCache(
-            conversationCacheRef.current,
+    }, [commitConversationCache])
+
+    /**
+     * Merges a batch's rows by revision. `live` batches come from the conversation feed and move
+     * its cursor; `mutation` batches are a request's own results and never do.
+     */
+    const applyConversationBatch = useCallback((
+        projectPath: string,
+        conversationId: string,
+        batch: ConversationBatch,
+        kind: 'live' | 'mutation',
+        source = 'unknown',
+        options?: { forceWorkspaceSync?: boolean },
+    ) => {
+        commitConversationCache((current) => applyConversationBatchToCache(current, conversationId, batch, kind, projectPath))
+        debugProjectChat('apply conversation batch', {
+            source,
             projectPath,
-            event as ConversationStreamEvent,
-        )
-        if (result.status === 'missing_record') {
-            debugProjectChat('buffer conversation stream event without cached record', {
-                source,
-                projectPath,
-                eventType: event.type,
-                conversationId: event.conversation_id,
-            })
-            return result
+            kind,
+            conversationId,
+            fromRevision: batch.from_revision,
+            watermark: batch.watermark,
+            rowCount: batch.rows.length,
+        })
+        if (options?.forceWorkspaceSync && currentCache().conversationsById[conversationId]) {
+            syncActiveConversation(projectPath, conversationId)
         }
-        const { cache, record } = result
-        commitConversationCache(cache)
-        debugProjectChat('apply merged stream conversation record', {
-            source,
-            projectPath,
-            conversationId: record.conversation_id,
-            turnCount: record.orderedTurnIds.length,
-            status: result.status,
-        })
-        return result
+    }, [commitConversationCache, syncActiveConversation])
+
+    const resetConversation = useCallback((conversationId: string) => {
+        commitConversationCache((current) => resetConversationInCache(current, conversationId))
+    }, [commitConversationCache])
+
+    const markConversationUnavailable = useCallback((conversationId: string) => {
+        commitConversationCache((current) => markConversationUnavailableInCache(current, conversationId))
     }, [commitConversationCache])
 
     const applyTransientConversationEvent = useCallback((
@@ -195,7 +155,7 @@ export function useProjectConversationCache({
         event: ConversationStreamDeltaEventResponse,
         source = 'unknown',
     ) => {
-        const result = applyTransientConversationEventToCache(conversationCacheRef.current, event)
+        const result = applyTransientConversationEventToCache(currentCache(), event)
         if (result.status === 'dropped') {
             return result
         }
@@ -211,13 +171,13 @@ export function useProjectConversationCache({
     }, [commitConversationCache])
 
     return {
-        applyConversationSnapshot,
-        applyConversationStreamEvent,
+        applyConversationBatch,
+        applyConversationPage,
         applyTransientConversationEvent,
         commitConversationCache,
         conversationCache,
-        conversationCacheRef,
         loadProjectConversationSummaries,
-        setConversationSummaryList,
+        markConversationUnavailable,
+        resetConversation,
     }
 }

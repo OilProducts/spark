@@ -1,11 +1,9 @@
 import type { FlowLaunchResponse } from './conversationsApi'
 import { fetchWorkspaceJsonValidated } from './apiClient'
-import { parseConversationSnapshotResponse } from './conversationsApi'
 
 export interface WorkspaceRunLaunchResponse {
     ok: true
     launch?: FlowLaunchResponse | null
-    conversation?: ReturnType<typeof parseConversationSnapshotResponse> | null
     run_id?: string | null
 }
 
@@ -36,13 +34,9 @@ export async function launchWorkspaceRunValidated(payload: {
             const launch = record.launch && typeof record.launch === 'object'
                 ? record.launch as FlowLaunchResponse
                 : null
-            const conversation = record.conversation
-                ? parseConversationSnapshotResponse(record.conversation, endpoint)
-                : null
             return {
                 ok: true,
                 launch,
-                conversation,
                 run_id: typeof record.run_id === 'string' ? record.run_id : null,
             }
         },

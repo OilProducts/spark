@@ -1,11 +1,8 @@
 import type { Edge, Node } from '@xyflow/react'
-import type {
-    ConversationSummaryResponse,
-    TriggerResponse,
-} from '@/lib/workspaceClient'
+import type { TriggerResponse } from '@/lib/workspaceClient'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { PendingConversationTurnState, PendingUserMessage } from '@/features/projects/model/conversationState'
-import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import type { ProjectConversationCacheState } from '@/features/projects/model/projectsHomeState'
 import type { ComposerAttachment } from '@/features/projects/model/types'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
 import type {
@@ -22,11 +19,7 @@ import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
 
 export type ResourceStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-export interface HomeConversationCacheState {
-    conversationsById: Record<string, NormalizedConversationRecord>
-    summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
-    streamSequenceByTurnId?: Record<string, number>
-}
+export type HomeConversationCacheState = ProjectConversationCacheState
 
 export interface HomeProjectSessionState {
     chatDraft: string
@@ -149,12 +142,6 @@ export interface HomeSessionSlice {
             | HomeConversationCacheState
             | ((current: HomeConversationCacheState) => HomeConversationCacheState),
     ) => void
-    setHomeConversationSummaryList: (
-        projectPath: string,
-        summaries: ConversationSummaryResponse[],
-    ) => void
-    /** Applies a live thread-list change to a project list already loaded. */
-    upsertHomeConversationSummary: (summary: ConversationSummaryResponse) => void
     setHomeThreadSummariesStatus: (
         projectPath: string,
         status: ResourceStatus,

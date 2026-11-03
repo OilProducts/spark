@@ -547,10 +547,12 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
         repo.conversation_handle("chat-new", Some(&handle)).unwrap(),
         handle
     );
-    let fresh = repo
-        .commit_conversation("chat-new", path, 0, vec![assistant("turn-new", "complete")])
+    repo.commit_conversation("chat-new", path, 0, vec![assistant("turn-new", "complete")])
         .unwrap();
-    assert_eq!(fresh.record.meta.conversation_handle, handle);
+    assert_eq!(
+        repo.read_snapshot("chat-new", None).unwrap().unwrap()["conversation_handle"],
+        handle
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import type { ConversationTurnResponse } from '@/lib/workspaceClient'
 
 export const isProjectChatDebugEnabled = () => {
     if (typeof window === 'undefined') {
@@ -15,7 +15,7 @@ export const isProjectChatDebugEnabled = () => {
     }
 }
 
-export const summarizeConversationTurnsForDebug = (turns: ConversationSnapshotResponse['turns']) => (
+export const summarizeConversationTurnsForDebug = (turns: ConversationTurnResponse[]) => (
     turns.map((turn, index) => ({
         index,
         id: turn.id,

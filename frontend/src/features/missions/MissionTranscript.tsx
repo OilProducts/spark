@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Check, CircleHelp, Flag, Pencil, Play, X, Zap } from 'lucide-react'
 import { useStore } from '@/store'
 import { buildRunsHash } from '@/app/runsRouting'
@@ -7,17 +7,17 @@ import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
 import { EventLine, MessageRow, RunCard, ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { Transcript } from '@/components/app/transcript/Transcript'
+import { OlderMessagesControl } from '@/features/projects/components/ProjectConversationHistory'
 import { ProjectConversationRequestUserInputCard } from '@/features/projects/components/ProjectConversationRequestUserInputCard'
 import {
     getConversationFlowLaunches,
     getConversationTimelineEntries,
-    hydrateConversationRecordFromSnapshot,
+    type NormalizedConversationRecord,
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
-import type { ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 import { cn } from '@/lib/utils'
 import { parseTurn, runKinds, runStatusLabel, type MissionRun } from './model/missionModel'
 
@@ -39,11 +39,14 @@ export function RunLink({ runId, className, children }: { runId: string; classNa
 
 type Entry = ConversationTimelineEntry
 
-type Conversation = { conversationId: string; snapshot: ConversationSnapshotResponse | null; loading: boolean; error: string; reload: () => void }
+type Conversation = {
+    conversationId: string; record: NormalizedConversationRecord | null; loading: boolean; error: string; reload: () => void
+    hasOlderMessages?: boolean; isLoadingOlderMessages?: boolean; olderMessagesError?: string | null; loadOlderMessages?: () => Promise<void>
+}
 
 /** The mission's log in the shared transcript grammar: turn headers, folded commands, run cards and quiet event lines. */
 export function MissionTranscript({ conversation, project, runs }: { conversation: Conversation; project: string; runs: Map<string, MissionRun> }) {
-    const { conversationId, snapshot, loading, error, reload } = conversation
+    const { conversationId, record, loading, error, reload } = conversation
     const [submitting, setSubmitting] = useState<Record<string, boolean>>({})
     const [inputError, setInputError] = useState<string | null>(null)
     // The agent can ask through its own question tool mid-turn; the answer resumes that turn.
@@ -65,7 +68,6 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
             .catch((e: unknown) => setRetryError(e instanceof Error ? e.message : String(e)))
     }
     const [showThinking, setShowThinking] = useState(false)
-    const record = useMemo(() => snapshot ? hydrateConversationRecordFromSnapshot(snapshot) : null, [snapshot])
     const entries = getConversationTimelineEntries(record)
     const launchesById = new Map(getConversationFlowLaunches(record).map(launch => [launch.id, launch]))
     const firstTurnId = entries.find(entry => entry.kind === 'message' && entry.role === 'user')?.id
@@ -129,6 +131,8 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         {error && <InlineError>{error}</InlineError>}
         {retryError && <InlineError>{retryError}</InlineError>}
         <SectionHeading as="h3" action={<ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} />}>Log</SectionHeading>
+        <OlderMessagesControl testId="mission-load-older-messages" hasOlderMessages={conversation.hasOlderMessages ?? false}
+            isLoading={conversation.isLoadingOlderMessages ?? false} error={conversation.olderMessagesError ?? null} onLoad={conversation.loadOlderMessages} />
         <Transcript testIdPrefix="mission" entries={entries} showThinking={showThinking} formatTimestamp={formatTime} loading={loading}
             conversation={{ id: conversationId, projectPath: project }} onRetryTurn={retryTurn} renderEntry={renderEntry} />
     </>

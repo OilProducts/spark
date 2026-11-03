@@ -5,7 +5,8 @@ import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { conversationMutationAck, conversationPage, conversationBatch, summarySnapshot, tombstoneRow, turnRow } from '@/test/conversationWire'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 const summary = (projectPath: string, id: string, updatedAt: string) => ({
@@ -14,7 +15,7 @@ const summary = (projectPath: string, id: string, updatedAt: string) => ({
 })
 const snapshot = (projectPath: string, id: string) => ({
     schema_version: 5, revision: 1, conversation_id: id, project_path: projectPath, title: 'New thread',
-    created_at: '2026-09-30T00:00:00Z', updated_at: '2026-09-30T00:00:00Z', turns: [], segments: [], event_log: [],
+    created_at: '2026-09-30T00:00:00Z', updated_at: '2026-09-30T00:00:00Z', turns: [], segments: [],
 })
 
 const HOME = '/home/me'
@@ -46,7 +47,8 @@ beforeEach(() => {
             return json({ providers: { codex: { status: 'available', error: null } }, models: [{ provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low'], default_reasoning_effort: 'low' }] })
         }
         if (url.includes('/projects/conversations')) {
-            return json((chatsByProject[new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''] ?? []).filter((chat) => !deletedIds.has(chat.conversation_id)))
+            const projectPath = new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''
+            return json(summarySnapshot((chatsByProject[projectPath] ?? []).filter((chat) => !deletedIds.has(chat.conversation_id)), { project_path: projectPath }))
         }
         const conversationId = decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
         if (conversationId && init?.method === 'DELETE') {
@@ -56,9 +58,9 @@ beforeEach(() => {
         if (conversationId && init?.method === 'PUT') {
             const body = JSON.parse(String(init.body))
             settingsWrites.push({ url, body })
-            return json({ ...snapshot(String(body.project_path), conversationId), revision: 2, chat_mode: body.chat_mode ?? 'chat' })
+            return json(conversationMutationAck({ ...snapshot(String(body.project_path), conversationId), revision: 2, chat_mode: body.chat_mode ?? 'chat' }))
         }
-        if (conversationId) return json(snapshot(conversationId.startsWith('home') ? HOME : '/work/busy', conversationId))
+        if (conversationId) return json(conversationPage(snapshot(conversationId.startsWith('home') ? HOME : '/work/busy', conversationId)))
         return json({})
     }))
 })
@@ -221,3 +223,268 @@ it.each([
     expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId).toBe(notifiedChat)
     expect(input()).toHaveValue(expectedDraft)
 })
+
+describe('a long chat', () => {
+    const message = (index: number) => ({
+        id: `turn-${index}`, role: 'user', kind: 'message', status: 'complete', content: `Message ${index}`,
+        timestamp: new Date(Date.parse('2026-09-01T00:00:00Z') + index * 1000).toISOString(),
+    })
+    const pageOf = (indexes: number[], olderCursor: string | null, revision = 10, generation?: string) => conversationPage({
+        ...snapshot(HOME, 'home-1'), revision, turns: indexes.map(message),
+    }, { older_cursor: olderCursor, generation })
+    const held = () => {
+        let release!: (response: Response) => void
+        const response = new Promise<Response>((resolve) => { release = resolve })
+        return { response, release }
+    }
+    const emitLive = (type: string, payload: unknown) => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { type, conversationId: 'home-1', projectPath: HOME, payload } }))
+    })
+    const resetPayload = { code: 'resync_required', reason: 'generation_changed', generation: 'generation-2', watermark: '0' }
+    const record = () => useStore.getState().homeConversationCache.conversationsById['home-1']
+    let pageRequests: string[]
+    let respondToPage: (url: URL) => Promise<Response> | Response
+
+    beforeEach(() => {
+        pageRequests = []
+        const original = vi.mocked(fetch).getMockImplementation()!
+        vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(String(input), 'http://localhost')
+            if (url.pathname === '/workspace/api/conversations/home-1' && !init?.method) {
+                pageRequests.push(url.searchParams.get('before') ?? 'newest')
+                return respondToPage(url)
+            }
+            return original(input, init)
+        })
+    })
+
+    const openHomeChat = async () => {
+        const user = userEvent.setup()
+        renderChats()
+        await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+        await screen.findByText('Message 3')
+        return user
+    }
+
+    it('opens at its newest page and loads older pages on request until none remain', async () => {
+        let releaseOlder!: () => void
+        respondToPage = async (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                await new Promise<void>((resolve) => { releaseOlder = resolve })
+                return json(pageOf([0, 1], null, 9))
+            }
+            return json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        expect(screen.queryByText('Message 1')).not.toBeInTheDocument()
+
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        const loading = await screen.findByRole('button', { name: 'Loading older messages…' })
+        expect(loading).toBeDisabled()
+        expect(loading).toHaveAttribute('aria-busy', 'true')
+        releaseOlder()
+
+        await screen.findByText('Message 0')
+        const shown = screen.getAllByText(/^Message \d$/).map((entry) => entry.textContent)
+        expect(shown).toEqual(['Message 0', 'Message 1', 'Message 2', 'Message 3'])
+        expect(screen.queryByRole('button', { name: /older messages/ })).not.toBeInTheDocument()
+        expect(pageRequests).toEqual(['newest', 'cursor-1'])
+        // An older page never moves the live cursor.
+        expect(useStore.getState().homeConversationCache.conversationsById['home-1']?.watermark).toBe('10')
+    })
+
+    it('reports a failed older page and retries it', async () => {
+        let failures = 1
+        respondToPage = (url) => {
+            if (url.searchParams.get('before')) {
+                return failures-- > 0 ? json({ detail: 'store busy' }, 503) : json(pageOf([0, 1], null, 9))
+            }
+            return json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+
+        const alert = await screen.findByRole('alert')
+        expect(alert).toHaveTextContent('store busy')
+        await user.click(within(alert).getByRole('button', { name: 'Retry' }))
+        await screen.findByText('Message 0')
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('reloads the newest window when moved turns invalidate the older cursor, then offers older messages again', async () => {
+        let moved = false
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                moved = true
+                return json({ code: 'window_reset', reason: 'order_changed', generation: 'generation-test', watermark: '12' }, 409)
+            }
+            return json(moved ? pageOf([3, 2], 'cursor-2', 12) : pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
+        await waitFor(() => expect(useStore.getState().homeConversationCache.conversationsById['home-1']?.olderCursor).toBe('cursor-2'))
+        expect(screen.getByRole('button', { name: 'Load older messages' })).toBeEnabled()
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('clears history at a reset and discards an older page that lands during or after it', async () => {
+        const olderPage = held()
+        const reload = held()
+        let resetDone = false
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') return olderPage.response
+            return resetDone ? reload.response : json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1']))
+
+        resetDone = true
+        emitLive('conversation.reset', resetPayload)
+        // The invalid history goes at once, before the reload answers.
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ resetting: true, olderCursor: null })
+
+        olderPage.release(json(pageOf([0, 1], null, 9)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+
+        reload.release(json(pageOf([5, 6], 'cursor-9', 20, 'generation-2')))
+        await screen.findByText('Message 6')
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', olderCursor: 'cursor-9', resetting: false })
+    })
+
+    it('keeps the cleared history and reports the error when the reload after a reset fails', async () => {
+        let resetDone = false
+        respondToPage = () => (resetDone ? json({ detail: 'store busy' }, 503) : json(pageOf([2, 3], 'cursor-1')))
+        await openHomeChat()
+        resetDone = true
+        emitLive('conversation.reset', resetPayload)
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'newest']))
+        expect(await screen.findByText(/store busy/)).toBeInTheDocument()
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /older messages/ })).not.toBeInTheDocument()
+        // Live changes still wait for a window; the stream's next window restores the chat.
+        emitLive('conversation.changes', conversationBatch([turnRow('home-1', message(4), '11')], { from_revision: '10' }))
+        expect(screen.queryByText('Message 4')).not.toBeInTheDocument()
+        emitLive('conversation.window', pageOf([7, 8], null, 30, 'generation-2'))
+        expect(await screen.findByText('Message 8')).toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', resetting: false })
+    })
+
+    it('drops the older-page recovery window when a newer-generation live window arrives first', async () => {
+        const recovery = held()
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                return json({ code: 'window_reset', reason: 'generation_changed', generation: 'generation-2', watermark: '0' }, 409)
+            }
+            return pageRequests.length > 2 ? recovery.response : json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
+
+        emitLive('conversation.window', pageOf([7, 8], 'cursor-g2', 30, 'generation-2'))
+        await screen.findByText('Message 8')
+        // Read before the live window, in the old generation: applying it would revert the chat.
+        recovery.release(json(pageOf([2, 3], 'cursor-stale', 12)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', olderCursor: 'cursor-g2', watermark: '30' })
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('discards a pre-reset older page even when the reloaded window repeats its cursor', async () => {
+        const olderPage = held()
+        respondToPage = (url) => (url.searchParams.get('before') === 'cursor-1' && pageRequests.length === 2
+            ? olderPage.response
+            : json(url.searchParams.get('before') ? pageOf([0, 1], null, 9) : pageOf([2, 3], 'cursor-1')))
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1']))
+
+        emitLive('conversation.reset', resetPayload)
+        // The reload completes with the same window, so the same older cursor comes back.
+        await screen.findByText('Message 3')
+        expect(record()).toMatchObject({ resetting: false, olderCursor: 'cursor-1' })
+
+        olderPage.release(json(pageOf([0, 1], null, 9)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+        expect(record()?.olderCursor).toBe('cursor-1')
+        // A request issued for the reloaded window still loads.
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await screen.findByText('Message 0')
+    })
+
+    it('discards a recovery window that lands after a later reset completed', async () => {
+        const recovery = held()
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                return json({ code: 'window_reset', reason: 'order_changed', generation: 'generation-test', watermark: '12' }, 409)
+            }
+            if (pageRequests.length === 3) return recovery.response
+            // The later reset's reload reads the same window again, older cursor included.
+            return json(pageOf([2, 3], 'cursor-1', pageRequests.length > 3 ? 12 : 10))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
+
+        emitLive('conversation.reset', { ...resetPayload, generation: 'generation-test' })
+        await waitFor(() => expect(record()).toMatchObject({ resetting: false, olderCursor: 'cursor-1', watermark: '12' }))
+        expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest', 'newest'])
+
+        recovery.release(json(pageOf([7, 8], 'cursor-7', 11)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 8')).not.toBeInTheDocument()
+        expect(screen.getByText('Message 3')).toBeInTheDocument()
+        expect(record()).toMatchObject({ olderCursor: 'cursor-1', watermark: '12' })
+    })
+
+    it('applies live changes the server files under its own spelling of the project path', async () => {
+        respondToPage = () => json(pageOf([2, 3], null))
+        await openHomeChat()
+        act(() => {
+            window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+                detail: { type: 'conversation.changes', conversationId: 'home-1', projectPath: `/private${HOME}`, payload: conversationBatch([turnRow('home-1', message(4), '11')], { from_revision: '10' }) },
+            }))
+        })
+        expect(await screen.findByText('Message 4')).toBeInTheDocument()
+        expect(useStore.getState().homeConversationCache.conversationsById['home-1']).toMatchObject({ project_path: HOME, watermark: '11' })
+    })
+
+    it('shows a chat deleted elsewhere as unavailable and stops sending to it', async () => {
+        respondToPage = () => json(pageOf([2, 3], null))
+        const user = await openHomeChat()
+        act(() => {
+            window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+                detail: { type: 'conversation.changes', conversationId: 'home-1', projectPath: HOME, payload: conversationBatch([tombstoneRow('conversation', 'home-1', 'home-1', '11')], { from_revision: '10' }) },
+            }))
+        })
+        expect(await screen.findByText('This chat is no longer available.')).toBeInTheDocument()
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        await user.type(screen.getByTestId('project-ai-conversation-input'), 'Anyone there?')
+        expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
+        expect(within(group(HOME)).queryByRole('button', { name: 'Open thread Chat home-1' })).not.toBeInTheDocument()
+    })
+
+    it('discards the chat and shows it unavailable when it is gone after a reset', async () => {
+        let gone = false
+        respondToPage = () => (gone ? json({ detail: 'not found' }, 404) : json(pageOf([2, 3], null)))
+        await openHomeChat()
+        gone = true
+        act(() => {
+            window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
+                detail: { type: 'conversation.reset', conversationId: 'home-1', projectPath: HOME, payload: { code: 'resync_required', reason: 'generation_changed', generation: 'generation-2', watermark: '0' } },
+            }))
+        })
+        expect(await screen.findByText('This chat is no longer available.')).toBeInTheDocument()
+        expect(useStore.getState().homeConversationCache.conversationsById['home-1']).toBeUndefined()
+        expect(pageRequests).toEqual(['newest', 'newest'])
+    })
+})
+

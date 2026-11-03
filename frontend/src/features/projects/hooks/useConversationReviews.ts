@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import {
     reviewFlowRunRequestValidated,
     reviewProposedPlanValidated,
-    type ConversationSnapshotResponse,
+    type ConversationBatch,
     type FlowRunRequestResponse,
     type ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
@@ -10,7 +10,13 @@ import { useDialogController } from '@/components/app/dialog-controller'
 type UseConversationReviewsArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
-    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => void
+    applyConversationBatch: (
+        projectPath: string,
+        conversationId: string,
+        batch: ConversationBatch,
+        kind: 'live' | 'mutation',
+        source?: string,
+    ) => void
     formatErrorMessage: (error: unknown, fallback: string) => string
     model: string
     setPanelError: (message: string | null) => void
@@ -19,7 +25,7 @@ type UseConversationReviewsArgs = {
 export function useConversationReviews({
     activeConversationId,
     activeProjectPath,
-    applyConversationSnapshot,
+    applyConversationBatch,
     formatErrorMessage,
     model,
     setPanelError,
@@ -55,13 +61,13 @@ export function useConversationReviews({
         setPendingFlowRunRequestId(flowRunRequest.id)
         setPanelError(null)
         try {
-            const snapshot = await reviewFlowRunRequestValidated(activeConversationId, flowRunRequest.id, {
+            const ack = await reviewFlowRunRequestValidated(activeConversationId, flowRunRequest.id, {
                 project_path: activeProjectPath,
                 disposition,
                 message: reviewMessage,
                 model: model.trim() || null,
             })
-            applyConversationSnapshot(activeProjectPath, snapshot, 'flow-run-request-review')
+            applyConversationBatch(activeProjectPath, activeConversationId, ack.changes, 'mutation', 'flow-run-request-review')
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to review the flow run request.')
             setPanelError(message)
@@ -71,7 +77,7 @@ export function useConversationReviews({
     }, [
         activeConversationId,
         activeProjectPath,
-            applyConversationSnapshot,
+            applyConversationBatch,
         formatErrorMessage,
         model,
         prompt,
@@ -89,12 +95,12 @@ export function useConversationReviews({
         setPendingProposedPlanId(proposedPlan.id)
         setPanelError(null)
         try {
-            const snapshot = await reviewProposedPlanValidated(activeConversationId, proposedPlan.id, {
+            const ack = await reviewProposedPlanValidated(activeConversationId, proposedPlan.id, {
                 project_path: activeProjectPath,
                 disposition,
                 review_note: reviewNote?.trim() || null,
             })
-            applyConversationSnapshot(activeProjectPath, snapshot, 'proposed-plan-review')
+            applyConversationBatch(activeProjectPath, activeConversationId, ack.changes, 'mutation', 'proposed-plan-review')
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to review the proposed plan.')
             setPanelError(message)
@@ -104,7 +110,7 @@ export function useConversationReviews({
     }, [
         activeConversationId,
         activeProjectPath,
-            applyConversationSnapshot,
+            applyConversationBatch,
         formatErrorMessage,
         setPanelError,
     ])

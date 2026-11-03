@@ -1,73 +1,48 @@
-import type {
-    ConversationSegmentResponse,
-    ConversationSegmentTombstoneEventResponse,
-    ConversationSegmentUpsertEventResponse,
-    ConversationSnapshotResponse,
-    ConversationSummaryResponse,
-    ConversationTurnResponse,
-    ConversationTurnUpsertEventResponse,
+import {
+    compareRevisions,
+    type ConversationRow,
+    type ConversationSummaryResponse,
+    type ConversationTurnResponse,
 } from '@/lib/workspaceClient'
 import type { ConversationTimelineEntry } from './types'
 
 export type PendingConversationTurnState = {
     conversationId: string
-    afterRevision: number
+    /** The conversation's newest applied row revision when the turn was sent. */
+    afterRevision: string
 }
 
 /** A sent message, shown until the server records it under the same id. */
 export type PendingUserMessage = Extract<ConversationTimelineEntry, { kind: 'message' }>
 
-export type ConversationStreamEvent =
-    | ConversationTurnUpsertEventResponse
-    | ConversationSegmentUpsertEventResponse
-    | ConversationSegmentTombstoneEventResponse
+/** Rows by identity: `(kind, conversation_id, collection when artifact, id)`. */
+export type ConversationRows = Record<string, ConversationRow>
 
-export function upsertConversationTurn(
-    snapshot: ConversationSnapshotResponse,
-    turn: ConversationTurnResponse,
-): ConversationSnapshotResponse {
-    const nextTurns = [...snapshot.turns]
-    const existingIndex = nextTurns.findIndex((entry) => entry.id === turn.id)
-    if (existingIndex >= 0) {
-        nextTurns[existingIndex] = turn
-    } else {
-        nextTurns.push(turn)
-    }
-    return {
-        ...snapshot,
-        turns: nextTurns,
-    }
+export function conversationRowKey(row: Pick<ConversationRow, 'kind' | 'conversation_id' | 'id'> & { collection?: string }): string {
+    return row.kind === 'artifact'
+        ? `artifact\u0000${row.conversation_id}\u0000${row.collection}\u0000${row.id}`
+        : `${row.kind}\u0000${row.conversation_id}\u0000${row.id}`
 }
 
-export function upsertConversationSegment(
-    snapshot: ConversationSnapshotResponse,
-    segment: ConversationSegmentResponse,
-): ConversationSnapshotResponse {
-    const nextSegments = [...snapshot.segments]
-    const existingIndex = nextSegments.findIndex((entry) => entry.id === segment.id)
-    if (existingIndex >= 0) {
-        nextSegments[existingIndex] = segment
-    } else {
-        nextSegments.push(segment)
-    }
-    nextSegments.sort((left, right) => {
-        if (left.turn_id === right.turn_id) {
-            const orderDelta = left.order - right.order
-            if (orderDelta !== 0) {
-                return orderDelta
-            }
-            const timestampDelta = left.timestamp.localeCompare(right.timestamp)
-            if (timestampDelta !== 0) {
-                return timestampDelta
-            }
-            return left.id.localeCompare(right.id)
+/**
+ * Applies each row newer than the one held under its identity. Equal and older revisions are
+ * ignored, so replays are idempotent and a tombstone keeps an older copy from coming back.
+ * Returns `rows` itself when nothing changed.
+ */
+export function mergeConversationRows(rows: ConversationRows, incoming: ConversationRow[]): ConversationRows {
+    let next = rows
+    for (const row of incoming) {
+        const key = conversationRowKey(row)
+        const current = next[key]
+        if (current && compareRevisions(row.revision, current.revision) <= 0) {
+            continue
         }
-        return left.timestamp.localeCompare(right.timestamp)
-    })
-    return {
-        ...snapshot,
-        segments: nextSegments,
+        if (next === rows) {
+            next = { ...rows }
+        }
+        next[key] = row
     }
+    return next
 }
 
 export function sanitizeStreamingTurnUpsert(
@@ -100,7 +75,7 @@ export function sortConversationSummaries(items: ConversationSummaryResponse[]):
         const pinCompare = pinRank(left).localeCompare(pinRank(right))
         if (pinCompare !== 0) return pinCompare
         const updatedAtCompare = right.updated_at.localeCompare(left.updated_at)
-        return updatedAtCompare !== 0 ? updatedAtCompare : right.revision - left.revision
+        return updatedAtCompare !== 0 ? updatedAtCompare : compareRevisions(right.revision, left.revision)
     })
 }
 

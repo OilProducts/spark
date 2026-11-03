@@ -6,6 +6,7 @@ import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { conversationPage, summarySnapshot } from '@/test/conversationWire'
 
 // The Flows panel asks the org list for its badges.
 const EMPTY_ORG_LIST = { org_path: '', bundled_path: '', org_exists: false, items: [] }
@@ -216,7 +217,7 @@ const buildConversationSummary = ({
   conversationId,
   projectPath,
   title,
-  revision = 0,
+  revision = 1,
 }: {
   conversationId: string
   projectPath: string
@@ -232,6 +233,11 @@ const buildConversationSummary = ({
   revision,
   last_message_preview: null,
 })
+
+// A thread-list response for the project the request names.
+const threadListResponse = (url: string, summaries: Array<Record<string, unknown>>) => jsonResponse(summarySnapshot(summaries, {
+  project_path: new URL(url, 'http://localhost').searchParams.get('project_path'),
+}))
 
 const buildConversationSnapshot = ({
   conversationId,
@@ -260,7 +266,6 @@ const buildConversationSnapshot = ({
   }, Date.parse('2026-03-25T12:00:00Z'))
   const updatedAt = new Date(latestTimestamp).toISOString().replace('.000Z', 'Z')
   return {
-    schema_version: 5,
     revision: revision ?? Math.floor(latestTimestamp / 1000),
     conversation_id: conversationId,
     conversation_handle: `${conversationId}-handle`,
@@ -270,7 +275,6 @@ const buildConversationSnapshot = ({
     updated_at: updatedAt,
     turns,
     segments,
-    event_log: [],
     flow_run_requests: [],
     flow_launches: [],
   }
@@ -612,7 +616,7 @@ describe('App shell behavior', () => {
         })
       }
       if (url.includes('/workspace/api/projects/conversations')) {
-        return jsonResponse([])
+        return threadListResponse(url, [])
       }
       if (url.includes('/workspace/api/projects')) {
         return jsonResponse([])
@@ -688,7 +692,7 @@ describe('App shell behavior', () => {
         })
       }
       if (url.includes('/workspace/api/projects/conversations')) {
-        return jsonResponse([])
+        return threadListResponse(url, [])
       }
       if (url.includes('/workspace/api/projects')) {
         return jsonResponse([])
@@ -746,7 +750,7 @@ describe('App shell behavior', () => {
         }))
       }
       if (url.includes('/workspace/api/projects/conversations')) {
-        return jsonResponse([])
+        return threadListResponse(url, [])
       }
       if (url.includes('/workspace/api/projects')) {
         return jsonResponse([])
@@ -822,10 +826,7 @@ describe('App shell behavior', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
+          return threadListResponse(url, [])
         }
         if (url.includes('/workspace/api/projects')) {
           return new Response(JSON.stringify([]), {
@@ -1012,7 +1013,7 @@ describe('App shell behavior', () => {
       if (url.includes('/workspace/api/projects/conversations')) {
         const projectPath = new URL(url, 'http://localhost').searchParams.get('project_path')
         if (projectPath === '/tmp/project-one') {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-project-one',
               projectPath: '/tmp/project-one',
@@ -1021,7 +1022,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (projectPath === '/tmp/project-two') {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-project-two',
               projectPath: '/tmp/project-two',
@@ -1029,7 +1030,7 @@ describe('App shell behavior', () => {
             }),
           ])
         }
-        return jsonResponse([])
+        return threadListResponse(url, [])
       }
       if (url.includes('/workspace/api/conversations/') && method === 'GET') {
         return jsonResponse({ detail: 'Unknown conversation' }, { status: 404 })
@@ -1107,7 +1108,7 @@ describe('App shell behavior', () => {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-home-one',
               projectPath: '/tmp/project-home',
@@ -1116,7 +1117,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/conversations/conversation-home-one') && !url.includes('/events')) {
-          return jsonResponse(buildConversationSnapshot({
+          return jsonResponse(conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-one',
             projectPath: '/tmp/project-home',
             title: 'Thread home',
@@ -1136,7 +1137,7 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:01:00Z',
               },
             ],
-          }))
+          })))
         }
         if (url.includes('/workspace/api/projects')) {
           return jsonResponse([
@@ -1199,7 +1200,7 @@ describe('App shell behavior', () => {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-home-restore',
               projectPath: '/tmp/project-home-restore',
@@ -1208,7 +1209,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/conversations/conversation-home-restore') && !url.includes('/events')) {
-          return jsonResponse(buildConversationSnapshot({
+          return jsonResponse(conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-restore',
             projectPath: '/tmp/project-home-restore',
             title: 'Thread restore',
@@ -1270,7 +1271,7 @@ describe('App shell behavior', () => {
                 source: null,
               },
             ],
-          }))
+          })))
         }
         if (url.includes('/workspace/api/projects')) {
           return jsonResponse([
@@ -1361,7 +1362,7 @@ describe('App shell behavior', () => {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-home-live',
               projectPath: '/tmp/project-home-live',
@@ -1370,7 +1371,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/conversations/conversation-home-live') && !url.includes('/events')) {
-          return jsonResponse(buildConversationSnapshot({
+          return jsonResponse(conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-live',
             projectPath: '/tmp/project-home-live',
             title: 'Thread live',
@@ -1390,7 +1391,7 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:01:00Z',
               },
             ],
-          }))
+          })))
         }
         if (url.includes('/workspace/api/projects')) {
           return jsonResponse([
@@ -1436,11 +1437,10 @@ describe('App shell behavior', () => {
 
     act(() => {
       conversationEventSource?.emitMessage({
-        type: 'conversation.snapshot',
+        type: 'conversation.window',
         project_path: '/tmp/project-home-live',
         resource: { kind: 'conversation', id: 'conversation-home-live' },
-        payload: {
-          state: buildConversationSnapshot({
+        payload: conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-live',
             projectPath: '/tmp/project-home-live',
             title: 'Thread live',
@@ -1460,8 +1460,7 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:01:30Z',
               },
             ],
-          }),
-        },
+          })),
       })
     })
 
@@ -1497,7 +1496,7 @@ describe('App shell behavior', () => {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
         }
         if (url.includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject-home-one')) {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-home-one',
               projectPath: '/tmp/project-home-one',
@@ -1506,7 +1505,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject-home-two')) {
-          return jsonResponse([
+          return threadListResponse(url, [
             buildConversationSummary({
               conversationId: 'conversation-home-two',
               projectPath: '/tmp/project-home-two',
@@ -1515,7 +1514,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/conversations/conversation-home-one') && !url.includes('/events')) {
-          return jsonResponse(buildConversationSnapshot({
+          return jsonResponse(conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-one',
             projectPath: '/tmp/project-home-one',
             title: 'Thread one',
@@ -1535,10 +1534,10 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:01:00Z',
               },
             ],
-          }))
+          })))
         }
         if (url.includes('/workspace/api/conversations/conversation-home-two') && !url.includes('/events')) {
-          return jsonResponse(buildConversationSnapshot({
+          return jsonResponse(conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-two',
             projectPath: '/tmp/project-home-two',
             title: 'Thread two',
@@ -1558,7 +1557,7 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:03:00Z',
               },
             ],
-          }))
+          })))
         }
         if (url.includes('/workspace/api/projects')) {
           return jsonResponse([
@@ -1619,11 +1618,10 @@ describe('App shell behavior', () => {
 
     act(() => {
       projectOneEventSource?.emitMessage({
-        type: 'conversation.snapshot',
+        type: 'conversation.window',
         project_path: '/tmp/project-home-one',
         resource: { kind: 'conversation', id: 'conversation-home-one' },
-        payload: {
-          state: buildConversationSnapshot({
+        payload: conversationPage(buildConversationSnapshot({
             conversationId: 'conversation-home-one',
             projectPath: '/tmp/project-home-one',
             title: 'Thread one',
@@ -1643,8 +1641,7 @@ describe('App shell behavior', () => {
                 timestamp: '2026-03-25T12:04:00Z',
               },
             ],
-          }),
-        },
+          })),
       })
     })
 
@@ -1684,10 +1681,7 @@ describe('App shell behavior', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          })
+          return threadListResponse(url, [])
         }
         if (url.includes('/workspace/api/projects')) {
           return new Response(JSON.stringify([]), {
@@ -1772,7 +1766,7 @@ describe('App shell behavior', () => {
           ])
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return jsonResponse([])
+          return threadListResponse(url, [])
         }
         if (url.includes('/workspace/api/projects/metadata')) {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
@@ -1842,7 +1836,7 @@ describe('App shell behavior', () => {
           return jsonResponse({ branch: 'main', commit: 'abcdef0' })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return jsonResponse([])
+          return threadListResponse(url, [])
         }
         if (url.includes('/workspace/api/projects')) {
           return jsonResponse([
@@ -1940,7 +1934,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     expect(await screen.findByTestId('project-thread-list-loading')).toBeVisible()
-    homeThreadsDeferred.resolve(jsonResponse([]))
+    homeThreadsDeferred.resolve(threadListResponse('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject-loading', []))
     await waitFor(() => {
       expect(screen.getByText('No chats yet.')).toBeVisible()
     })
@@ -2316,7 +2310,7 @@ describe('App shell behavior', () => {
         return jsonResponse([buildProjectRecord('/tmp/project-hidden-runs')])
       }
       if (url.includes('/workspace/api/projects/conversations')) {
-        return jsonResponse([])
+        return threadListResponse(url, [])
       }
       if (url.includes('/workspace/api/projects/metadata')) {
         return jsonResponse({ branch: 'main', commit: 'abcdef0' })

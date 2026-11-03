@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProjectConversationHistory } from '@/features/projects/components/ProjectConversationHistory'
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { useStore } from '@/store'
-import { getConversationTimelineEntries, hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
+import { applyConversationPage, getConversationTimelineEntries } from '@/features/projects/model/projectsHomeState'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationPage } from '@/test/conversationWire'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import type {
@@ -73,6 +75,11 @@ const makeHistoryElement = (
         requestUserInputActionError?: string | null
         submittingRequestUserInputIds?: Record<string, boolean>
         onRetryTurn?: (turnId: string) => void
+        isConversationUnavailable?: boolean
+        hasOlderMessages?: boolean
+        isLoadingOlderMessages?: boolean
+        olderMessagesError?: string | null
+        onLoadOlderMessages?: () => void
     } = {},
 ) =>
     <ProjectConversationHistory
@@ -101,6 +108,11 @@ const makeHistoryElement = (
         onReviewProposedPlan={overrides.onReviewProposedPlan ?? vi.fn()}
         onOpenFlowRun={overrides.onOpenFlowRun ?? vi.fn()}
         onRetryTurn={overrides.onRetryTurn}
+        isConversationUnavailable={overrides.isConversationUnavailable}
+        hasOlderMessages={overrides.hasOlderMessages}
+        isLoadingOlderMessages={overrides.isLoadingOlderMessages}
+        olderMessagesError={overrides.olderMessagesError}
+        onLoadOlderMessages={overrides.onLoadOlderMessages}
     />
 
 const renderHistory = (
@@ -364,21 +376,59 @@ const makeProposedPlan = (
 })
 
 describe('ProjectConversationHistory', () => {
+    describe('older messages', () => {
+        const entries: ConversationTimelineEntry[] = [{ id: 'turn-1', kind: 'message', role: 'user', content: 'Newest page.', timestamp: '2026-03-10T10:00:00Z', status: 'complete' }]
+
+        it('offers older messages only while an older page exists', async () => {
+            const onLoadOlderMessages = vi.fn()
+            const { rerender } = renderHistory(entries, { hasOlderMessages: true, onLoadOlderMessages })
+            const button = screen.getByRole('button', { name: 'Load older messages' })
+            expect(button).toBeEnabled()
+            expect(button).toHaveAttribute('aria-busy', 'false')
+            await userEvent.click(button)
+            expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+
+            rerender(makeHistoryElement(entries, { hasOlderMessages: false, onLoadOlderMessages }))
+            expect(screen.queryByRole('button', { name: /older messages/ })).not.toBeInTheDocument()
+        })
+
+        it('marks the control busy and disabled while a page loads', () => {
+            renderHistory(entries, { hasOlderMessages: true, isLoadingOlderMessages: true, onLoadOlderMessages: vi.fn() })
+            const button = screen.getByRole('button', { name: 'Loading older messages…' })
+            expect(button).toBeDisabled()
+            expect(button).toHaveAttribute('aria-busy', 'true')
+        })
+
+        it('reports a failed load in an alert with a Retry button', async () => {
+            const onLoadOlderMessages = vi.fn()
+            renderHistory(entries, { hasOlderMessages: true, olderMessagesError: 'Unable to load older messages.', onLoadOlderMessages })
+            const alert = screen.getByRole('alert')
+            expect(alert).toHaveTextContent('Unable to load older messages.')
+            await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+            expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
+        })
+    })
+
+    it('says when the chat is no longer available', () => {
+        renderHistory([], { isConversationUnavailable: true })
+        expect(screen.getByText('This chat is no longer available.')).toBeInTheDocument()
+    })
+
     it.each(['reasoning', 'plan'] as const)('offers Retry on a failed chat turn with only a %s segment', async (kind) => {
         const at = '2026-03-10T10:00:00Z'
-        const entries = getConversationTimelineEntries(hydrateConversationRecordFromSnapshot({
-            schema_version: 5, revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
+        const entries = getConversationTimelineEntries(applyConversationPage(undefined, parseConversationPageResponse(conversationPage({
+            revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
             chat_mode: 'chat', title: 'Chat', created_at: at, updated_at: at,
             turns: [
-                { id: 'turn-user', role: 'user', content: 'Hi', timestamp: at, kind: 'message', status: 'complete', artifact_id: null },
-                { id: 'turn-failed', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'failed', artifact_id: null, error: 'Turn interrupted.' },
+                { id: 'turn-user', role: 'user', content: 'Hi', timestamp: at, kind: 'message', status: 'complete', artifact_id: null, position: 1 },
+                { id: 'turn-failed', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'failed', artifact_id: null, error: 'Turn interrupted.', position: 2 },
             ],
             segments: [{
                 id: 'only-segment', turn_id: 'turn-failed', order: 1, kind, role: 'assistant', status: 'failed', timestamp: at,
                 updated_at: at, completed_at: at, content: 'Partial work.', artifact_id: null, error: null, source: null, tool_call: null,
             }],
-            event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [],
-        }))
+            flow_run_requests: [], flow_launches: [], proposed_plans: [],
+        })), 'window') ?? null)
         const onRetryTurn = vi.fn()
         renderHistory(entries, { onRetryTurn })
 

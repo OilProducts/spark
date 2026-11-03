@@ -12,7 +12,19 @@ import { hasUnread, markAttentionSeen, readFinishedWatermark, type Chat } from '
 let pending: AttentionItem[] = []
 vi.mock('@/lib/api/attentionApi', () => ({ fetchPendingAttention: () => Promise.resolve(pending) }))
 let chats: Chat[] = []
-vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), fetchProjectConversationListValidated: () => Promise.resolve(chats) }))
+// The project path of each thread-list request; the Overview asks once for every project.
+let chatListRequests: (string | null)[] = []
+vi.mock('@/lib/workspaceClient', async (original) => {
+    const client = await original<typeof import('@/lib/workspaceClient')>()
+    const { summarySnapshot } = await import('@/test/conversationWire')
+    return {
+        ...client,
+        fetchProjectConversationListValidated: (projectPath: string | null) => {
+            chatListRequests.push(projectPath)
+            return Promise.resolve(client.parseConversationSummarySnapshotResponse(summarySnapshot(chats)))
+        },
+    }
+})
 
 // Run gate ids as the aggregate emits them: the run id with its run-local question id.
 const gate = (runId: string, questionId: string): AttentionItem => ({
@@ -74,6 +86,7 @@ const finished = () => screen.queryAllByTestId('overview-finished-item').map((ro
 const reset = () => {
     pending = []
     chats = []
+    chatListRequests = []
     window.localStorage.clear()
     setRuns([], false)
     setMissions([], false)
@@ -119,6 +132,7 @@ describe('Overview finished since', () => {
         setMissions([])
         render(<OverviewPanel />)
         await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+        expect(chatListRequests).toEqual([null])
 
         expect(finished()).toEqual(['run-done', 'run-failed'])
         const [done, failed] = screen.getAllByTestId('overview-finished-item')

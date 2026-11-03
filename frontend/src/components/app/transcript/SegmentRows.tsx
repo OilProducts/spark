@@ -567,6 +567,7 @@ export const MessageRow = memo(function MessageRow({
     const delivery = entry.role !== 'user' ? null
         : entry.status === 'queued' ? 'Queued · starts when the current turn ends'
             : entry.status === 'delivered' ? 'Sent into the running turn'
+                : entry.status === 'delivery_pending' ? 'Sending into the running turn…'
                 : entry.status === 'failed' ? (entry.error || 'Not sent')
                     : null
     const canCopy = enableCopy && (

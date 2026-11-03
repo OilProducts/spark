@@ -115,9 +115,16 @@ fn workspace_and_project_groups_resolve_at_the_next_message_and_clearing_restore
     let initial = service
         .get_snapshot("override-chat", Some("/projects/inheritance"))
         .unwrap();
-    let saved = service.update_conversation_settings("override-chat", serde_json::from_value(json!({"project_path": "/projects/inheritance", "expected_revision": initial["settings"]["models"]["revision"], "model_settings": group("codex", Some("conversation"))})).unwrap()).unwrap();
+    let view = |id: &str| {
+        service
+            .get_snapshot(id, Some("/projects/inheritance"))
+            .unwrap()
+    };
+    let saved_ack = service.update_conversation_settings("override-chat", serde_json::from_value(json!({"project_path": "/projects/inheritance", "expected_revision": initial["settings"]["models"]["revision"], "model_settings": group("codex", Some("conversation"))})).unwrap()).unwrap();
+    let saved = view("override-chat");
     assert_eq!(saved["settings"]["models"]["source"], "conversation");
-    let unchanged = service
+    assert_eq!(saved["revision"], saved_ack.revision);
+    let unchanged_ack = service
         .update_conversation_settings(
             "override-chat",
             ConversationSettingsUpdate {
@@ -126,9 +133,21 @@ fn workspace_and_project_groups_resolve_at_the_next_message_and_clearing_restore
             },
         )
         .unwrap();
+    let unchanged = view("override-chat");
     assert_eq!(unchanged["model_settings"], saved["model_settings"]);
-    let cleared = service.update_conversation_settings("override-chat", serde_json::from_value(json!({"project_path": "/projects/inheritance", "expected_revision": saved["settings"]["models"]["revision"], "model_settings": null})).unwrap()).unwrap();
-    assert_eq!(cleared["settings"]["models"]["source"], "project");
+    assert_eq!(
+        unchanged["revision"], saved["revision"],
+        "a no-op writes nothing"
+    );
+    assert_eq!(unchanged_ack.revision, saved_ack.revision);
+    let cleared_ack = service.update_conversation_settings("override-chat", serde_json::from_value(json!({"project_path": "/projects/inheritance", "expected_revision": saved["settings"]["models"]["revision"], "model_settings": null})).unwrap()).unwrap();
+    assert!(cleared_ack.revision > saved_ack.revision);
+    assert_eq!(
+        service
+            .conversation_settings_view("override-chat", "/projects/inheritance")
+            .unwrap()["models"]["source"],
+        "project"
+    );
     save_project(&settings, Value::Null);
     assert_eq!(
         service
@@ -185,18 +204,16 @@ fn selected_profile_contents_and_default_model_are_captured_and_secret_values_ar
     assert_eq!(first.model.as_deref(), Some("first"));
     assert_eq!(second.model.as_deref(), Some("second"));
     assert_eq!(
-        first.agent_turn_request.metadata["spark.execution.settings"]["llm_profile"]["base_url"],
+        first.execution_settings["llm_profile"]["base_url"],
         "http://localhost:9999/v1"
     );
     assert_eq!(
-        first.agent_turn_request.metadata["spark.execution.settings"]["llm_profile"]["api_key_env"],
+        first.execution_settings["llm_profile"]["api_key_env"],
         "SPARK_TEST_PROFILE_SECRET"
     );
-    assert!(
-        first.agent_turn_request.metadata["spark.execution.settings"]["llm_profile"]
-            .get("api_key")
-            .is_none()
-    );
+    assert!(first.execution_settings["llm_profile"]
+        .get("api_key")
+        .is_none());
     fs::write(&path, "secret = SECRET_DO_NOT_EXPOSE\n").unwrap();
     assert!(!workspace_settings(&settings)
         .unwrap_err()
@@ -268,7 +285,7 @@ fn active_turn_uses_captured_connection(profile: bool) {
         fs::write(&path, format!("[models]\nprovider='openai_compatible'\nmodel='captured-model'\n[providers.openai_compatible]\nbase_url='http://{address}/v1'\n")).unwrap();
     }
     let service = conversations(settings.clone());
-    let (prepared, started) = service
+    let (prepared, _) = service
         .start_turn(
             "captured-chat",
             ConversationTurnRequest {
@@ -317,8 +334,11 @@ fn active_turn_uses_captured_connection(profile: bool) {
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {chunk}\n\ndata: [DONE]\n\n").unwrap();
         serde_json::from_slice::<Value>(&request).unwrap()
     });
+    service
+        .complete_started_turn_with_progress_payloads(prepared.clone(), |_| {})
+        .unwrap();
     let completed = service
-        .complete_started_turn_with_progress_payloads(prepared.clone(), started, |_| {})
+        .get_snapshot(&prepared.conversation_id, Some(&prepared.project_path))
         .unwrap();
     let request = server.join().unwrap();
     assert_eq!(request["model"], "captured-model");
@@ -372,14 +392,14 @@ fn saved_and_file_edited_provider_and_session_settings_apply_only_to_new_message
     );
     let service = conversations(settings.clone());
     let first = start(&service, "capture-first");
-    let snapshot = first.agent_turn_request.metadata["spark.execution.settings"].clone();
+    let snapshot = first.execution_settings.clone();
     save("agents", json!({"max_turns": 11}));
     let text = fs::read_to_string(&path)
         .unwrap()
         .replace("localhost:10001", "localhost:10002");
     fs::write(&path, text).unwrap();
     let second = start(&service, "capture-second");
-    let next = &second.agent_turn_request.metadata["spark.execution.settings"];
+    let next = &second.execution_settings;
     assert_eq!(snapshot["configuration"]["agents"]["max_turns"], 7);
     assert_eq!(next["configuration"]["agents"]["max_turns"], 11);
     assert_eq!(
@@ -395,10 +415,7 @@ fn saved_and_file_edited_provider_and_session_settings_apply_only_to_new_message
         .unwrap();
     assert!(historical.to_string().contains("localhost:10001"));
     assert!(!historical.to_string().contains("localhost:10002"));
-    assert_eq!(
-        first.agent_turn_request.metadata["spark.execution.settings"],
-        snapshot
-    );
+    assert_eq!(first.execution_settings, snapshot);
     let before = fs::read(&path).unwrap();
     let revision = read_settings_document(&path).unwrap().revision;
     assert!(update_workspace_settings(&settings,&shared_store(&(&settings).data_dir), serde_json::from_value(json!({"section": "agents", "expected_revision": revision, "value": {"default_command_timeout_ms": 0}})).unwrap()).is_err());

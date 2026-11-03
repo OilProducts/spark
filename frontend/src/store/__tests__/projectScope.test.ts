@@ -1,7 +1,8 @@
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useStore } from '@/store'
-import { applyConversationSnapshotToCache } from '@/features/projects/model/projectsHomeState'
-import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { applyConversationPageToCache, type ProjectConversationCacheState } from '@/features/projects/model/projectsHomeState'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationPage } from '@/test/conversationWire'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
@@ -67,12 +68,21 @@ const buildRunRecord = (runId: string, projectPath: string, flowName: string) =>
   continued_from_flow_name: null,
 })
 
+const applyConversationWindow = (
+  cache: ProjectConversationCacheState,
+  conversationId: string,
+  projectPath: string,
+) => applyConversationPageToCache(
+  cache,
+  parseConversationPageResponse(conversationPage(buildConversationSnapshot(conversationId, projectPath))),
+  'window',
+)
+
 const buildConversationSnapshot = (
   conversationId: string,
   projectPath: string,
-): ConversationSnapshotResponse => ({
-  schema_version: 5,
-  revision: 0,
+) => ({
+  revision: 1,
   conversation_id: conversationId,
   conversation_handle: '',
   project_path: projectPath,
@@ -92,7 +102,6 @@ const buildConversationSnapshot = (
     },
   ],
   segments: [],
-  event_log: [],
   flow_run_requests: [],
   flow_launches: [],
   proposed_plans: [],
@@ -288,11 +297,7 @@ describe('project scope store behavior', () => {
   it('renames normalized home conversation cache entries with project path updates', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
-    store.commitHomeConversationCache((cache) => applyConversationSnapshotToCache(
-      cache,
-      '/tmp/project-a',
-      buildConversationSnapshot('conversation-a', '/tmp/project-a'),
-    ).cache)
+    store.commitHomeConversationCache((cache) => applyConversationWindow(cache, 'conversation-a', '/tmp/project-a'))
     store.updateHomeConversationSession('conversation-a', {
       isPinnedToBottom: false,
       scrollTop: 120,
@@ -316,16 +321,8 @@ describe('project scope store behavior', () => {
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
     store.commitHomeConversationCache((cache) => {
-      const withProjectA = applyConversationSnapshotToCache(
-        cache,
-        '/tmp/project-a',
-        buildConversationSnapshot('conversation-a', '/tmp/project-a'),
-      ).cache
-      return applyConversationSnapshotToCache(
-        withProjectA,
-        '/tmp/project-b',
-        buildConversationSnapshot('conversation-b', '/tmp/project-b'),
-      ).cache
+      const withProjectA = applyConversationWindow(cache, 'conversation-a', '/tmp/project-a')
+      return applyConversationWindow(withProjectA, 'conversation-b', '/tmp/project-b')
     })
     store.updateHomeConversationSession('conversation-a', { scrollTop: 120 })
     store.updateHomeConversationSession('conversation-b', { scrollTop: 240 })

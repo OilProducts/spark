@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
+import { ensureScreenshotDir, screenshotPath, summarySnapshot } from '../fixtures/smoke-helpers'
 
 const MOBILE_PROJECT_PATH = '/tmp/ui-smoke-mobile-project'
 const MOBILE_FLOW_NAME = 'mobile-smoke.yaml'
@@ -89,7 +89,7 @@ const stubResponsiveSmokeApis = async (page: Page) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([]),
+        body: JSON.stringify(summarySnapshot([], url.searchParams.get('project_path'))),
       })
       return
     }

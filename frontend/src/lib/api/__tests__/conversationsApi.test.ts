@@ -1,7 +1,46 @@
 import {
-    parseConversationStreamEventResponse,
-    parseConversationSnapshotResponse,
+    ConversationResetError,
+    conversationSummaryFromRow,
+    fetchConversationChangesValidated,
+    fetchConversationPageValidated,
+    fetchProjectConversationListValidated,
+    parseConversationAcceptanceResponse,
+    parseConversationBatchResponse,
+    parseConversationMutationAckResponse,
+    parseConversationPageResponse,
+    parseConversationResetResponse,
+    parseConversationSummarySnapshotResponse,
+    type ConversationRow,
 } from '@/lib/api/conversationsApi'
+import { afterEach, vi } from 'vitest'
+import { artifactRow, conversationBatch, conversationPage, conversationRow, segmentRow, summarySnapshot, tombstoneRow, turnRow } from '@/test/conversationWire'
+
+// The page a transcript-shaped fixture becomes, with its rows' payloads grouped by kind.
+function parseConversationSnapshotResponse(fixture: Record<string, unknown>) {
+    const events = Array.isArray(fixture.event_log) ? fixture.event_log as Record<string, unknown>[] : []
+    const raw = conversationPage(fixture, { revision: '1' })
+    const page = parseConversationPageResponse({
+        ...raw,
+        rows: [...raw.rows as unknown[], ...events.map((event, index) => artifactRow(String(fixture.conversation_id), 'event_log', { ...event, id: `event-${index}` }, '1', index + 1))],
+    })
+    const payloads = <K extends ConversationRow['kind']>(kind: K) => page.rows
+        .filter((row): row is Extract<ConversationRow, { kind: K }> => row.kind === kind)
+        .map((row) => row.payload!)
+    const artifacts = (collection: string) => page.rows.flatMap((row) => row.kind === 'artifact' && row.collection === collection ? [row.payload] : [])
+    const conversation = payloads('conversation')[0]!
+    return {
+        ...conversation,
+        turns: payloads('turn'),
+        segments: payloads('segment'),
+        event_log: artifacts('event_log').map((event) => {
+            const { id: _id, ...rest } = event as Record<string, unknown>
+            return rest
+        }),
+        proposed_plans: artifacts('proposed_plans'),
+    }
+}
+
+const batchOf = (rows: Record<string, unknown>[]) => parseConversationBatchResponse(conversationBatch(rows))
 
 describe('conversationsApi parsing', () => {
     it('parses chat_mode and mode_change turns from snapshots', () => {
@@ -440,58 +479,41 @@ describe('conversationsApi parsing', () => {
         })
     })
 
-    it('rejects turn_upsert stream events without a numeric revision', () => {
-        const event = parseConversationStreamEventResponse({
-            type: 'turn_upsert',
-            conversation_id: 'conversation-plan',
-            project_path: '/tmp/project-plan',
-            title: 'Planning thread',
-            updated_at: '2026-04-16T18:00:10Z',
-            turn: {
-                id: 'turn-assistant-1',
-                role: 'assistant',
-                kind: 'message',
-                status: 'streaming',
-                content: '',
-                timestamp: '2026-04-16T18:00:01Z',
-            },
-        })
-
-        expect(event).toBeNull()
+    it('rejects a batch whose turn row has a numeric revision', () => {
+        const row = turnRow('conversation-plan', {
+            id: 'turn-assistant-1',
+            role: 'assistant',
+            kind: 'message',
+            status: 'streaming',
+            content: '',
+            timestamp: '2026-04-16T18:00:01Z',
+        }, '1')
+        expect(() => parseConversationBatchResponse({ generation: 'g', from_revision: '0', watermark: '1', rows: [{ ...row, revision: 1 }] })).toThrow()
     })
 
-    it('rejects segment_upsert stream events without a numeric revision', () => {
-        const event = parseConversationStreamEventResponse({
-            type: 'segment_upsert',
-            conversation_id: 'conversation-plan',
-            project_path: '/tmp/project-plan',
-            title: 'Planning thread',
-            updated_at: '2026-04-16T18:00:10Z',
-            segment: {
-                id: 'segment-assistant-1',
-                turn_id: 'turn-assistant-1',
-                order: 1,
-                kind: 'assistant_message',
-                role: 'assistant',
-                status: 'streaming',
-                timestamp: '2026-04-16T18:00:08Z',
-                updated_at: '2026-04-16T18:00:08Z',
-                content: 'Hello',
-            },
-        })
-
-        expect(event).toBeNull()
+    it('rejects a batch whose segment row lacks its order or names another turn', () => {
+        const segment = {
+            id: 'segment-assistant-1',
+            turn_id: 'turn-assistant-1',
+            order: 1,
+            kind: 'assistant_message',
+            role: 'assistant',
+            status: 'streaming',
+            timestamp: '2026-04-16T18:00:08Z',
+            updated_at: '2026-04-16T18:00:08Z',
+            content: 'Hello',
+        }
+        const row = segmentRow('conversation-plan', segment, '1')
+        expect(batchOf([row]).rows).toHaveLength(1)
+        expect(() => batchOf([{ ...row, order: undefined }])).toThrow()
+        expect(() => batchOf([{ ...row, turn_id: 'turn-other' }])).toThrow()
     })
 
-    it('parses optional artifact sidecars from segment_upsert stream events', () => {
-        const event = parseConversationStreamEventResponse({
-            type: 'segment_upsert',
-            revision: 1,
-            conversation_id: 'conversation-plan',
-            project_path: '/tmp/project-plan',
-            title: 'Planning thread',
-            updated_at: '2026-04-16T18:00:10Z',
-            segment: {
+    it('parses artifact rows that arrive with their segment', () => {
+        const conversationId = 'conversation-plan'
+        const base = { created_at: '2026-04-16T18:00:08Z', updated_at: '2026-04-16T18:00:08Z', project_path: '/tmp/project-plan', conversation_id: conversationId, source_turn_id: 'turn-assistant-1' }
+        const batch = batchOf([
+            segmentRow(conversationId, {
                 id: 'segment-plan-1',
                 turn_id: 'turn-assistant-1',
                 order: 1,
@@ -502,111 +524,186 @@ describe('conversationsApi parsing', () => {
                 updated_at: '2026-04-16T18:00:08Z',
                 content: 'Plan content.',
                 artifact_id: 'plan-1',
-            },
-            proposed_plans: [{
-                id: 'plan-1',
-                created_at: '2026-04-16T18:00:08Z',
-                updated_at: '2026-04-16T18:00:08Z',
-                title: 'Plan',
-                content: 'Plan content.',
-                project_path: '/tmp/project-plan',
-                conversation_id: 'conversation-plan',
-                source_turn_id: 'turn-assistant-1',
-                source_segment_id: 'segment-plan-1',
-                status: 'pending_review',
-            }],
-            flow_run_requests: [{
-                id: 'request-1',
-                created_at: '2026-04-16T18:00:08Z',
-                updated_at: '2026-04-16T18:00:08Z',
-                flow_name: 'implementation.dot',
-                summary: 'Run implementation.',
-                project_path: '/tmp/project-plan',
-                conversation_id: 'conversation-plan',
-                source_turn_id: 'turn-assistant-1',
-                source_segment_id: 'segment-request-1',
-                status: 'pending',
-            }],
-            flow_launches: [{
-                id: 'launch-1',
-                created_at: '2026-04-16T18:00:08Z',
-                updated_at: '2026-04-16T18:00:08Z',
-                flow_name: 'implementation.dot',
-                summary: 'Launch implementation.',
-                project_path: '/tmp/project-plan',
-                conversation_id: 'conversation-plan',
-                source_turn_id: 'turn-assistant-1',
-                source_segment_id: 'segment-launch-1',
-                status: 'pending',
-            }],
-        })
+            }, '1'),
+            artifactRow(conversationId, 'proposed_plans', { ...base, id: 'plan-1', title: 'Plan', content: 'Plan content.', source_segment_id: 'segment-plan-1', status: 'pending_review' }, '1', 1),
+            artifactRow(conversationId, 'flow_run_requests', { ...base, id: 'request-1', flow_name: 'implementation.dot', summary: 'Run implementation.', source_segment_id: 'segment-request-1', status: 'pending' }, '1', 1),
+            artifactRow(conversationId, 'flow_launches', { ...base, id: 'launch-1', flow_name: 'implementation.dot', summary: 'Launch implementation.', source_segment_id: 'segment-launch-1', status: 'pending' }, '1', 1),
+        ])
 
-        expect(event?.type).toBe('segment_upsert')
-        if (event?.type !== 'segment_upsert') {
-            return
-        }
-        expect(event.proposed_plans?.[0]?.id).toBe('plan-1')
-        expect(event.flow_run_requests?.[0]?.id).toBe('request-1')
-        expect(event.flow_launches?.[0]?.id).toBe('launch-1')
+        const artifacts = batch.rows.flatMap((row) => row.kind === 'artifact' ? [[row.collection, (row.payload as { id: string }).id]] : [])
+        expect(artifacts).toEqual([['proposed_plans', 'plan-1'], ['flow_run_requests', 'request-1'], ['flow_launches', 'launch-1']])
+        expect(() => batchOf([artifactRow(conversationId, 'unknown_collection', { id: 'x' }, '1', 1)])).toThrow()
+        expect(() => batchOf([artifactRow(conversationId, 'proposed_plans', { id: 'plan-2' }, '1', 1)])).toThrow()
     })
 
     it('parses yielded tool calls with their completion reason', () => {
-        const event = parseConversationStreamEventResponse({
-            type: 'segment_upsert',
-            revision: 7,
-            conversation_id: 'conversation-yield',
-            project_path: '/tmp/project-yield',
-            title: 'Yield thread',
+        const batch = batchOf([segmentRow('conversation-yield', {
+            id: 'segment-tool-app-1-exec-a',
+            turn_id: 'turn-1',
+            order: 2,
+            kind: 'tool_call',
+            role: 'system',
+            status: 'complete',
+            timestamp: '2026-08-27T11:59:58Z',
             updated_at: '2026-08-27T12:00:00Z',
-            segment: {
-                id: 'segment-tool-app-1-exec-a',
-                turn_id: 'turn-1',
-                order: 2,
-                kind: 'tool_call',
-                role: 'system',
-                status: 'complete',
-                timestamp: '2026-08-27T11:59:58Z',
-                updated_at: '2026-08-27T12:00:00Z',
-                content: '',
-                tool_call: {
-                    id: 'exec-a',
-                    kind: 'command_execution',
-                    status: 'yielded',
-                    completion_reason: 'turn_boundary_yield',
-                    title: 'Run command',
-                    command: 'sleep 60',
-                    output: 'partial',
-                },
+            content: '',
+            tool_call: {
+                id: 'exec-a',
+                kind: 'command_execution',
+                status: 'yielded',
+                completion_reason: 'turn_boundary_yield',
+                title: 'Run command',
+                command: 'sleep 60',
+                output: 'partial',
             },
-        })
-        expect(event?.type).toBe('segment_upsert')
-        if (event?.type !== 'segment_upsert') {
+        }, '7')])
+        const row = batch.rows[0]
+        expect(row.kind).toBe('segment')
+        if (row.kind !== 'segment') {
             return
         }
-        expect(event.segment.tool_call?.status).toBe('yielded')
-        expect(event.segment.tool_call?.completion_reason).toBe('turn_boundary_yield')
+        expect(row.payload?.tool_call?.status).toBe('yielded')
+        expect(row.payload?.tool_call?.completion_reason).toBe('turn_boundary_yield')
     })
 
-    it('parses segment tombstone stream events', () => {
-        const event = parseConversationStreamEventResponse({
-            type: 'segment_tombstone',
-            revision: 9,
+    it('parses tombstone rows without a payload', () => {
+        const batch = batchOf([tombstoneRow('segment', 'conversation-yield', 'segment-agent-event-turn-1-turn_completed-6', '9', { turn_id: 'turn-1' })])
+        expect(batch.rows).toEqual([{
+            kind: 'segment',
             conversation_id: 'conversation-yield',
-            project_path: '/tmp/project-yield',
-            title: 'Yield thread',
-            updated_at: '2026-08-27T12:00:01Z',
+            id: 'segment-agent-event-turn-1-turn_completed-6',
             turn_id: 'turn-1',
-            segment_id: 'segment-agent-event-turn-1-turn_completed-6',
+            revision: '9',
+            deleted: true,
+            payload: null,
+        }])
+    })
+})
+
+describe('conversation wire envelopes', () => {
+    const conversationId = 'conversation-1'
+    const fixture = {
+        conversation_id: conversationId,
+        project_path: '/tmp/project',
+        title: 'Thread',
+        created_at: '2026-04-16T18:00:00Z',
+        updated_at: '2026-04-16T18:00:10Z',
+        revision: 4,
+        chat_mode: 'plan',
+        provider: 'codex',
+        model: 'gpt-5.4',
+        turns: [{ id: 'turn-1', role: 'user', kind: 'message', status: 'complete', content: 'Hi.', timestamp: '2026-04-16T18:00:01Z' }],
+        segments: [],
+        settings: { models: { scope: 'conversation', source: 'conversation', revision: '4', stored: null, effective: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: null } } },
+    }
+
+    it('parses a page with its conversation row, window and cursor', () => {
+        const page = parseConversationPageResponse(conversationPage(fixture, { older_cursor: 'cursor-1' }))
+        expect(page).toMatchObject({ generation: 'generation-test', watermark: '4', conversation_id: conversationId, turn_ids: ['turn-1'], older_cursor: 'cursor-1' })
+        const conversation = page.rows.find((row) => row.kind === 'conversation')
+        expect(conversation?.payload).toMatchObject({ chat_mode: 'plan', model: 'gpt-5.4', title: 'Thread', placeholder: false })
+        expect(conversation?.kind === 'conversation' && conversation.payload?.model_settings_view?.revision).toBe('4')
+    })
+
+    it('rejects a page row above its watermark or from another conversation', () => {
+        expect(() => parseConversationPageResponse(conversationPage(fixture, { watermark: '3' }))).toThrow()
+        const raw = conversationPage(fixture)
+        expect(() => parseConversationPageResponse({ ...raw, rows: [...raw.rows as unknown[], conversationRow({ ...fixture, conversation_id: 'other' })] })).toThrow()
+    })
+
+    it('parses an acceptance and fills client_turn_id from user_turn_id', () => {
+        const changes = conversationBatch([turnRow(conversationId, fixture.turns[0], '5')], { from_revision: '0' })
+        expect(parseConversationAcceptanceResponse({ generation: 'g', revision: '5', user_turn_id: 'turn-1', assistant_turn_id: null, status: 'queued', changes }))
+            .toMatchObject({ user_turn_id: 'turn-1', client_turn_id: 'turn-1', assistant_turn_id: null, status: 'queued', revision: '5' })
+        expect(() => parseConversationAcceptanceResponse({ generation: 'g', revision: '5', user_turn_id: 'turn-1', status: 'sent', changes })).toThrow()
+    })
+
+    it('parses a mutation acknowledgement whose unchanged row is at or below its start', () => {
+        const ack = parseConversationMutationAckResponse({ generation: 'g', revision: '4', changes: conversationBatch([conversationRow(fixture, '4')], { from_revision: '9', watermark: '9' }) })
+        expect(ack.changes.rows).toHaveLength(1)
+        expect(() => parseConversationMutationAckResponse({ generation: 'g', revision: '4', changes: conversationBatch([conversationRow(fixture, '10')], { from_revision: '9', watermark: '9' }) })).toThrow()
+    })
+
+    it('parses resets', () => {
+        expect(parseConversationResetResponse({ code: 'window_reset', reason: 'order_changed', generation: 'g', watermark: '12' }))
+            .toEqual({ code: 'window_reset', reason: 'order_changed', generation: 'g', watermark: '12' })
+        expect(() => parseConversationResetResponse({ code: 'window_reset', reason: 'because', generation: 'g', watermark: '12' })).toThrow()
+    })
+
+    it('parses a summary snapshot and maps its rows to thread-list entries', () => {
+        const role = { name: 'coordinator', title: 'Coordinator', state: 'working' }
+        const snapshot = parseConversationSummarySnapshotResponse(summarySnapshot([
+            { ...fixture, conversation_handle: 'steady-harbor', last_message_preview: 'Hi.', launched_run_ids: ['run-1'], running: true, standing_role: role },
+        ], { project_path: null }))
+        expect(snapshot).toMatchObject({ project_path: null, watermark: '4' })
+        const row = snapshot.rows[0]
+        if (row.kind !== 'conversation' || !row.payload) throw new Error('expected a conversation row')
+        expect(conversationSummaryFromRow({ ...row, payload: row.payload })).toEqual({
+            conversation_id: conversationId,
+            conversation_handle: 'steady-harbor',
+            project_path: '/tmp/project',
+            title: 'Thread',
+            created_at: '2026-04-16T18:00:00Z',
+            updated_at: '2026-04-16T18:00:10Z',
+            revision: '4',
+            last_message_preview: 'Hi.',
+            launched_run_ids: ['run-1'],
+            standing_role: role,
+            running: true,
         })
-        expect(event).toEqual({
-            type: 'segment_tombstone',
-            revision: 9,
-            conversation_id: 'conversation-yield',
-            project_path: '/tmp/project-yield',
-            title: 'Yield thread',
-            updated_at: '2026-08-27T12:00:01Z',
-            turn_id: 'turn-1',
-            segment_id: 'segment-agent-event-turn-1-turn_completed-6',
-        })
+        expect(() => parseConversationSummarySnapshotResponse({ generation: 'g', watermark: '4', project_path: null, rows: [turnRow(conversationId, fixture.turns[0], '1')] })).toThrow()
+    })
+})
+
+describe('conversation reads', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals()
+    })
+
+    const respond = (status: number, body: unknown) => {
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }))
+        vi.stubGlobal('fetch', fetchMock)
+        return fetchMock
+    }
+
+    it('requests the newest page, then the page before a cursor', async () => {
+        const fetchMock = respond(200, conversationPage({ conversation_id: 'c 1', project_path: '/p', title: 'T', revision: 2, turns: [], segments: [] }))
+        await fetchConversationPageValidated('c 1', '/p')
+        await fetchConversationPageValidated('c 1', '/p', 'cur/sor')
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            '/workspace/api/conversations/c%201?project_path=%2Fp&limit=50',
+            '/workspace/api/conversations/c%201?project_path=%2Fp&limit=50&before=cur%2Fsor',
+        ])
+    })
+
+    it('surfaces a 409 reset as a typed error', async () => {
+        respond(409, { code: 'window_reset', reason: 'order_changed', generation: 'g', watermark: '7' })
+        const error = await fetchConversationPageValidated('c', '/p', 'cursor').catch((caught: unknown) => caught)
+        expect(error).toBeInstanceOf(ConversationResetError)
+        expect((error as ConversationResetError).reset).toMatchObject({ code: 'window_reset', reason: 'order_changed' })
+
+        respond(409, { code: 'resync_required', reason: 'catchup_limit', generation: 'g', watermark: '7' })
+        await expect(fetchConversationChangesValidated('c', '/p', 'g', '3')).rejects.toBeInstanceOf(ConversationResetError)
+    })
+
+    it('keeps other 409s as plain HTTP errors', async () => {
+        respond(409, { detail: 'turn_id_conflict: reused' })
+        const error = await fetchConversationPageValidated('c', '/p').catch((caught: unknown) => caught)
+        expect(error).not.toBeInstanceOf(ConversationResetError)
+        expect(error).toMatchObject({ status: 409, detail: 'turn_id_conflict: reused' })
+    })
+
+    it('requests changes since a revision and lists summaries for one or every project', async () => {
+        const fetchMock = respond(200, { generation: 'g', from_revision: '3', watermark: '3', rows: [] })
+        await expect(fetchConversationChangesValidated('c', '/p', 'g', '3')).resolves.toMatchObject({ watermark: '3', rows: [] })
+        respond(200, summarySnapshot([]))
+        const listMock = vi.mocked(fetch)
+        await fetchProjectConversationListValidated('/p')
+        await fetchProjectConversationListValidated(null)
+        expect(fetchMock.mock.calls[0][0]).toBe('/workspace/api/conversations/c/changes?project_path=%2Fp&generation=g&since=3')
+        expect(listMock.mock.calls.map(([url]) => url)).toEqual([
+            '/workspace/api/projects/conversations?project_path=%2Fp',
+            '/workspace/api/projects/conversations',
+        ])
     })
 })

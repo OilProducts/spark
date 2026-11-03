@@ -3,8 +3,8 @@ use std::fs;
 use serde_json::{json, Value};
 use spark_storage::conversation::{
     record_from_snapshot, snapshot_from_record, ArtifactCollection, ConversationMetadataPatch,
-    ConversationMutation, JournalEntryKind, TranscriptSegment, TranscriptTurn, TransientStreamBody,
-    TransientStreamEvent, ORDER_UNASSIGNED, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+    ConversationMutation, EntityKind, EntityRow, TranscriptSegment, TranscriptTurn,
+    TransientStreamBody, TransientStreamEvent, ORDER_UNASSIGNED, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
 };
 use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry, StorageError};
 
@@ -28,6 +28,27 @@ fn conversation_dir(
         .expect("project paths")
         .conversations_dir
         .join(conversation_id)
+}
+
+/// The full projection of a conversation's committed state.
+fn snapshot(repo: &ConversationRepository, conversation_id: &str) -> Value {
+    repo.read_snapshot(conversation_id, None)
+        .expect("read")
+        .expect("snapshot")
+}
+
+/// The row a commit changed, by kind and id.
+fn changed<'a>(
+    commit: &'a spark_storage::conversation::ConversationCommit,
+    kind: EntityKind,
+    id: &str,
+) -> &'a EntityRow {
+    commit
+        .changes
+        .rows
+        .iter()
+        .find(|row| row.kind == kind && row.id == id)
+        .unwrap_or_else(|| panic!("changed {kind:?} {id}"))
 }
 
 fn user_turn(id: &str, content: &str) -> TranscriptTurn {
@@ -79,7 +100,7 @@ fn segment(id: &str, turn_id: &str, order: i64) -> TranscriptSegment {
 }
 
 #[test]
-fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_revisions() {
+fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
     let project_path = "/projects/commit-basics";
     let _temp = tempfile::tempdir().expect("tempdir");
     let home = _temp.path().join("spark-home");
@@ -101,22 +122,26 @@ fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_r
         )
         .expect("initial commit");
 
-    assert_eq!(commit.revision, 2);
+    // One home-global revision per transaction, stamped on every changed row.
+    assert_eq!(commit.revision, 1);
     assert!(!commit.rebased);
+    assert_eq!(commit.changes.from_revision, 0);
+    assert_eq!(commit.changes.watermark, 1);
+    assert_eq!(commit.changes.rows.len(), 3);
+    assert!(commit.changes.rows.iter().all(|row| row.revision == 1));
+    let conversation = changed(&commit, EntityKind::Conversation, "conversation-a");
+    let summary = conversation.payload.as_ref().expect("summary");
+    assert_eq!(summary["title"], "Hello there commit boundary");
+    assert_eq!(summary["handle"].as_str().unwrap().split('-').count(), 2);
+    assert!(!summary["created_at"].as_str().unwrap().is_empty());
+    assert!(summary.get("turns").is_none());
     assert_eq!(
-        commit
-            .journal_entries
-            .iter()
-            .map(|entry| entry.revision)
-            .collect::<Vec<_>>(),
-        vec![1, 2]
+        changed(&commit, EntityKind::Turn, "turn-user")
+            .payload
+            .as_ref()
+            .unwrap()["content"],
+        "Hello there commit boundary"
     );
-    assert_eq!(commit.record.meta.title, "Hello there commit boundary");
-    assert_eq!(commit.record.meta.conversation_handle.split('-').count(), 2);
-    assert!(!commit.record.meta.created_at.is_empty());
-    assert_eq!(commit.journal_payloads[0]["type"], "turn_upsert");
-    assert_eq!(commit.journal_payloads[0]["turn"]["id"], "turn-user");
-    assert_eq!(commit.journal_payloads[0]["revision"], 1);
 
     let second = repo
         .commit_conversation(
@@ -128,18 +153,19 @@ fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_r
             }],
         )
         .expect("second commit");
-    assert_eq!(second.revision, 3);
-    assert_eq!(second.journal_entries[0].revision, 3);
-    assert!(matches!(
-        &second.journal_entries[0].kind,
-        JournalEntryKind::SegmentUpserted { segment } if segment.order == 1
-    ));
+    assert_eq!(second.revision, 2);
+    // Only the segment and its conversation's summary changed.
+    assert_eq!(second.changes.rows.len(), 2);
+    assert_eq!(
+        changed(&second, EntityKind::Segment, "segment-a").order,
+        Some(1)
+    );
 
     let persisted = repo
         .read_snapshot("conversation-a", Some(project_path))
         .expect("read")
         .expect("snapshot");
-    assert_eq!(persisted["revision"], 3);
+    assert_eq!(persisted["revision"], 2);
     assert_eq!(persisted["turns"].as_array().expect("turns").len(), 2);
     assert_eq!(persisted["segments"][0]["id"], "segment-a");
     // Every entity is a database row; no split conversation files exist.
@@ -151,7 +177,7 @@ fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_r
         .expect("conversation row");
     assert_eq!(stored.turns.len(), 2);
     assert_eq!(stored.segments.len(), 1);
-    assert_eq!(stored.metadata["revision"], 3);
+    assert_eq!(stored.metadata["revision"], 2);
     assert!(stored.metadata.get("turns").is_none());
     let root = conversation_dir(&_temp, project_path, "conversation-a");
     for legacy in [
@@ -230,19 +256,12 @@ fn commit_conversation_rebases_stale_base_without_clobbering_concurrent_writes()
     assert_eq!(persisted["flow_run_requests"][0]["id"], "request-a");
     assert_eq!(persisted["revision"], artifact.revision);
 
-    // The artifact commit journals a snapshot entry stamped at its revision.
-    assert_eq!(
-        artifact.journal_payloads[0]["type"],
-        "conversation_snapshot"
-    );
-    assert_eq!(
-        artifact.journal_payloads[0]["state"]["revision"],
-        artifact.revision
-    );
-    assert_eq!(
-        artifact.journal_payloads[0]["state"]["segments"][0]["id"],
-        "segment-stream"
-    );
+    // The artifact commit's result is the artifact row and the summary it
+    // changed, never a snapshot of the conversation.
+    assert_eq!(artifact.changes.rows.len(), 2);
+    let row = changed(&artifact, EntityKind::Artifact, "request-a");
+    assert_eq!(row.collection.as_deref(), Some("flow_run_requests"));
+    assert_eq!(row.revision, artifact.revision);
 }
 
 #[test]
@@ -375,12 +394,20 @@ fn commit_conversation_applies_metadata_patches_and_workflow_events() {
             ],
         )
         .expect("metadata commit");
-    assert_eq!(commit.record.meta.chat_mode, "plan");
-    assert_eq!(commit.record.meta.model.as_deref(), Some("gpt-5.3-codex"));
     assert_eq!(commit.revision, 1);
-    // Live payload carries full state for connected clients.
-    assert_eq!(commit.journal_payloads[0]["type"], "conversation_snapshot");
-    assert_eq!(commit.journal_payloads[0]["state"]["chat_mode"], "plan");
+    // The metadata travels as the conversation row; the workflow event as its own row.
+    let metadata = &changed(&commit, EntityKind::Conversation, "conversation-e")
+        .payload
+        .as_ref()
+        .unwrap()["metadata"];
+    assert_eq!(metadata["chat_mode"], "plan");
+    assert_eq!(metadata["model"], "gpt-5.3-codex");
+    assert!(commit
+        .changes
+        .rows
+        .iter()
+        .any(|row| row.kind == EntityKind::Artifact
+            && row.collection.as_deref() == Some("event_log")));
 
     let cleared = repo
         .commit_conversation(
@@ -395,7 +422,13 @@ fn commit_conversation_applies_metadata_patches_and_workflow_events() {
             }],
         )
         .expect("clear model");
-    assert_eq!(cleared.record.meta.model, None);
+    assert_eq!(
+        changed(&cleared, EntityKind::Conversation, "conversation-e")
+            .payload
+            .as_ref()
+            .unwrap()["metadata"]["model"],
+        Value::Null
+    );
 
     let persisted = repo
         .read_snapshot("conversation-e", Some(project_path))
@@ -459,13 +492,9 @@ fn commit_conversation_externalizes_oversized_tool_outputs() {
         big_output.len()
     );
     assert!(stored["output"].as_str().expect("preview").len() <= TOOL_OUTPUT_INLINE_LIMIT_BYTES);
-    let journal_segment = commit
-        .journal_payloads
-        .iter()
-        .find(|payload| payload["segment"]["id"] == "segment-tool-call-1")
-        .expect("journal segment");
+    let changed_segment = changed(&commit, EntityKind::Segment, "segment-tool-call-1");
     assert_eq!(
-        journal_segment["segment"]["tool_call"]["output_truncated"],
+        changed_segment.payload.as_ref().unwrap()["tool_call"]["output_truncated"],
         true
     );
 
@@ -537,12 +566,10 @@ fn commit_conversation_externalizes_oversized_tool_outputs() {
             vec![ConversationMutation::SegmentUpserted { segment: replaced }],
         )
         .expect("replace output");
-    let new_artifact = replaced
-        .record
-        .transcript
-        .find_segment("segment-tool-call-1")
-        .and_then(|segment| segment.tool_call.as_ref())
-        .and_then(|tool_call| tool_call["output_artifact"].as_str())
+    let new_artifact = changed(&replaced, EntityKind::Segment, "segment-tool-call-1")
+        .payload
+        .as_ref()
+        .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
         .expect("new artifact")
         .to_string();
     assert_ne!(new_artifact, artifact);
@@ -755,7 +782,8 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
         1
     );
     let winner = results.into_iter().find_map(Result::ok).unwrap();
-    assert_eq!(winner.record.transcript.turns.len(), 2);
+    let winner_snapshot = snapshot(&repo, "chat");
+    assert_eq!(winner_snapshot["turns"].as_array().unwrap().len(), 2);
     let rows = || {
         repo.store()
             .database()
@@ -773,8 +801,9 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
         repo.read_snapshot("chat", Some(project_path))
             .unwrap()
             .unwrap(),
-        winner.snapshot
+        winner_snapshot
     );
+    let _ = winner;
     let operational = repo
         .commit_conversation(
             "chat",
@@ -786,13 +815,11 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
         )
         .unwrap();
     assert!(operational.rebased);
+    let after = snapshot(&repo, "chat");
+    assert_eq!(after["chat_mode"], winner_snapshot["chat_mode"]);
     assert_eq!(
-        operational.record.meta.chat_mode,
-        winner.record.meta.chat_mode
-    );
-    assert_eq!(
-        &operational.record.transcript.turns[..2],
-        &winner.record.transcript.turns
+        after["turns"].as_array().unwrap()[..2],
+        winner_snapshot["turns"].as_array().unwrap()[..]
     );
 }
 
@@ -872,6 +899,7 @@ fn failed_transactions_roll_back_rows_and_memory() {
             .unwrap()
     };
     let before = rows();
+    let before_snapshot = snapshot(&repo, "conversation-rollback");
     // A non-object event violates the row constraint inside the transaction.
     let error = repo
         .commit_conversation(
@@ -897,7 +925,8 @@ fn failed_transactions_roll_back_rows_and_memory() {
         .read_snapshot("conversation-rollback", Some(project_path))
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot, first.snapshot);
+    assert_eq!(snapshot, before_snapshot);
+    let _ = first;
 }
 
 /// Externalized output is read from its blob; inline output has no blob;
@@ -1039,12 +1068,10 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
         .unwrap()
         .trim_start_matches("tool-output/")
         .to_string();
-    let live_blob = second
-        .record
-        .transcript
-        .find_segment("segment-replaced")
-        .and_then(|segment| segment.tool_call.as_ref())
-        .and_then(|tool_call| tool_call["output_artifact"].as_str())
+    let live_blob = changed(&second, EntityKind::Segment, "segment-replaced")
+        .payload
+        .as_ref()
+        .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
         .unwrap()
         .trim_start_matches("tool-output/")
         .to_string();
@@ -1174,14 +1201,10 @@ fn shared_conversation_id_collection_child() {
         .unwrap();
     let live_root = conversation_dir(&temp, live_project, id);
     let live_blob = live_root.join(
-        commit
-            .record
-            .transcript
-            .find_segment("segment-tool")
-            .unwrap()
-            .tool_call
+        changed(&commit, EntityKind::Segment, "segment-tool")
+            .payload
             .as_ref()
-            .unwrap()["output_artifact"]
+            .unwrap()["tool_call"]["output_artifact"]
             .as_str()
             .unwrap(),
     );

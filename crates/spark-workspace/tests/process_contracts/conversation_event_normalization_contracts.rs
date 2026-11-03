@@ -61,7 +61,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
 
-    let (prepared, snapshot) = service
+    let (prepared, acceptance) = service
         .start_turn(
             "conversation-turn",
             ConversationTurnRequest {
@@ -81,6 +81,9 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     assert_eq!(prepared.chat_mode, "plan");
     assert_eq!(prepared.provider, "openai");
     assert_eq!(prepared.model.as_deref(), Some("gpt-5"));
+    let snapshot = service
+        .get_snapshot("conversation-turn", Some("/projects/turns"))
+        .expect("snapshot");
     assert_eq!(snapshot["chat_mode"], "plan");
     assert_eq!(snapshot["provider"], "openai");
     assert_eq!(snapshot["llm_profile"], Value::Null);
@@ -94,9 +97,42 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     assert_eq!(turns[2]["role"], "assistant");
     assert_eq!(turns[2]["status"], "pending");
     assert_eq!(turns[2]["parent_turn_id"], turns[1]["id"]);
-    // Mode-change turn, user turn, assistant turn, plus one settings-change
-    // journal entry.
-    assert_eq!(snapshot["revision"], 4);
+    // Mode-change turn, user turn, assistant turn and the settings change
+    // commit as one revision; the acceptance carries exactly those rows.
+    assert_eq!(snapshot["revision"], acceptance.revision);
+    assert_eq!(acceptance.status, "accepted");
+    assert_eq!(acceptance.user_turn_id, turns[1]["id"].as_str().unwrap());
+    assert_eq!(
+        acceptance.assistant_turn_id.as_deref(),
+        turns[2]["id"].as_str()
+    );
+    let mut changed: Vec<_> = acceptance
+        .changes
+        .rows
+        .iter()
+        .map(|row| (row.kind, row.id.clone()))
+        .collect();
+    changed.sort_by_key(|(_, id)| id.clone());
+    let mut expected = vec![
+        (
+            spark_storage::conversation::EntityKind::Conversation,
+            "conversation-turn".to_string(),
+        ),
+        (
+            spark_storage::conversation::EntityKind::Turn,
+            turns[0]["id"].as_str().unwrap().to_string(),
+        ),
+        (
+            spark_storage::conversation::EntityKind::Turn,
+            turns[1]["id"].as_str().unwrap().to_string(),
+        ),
+        (
+            spark_storage::conversation::EntityKind::Turn,
+            turns[2]["id"].as_str().unwrap().to_string(),
+        ),
+    ];
+    expected.sort_by_key(|(_, id)| id.clone());
+    assert_eq!(changed, expected);
 
     // One transaction stored the three turns and the settings metadata.
     let events = crate::stored_upserts(&settings, "conversation-turn");
@@ -338,7 +374,7 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
         vec![vec![completion]],
     );
     let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
-    let (prepared, started) = service
+    let (prepared, _) = service
         .start_turn(
             "conversation-provider-write-failure",
             ConversationTurnRequest {
@@ -366,7 +402,7 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
 
     let assistant_turn_id = prepared.assistant_turn_id.clone();
     let error = service
-        .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
+        .complete_started_turn_with_progress_payloads(prepared, |_| {})
         .expect_err("provider event write must fail the turn");
     assert!(matches!(error, WorkspaceError::Internal(_)));
 
@@ -414,7 +450,7 @@ fn a_prepared_turn_resumed_after_project_deletion_starts_no_provider_work() {
     }]);
     let requests = backend.requests();
     let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
-    let (prepared, started) = service
+    let (prepared, _) = service
         .start_turn(
             "conversation-deleted-before-start",
             ConversationTurnRequest {
@@ -429,7 +465,7 @@ fn a_prepared_turn_resumed_after_project_deletion_starts_no_provider_work() {
         .expect("delete project");
 
     let error = service
-        .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
+        .complete_started_turn_with_progress_payloads(prepared, |_| {})
         .expect_err("a deleted conversation's turn cannot run");
     assert!(matches!(error, WorkspaceError::NotFound(_)), "{error}");
     assert!(requests.lock().unwrap().is_empty());
@@ -459,8 +495,9 @@ fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
             },
         )
         .expect("start default turn");
-    assert!(default_prepared
-        .agent_turn_request
+    assert!(service
+        .prepare_agent_turn_request(&default_prepared)
+        .expect("default request")
         .metadata
         .get(CODEX_JSONRPC_TRACE_PATH_METADATA_KEY)
         .is_none());
@@ -478,8 +515,10 @@ fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
             },
         )
         .expect("start debug turn");
-    let trace_path = debug_prepared
-        .agent_turn_request
+    let debug_request = service
+        .prepare_agent_turn_request(&debug_prepared)
+        .expect("debug request");
+    let trace_path = debug_request
         .metadata
         .get(CODEX_JSONRPC_TRACE_PATH_METADATA_KEY)
         .and_then(Value::as_str)
@@ -525,7 +564,7 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
         )
         .expect("first output");
 
-    let (prepared, snapshot) = service
+    let (prepared, _) = service
         .start_turn(
             "conversation-agent-request",
             ConversationTurnRequest {
@@ -542,7 +581,9 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
         )
         .expect("second turn");
 
-    let request = &prepared.agent_turn_request;
+    let request = &service
+        .prepare_agent_turn_request(&prepared)
+        .expect("agent turn request");
     assert_eq!(request.conversation_id, prepared.conversation_id);
     assert_eq!(request.project_path, prepared.project_path);
     assert_eq!(request.prompt, "Second question");
@@ -571,6 +612,12 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
     assert!(history[0].get("kind").is_none());
     assert!(history[1].get("segments").is_none());
 
+    let snapshot = service
+        .get_snapshot(
+            "conversation-agent-request",
+            Some("/projects/agent-request"),
+        )
+        .expect("snapshot");
     let turns = snapshot["turns"].as_array().expect("turns");
     assert!(turns
         .iter()
@@ -642,7 +689,10 @@ fn start_turn_agent_history_does_not_hydrate_removed_legacy_state_turns() {
         )
         .expect("start turn");
 
-    let history = serde_json::to_value(&prepared.agent_turn_request.history).expect("history");
+    let request = service
+        .prepare_agent_turn_request(&prepared)
+        .expect("agent turn request");
+    let history = serde_json::to_value(&request.history).expect("history");
     assert!(history.as_array().expect("history").is_empty());
 }
 
@@ -771,8 +821,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
 
     // A client behind the current revision gets one fresh snapshot carrying
     // the committed completion.
-    let state =
-        crate::live_snapshot_state(&settings, "conversation-execute", "/projects/execute", 0);
+    let state = crate::live_rows_state(&settings, "conversation-execute", "/projects/execute", 0);
     assert!(state["turns"]
         .as_array()
         .expect("turns")
@@ -896,7 +945,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["segment"]["details"]["raw"]["error"]["code"] == "rate_limit_exceeded"
     }));
 
-    let stream_live = crate::live_snapshot_state(
+    let stream_live = crate::live_rows_state(
         &settings,
         "conversation-execute-stream-failure",
         "/projects/execute-errors",
@@ -979,7 +1028,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
             && event["turn"]["error_code"] == "thread_resume_failed"
             && event["turn"]["details"]["thread_id"] == "thread-public-execute"
     }));
-    let resume_live = crate::live_snapshot_state(
+    let resume_live = crate::live_rows_state(
         &settings,
         "conversation-execute-resume-failure",
         "/projects/execute-errors",
@@ -1236,77 +1285,72 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
-    let live_envelopes =
-        crate::stored_live_envelopes(&settings, "conversation-events", "/projects/events");
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.turn_upsert"
-            && envelope.payload["turn"]["id"] == prepared.assistant_turn_id
-            && envelope.payload["turn"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
+    // A live client catching up receives the committed rows.
+    let live_rows =
+        crate::live_change_rows(&settings, "conversation-events", "/projects/events", 0);
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "turn"
+            && row["payload"]["id"] == prepared.assistant_turn_id
+            && row["payload"]["token_usage_breakdown"]["last"]["outputTokens"] == json!(1)
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "assistant_message"
-            && envelope.payload["segment"]["content"] == "Hello"
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "assistant_message"
+            && row["payload"]["content"] == "Hello"
     }));
-    assert!(!live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "assistant_message"
-            && envelope.payload["segment"]["content"] == "Hel"
+    assert!(!live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "assistant_message"
+            && row["payload"]["content"] == "Hel"
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "reasoning"
-            && envelope.payload["segment"]["content"] == "Because."
-            && envelope.payload["segment"]["source"]["item_id"] == "reasoning"
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "reasoning"
+            && row["payload"]["content"] == "Because."
+            && row["payload"]["source"]["item_id"] == "reasoning"
     }));
-    assert!(!live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "reasoning"
-            && envelope.payload["segment"]["content"] == "Because"
+    assert!(!live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "reasoning"
+            && row["payload"]["content"] == "Because"
     }));
-    assert!(!live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "model_tool_call"
-            && envelope.payload["segment"]["source"]["raw_kind"] == "model_tool_call_delta"
+    assert!(!live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "model_tool_call"
+            && row["payload"]["source"]["raw_kind"] == "model_tool_call_delta"
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "model_tool_call"
-            && envelope.payload["segment"]["status"] == "complete"
-            && envelope.payload["segment"]["tool_call"]["id"] == "tool-1"
-            && envelope.payload["segment"]["source"]["raw_kind"] == "model_tool_call_end"
-            && envelope.payload["segment"]["source"]["response_id"] == "resp-1"
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "model_tool_call"
+            && row["payload"]["status"] == "complete"
+            && row["payload"]["tool_call"]["id"] == "tool-1"
+            && row["payload"]["source"]["raw_kind"] == "model_tool_call_end"
+            && row["payload"]["source"]["response_id"] == "resp-1"
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "tool_call"
-            && envelope.payload["segment"]["status"] == "complete"
-            && envelope.payload["segment"]["tool_call"]["output"] == "full output"
-            && envelope.payload["segment"]["source"]["call_id"] == "tool-1"
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "tool_call"
+            && row["payload"]["status"] == "complete"
+            && row["payload"]["tool_call"]["output"] == "full output"
+            && row["payload"]["source"]["call_id"] == "tool-1"
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "agent_event"
-            && envelope.payload["segment"]["event_kind"] == "warning"
-            && envelope.payload["segment"]["message"] == "Context usage at 95%."
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "agent_event"
+            && row["payload"]["event_kind"] == "warning"
+            && row["payload"]["message"] == "Context usage at 95%."
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.segment_upsert"
-            && envelope.payload["segment"]["kind"] == "agent_event"
-            && envelope.payload["segment"]["event_kind"] == "processing_end"
-            && envelope.payload["segment"]["event_status"] == "idle"
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "agent_event"
+            && row["payload"]["event_kind"] == "processing_end"
+            && row["payload"]["event_status"] == "idle"
     }));
-    assert!(live_envelopes.iter().any(|envelope| {
-        envelope.event_type == "conversation.snapshot"
-            && envelope.payload["state"]["segments"]
-                .as_array()
-                .is_some_and(|segments| {
-                    segments.iter().any(|segment| {
-                        segment["kind"] == "agent_event"
-                            && segment["event_kind"] == "session_end"
-                            && segment["event_status"] == "closed"
-                    })
-                })
+    assert!(live_rows.iter().any(|row| {
+        row["kind"] == "segment"
+            && row["payload"]["kind"] == "agent_event"
+            && row["payload"]["event_kind"] == "session_end"
+            && row["payload"]["event_status"] == "closed"
     }));
 
     let (failure_prepared, _snapshot) = service
@@ -1716,15 +1760,14 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
         .expect("execute turn");
 
     let live_payloads = progress_payloads.lock().expect("progress payloads");
-    // The committed start publishes as a snapshot of the accepted state.
-    assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "conversation_snapshot"
-            && payload["state"]["turns"].as_array().is_some_and(|turns| {
-                turns
-                    .iter()
-                    .any(|turn| turn["role"] == "user" && turn["content"] == "Stream this")
-            })
-    }));
+    // The committed start is durable rows, not a progress payload: progress
+    // receives only transient stream deltas.
+    assert!(live_payloads
+        .iter()
+        .all(|payload| payload["type"] == "stream_delta"));
+    assert!(crate::stored_upserts(&settings, "conversation-live-stream")
+        .iter()
+        .any(|event| event["turn"]["role"] == "user" && event["turn"]["content"] == "Stream this"));
     // Streamed updates are transient deltas: coalesced bodies, a per-turn
     // stream sequence, the committed base revision, and no durable revision.
     assert!(live_payloads.iter().any(|payload| {
@@ -2010,7 +2053,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     );
     assert_eq!(request_segment["request_user_input"]["status"], "pending");
 
-    let answered = service
+    let answered_ack = service
         .submit_request_user_input_answer(
             "conversation-input",
             "decision",
@@ -2020,6 +2063,10 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             },
         )
         .expect("answer");
+    let answered = service
+        .get_snapshot("conversation-input", Some("/projects/input"))
+        .expect("snapshot");
+    assert_acks_request_segment(&answered_ack);
     let request_segment = segment_by_kind(
         answered["segments"].as_array().expect("segments"),
         "request_user_input",
@@ -2113,7 +2160,12 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             },
         )
         .expect("idempotent answer");
-    assert_eq!(idempotent["revision"], answered["revision"]);
+    let after_idempotent = service
+        .get_snapshot("conversation-input", Some("/projects/input"))
+        .expect("snapshot");
+    // A repeated answer commits nothing.
+    assert!(idempotent.changes.rows.is_empty());
+    assert_eq!(after_idempotent["revision"], answered["revision"]);
 
     let changed = service
         .submit_request_user_input_answer(
@@ -2195,7 +2247,7 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
         )
         .expect("request input");
 
-    let answered = service
+    let answered_ack = service
         .submit_request_user_input_answer(
             "conversation-input-live",
             "decision",
@@ -2205,6 +2257,10 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
             },
         )
         .expect("live answer");
+    let answered = service
+        .get_snapshot("conversation-input-live", Some("/projects/input-live"))
+        .expect("snapshot");
+    assert_acks_request_segment(&answered_ack);
     let request_segment = segment_by_kind(
         answered["segments"].as_array().expect("segments"),
         "request_user_input",
@@ -2236,7 +2292,7 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
     let backend = BlockingRequestInputBackend::new();
     let service =
         crate::conversations_with_backend(settings(temp.path()), Arc::new(backend.clone()));
-    let (prepared, started_snapshot) = service
+    let (prepared, _) = service
         .start_turn(
             "conversation-input-live-pending",
             ConversationTurnRequest {
@@ -2254,33 +2310,39 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
     let service_for_turn = service.clone();
 
     let turn_handle = std::thread::spawn(move || {
-        service_for_turn.complete_started_turn_with_progress_payloads(
-            prepared,
-            started_snapshot,
-            move |payload| {
-                progress_payloads_for_callback
-                    .lock()
-                    .expect("progress payloads")
-                    .push(payload);
-            },
-        )
+        service_for_turn.complete_started_turn_with_progress_payloads(prepared, move |payload| {
+            progress_payloads_for_callback
+                .lock()
+                .expect("progress payloads")
+                .push(payload);
+        })
     });
 
     backend.wait_for_request();
+    let pending = service
+        .get_snapshot(
+            "conversation-input-live-pending",
+            Some("/projects/input-live-pending"),
+        )
+        .expect("pending snapshot");
     assert!(
-        progress_payloads
-            .lock()
-            .expect("progress payloads")
+        pending["segments"]
+            .as_array()
+            .expect("segments")
             .iter()
-            .any(|payload| {
-                payload["type"] == "segment_upsert"
-                    && payload["segment"]["kind"] == "request_user_input"
-                    && payload["segment"]["request_user_input"]["status"] == "pending"
+            .any(|segment| {
+                segment["kind"] == "request_user_input"
+                    && segment["request_user_input"]["status"] == "pending"
             }),
-        "request-user-input card should be emitted live before the turn completes"
+        "request-user-input card should be committed before the turn completes"
     );
+    assert!(progress_payloads
+        .lock()
+        .expect("progress payloads")
+        .iter()
+        .all(|payload| payload["type"] == "stream_delta"));
 
-    let answered = service
+    let answered_ack = service
         .submit_request_user_input_answer(
             "conversation-input-live-pending",
             "decision",
@@ -2290,6 +2352,13 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
             },
         )
         .expect("live pending answer");
+    let answered = service
+        .get_snapshot(
+            "conversation-input-live-pending",
+            Some("/projects/input-live-pending"),
+        )
+        .expect("snapshot");
+    assert_acks_request_segment(&answered_ack);
     let request_segment = segment_by_kind(
         answered["segments"].as_array().expect("segments"),
         "request_user_input",
@@ -2307,10 +2376,16 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
         .expect("assistant turn");
     assert_eq!(assistant_turn["status"], "streaming");
 
-    let completed = turn_handle
+    turn_handle
         .join()
         .expect("turn thread")
         .expect("turn completes after answer");
+    let completed = service
+        .get_snapshot(
+            "conversation-input-live-pending",
+            Some("/projects/input-live-pending"),
+        )
+        .expect("completed snapshot");
     let completed_assistant_turn = completed["turns"]
         .as_array()
         .expect("turns")
@@ -2372,7 +2447,7 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
         )
         .expect("request input");
 
-    let answered = service
+    let answered_ack = service
         .submit_request_user_input_answer(
             "conversation-input-expired",
             "decision",
@@ -2382,6 +2457,13 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             },
         )
         .expect("answer");
+    let answered = service
+        .get_snapshot(
+            "conversation-input-expired",
+            Some("/projects/input-expired"),
+        )
+        .expect("snapshot");
+    assert_acks_request_segment(&answered_ack);
     let request_segment = segment_by_kind(
         answered["segments"].as_array().expect("segments"),
         "request_user_input",
@@ -2414,7 +2496,15 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             },
         )
         .expect("idempotent answer");
-    assert_eq!(idempotent["revision"], answered["revision"]);
+    let after_idempotent = service
+        .get_snapshot(
+            "conversation-input-expired",
+            Some("/projects/input-expired"),
+        )
+        .expect("snapshot");
+    // A repeated answer commits nothing.
+    assert!(idempotent.changes.rows.is_empty());
+    assert_eq!(after_idempotent["revision"], answered["revision"]);
 
     let changed = service
         .submit_request_user_input_answer(
@@ -2983,14 +3073,14 @@ fn stream_error_event(message: &str) -> TurnStreamEvent {
 }
 
 #[test]
-fn live_replay_sends_one_fresh_snapshot_to_any_older_cursor() {
+fn live_catch_up_sends_current_rows_to_any_older_cursor() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
 
-    // start_turn commits three turn upserts plus a settings-change entry that
-    // is journaled as a slim conversation_snapshot_ref (revisions 1-4).
-    service
+    // start_turn commits the mode-change, user and assistant turns and the
+    // settings change as one revision.
+    let (_, acceptance) = service
         .start_turn(
             "conversation-ref-replay",
             ConversationTurnRequest {
@@ -3007,9 +3097,9 @@ fn live_replay_sends_one_fresh_snapshot_to_any_older_cursor() {
         )
         .expect("start turn");
 
-    // Any older cursor gets one fresh snapshot carrying full current state;
+    // Any older cursor gets the current rows, carrying full current state;
     // the current revision gets nothing.
-    let state = crate::live_snapshot_state(
+    let state = crate::live_rows_state(
         &settings,
         "conversation-ref-replay",
         "/projects/ref-replay",
@@ -3017,25 +3107,40 @@ fn live_replay_sends_one_fresh_snapshot_to_any_older_cursor() {
     );
     assert_eq!(
         state["chat_mode"], "plan",
-        "snapshot payload carries full current state"
+        "the conversation row carries full current metadata"
     );
-    let revision = state["revision"].as_i64().expect("revision");
-    let state = crate::live_snapshot_state(
+    assert_eq!(state["turns"].as_array().expect("turns").len(), 3);
+    let revision = acceptance.revision;
+    assert_eq!(state["revision"], revision);
+    let state = crate::live_rows_state(
         &settings,
         "conversation-ref-replay",
         "/projects/ref-replay",
         revision - 1,
     );
     assert_eq!(state["revision"], revision);
-    assert!(spark_workspace::live::conversation_envelopes_after(
+    assert_eq!(state["turns"].as_array().expect("turns").len(), 3);
+    assert!(crate::live_change_rows(
         &settings,
-        &crate::shared_store(&settings.data_dir),
         "conversation-ref-replay",
         "/projects/ref-replay",
         revision,
     )
-    .expect("current")
     .is_empty());
+}
+
+/// The answer's result carries its request-user-input segment row.
+fn assert_acks_request_segment(ack: &spark_workspace::conversations::MutationAck) {
+    assert!(
+        ack.changes.rows.iter().any(|row| {
+            row.kind == spark_storage::conversation::EntityKind::Segment
+                && row
+                    .payload
+                    .as_ref()
+                    .is_some_and(|segment| segment["kind"] == "request_user_input")
+        }),
+        "{ack:?}"
+    );
 }
 
 fn structured_stream_error_event(
@@ -3564,7 +3669,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
         let config = settings(temp.path());
         let service = crate::conversations(config.clone());
         let id = format!("claude-{mode}");
-        let (prepared, started) = service
+        let (prepared, _) = service
             .start_turn(
                 &id,
                 ConversationTurnRequest {
@@ -3575,28 +3680,32 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
                 },
             )
             .unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
         let running = service.clone();
         let handle = std::thread::spawn(move || {
-            running.complete_started_turn_with_progress_payloads(
-                prepared,
-                started,
-                move |payload| {
-                    if payload["type"] == "segment_upsert"
-                        && payload["segment"]["kind"] == "request_user_input"
-                    {
-                        let _ = sender.send(payload);
-                    }
-                },
-            )
+            running.complete_started_turn_with_progress_payloads(prepared, |_| {})
         });
-        receiver
-            .recv_timeout(Duration::from_secs(10))
-            .expect("pending question before turn completion");
-        let persisted = ConversationRepository::new(crate::shared_store(&config.data_dir))
-            .read_snapshot(&id, Some(&project))
-            .unwrap()
-            .unwrap();
+        // The pending question is committed before the turn completes.
+        let repository = ConversationRepository::new(crate::shared_store(&config.data_dir));
+        let waited = std::time::Instant::now();
+        let persisted = loop {
+            let snapshot = repository
+                .read_snapshot(&id, Some(&project))
+                .unwrap()
+                .unwrap();
+            if snapshot["segments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|segment| segment["kind"] == "request_user_input")
+            {
+                break snapshot;
+            }
+            assert!(
+                waited.elapsed() < Duration::from_secs(10),
+                "pending question before turn completion"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
         let segment = persisted["segments"]
             .as_array()
             .unwrap()
@@ -3611,7 +3720,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
         // A fresh service reads the checkpoint and routes to the same live adapter.
         let reopened = crate::conversations(config.clone());
         if mode == "question" {
-            let answered = reopened
+            let answered_ack = reopened
                 .submit_request_user_input_answer(
                     &id,
                     "question-1",
@@ -3621,6 +3730,8 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
                     },
                 )
                 .unwrap();
+            assert_acks_request_segment(&answered_ack);
+            let answered = reopened.get_snapshot(&id, Some(&project)).unwrap();
             assert!(answered["segments"]
                 .as_array()
                 .unwrap()
@@ -3629,7 +3740,8 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
         } else if mode == "interrupt-question" {
             assert!(reopened.interrupt_turn(&id, &project).unwrap());
         }
-        let completed = handle.join().unwrap().unwrap();
+        handle.join().unwrap().unwrap();
+        let completed = reopened.get_snapshot(&id, Some(&project)).unwrap();
         let assistant = completed["turns"]
             .as_array()
             .unwrap()
@@ -3641,7 +3753,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
             assert_eq!(assistant["content"], "Stopped.");
         }
         if mode != "question" {
-            let expired = reopened
+            reopened
                 .submit_request_user_input_answer(
                     &id,
                     "question-1",
@@ -3651,6 +3763,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
                     },
                 )
                 .unwrap();
+            let expired = reopened.get_snapshot(&id, Some(&project)).unwrap();
             assert!(expired["segments"]
                 .as_array()
                 .unwrap()
@@ -3778,7 +3891,7 @@ fn claude_stream_interrupt_error_result_completes_shortened_turn() {
     );
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "interrupt-aborted");
     let service = crate::conversations(settings(temp.path()));
-    let (prepared, started) = service
+    let (prepared, _) = service
         .start_turn(
             "interrupt-stream",
             ConversationTurnRequest {
@@ -3791,17 +3904,21 @@ fn claude_stream_interrupt_error_result_completes_shortened_turn() {
         .unwrap();
     let controller = service.clone();
     let interrupted = std::sync::atomic::AtomicBool::new(false);
-    let completed = service
-        .complete_started_turn_with_progress_payloads(prepared, started, move |payload| {
+    let controller_project = project.clone();
+    service
+        .complete_started_turn_with_progress_payloads(prepared, move |payload| {
             if payload["type"] == "stream_delta"
                 && payload["segment"]["content"] == "Shortened turn."
                 && !interrupted.swap(true, std::sync::atomic::Ordering::SeqCst)
             {
                 assert!(controller
-                    .interrupt_turn("interrupt-stream", &project)
+                    .interrupt_turn("interrupt-stream", &controller_project)
                     .unwrap());
             }
         })
+        .unwrap();
+    let completed = service
+        .get_snapshot("interrupt-stream", Some(&project))
         .unwrap();
     let assistant = completed["turns"]
         .as_array()
@@ -3858,11 +3975,12 @@ fn assert_retry_succeeds(
     ));
 
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
-    let (prepared, started) = service.retry_turn(id, project, failed_id).unwrap();
+    let (prepared, _) = service.retry_turn(id, project, failed_id).unwrap();
     assert_eq!(prepared.prompt, text);
-    let completed = service
-        .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
+    service
+        .complete_started_turn_with_progress_payloads(prepared, |_| {})
         .unwrap();
+    let completed = service.get_snapshot(id, Some(project)).unwrap();
     assert_eq!(turn_with(&completed, "user", 1)["content"], text);
     assert_eq!(turn_with(&completed, "assistant", 1)["status"], "complete");
     let sent = std::fs::read_to_string(log).unwrap().matches(text).count();
@@ -3888,7 +4006,7 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
     let service = crate::conversations(settings(temp.path()));
     {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
-        let (prepared, started) = service
+        let (prepared, _) = service
             .start_turn(
                 "retry-chat",
                 ConversationTurnRequest {
@@ -3899,7 +4017,7 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
                 },
             )
             .unwrap();
-        let _ = service.complete_started_turn_with_progress_payloads(prepared, started, |_| {});
+        let _ = service.complete_started_turn_with_progress_payloads(prepared, |_| {});
     }
     assert_retry_succeeds(&service, "retry-chat", &project, &log, "Summarize the plan");
 }
@@ -4016,8 +4134,15 @@ impl AgentTurnBackend for GatedAgentTurnBackend {
     }
 }
 
-fn send(service: &WorkspaceConversationService, id: &str, project: &str, message: &str) -> Value {
-    let (prepared, snapshot) = service
+/// Sends a message while a turn runs. Returns its acceptance and the
+/// conversation read right after it.
+fn send(
+    service: &WorkspaceConversationService,
+    id: &str,
+    project: &str,
+    message: &str,
+) -> (spark_workspace::conversations::TurnAcceptance, Value) {
+    let (prepared, acceptance) = service
         .send_turn(
             id,
             ConversationTurnRequest {
@@ -4028,7 +4153,8 @@ fn send(service: &WorkspaceConversationService, id: &str, project: &str, message
         )
         .expect("a send during a turn is not a conflict");
     assert!(prepared.is_none(), "{message} must not start a second turn");
-    snapshot
+    let snapshot = service.get_snapshot(id, Some(project)).unwrap();
+    (acceptance, snapshot)
 }
 
 /// Starts `first` and completes it, and every message queued behind it, on a thread.
@@ -4036,8 +4162,8 @@ fn start_gated_turn(
     service: &WorkspaceConversationService,
     id: &str,
     project: &str,
-) -> std::thread::JoinHandle<Result<Value, WorkspaceError>> {
-    let (prepared, started) = service
+) -> std::thread::JoinHandle<Result<(), WorkspaceError>> {
+    let (prepared, _) = service
         .send_turn(
             id,
             ConversationTurnRequest {
@@ -4049,7 +4175,7 @@ fn start_gated_turn(
         .unwrap();
     let running = service.clone();
     std::thread::spawn(move || {
-        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), started, |_| {})
+        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), |_| {})
     })
 }
 
@@ -4077,8 +4203,25 @@ fn messages_sent_during_a_turn_that_cannot_take_them_queue_and_start_in_order() 
     let project = "/projects/queue";
     let running = start_gated_turn(&service, "queue", project);
 
-    send(&service, "queue", project, "second");
-    let queued = send(&service, "queue", project, "third");
+    let (second, _) = send(&service, "queue", project, "second");
+    let (third, queued) = send(&service, "queue", project, "third");
+    // Each is accepted as queued, with no turn of its own yet.
+    for acceptance in [&second, &third] {
+        assert_eq!(acceptance.status, "queued");
+        assert_eq!(acceptance.assistant_turn_id, None);
+    }
+    assert!(second.revision < third.revision);
+    let user_turn = |id: &str| {
+        queued["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|turn| turn["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("turn {id} in {queued}"))
+    };
+    assert_eq!(user_turn(&second.user_turn_id)["content"], "second");
+    assert_eq!(user_turn(&third.user_turn_id)["content"], "third");
     let user =
         |content: &str, status: &str| ("user".to_string(), status.to_string(), content.to_string());
     assert_eq!(
@@ -4096,7 +4239,8 @@ fn messages_sent_during_a_turn_that_cannot_take_them_queue_and_start_in_order() 
     );
 
     backend.release();
-    let completed = running.join().unwrap().unwrap();
+    running.join().unwrap().unwrap();
+    let completed = service.get_snapshot("queue", Some(project)).unwrap();
     assert_eq!(
         *backend.prompts.lock().unwrap(),
         ["first", "second", "third"]
@@ -4131,7 +4275,8 @@ fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
     send(&service, "stop-queue", project, "after stop");
 
     assert!(service.interrupt_turn("stop-queue", project).unwrap());
-    let completed = running.join().unwrap().unwrap();
+    running.join().unwrap().unwrap();
+    let completed = service.get_snapshot("stop-queue", Some(project)).unwrap();
 
     assert_eq!(*backend.prompts.lock().unwrap(), ["first", "after stop"]);
     assert!(message_turns(&completed)
@@ -4141,12 +4286,17 @@ fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
 
 /// Runs a Claude turn with the fake CLI in `mode`, sends "Also check the
 /// docs." once it streams, and optionally stops it right after. Returns the
-/// send's snapshot, the completed snapshot, and every live payload.
+/// send's acceptance, the completed snapshot, and every live payload: the
+/// transient stream deltas and, per commit, the rows it changed.
 fn claude_turn_with_mid_turn_send(
     temp: &Path,
     mode: &str,
     stop: bool,
-) -> (Value, Value, Vec<Value>) {
+) -> (
+    spark_workspace::conversations::TurnAcceptance,
+    Value,
+    Vec<Value>,
+) {
     let project = temp.canonicalize().unwrap().to_string_lossy().to_string();
     let _bin = EnvVarGuard::set(
         "SPARK_CLAUDE_CODE_BIN",
@@ -4160,7 +4310,39 @@ fn claude_turn_with_mid_turn_send(
         message: message.into(),
         ..ConversationTurnRequest::default()
     };
-    let (prepared, started) = service
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    {
+        let committed = payloads.clone();
+        let store = service.store().clone();
+        let listener_store = Arc::downgrade(&store);
+        store.set_commit_listener(Arc::new(move |notice| {
+            let Some(store) = listener_store.upgrade() else {
+                return;
+            };
+            let generation = store.database().generation().to_string();
+            let Ok(spark_storage::conversation::CatchUp::Batch(batch)) =
+                store.database().read(|read| {
+                    read.changes(
+                        spark_storage::conversation::ChangeScope::Conversation("mid-turn"),
+                        &generation,
+                        notice.revision - 1,
+                    )
+                })
+            else {
+                return;
+            };
+            let rows = batch
+                .rows
+                .into_iter()
+                .filter_map(|row| row.payload)
+                .collect::<Vec<_>>();
+            committed
+                .lock()
+                .unwrap()
+                .push(json!({"type": "commit", "rows": rows}));
+        }));
+    }
+    let (prepared, _) = service
         .send_turn(
             "mid-turn",
             ConversationTurnRequest {
@@ -4170,20 +4352,15 @@ fn claude_turn_with_mid_turn_send(
         )
         .unwrap();
     let (streaming, streamed) = std::sync::mpsc::channel();
-    let payloads = Arc::new(Mutex::new(Vec::new()));
     let live = payloads.clone();
     let running = service.clone();
     let handle = std::thread::spawn(move || {
-        running.complete_started_turn_with_progress_payloads(
-            prepared.unwrap(),
-            started,
-            move |payload| {
-                if payload["type"] == "stream_delta" {
-                    let _ = streaming.send(());
-                }
-                live.lock().unwrap().push(payload);
-            },
-        )
+        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), move |payload| {
+            if payload["type"] == "stream_delta" {
+                let _ = streaming.send(());
+            }
+            live.lock().unwrap().push(payload);
+        })
     });
     streamed.recv_timeout(Duration::from_secs(10)).unwrap();
     let (none, sent) = service
@@ -4193,7 +4370,8 @@ fn claude_turn_with_mid_turn_send(
     if stop {
         assert!(service.interrupt_turn("mid-turn", &project).unwrap());
     }
-    let completed = handle.join().unwrap().unwrap();
+    handle.join().unwrap().unwrap();
+    let completed = service.get_snapshot("mid-turn", Some(&project)).unwrap();
     let payloads = payloads.lock().unwrap().clone();
     (sent, completed, payloads)
 }
@@ -4237,7 +4415,9 @@ fn a_send_while_a_claude_turn_streams_is_delivered_into_that_turn() {
         claude_turn_with_mid_turn_send(temp.path(), "mid-turn-message", false);
 
     // The message joined the turn instead of queuing behind it.
-    assert!(message_turns(&sent)
+    assert_ne!(sent.status, "queued");
+    assert!(sent.assistant_turn_id.is_some());
+    assert!(message_turns(&completed)
         .iter()
         .all(|(_, status, _)| status != "queued"));
     let delivered = user_message_segment(&completed);
@@ -4471,10 +4651,10 @@ fn assert_delivered_history(plan: bool) {
         message: message.to_string(),
         ..ConversationTurnRequest::default()
     };
-    let (prepared, started) = service.send_turn("history", request("Start")).unwrap();
+    let (prepared, _) = service.send_turn("history", request("Start")).unwrap();
     let running = service.clone();
     let turn = std::thread::spawn(move || {
-        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), started, |_| {})
+        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), |_| {})
     });
     let waited = std::time::Instant::now();
     while backend.sink.lock().unwrap().is_none() {
@@ -4487,9 +4667,9 @@ fn assert_delivered_history(plan: bool) {
     backend.released.1.notify_all();
     turn.join().unwrap().unwrap();
 
-    let (next, started) = service.send_turn("history", request("Next")).unwrap();
+    let (next, _) = service.send_turn("history", request("Next")).unwrap();
     service
-        .complete_started_turn_with_progress_payloads(next.unwrap(), started, |_| {})
+        .complete_started_turn_with_progress_payloads(next.unwrap(), |_| {})
         .unwrap();
 
     let pair = |role: &str, text: &str| (role.to_string(), text.to_string());
@@ -4520,12 +4700,12 @@ fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_f
             attachment_ids,
             ..ConversationTurnRequest::default()
         };
-        let (prepared, started) = service
+        let (prepared, _) = service
             .send_turn("attach", request("Start", Vec::new()))
             .unwrap();
         let running = service.clone();
         let turn = std::thread::spawn(move || {
-            running.complete_started_turn_with_progress_payloads(prepared.unwrap(), started, |_| {})
+            running.complete_started_turn_with_progress_payloads(prepared.unwrap(), |_| {})
         });
         let waited = std::time::Instant::now();
         while backend.sink.lock().unwrap().is_none() {
@@ -4537,7 +4717,7 @@ fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_f
             .upload_attachment("attach", project, "notes.txt", b"notes")
             .unwrap();
         // As the composer sends it: the conversation keeps its provider.
-        let (prepared, snapshot) = service
+        let (prepared, acceptance) = service
             .send_turn(
                 "attach",
                 ConversationTurnRequest {
@@ -4548,6 +4728,8 @@ fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_f
             .unwrap();
 
         assert!(prepared.is_none(), "{provider}");
+        assert_ne!(acceptance.status, "queued", "{provider}");
+        let snapshot = service.get_snapshot("attach", Some(project)).unwrap();
         assert!(
             !snapshot["turns"]
                 .as_array()
@@ -4571,4 +4753,207 @@ fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_f
         backend.released.1.notify_all();
         turn.join().unwrap().unwrap();
     }
+}
+
+fn scripted_answers(answers: &[&str]) -> ScriptedAgentTurnBackend {
+    ScriptedAgentTurnBackend::new(
+        answers
+            .iter()
+            .map(|answer| AgentTurnOutput {
+                final_assistant_text: Some(answer.to_string()),
+                ..AgentTurnOutput::default()
+            })
+            .collect(),
+    )
+}
+
+fn message(project_path: &str, message: &str) -> ConversationTurnRequest {
+    ConversationTurnRequest {
+        project_path: project_path.to_string(),
+        message: message.to_string(),
+        ..ConversationTurnRequest::default()
+    }
+}
+
+#[test]
+fn a_history_failure_after_acceptance_leaves_the_accepted_turn_visibly_failed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = scripted_answers(&["Read them.", "must not run"]);
+    let requests = backend.requests();
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
+    let (id, project) = ("conversation-history-failure", "/projects/history-failure");
+    let upload = service
+        .upload_attachment(id, project, "notes.txt", b"notes")
+        .expect("upload");
+    service
+        .execute_turn(
+            id,
+            ConversationTurnRequest {
+                attachment_ids: vec![upload.id.clone()],
+                ..message(project, "Read the notes.")
+            },
+        )
+        .expect("first turn");
+    // The earlier message's attachment bytes disappear.
+    let (_, blob) = ConversationRepository::new(crate::shared_store(&settings.data_dir))
+        .read_attachment(id, project, &upload.id)
+        .expect("read attachment")
+        .expect("attachment");
+    fs::remove_file(blob).expect("remove blob");
+
+    let (prepared, acceptance) = service
+        .send_turn(id, message(project, "Follow up."))
+        .expect("the send is accepted without building history");
+    let prepared = prepared.expect("a started turn");
+    assert_eq!(acceptance.status, "accepted");
+    assert_eq!(
+        acceptance.assistant_turn_id.as_deref(),
+        Some(prepared.assistant_turn_id.as_str())
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    let error = service
+        .complete_started_turn_with_progress_payloads(prepared.clone(), |_| {})
+        .expect_err("the history cannot be built");
+    assert!(matches!(error, WorkspaceError::Conflict(_)), "{error}");
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "no provider turn starts without its history"
+    );
+    let snapshot = service.get_snapshot(id, Some(project)).expect("snapshot");
+    let assistant = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == prepared.assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    assert!(
+        assistant["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("cannot be sent")),
+        "{assistant}"
+    );
+}
+
+#[test]
+fn a_send_is_accepted_before_any_history_is_built_and_carries_only_its_rows() {
+    use spark_storage::conversation::EntityKind;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = scripted_answers(&["First answer.", "Second answer."]);
+    let requests = backend.requests();
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
+    let (id, project) = ("conversation-accept-rows", "/projects/accept-rows");
+    let before = service
+        .execute_turn(id, message(project, "First question."))
+        .expect("first turn");
+    let earlier: Vec<String> = before["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .map(|turn| turn["id"].as_str().expect("id").to_string())
+        .collect();
+    assert!(!earlier.is_empty());
+
+    let (prepared, acceptance) = service
+        .send_turn(id, message(project, "Second question."))
+        .expect("send");
+    let prepared = prepared.expect("a started turn");
+    // Accepted before the backend is asked to run anything.
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    let mut changed: Vec<_> = acceptance
+        .changes
+        .rows
+        .iter()
+        .map(|row| (row.kind, row.id.clone()))
+        .collect();
+    changed.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut expected = vec![
+        (EntityKind::Conversation, id.to_string()),
+        (EntityKind::Turn, prepared.user_turn_id.clone()),
+        (EntityKind::Turn, prepared.assistant_turn_id.clone()),
+    ];
+    expected.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(changed, expected);
+    assert!(acceptance
+        .changes
+        .rows
+        .iter()
+        .all(|row| !earlier.contains(&row.id)
+            && row
+                .turn_id
+                .as_ref()
+                .is_none_or(|turn| !earlier.contains(turn))));
+
+    service
+        .complete_started_turn_with_progress_payloads(prepared, |_| {})
+        .expect("second turn");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].prompt, "Second question.");
+    assert_eq!(
+        requests[1].history.len(),
+        2,
+        "history is built when the turn runs"
+    );
+}
+
+#[test]
+fn a_duplicate_send_returns_the_original_acceptance_and_starts_no_second_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = scripted_answers(&["Answer.", "must not run"]);
+    let requests = backend.requests();
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
+    let (id, project) = ("conversation-duplicate", "/projects/duplicate");
+    let send = |text: &str| {
+        service.send_turn(
+            id,
+            ConversationTurnRequest {
+                client_turn_id: Some("turn-dup1".to_string()),
+                ..message(project, text)
+            },
+        )
+    };
+    let (prepared, original) = send("Do it once.").expect("send");
+    let prepared = prepared.expect("a started turn");
+    assert_eq!(original.user_turn_id, "turn-dup1");
+    assert_eq!(
+        original.assistant_turn_id.as_deref(),
+        Some(prepared.assistant_turn_id.as_str())
+    );
+
+    let assert_original = |stage: &str| {
+        let (started, resent) = send("Do it once.").expect("resend");
+        assert!(started.is_none(), "{stage}: a resend started a turn");
+        assert_eq!(resent.user_turn_id, original.user_turn_id, "{stage}");
+        assert_eq!(
+            resent.assistant_turn_id, original.assistant_turn_id,
+            "{stage}"
+        );
+        assert_eq!(resent.status, "accepted", "{stage}");
+    };
+    // Before and after the turn runs.
+    assert_original("accepted");
+    service
+        .complete_started_turn_with_progress_payloads(prepared, |_| {})
+        .expect("turn");
+    assert_original("complete");
+    assert_eq!(requests.lock().unwrap().len(), 1, "one provider turn");
+
+    let conflict = send("A different message.").expect_err("reused id");
+    assert!(
+        matches!(conflict, WorkspaceError::TurnIdConflict(_)),
+        "{conflict}"
+    );
+    let snapshot = service.get_snapshot(id, Some(project)).expect("snapshot");
+    let user_turns = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .count();
+    assert_eq!(user_turns, 1, "{snapshot}");
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

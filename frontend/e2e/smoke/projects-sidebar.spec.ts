@@ -1,6 +1,37 @@
 import { expect, test, type Page } from '@playwright/test'
+import { conversationPage, liveFrame, summarySnapshot } from '../fixtures/smoke-helpers'
 
 const SIDEBAR_PROJECT_PATH = '/tmp/ui-smoke-sidebar-project'
+
+const SIDEBAR_THREADS = [
+  {
+    conversation_id: 'conversation-thread-a',
+    project_path: SIDEBAR_PROJECT_PATH,
+    title: "I'd like to change the default model on the global settings page and keep the rest intact",
+    created_at: '2026-04-17T16:00:00Z',
+    updated_at: '2026-04-17T16:30:00Z',
+    revision: 1,
+    last_message_preview: 'Default model change request.',
+  },
+  {
+    conversation_id: 'conversation-thread-b',
+    project_path: SIDEBAR_PROJECT_PATH,
+    title: 'There is an issue with the UI where the thread card grows wider than the sidebar',
+    created_at: '2026-04-17T16:10:00Z',
+    updated_at: '2026-04-17T17:35:00Z',
+    revision: 2,
+    last_message_preview: 'Sidebar overflow investigation.',
+  },
+  {
+    conversation_id: 'conversation-thread-c',
+    project_path: SIDEBAR_PROJECT_PATH,
+    title: 'Can you run the implement-change-request flow with the latest sidebar layout fix applied',
+    created_at: '2026-04-16T09:00:00Z',
+    updated_at: '2026-04-16T12:00:00Z',
+    revision: 1,
+    last_message_preview: 'Implementation flow check.',
+  },
+]
 
 const seedSidebarRouteState = async (page: Page) => {
   await page.addInitScript(({ projectPath }) => {
@@ -77,39 +108,21 @@ const stubSidebarApis = async (page: Page) => {
       return
     }
 
+    // The thread list arrives over HTTP and again as the live summary feed's first frame.
+    if (pathname === '/workspace/api/live/events') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: liveFrame('conversations.snapshot', summarySnapshot(SIDEBAR_THREADS)),
+      })
+      return
+    }
+
     if (pathname === '/workspace/api/projects/conversations' && requestMethod === 'GET') {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([
-          {
-            conversation_id: 'conversation-thread-a',
-            project_path: SIDEBAR_PROJECT_PATH,
-            title: "I'd like to change the default model on the global settings page and keep the rest intact",
-            created_at: '2026-04-17T16:00:00Z',
-            updated_at: '2026-04-17T16:30:00Z',
-            revision: 1,
-            last_message_preview: 'Default model change request.',
-          },
-          {
-            conversation_id: 'conversation-thread-b',
-            project_path: SIDEBAR_PROJECT_PATH,
-            title: 'There is an issue with the UI where the thread card grows wider than the sidebar',
-            created_at: '2026-04-17T16:10:00Z',
-            updated_at: '2026-04-17T17:35:00Z',
-            revision: 2,
-            last_message_preview: 'Sidebar overflow investigation.',
-          },
-          {
-            conversation_id: 'conversation-thread-c',
-            project_path: SIDEBAR_PROJECT_PATH,
-            title: 'Can you run the implement-change-request flow with the latest sidebar layout fix applied',
-            created_at: '2026-04-16T09:00:00Z',
-            updated_at: '2026-04-16T12:00:00Z',
-            revision: 1,
-            last_message_preview: 'Implementation flow check.',
-          },
-        ]),
+        body: JSON.stringify(summarySnapshot(SIDEBAR_THREADS, url.searchParams.get('project_path'))),
       })
       return
     }
@@ -118,8 +131,7 @@ const stubSidebarApis = async (page: Page) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          schema_version: 4,
+        body: JSON.stringify(conversationPage({
           conversation_id: 'conversation-thread-b',
           project_path: SIDEBAR_PROJECT_PATH,
           title: 'There is an issue with the UI where the thread card grows wider than the sidebar',
@@ -127,8 +139,7 @@ const stubSidebarApis = async (page: Page) => {
           updated_at: '2026-04-17T17:35:00Z',
           revision: 2,
           turns: [],
-          event_log: [],
-        }),
+        })),
       })
       return
     }

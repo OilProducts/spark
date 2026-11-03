@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
-import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
+import { conversationRowOf, ensureScreenshotDir, pageTurns, screenshotPath } from '../fixtures/smoke-helpers'
 
 const run = (runId: string, projectPath: string, status: string, endedAt: string | null, title: string) => ({
     run_id: runId, title, flow_name: 'smoke/overview-review.yaml', status, outcome: status === 'completed' ? 'success' : status === 'failed' ? 'failure' : null,
@@ -42,10 +42,18 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
         run(waitingRun, project, 'waiting', null, 'Waiting for approval'),
     ] } }))
     // The chat launched the completed run; the mission's roster holds the failed one.
+    // The live summary feed waits for this list: its snapshot rows, at the same revisions, then leave it as is.
+    let listed = () => {}
+    const summariesListed = new Promise<void>((resolve) => { listed = resolve })
+    await page.route((url) => url.pathname === '/workspace/api/live/events', async (route) => {
+        await summariesListed
+        await route.continue()
+    })
     await page.route((url) => url.pathname === '/workspace/api/projects/conversations', async (route) => {
         const response = await route.fetch()
-        const chats = (await response.json()) as { conversation_id: string; launched_run_ids?: string[] }[]
-        await route.fulfill({ response, json: chats.map((chat) => chat.conversation_id === lastChat ? { ...chat, launched_run_ids: [doneRun] } : chat) })
+        const snapshot = (await response.json()) as { rows: { id: string; payload: Record<string, unknown> }[] }
+        await route.fulfill({ response, json: { ...snapshot, rows: snapshot.rows.map((row) => row.id === lastChat ? { ...row, payload: { ...row.payload, launched_run_ids: [doneRun] } } : row) } })
+        listed()
     })
     await page.route('**/workspace/api/missions', async (route) => {
         const response = await route.fetch()
@@ -145,13 +153,14 @@ test('an open Overview follows a background chat that launches a run', async ({ 
     for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
     const backgroundChat = `conversation-overview-background-${stamp}`
     const otherChat = `conversation-overview-recent-${stamp}`
-    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    const pageOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    const handleOf = async (id: string) => conversationRowOf(await pageOf(id))!.payload.handle as string
     expect((await page.request.post(`/workspace/api/conversations/${backgroundChat}/turns`, { data: { project_path: project, message: 'Get ready.' } })).ok()).toBeTruthy()
-    await expect.poll(async () => (await snapshotOf(backgroundChat)).turns.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    await expect.poll(async () => pageTurns(await pageOf(backgroundChat)).at(-1)?.status, { timeout: 15_000 }).toBe('complete')
     // Chat times are stored to the second.
     await page.waitForTimeout(1_100)
     expect((await page.request.put(`/workspace/api/conversations/${otherChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
-    const snapshot = await snapshotOf(backgroundChat)
+    const backgroundHandle = await handleOf(backgroundChat)
 
     await page.goto('/')
     await expect(page.getByTestId('overview-view')).toBeVisible()
@@ -160,7 +169,7 @@ test('an open Overview follows a background chat that launches a run', async ({ 
 
     // The background chat launches a flow, as the spark CLI does; it runs to completion.
     const launched = await page.request.post('/workspace/api/runs/launch', {
-        data: { flow_name: 'overview-live-smoke', summary: 'Launch from a background chat.', conversation_handle: snapshot.conversation_handle },
+        data: { flow_name: 'overview-live-smoke', summary: 'Launch from a background chat.', conversation_handle: backgroundHandle },
     })
     expect(launched.ok(), await launched.text()).toBeTruthy()
     const runId = (await launched.json()).run_id as string
@@ -186,19 +195,20 @@ test('a mission launching a flow credits the chat that started it, not its own c
     expect((await page.request.post('/attractor/api/flows', { data: { name: flowName, flow: smokeFlow, project_path: project } })).ok()).toBeTruthy()
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
     for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
-    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    const pageOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    const handleOf = async (id: string) => conversationRowOf(await pageOf(id))!.payload.handle as string
 
     // The user's chat starts a mission; the mission's agent runs in its own conversation.
     const userChat = `conversation-overview-mission-source-${stamp}`
     expect((await page.request.put(`/workspace/api/conversations/${userChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
-    const created = await page.request.post(`/workspace/api/missions?conversation_handle=${(await snapshotOf(userChat)).conversation_handle}`, {
+    const created = await page.request.post(`/workspace/api/missions?conversation_handle=${await handleOf(userChat)}`, {
         data: { fields: { title: `Overview mission ${stamp}`, description: 'Overview mission smoke', archived: false }, actor: 'human' },
     })
     expect(created.ok(), await created.text()).toBeTruthy()
     const missionId = (await created.json()).id as string
     const started = await page.request.post(`/workspace/api/missions/${missionId}/start?project_path=${encodeURIComponent(project)}`)
     expect(started.ok(), await started.text()).toBeTruthy()
-    await expect.poll(async () => (await snapshotOf(missionId)).turns?.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    await expect.poll(async () => pageTurns(await pageOf(missionId)).at(-1)?.status, { timeout: 15_000 }).toBe('complete')
     // Chat times are stored to the second.
     await page.waitForTimeout(1_100)
     const otherChat = `conversation-overview-mission-other-${stamp}`
@@ -210,7 +220,7 @@ test('a mission launching a flow credits the chat that started it, not its own c
     await expect(title).toHaveAttribute('data-conversation-id', otherChat)
 
     // The mission's agent launches a flow through its conversation handle, as the spark CLI does.
-    const launched = await page.request.post(`/workspace/api/conversations/by-handle/${(await snapshotOf(missionId)).conversation_handle}/flow-run-requests`, {
+    const launched = await page.request.post(`/workspace/api/conversations/by-handle/${await handleOf(missionId)}/flow-run-requests`, {
         data: { flow_name: flowName, summary: 'Launch from a mission.' },
     })
     expect(launched.ok(), await launched.text()).toBeTruthy()

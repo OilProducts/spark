@@ -187,10 +187,22 @@ async fn proposed_plan_review_route_records_rejection() {
     .await;
 
     assert_eq!(response.0, StatusCode::OK);
-    assert_eq!(response.1["proposed_plans"][0]["status"], "rejected");
-    assert_eq!(
-        response.1["proposed_plans"][0]["review_note"],
-        "Needs work."
+    // A MutationAck: the reviewed plan row among the rows the review changed.
+    let plan = response.1["changes"]["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["collection"] == "proposed_plans" && row["id"] == "proposed-plan-inline")
+        .expect("plan row");
+    assert_eq!(plan["payload"]["status"], "rejected");
+    assert_eq!(plan["payload"]["review_note"], "Needs work.");
+    assert!(
+        plan["revision"].as_str().unwrap().parse::<u64>().unwrap()
+            <= response.1["changes"]["watermark"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap()
     );
 }
 

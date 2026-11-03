@@ -6,7 +6,7 @@
 //! database connection. Reads that only query the database take neither of
 //! the first two.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,13 +19,13 @@ use crate::{DeletedProjectRecord, ProjectRegistry};
 
 use super::attachments::ConversationAttachment;
 use super::database::{ConversationDatabase, ProjectDeletionMarker, StoredConversation};
+pub(crate) use super::loaded::{LoadedConversation, StoredArtifact, StoredAttachment};
 use super::provider_trace::read_trace;
-use super::records::{ConversationArtifacts, ConversationMeta, ConversationRecord, Transcript};
+use super::records::ConversationMeta;
 
 /// Held exclusively for the app's lifetime; never unlinked.
 pub const SERVER_LOCK_FILE_NAME: &str = "server.lock";
-/// Workflow events are artifact rows in this collection, in insertion order.
-pub(crate) const EVENT_LOG_COLLECTION: &str = "event_log";
+pub(crate) use super::loaded::EVENT_LOG_COLLECTION;
 pub(crate) const ALL_COLLECTIONS: [super::ArtifactCollection; 4] = [
     super::ArtifactCollection::FlowRunRequests,
     super::ArtifactCollection::FlowLaunches,
@@ -35,6 +35,18 @@ pub(crate) const ALL_COLLECTIONS: [super::ArtifactCollection; 4] = [
 const LEGACY_HANDLE_INDEX: &str = "workspace/conversation-handles.json";
 /// How often a passive checkpoint runs when writes occurred.
 const PASSIVE_CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Told about every committed write after it commits: a wakeup for live
+/// subscribers, who read the changed rows themselves. It must not block.
+pub type CommitListener = Arc<dyn Fn(&CommitNotice) + Send + Sync>;
+
+/// One committed write: the conversations it changed and its revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitNotice {
+    pub revision: i64,
+    /// (conversation id, project path).
+    pub conversations: Vec<(String, String)>,
+}
 
 /// The one conversation store of a running Spark app.
 pub struct ConversationStore {
@@ -46,43 +58,15 @@ pub struct ConversationStore {
     pending_deletions: Mutex<HashSet<String>>,
     /// Handles promised to conversations before their first commit.
     reserved_handles: Mutex<HashMap<String, String>>,
+    commit_listener: RwLock<Option<CommitListener>>,
+    /// Revisions allocated for summary rows that have no conversation row
+    /// yet (a standing role before its first message): id to (revision,
+    /// project path).
+    // ponytail: process-lifetime only; after a restart placeholders read at
+    // revision 0 until their next change, and their snapshot is current.
+    placeholder_touches: Mutex<HashMap<String, (i64, String)>>,
     // Declared last so the database closes before the lock is released.
     _home_lock: fs::File,
-}
-
-/// One conversation's committed state, published only after its SQL commit.
-#[derive(Debug, Clone)]
-pub(crate) struct LoadedConversation {
-    pub record: ConversationRecord,
-    pub positions: HashMap<String, i64>,
-    pub next_position: i64,
-    pub applied_trace: HashMap<String, u64>,
-    pub next_trace_sequence: u64,
-    /// Newest durable trace sequence of each turn.
-    pub trace_last_by_turn: HashMap<String, u64>,
-    pub attachments: BTreeMap<String, StoredAttachment>,
-}
-
-impl LoadedConversation {
-    pub fn new(conversation_id: &str, project_path: &str) -> Self {
-        Self {
-            record: ConversationRecord::new(conversation_id, project_path),
-            positions: HashMap::new(),
-            next_position: 0,
-            applied_trace: HashMap::new(),
-            next_trace_sequence: 1,
-            trace_last_by_turn: HashMap::new(),
-            attachments: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StoredAttachment {
-    pub record: ConversationAttachment,
-    /// Relative to the Spark home.
-    pub blob_path: String,
-    pub attached: bool,
 }
 
 impl ConversationStore {
@@ -128,6 +112,8 @@ impl ConversationStore {
                     .collect(),
             ),
             reserved_handles: Mutex::new(HashMap::new()),
+            commit_listener: RwLock::new(None),
+            placeholder_touches: Mutex::new(HashMap::new()),
             _home_lock: lock,
         };
         if !store.database.read(|read| read.reset_complete())? {
@@ -250,6 +236,75 @@ impl ConversationStore {
         &self.home_dir
     }
 
+    /// Install the app's commit listener, replacing any earlier one.
+    pub fn set_commit_listener(&self, listener: CommitListener) {
+        *self
+            .commit_listener
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(listener);
+    }
+
+    /// Allocate a revision for a placeholder summary row whose decoration
+    /// changed, and wake its subscribers.
+    pub(crate) fn touch_placeholder(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> Result<()> {
+        let (revision, ()) = self.database.write(|_| Ok(()))?;
+        self.placeholder_touches
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(
+                conversation_id.to_string(),
+                (revision, project_path.to_string()),
+            );
+        self.notify_commit(
+            revision,
+            vec![(conversation_id.to_string(), project_path.to_string())],
+        );
+        Ok(())
+    }
+
+    /// The revision of a placeholder row's last change, if any.
+    pub fn placeholder_revision(&self, conversation_id: &str) -> Option<i64> {
+        self.placeholder_touches
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(conversation_id)
+            .map(|(revision, _)| *revision)
+    }
+
+    /// Placeholder rows changed in `(since, watermark]`: (id, project path, revision).
+    pub fn placeholder_changes(&self, since: i64, watermark: i64) -> Vec<(String, String, i64)> {
+        let mut changes: Vec<_> = self
+            .placeholder_touches
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .filter(|(_, (revision, _))| since < *revision && *revision <= watermark)
+            .map(|(id, (revision, project_path))| (id.clone(), project_path.clone(), *revision))
+            .collect();
+        changes.sort();
+        changes
+    }
+
+    /// Wake live subscribers after a committed write. Durable state comes
+    /// first: a lost notice is closed by the subscriber's heartbeat catch-up.
+    pub(crate) fn notify_commit(&self, revision: i64, conversations: Vec<(String, String)>) {
+        let listener = self
+            .commit_listener
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        if let Some(listener) = listener {
+            listener(&CommitNotice {
+                revision,
+                conversations,
+            });
+        }
+    }
+
     pub fn database(&self) -> &ConversationDatabase {
         &self.database
     }
@@ -283,10 +338,17 @@ impl ConversationStore {
                     }
                 })?,
             };
-            let (_, tombstoned) = self.database.write(|tx| tx.delete_project(&marker))?;
+            let (revision, tombstoned) = self.database.write(|tx| tx.delete_project(&marker))?;
             self.pending_deletions()
                 .insert(deleted.project_path.clone());
             self.evict(&tombstoned);
+            self.notify_commit(
+                revision,
+                tombstoned
+                    .iter()
+                    .map(|id| (id.clone(), deleted.project_path.clone()))
+                    .collect(),
+            );
             tombstoned
         };
         // Then stop the work that was running. Outside the gate, so a provider
@@ -563,44 +625,44 @@ fn loaded_from_rows(
     let mut meta: ConversationMeta = serde_json::from_value(stored.metadata)
         .map_err(|error| invalid(format!("Invalid conversation metadata: {error}")))?;
     meta.conversation_id = conversation_id.to_string();
-    meta.project_path = stored.project_path;
+    meta.project_path = stored.project_path.clone();
     meta.conversation_handle = stored.handle;
-    let mut positions = HashMap::new();
-    let mut applied_trace = HashMap::new();
-    let mut turns = Vec::with_capacity(stored.turns.len());
+    let mut loaded = LoadedConversation::new(conversation_id, &stored.project_path);
+    loaded.meta = meta;
+    loaded.revision = stored.revision;
     for (turn_id, position, applied, payload) in stored.turns {
-        turns.push(
-            serde_json::from_value(payload)
-                .map_err(|error| invalid(format!("Invalid turn {turn_id}: {error}")))?,
+        let turn = serde_json::from_value(payload)
+            .map_err(|error| invalid(format!("Invalid turn {turn_id}: {error}")))?;
+        loaded.put_turn(turn, position);
+        loaded.applied_trace.insert(turn_id, applied);
+    }
+    for payload in stored.segments {
+        let segment = serde_json::from_value(payload)
+            .map_err(|error| invalid(format!("Invalid segment: {error}")))?;
+        loaded.put_segment(segment);
+    }
+    for (collection, id, position, owner, payload) in stored.artifacts {
+        if collection != EVENT_LOG_COLLECTION
+            && !ALL_COLLECTIONS
+                .iter()
+                .any(|known| known.key() == collection)
+        {
+            return Err(invalid(format!("Unknown artifact collection {collection}")));
+        }
+        loaded.put_artifact(
+            &collection,
+            &id,
+            StoredArtifact {
+                position,
+                owner,
+                payload,
+            },
         );
-        positions.insert(turn_id.clone(), position);
-        applied_trace.insert(turn_id, applied);
     }
-    let segments: Vec<super::records::TranscriptSegment> = stored
-        .segments
-        .into_iter()
-        .map(|payload| {
-            serde_json::from_value(payload)
-                .map_err(|error| invalid(format!("Invalid segment: {error}")))
-        })
-        .collect::<Result<_>>()?;
-    let mut artifacts = ConversationArtifacts::default();
-    for (collection, _, payload) in stored.artifacts {
-        let target = match collection.as_str() {
-            EVENT_LOG_COLLECTION => &mut artifacts.event_log,
-            "flow_run_requests" => &mut artifacts.flow_run_requests,
-            "flow_launches" => &mut artifacts.flow_launches,
-            "run_recoveries" => &mut artifacts.run_recoveries,
-            "proposed_plans" => &mut artifacts.proposed_plans,
-            other => return Err(invalid(format!("Unknown artifact collection {other}"))),
-        };
-        target.push(payload);
-    }
-    let mut attachments = BTreeMap::new();
     for (id, blob_path, status, payload) in stored.attachments {
         let record: ConversationAttachment = serde_json::from_value(payload)
             .map_err(|error| invalid(format!("Invalid attachment {id}: {error}")))?;
-        attachments.insert(
+        loaded.attachments.insert(
             id,
             StoredAttachment {
                 record,
@@ -609,18 +671,6 @@ fn loaded_from_rows(
             },
         );
     }
-    let next_position = positions.values().max().map_or(0, |max| max + 1);
-    Ok(LoadedConversation {
-        record: ConversationRecord {
-            meta,
-            transcript: Transcript { turns, segments },
-            artifacts,
-        },
-        positions,
-        next_position,
-        applied_trace,
-        next_trace_sequence: stored.trace_sequence_high_water + 1,
-        trace_last_by_turn: HashMap::new(),
-        attachments,
-    })
+    loaded.next_trace_sequence = stored.trace_sequence_high_water + 1;
+    Ok(loaded)
 }

@@ -1,17 +1,17 @@
-import { useCallback, type MutableRefObject } from 'react'
+import { useCallback } from 'react'
 
 import {
     deleteConversationValidated,
     fetchProjectConversationListValidated,
     updateConversationSettingsValidated,
-    type ConversationSnapshotResponse,
-    type ConversationSummaryResponse,
+    type ConversationBatch,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import {
     buildProjectConversationId,
+    applySummarySnapshotToCache,
     extractApiErrorMessage,
     removeConversationFromCache,
     type ProjectConversationCacheState,
@@ -26,13 +26,15 @@ type PersistProjectState = (
     },
 ) => Promise<void>
 
-type ConversationCacheRef = MutableRefObject<ProjectConversationCacheState>
-
 type UseProjectThreadActionsArgs = {
-    conversationCacheRef: ConversationCacheRef
-    setConversationSummaryList: (projectPath: string, summaries: ConversationSummaryResponse[]) => void
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
-    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
+    applyConversationBatch: (
+        projectPath: string,
+        conversationId: string,
+        batch: ConversationBatch,
+        kind: 'live' | 'mutation',
+        source?: string,
+    ) => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
     clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
@@ -46,10 +48,8 @@ type UseProjectThreadActionsArgs = {
 }
 
 export function useProjectThreadActions({
-    conversationCacheRef,
-    setConversationSummaryList,
     activateConversationThread,
-    applyConversationSnapshot,
+    applyConversationBatch,
     updateProjectSessionState,
     clearHomeConversationSession,
     setPanelError,
@@ -87,11 +87,11 @@ export function useProjectThreadActions({
         setPanelError(null)
         try {
             // Persist first so an empty thread survives reload and can be deleted.
-            const snapshot = await updateConversationSettingsValidated(conversationId, {
+            const ack = await updateConversationSettingsValidated(conversationId, {
                 project_path: projectPath,
                 expected_revision: '0',
             })
-            applyConversationSnapshot(projectPath, snapshot, 'create-thread')
+            applyConversationBatch(projectPath, conversationId, ack.changes, 'mutation', 'create-thread')
             // Only open it if you are still where you were when you asked for it.
             if (whereYouWere() === before) {
                 onSelectConversationThread(projectPath, conversationId)
@@ -100,7 +100,7 @@ export function useProjectThreadActions({
             setPanelError(extractApiErrorMessage(error, 'Unable to create the thread.'))
         }
     }, [
-        applyConversationSnapshot,
+        applyConversationBatch,
         onSelectConversationThread,
         setPanelError,
     ])
@@ -120,20 +120,21 @@ export function useProjectThreadActions({
         setPendingDeleteConversationId(conversationId)
         try {
             await deleteConversationValidated(conversationId, projectPath)
-            commitConversationCache((current) => removeConversationFromCache(current, conversationId))
+            commitConversationCache((current) => removeConversationFromCache({
+                ...current,
+                summariesByProjectPath: {
+                    ...current.summariesByProjectPath,
+                    [projectPath]: (current.summariesByProjectPath[projectPath] ?? []).filter((entry) => entry.conversation_id !== conversationId),
+                },
+            }, conversationId))
             clearHomeConversationSession(conversationId)
-            const localRemainingSummaries = (
-                conversationCacheRef.current.summariesByProjectPath[projectPath] || []
-            ).filter((entry) => entry.conversation_id !== conversationId)
-            setConversationSummaryList(projectPath, localRemainingSummaries)
-
-            let remainingSummaries = localRemainingSummaries
             try {
-                remainingSummaries = await fetchProjectConversationListValidated(projectPath)
-                setConversationSummaryList(projectPath, remainingSummaries)
+                const snapshot = await fetchProjectConversationListValidated(projectPath)
+                commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
             } catch {
                 // Keep the local optimistic removal if the follow-up refresh fails.
             }
+            const remainingSummaries = useStore.getState().homeConversationCache.summariesByProjectPath[projectPath] ?? []
 
             if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {
                 const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
@@ -153,9 +154,7 @@ export function useProjectThreadActions({
         }
     }, [
         commitConversationCache,
-        conversationCacheRef,
         persistProjectState,
-        setConversationSummaryList,
         clearHomeConversationSession,
         setPanelError,
         setPendingDeleteConversationId,

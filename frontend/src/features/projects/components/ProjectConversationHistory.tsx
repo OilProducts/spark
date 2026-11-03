@@ -61,6 +61,13 @@ interface ProjectConversationHistoryProps {
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
     /** Resends a failed turn's message. */
     onRetryTurn?: (turnId: string) => void | Promise<void>
+    /** The chat was deleted, or is gone after a reset. */
+    isConversationUnavailable?: boolean
+    /** An older page exists before the loaded messages. */
+    hasOlderMessages?: boolean
+    isLoadingOlderMessages?: boolean
+    olderMessagesError?: string | null
+    onLoadOlderMessages?: () => void | Promise<void>
 }
 
 const RequestUserInputRow = memo(function RequestUserInputRow({
@@ -310,6 +317,11 @@ export function ProjectConversationHistory({
     onReviewProposedPlan,
     onOpenFlowRun,
     onRetryTurn,
+    isConversationUnavailable = false,
+    hasOlderMessages = false,
+    isLoadingOlderMessages = false,
+    olderMessagesError = null,
+    onLoadOlderMessages,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const onPlanReviewNoteChange = useCallback((proposedPlanId: string, value: string) => {
@@ -396,6 +408,12 @@ export function ProjectConversationHistory({
 
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
+            <OlderMessagesControl
+                hasOlderMessages={hasOlderMessages}
+                isLoading={isLoadingOlderMessages}
+                error={olderMessagesError}
+                onLoad={onLoadOlderMessages}
+            />
             <Transcript
                 data-testid="project-ai-conversation-history-list"
                 testIdPrefix="project"
@@ -403,13 +421,52 @@ export function ProjectConversationHistory({
                 showThinking={showThinking}
                 formatTimestamp={formatConversationTimestamp}
                 loading={isConversationHistoryLoading}
-                empty={activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
+                empty={isConversationUnavailable
+                    ? 'This chat is no longer available.'
+                    : activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
                 conversation={conversation}
                 expansion={expansion}
                 attachmentUrl={attachmentUrl}
                 onRetryTurn={onRetryTurn}
                 renderEntry={renderEntry}
             />
+        </div>
+    )
+}
+
+/** Loads the page before the oldest loaded message: a button while there is one, busy while
+ * loading, and an alert with Retry when loading failed. */
+export function OlderMessagesControl({ hasOlderMessages, isLoading, error, onLoad, testId = 'project-load-older-messages' }: {
+    hasOlderMessages: boolean
+    isLoading: boolean
+    error: string | null
+    onLoad?: () => void | Promise<void>
+    testId?: string
+}) {
+    if (error) {
+        return (
+            <div role="alert" className="flex flex-wrap items-center justify-center gap-2 text-sm text-destructive">
+                <span>{error}</span>
+                <Button type="button" variant="outline" size="xs" onClick={() => { void onLoad?.() }}>
+                    Retry
+                </Button>
+            </div>
+        )
+    }
+    if (!hasOlderMessages) return null
+    return (
+        <div className="flex justify-center">
+            <Button
+                type="button"
+                data-testid={testId}
+                variant="ghost"
+                size="xs"
+                disabled={isLoading}
+                aria-busy={isLoading}
+                onClick={() => { void onLoad?.() }}
+            >
+                {isLoading ? 'Loading older messages…' : 'Load older messages'}
+            </Button>
         </div>
     )
 }

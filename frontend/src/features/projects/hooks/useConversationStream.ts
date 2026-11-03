@@ -1,94 +1,54 @@
 import { useEffect, useRef } from 'react'
 import {
     ApiHttpError,
-    fetchConversationSnapshotValidated,
-    parseConversationSnapshotResponse,
+    fetchConversationPageValidated,
+    parseConversationBatchResponse,
+    parseConversationPageResponse,
+    parseConversationResetResponse,
     parseConversationStreamDeltaEventResponse,
-    parseConversationStreamEventResponse,
-    type ConversationSnapshotResponse,
+    type ConversationBatch,
+    type ConversationPage,
     type ConversationStreamDeltaEventResponse,
-    type ConversationTurnUpsertEventResponse,
-    type ConversationSegmentTombstoneEventResponse,
-    type ConversationSegmentUpsertEventResponse,
 } from '@/lib/workspaceClient'
-import type { ApplyConversationStreamEventResult } from '../model/projectsHomeState'
+import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 
-type ConversationStreamEvent =
-    | ConversationTurnUpsertEventResponse
-    | ConversationSegmentUpsertEventResponse
-    | ConversationSegmentTombstoneEventResponse
+const LIVE_ENDPOINT = '/workspace/api/live/events'
 
 type UseConversationStreamArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
-    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
-    applyConversationStreamEvent: (
+    getConversationRecord: (conversationId: string) => NormalizedConversationRecord | undefined
+    applyConversationPage: (projectPath: string, page: ConversationPage, mode: 'window' | 'older', source?: string) => void
+    applyConversationBatch: (
         projectPath: string,
-        event: ConversationStreamEvent,
+        conversationId: string,
+        batch: ConversationBatch,
+        kind: 'live' | 'mutation',
         source?: string,
-    ) => ApplyConversationStreamEventResult | undefined
+    ) => void
     applyTransientConversationEvent: (
         projectPath: string,
         event: ConversationStreamDeltaEventResponse,
         source?: string,
     ) => unknown
+    resetConversation: (conversationId: string) => void
+    markConversationUnavailable: (conversationId: string) => void
     formatErrorMessage: (error: unknown, fallback: string) => string
     setPanelError: (message: string | null) => void
 }
 
-export function useConversationStream({
-    activeConversationId,
-    activeProjectPath,
-    applyConversationSnapshot,
-    applyConversationStreamEvent,
-    applyTransientConversationEvent,
-    formatErrorMessage,
-    setPanelError,
-}: UseConversationStreamArgs) {
-    const maybeRefreshSnapshotForArtifactSegment = (
-        event: ConversationStreamEvent,
-        refreshSnapshot: () => Promise<void>,
-    ) => {
-        if (event.type !== 'segment_upsert') {
-            return
-        }
-        const segmentKind = event.segment.kind
-        if (!event.segment.artifact_id) {
-            return
-        }
-        if (segmentKind !== 'plan' && segmentKind !== 'flow_run_request' && segmentKind !== 'flow_launch') {
-            return
-        }
-        const hasMatchingSidecar = segmentKind === 'plan'
-            ? event.proposed_plans?.some((plan) => plan.id === event.segment.artifact_id)
-            : segmentKind === 'flow_run_request'
-                ? event.flow_run_requests?.some((request) => request.id === event.segment.artifact_id)
-                : event.flow_launches?.some((launch) => launch.id === event.segment.artifact_id)
-        if (hasMatchingSidecar) {
-            return
-        }
-        void refreshSnapshot()
-    }
-
-    const snapshotHandlerRef = useRef(applyConversationSnapshot)
-    const eventHandlerRef = useRef(applyConversationStreamEvent)
-    const transientHandlerRef = useRef(applyTransientConversationEvent)
-    const errorFormatterRef = useRef(formatErrorMessage)
-    const setPanelErrorRef = useRef(setPanelError)
+/**
+ * Opens the active conversation at its newest page and keeps it live: a `conversation.window`
+ * replaces the loaded window, `conversation.changes` merge and advance the live cursor, and a
+ * `conversation.reset` stops applying until the window is reloaded.
+ */
+export function useConversationStream(args: UseConversationStreamArgs) {
+    const { activeConversationId, activeProjectPath } = args
+    const argsRef = useRef(args)
 
     useEffect(() => {
-        snapshotHandlerRef.current = applyConversationSnapshot
-        eventHandlerRef.current = applyConversationStreamEvent
-        transientHandlerRef.current = applyTransientConversationEvent
-        errorFormatterRef.current = formatErrorMessage
-        setPanelErrorRef.current = setPanelError
-    }, [
-            applyConversationSnapshot,
-        applyConversationStreamEvent,
-        applyTransientConversationEvent,
-        formatErrorMessage,
-        setPanelError,
-    ])
+        argsRef.current = args
+    })
 
     useEffect(() => {
         if (!activeProjectPath || !activeConversationId) {
@@ -96,120 +56,81 @@ export function useConversationStream({
         }
 
         let isCancelled = false
-        let snapshotFetchInFlight: Promise<void> | null = null
-        let snapshotFetchMarker: object | null = null
-        let pendingPreSnapshotEvents: ConversationStreamEvent[] = []
+        let issued = 0
+        // A conversation missing on a reopen after a reset is gone; on a first open it is a new thread.
+        let afterReset = false
 
-        const replayPendingEventsAfterSnapshot = (snapshot: ConversationSnapshotResponse) => {
-            const replayableEvents = pendingPreSnapshotEvents
-                .filter((pendingEvent) => pendingEvent.revision > snapshot.revision)
-                .sort((left, right) => left.revision - right.revision)
-            pendingPreSnapshotEvents = []
-            replayableEvents.forEach((pendingEvent) => {
-                eventHandlerRef.current(activeProjectPath, pendingEvent, 'event-stream-replay')
-                maybeRefreshSnapshotForArtifactSegment(pendingEvent, loadSnapshot)
-            })
-        }
-
-        const loadSnapshot = async () => {
-            if (snapshotFetchInFlight) {
-                return snapshotFetchInFlight
-            }
-            const currentFetchMarker = {}
-            snapshotFetchMarker = currentFetchMarker
-            const currentFetch = (async () => {
-                try {
-                    const snapshot = await fetchConversationSnapshotValidated(activeConversationId, activeProjectPath)
-                    if (isCancelled) {
-                        return
-                    }
-                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'snapshot-fetch')
-                    snapshotFetchInFlight = null
-                    snapshotFetchMarker = null
-                    replayPendingEventsAfterSnapshot(snapshot)
-                } catch (error) {
-                    if (isCancelled) {
-                        return
-                    }
-                    if (error instanceof ApiHttpError && error.status === 404) {
-                        return
-                    }
-                    const message = errorFormatterRef.current(error, 'Unable to load project conversation.')
-                    setPanelErrorRef.current(message)
-                } finally {
-                    if (snapshotFetchMarker === currentFetchMarker) {
-                        snapshotFetchInFlight = null
-                        snapshotFetchMarker = null
-                    }
+        const loadWindow = async () => {
+            const sequence = ++issued
+            try {
+                const page = await fetchConversationPageValidated(activeConversationId, activeProjectPath)
+                if (!isCancelled && sequence === issued) {
+                    afterReset = false
+                    argsRef.current.applyConversationPage(activeProjectPath, page, 'window', 'page-fetch')
                 }
-            })()
-            snapshotFetchInFlight = currentFetch
-            return snapshotFetchInFlight
+            } catch (error) {
+                if (isCancelled || sequence !== issued) {
+                    return
+                }
+                if (error instanceof ApiHttpError && error.status === 404) {
+                    if (afterReset) {
+                        argsRef.current.markConversationUnavailable(activeConversationId)
+                    }
+                    return
+                }
+                argsRef.current.setPanelError(argsRef.current.formatErrorMessage(error, 'Unable to load project conversation.'))
+            }
         }
 
-        void loadSnapshot()
+        const reset = () => {
+            afterReset = true
+            argsRef.current.resetConversation(activeConversationId)
+            void loadWindow()
+        }
+
+        void loadWindow()
 
         const handleLiveEvent = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
-            if (
-                !detail
-                || detail.conversationId !== activeConversationId
-                || detail.projectPath !== activeProjectPath
-            ) {
-                return
-            }
-            if (isCancelled) {
+            // The envelope's project_path may be the server's spelling of the project; the id is the scope.
+            if (isCancelled || !detail || detail.conversationId !== activeConversationId) {
                 return
             }
             try {
-                const payload = detail.payload as { type?: string; state?: unknown }
-                if (detail.type === 'resync_required') {
-                    void loadSnapshot()
-                    return
-                }
-                if (payload.type === 'conversation_snapshot') {
-                    const snapshot = parseConversationSnapshotResponse(
-                        payload.state,
-                        '/workspace/api/live/events',
-                    )
-                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
-                    replayPendingEventsAfterSnapshot(snapshot)
-                    return
-                }
-                if (detail.type === 'conversation.snapshot' && payload.state) {
-                    const snapshot = parseConversationSnapshotResponse(
-                        payload.state,
-                        '/workspace/api/live/events',
-                    )
-                    snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
-                    replayPendingEventsAfterSnapshot(snapshot)
-                    return
-                }
-                if (detail.type === 'conversation.stream_delta' || payload.type === 'stream_delta') {
-                    // Transient deltas render live but are droppable: never
-                    // buffered pre-snapshot and never treated as committed.
-                    const delta = parseConversationStreamDeltaEventResponse(payload)
-                    if (delta) {
-                        transientHandlerRef.current(activeProjectPath, delta, 'event-stream')
+                if (detail.type === 'conversation.window') {
+                    const page = parseConversationPageResponse(detail.payload, LIVE_ENDPOINT)
+                    // The server sends an empty window for a missing conversation too, so only a
+                    // window holding the conversation row proves it still exists after a reset.
+                    if (page.rows.some((row) => row.kind === 'conversation' && !row.deleted)) {
+                        afterReset = false
                     }
-                    return
+                    // The stream's window is newer than any page request still in flight, which
+                    // could even be another store generation's: it supersedes them. After a reset,
+                    // an empty window still waits for the reload to say whether the chat is gone.
+                    if (!afterReset) {
+                        issued += 1
+                    }
+                    argsRef.current.applyConversationPage(activeProjectPath, page, 'window', 'event-stream-window')
+                } else if (detail.type === 'conversation.changes') {
+                    const batch = parseConversationBatchResponse(detail.payload, LIVE_ENDPOINT)
+                    const record = argsRef.current.getConversationRecord(activeConversationId)
+                    if (record && record.generation !== batch.generation) {
+                        reset()
+                        return
+                    }
+                    argsRef.current.applyConversationBatch(activeProjectPath, activeConversationId, batch, 'live', 'event-stream')
+                } else if (detail.type === 'conversation.reset') {
+                    parseConversationResetResponse(detail.payload, LIVE_ENDPOINT)
+                    reset()
+                } else if (detail.type === 'conversation.stream_delta') {
+                    // Transient deltas render live but are droppable and never committed.
+                    const delta = parseConversationStreamDeltaEventResponse(detail.payload)
+                    if (delta) {
+                        argsRef.current.applyTransientConversationEvent(activeProjectPath, delta, 'event-stream')
+                    }
                 }
-                const parsedEvent = parseConversationStreamEventResponse(
-                    payload,
-                    '/workspace/api/live/events',
-                )
-                if (!parsedEvent) {
-                    return
-                }
-                const result = eventHandlerRef.current(activeProjectPath, parsedEvent, 'event-stream')
-                if (result?.status === 'missing_record') {
-                    pendingPreSnapshotEvents.push(parsedEvent)
-                    void loadSnapshot()
-                    return
-                }
-                maybeRefreshSnapshotForArtifactSegment(parsedEvent, loadSnapshot)
             } catch {
-                // Ignore malformed stream events.
+                // A malformed frame is dropped whole; the next window or batch restores state.
             }
         }
 

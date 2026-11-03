@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
+import { conversationRowOf, pageTurns, settingsRevisionOf, summarySnapshot } from '../fixtures/smoke-helpers'
 
 test.beforeEach(async ({ context }) => {
     // The picker lists only reachable providers, so the fixture reaches the ones these tests choose from.
@@ -514,14 +515,15 @@ test('conversation effort and model edits preserve an inherited profile; selecti
     }
     const id = 'cr0118-browser-profile'
     const conversationPath = '/workspace/api/conversations/cr0118-browser-conversation'
-    const conversation = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
+    const conversationPage = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
+    const conversation = async () => conversationRowOf(await conversationPage())?.payload
     try {
         expect((await page.request.post('/workspace/api/projects/register', {data:{project_path:project}})).ok()).toBeTruthy()
         await save('llm_profiles', [...original.llm_profiles.stored, {id, provider:'openai_compatible', base_url:'http://127.0.0.1:1', models:['model-one','model-two'], default_model:'model-one', reasoning_efforts:['low','medium','high']}])
         await save('models', {llm_profile:id, model:null, reasoning_effort:'low'})
         const created = await page.request.put(`${conversationPath}/settings`, {data:{project_path:project, expected_revision:'0', model_settings:null}})
         expect(created.ok(), await created.text()).toBeTruthy()
-        const title = (await created.json()).title as string
+        const title = conversationRowOf(await created.json())!.payload.title as string
         await page.goto('/')
         await openChat(page, project, title)
         const provider = page.getByRole('button', { name: /^Model:/ })
@@ -551,10 +553,10 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         } finally { releaseReset() }
         await expect.poll(async () => (await conversation()).settings.models.stored).toBeNull()
         await expect(provider).toContainText('model-one · Low')
-        expect((await conversation()).turns).toEqual([])
+        expect(pageTurns(await conversationPage())).toEqual([])
     } finally {
         const current = await conversation()
-        if (current.settings?.models) await page.request.put(`${conversationPath}/settings`, {data:{project_path:project,expected_revision:current.settings.models.revision,model_settings:null}})
+        if (current?.settings?.models) await page.request.put(`${conversationPath}/settings`, {data:{project_path:project,expected_revision:current.settings.models.revision,model_settings:null}})
         await save('models', original.models.effective)
         await save('llm_profiles', original.llm_profiles.stored)
     }
@@ -567,7 +569,7 @@ test('malformed project execution selection is repairable with explicit Save and
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
     // Listing a project's chats, missions or attention items rewrites a project file it finds
     // malformed; this test repairs it through the project page alone, so the page lists nothing.
-    await page.route('**/workspace/api/projects/conversations**', route => route.fulfill({ json: [] }))
+    await page.route('**/workspace/api/projects/conversations**', route => route.fulfill({ json: summarySnapshot([], new URL(route.request().url()).searchParams.get('project_path')) }))
     await page.route(url => url.pathname === '/workspace/api/missions', route => route.fulfill({ json: { missions: [] } }))
     await page.route('**/workspace/api/attention', route => route.fulfill({ json: { items: [] } }))
     await page.goto('/')
@@ -699,35 +701,39 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
         project_path: project, expected_revision: '0', model_settings: initial,
     } })
     expect(created.ok()).toBeTruthy()
-    const snapshot = await created.json()
-    const read = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
-    // Hold the chat's snapshot: until it loads, its revision is unknown and the picker must stay disabled.
+    const createdRow = conversationRowOf(await created.json(), 'cr0125-browser-chat')!
+    // Until the first save commits, the conversation is not found and polls keep polling.
+    const read = async () => conversationRowOf(await (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json())?.payload
+    // Hold the chat's page: until it loads, its revision is unknown and the picker must stay disabled.
     let hydrate!: () => void
     const hydrated = new Promise<void>((resolve) => { hydrate = resolve })
     await page.route(`**${conversationPath}?*`, async (route) => {
         await hydrated
         await route.continue()
     })
-    // The chat's live stream also opens with its snapshot; hold it too.
+    // The chat's live stream also opens with its window; hold it too.
     await page.route((url) => url.pathname === '/workspace/api/live/events'
         && url.searchParams.get('conversation_id') === 'cr0125-browser-chat', async (route) => {
         await hydrated
         await route.continue()
     })
     await page.goto('/')
-    await openChat(page, project, snapshot.title)
+    await openChat(page, project, createdRow.payload.title)
     await expect(page.getByTestId('chat-composer-project')).toContainText('chat-model-project')
     await expect(page.getByRole('button', { name: /^Model:/ })).toBeDisabled()
     hydrate()
     await expect(page.getByRole('button', { name: /^Model:/ })).toBeEnabled()
     const requests: { expected_revision: string; model_settings: unknown }[] = []
     const statuses: number[] = []
+    // Each save's acknowledged conversation revision, which the next save must expect.
+    const acked: string[] = []
     const releases: (() => void)[] = []
     // Forward every save to Rust unchanged; hold only its response to force overlapping edits.
     await page.route(`**${conversationPath}/settings`, async (route) => {
         requests.push(route.request().postDataJSON())
         const response = await route.fetch()
         statuses.push(response.status())
+        if (response.ok()) acked.push(settingsRevisionOf(conversationRowOf(await response.json(), 'cr0125-browser-chat')!))
         await new Promise<void>((resolve) => releases.push(resolve))
         await route.fulfill({ response })
     })
@@ -745,9 +751,9 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await page.keyboard.press('Escape')
     await expect(model).toContainText('my-model')
     await release()
-    expect(requests[0].expected_revision).toBe(String(snapshot.revision))
+    expect(requests[0].expected_revision).toBe(settingsRevisionOf(createdRow))
     expect(statuses).toEqual([200])
-    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('my-model')
+    await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('my-model')
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
 
     await chooseModel(page, 'anthropic', 'claude-opus-4-6')
@@ -759,11 +765,9 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
     const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
-    await expect.poll(async () => (await read()).settings.models.stored).toMatchObject(final)
+    await expect.poll(async () => (await read())?.settings?.models.stored).toMatchObject(final)
     expect(statuses).toEqual([200, 200, 200])
-    expect(requests.map((request) => request.expected_revision)).toEqual(
-        Array.from({ length: 3 }, (_, index) => String(snapshot.revision + index)),
-    )
+    expect(requests.map((request) => request.expected_revision)).toEqual([settingsRevisionOf(createdRow), ...acked.slice(0, 2)])
     await page.reload()
     await expect(model).toContainText('final-model · High')
 })
@@ -850,7 +854,9 @@ test('mission picker default persists through the real conversation backend', as
     const response = await page.request.post(`/workspace/api/missions?project_path=${encodeURIComponent(project)}`, { data: { fields: { title: 'Picker reset mission', description: 'Reset model', archived: false }, actor: 'human' } })
     expect(response.ok(), await response.text()).toBeTruthy()
     const mission = await response.json()
-    const read = async () => (await page.request.get(`/workspace/api/conversations/${mission.id}?project_path=${encodeURIComponent(project)}`)).json()
+    const readPage = async () => (await page.request.get(`/workspace/api/conversations/${mission.id}?project_path=${encodeURIComponent(project)}`)).json()
+    // Until the save commits, the conversation is not found and polls keep polling.
+    const read = async () => conversationRowOf(await readPage())?.payload
     await page.goto('/')
     await page.getByTestId('activity-missions').click()
     await page.getByRole('button', { name: 'Picker reset mission', exact: true }).click()
@@ -864,7 +870,7 @@ test('mission picker default persists through the real conversation backend', as
     await customModel(page, 'mission-custom', detail)
     await chooseEffort(page, 'High')
     await detail.getByRole('button', { name: 'Save model', exact: true }).click()
-    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('mission-custom')
+    await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('mission-custom')
     await openModel()
     await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('mission-custom · High')
     await openPicker(page, detail)
@@ -876,9 +882,9 @@ test('mission picker default persists through the real conversation backend', as
     await expect(page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true })).toBeDisabled()
     await page.keyboard.press('Escape')
     await detail.getByRole('button', { name: 'Save model', exact: true }).click()
-    await expect.poll(async () => (await read()).settings.models.stored).toBeNull()
+    await expect.poll(async () => (await read())?.settings?.models.stored).toBeNull()
     await expect(detail.getByRole('button', { name: 'Save model', exact: true })).toHaveCount(0)
     await openModel()
     await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('project-parent · Low')
-    expect((await read()).turns).toEqual([])
+    expect(pageTurns(await readPage())).toEqual([])
 })

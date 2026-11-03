@@ -1,11 +1,14 @@
 import { modelSettingsForApi, parseModelSettingsView, type ModelSettings, type ModelSettingsView } from './settingsApi'
 import {
+    ApiHttpError,
     ApiSchemaError,
     asOptionalNullableString,
     asOptionalString,
     asUnknownRecord,
     expectObjectRecord,
     expectString,
+    extractHttpError,
+    parseJsonPayload,
 } from './shared'
 import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
 
@@ -50,7 +53,8 @@ export interface ConversationSegmentResponse {
     /** An `agent_event`'s category; only `warning` is shown. */
     category?: string | null
     role: 'assistant' | 'system' | 'user'
-    status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running'
+    /** `delivery_pending`: a message accepted into a running turn whose delivery is unresolved. */
+    status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running' | 'delivery_pending'
     timestamp: string
     updated_at: string
     content: string
@@ -173,29 +177,6 @@ export interface ProposedPlanArtifactResponse {
     launch_error?: string | null
 }
 
-export interface ConversationSnapshotResponse {
-    model_settings_view?: ModelSettingsView
-
-    schema_version: number
-    revision: number
-    conversation_id: string
-    conversation_handle?: string | null
-    project_path: string
-    chat_mode: ConversationChatMode
-    provider?: string | null
-    model?: string | null
-    reasoning_effort?: string | null
-    title: string
-    created_at: string
-    updated_at: string
-    turns: ConversationTurnResponse[]
-    segments: ConversationSegmentResponse[]
-    event_log: WorkflowEventResponse[]
-    flow_run_requests: FlowRunRequestResponse[]
-    flow_launches: FlowLaunchResponse[]
-    proposed_plans?: ProposedPlanArtifactResponse[]
-}
-
 export interface ConversationSummaryResponse {
     conversation_id: string
     conversation_handle?: string | null
@@ -203,7 +184,8 @@ export interface ConversationSummaryResponse {
     title: string
     created_at: string
     updated_at: string
-    revision: number
+    /** The conversation row's revision, a decimal string. */
+    revision: string
     last_message_preview?: string | null
     /** The runs this chat launched, oldest first. */
     launched_run_ids?: string[]
@@ -238,40 +220,6 @@ export interface ConversationToolOutputResponse {
     output_size: number
 }
 
-export interface ConversationTurnUpsertEventResponse {
-    type: 'turn_upsert'
-    revision: number
-    conversation_id: string
-    project_path: string
-    title: string
-    updated_at: string
-    turn: ConversationTurnResponse
-}
-
-export interface ConversationSegmentUpsertEventResponse {
-    type: 'segment_upsert'
-    revision: number
-    conversation_id: string
-    project_path: string
-    title: string
-    updated_at: string
-    segment: ConversationSegmentResponse
-    flow_run_requests?: FlowRunRequestResponse[]
-    flow_launches?: FlowLaunchResponse[]
-    proposed_plans?: ProposedPlanArtifactResponse[]
-}
-
-export interface ConversationSegmentTombstoneEventResponse {
-    type: 'segment_tombstone'
-    revision: number
-    conversation_id: string
-    project_path: string
-    title: string
-    updated_at: string
-    turn_id: string
-    segment_id: string
-}
-
 export interface ConversationStreamDeltaEventResponse {
     type: 'stream_delta'
     conversation_id: string
@@ -282,6 +230,131 @@ export interface ConversationStreamDeltaEventResponse {
     turn?: ConversationTurnResponse
     segment?: ConversationSegmentResponse
     token_usage?: Record<string, unknown>
+}
+
+/** Metadata and summary of a conversation; never its transcript. */
+export interface ConversationRowPayload {
+    handle: string | null
+    project_path: string
+    title: string
+    created_at: string
+    updated_at: string
+    preview: string | null
+    running: boolean
+    needs_attention: boolean
+    launched_run_ids: string[]
+    chat_mode: ConversationChatMode
+    /** The effective provider, model and effort; conversation scope only. */
+    provider: string | null
+    model: string | null
+    reasoning_effort: string | null
+    model_settings_view?: ModelSettingsView
+    /**
+     * The revision of the conversation's last committed settings change: a settings write's
+     * `expected_revision`. It can trail the row's revision, which other changes also bump.
+     */
+    settings_revision: string | null
+    /** Summary scope only; `undefined` when the row doesn't carry it. */
+    standing_role?: StandingRoleSummary | null
+    /** A standing role without a conversation yet. */
+    placeholder: boolean
+}
+
+export type ConversationArtifactCollection = 'flow_run_requests' | 'flow_launches' | 'run_recoveries' | 'proposed_plans' | 'event_log'
+
+type ConversationRowBase = {
+    conversation_id: string
+    id: string
+    turn_id?: string
+    position?: string
+    order?: string
+    revision: string
+    deleted: boolean
+}
+
+/** One stored entity at its last-change revision; a tombstone has no payload. */
+export type ConversationRow =
+    | (ConversationRowBase & { kind: 'conversation'; payload: ConversationRowPayload | null })
+    | (ConversationRowBase & { kind: 'turn'; payload: ConversationTurnResponse | null })
+    | (ConversationRowBase & { kind: 'segment'; payload: ConversationSegmentResponse | null })
+    | (ConversationRowBase & { kind: 'attachment'; payload: ConversationAttachmentResponse | null })
+    | (ConversationRowBase & {
+        kind: 'artifact'
+        collection: ConversationArtifactCollection
+        payload: FlowRunRequestResponse | FlowLaunchResponse | ProposedPlanArtifactResponse | WorkflowEventResponse | Record<string, unknown> | null
+    })
+
+export interface ConversationBatch {
+    generation: string
+    from_revision: string
+    watermark: string
+    rows: ConversationRow[]
+}
+
+export interface ConversationPage {
+    generation: string
+    watermark: string
+    conversation_id: string
+    rows: ConversationRow[]
+    turn_ids: string[]
+    pinned_turn_ids: string[]
+    pinned_artifact_ids: Array<{ collection: string; id: string }>
+    older_cursor: string | null
+}
+
+export interface ConversationSummarySnapshot {
+    generation: string
+    watermark: string
+    /** `null`: every project. */
+    project_path: string | null
+    rows: ConversationRow[]
+}
+
+export interface ConversationMutationAck {
+    generation: string
+    revision: string
+    changes: ConversationBatch
+}
+
+export interface ConversationAcceptance extends ConversationMutationAck {
+    user_turn_id: string
+    client_turn_id: string
+    assistant_turn_id: string | null
+    status: 'accepted' | 'queued' | 'delivery_pending'
+}
+
+export interface ConversationReset {
+    code: 'window_reset' | 'resync_required'
+    reason: 'order_changed' | 'generation_changed' | 'cursor_ahead' | 'catchup_limit'
+    generation: string
+    watermark: string
+}
+
+/** A 409 whose body says the cursor is invalid: reload from the newest window. */
+export class ConversationResetError extends ApiHttpError {
+    reset: ConversationReset
+
+    constructor(endpoint: string, reset: ConversationReset) {
+        super(endpoint, 409, `${reset.code}: ${reset.reason}`)
+        this.name = 'ConversationResetError'
+        this.reset = reset
+    }
+}
+
+const DECIMAL = /^(0|[1-9][0-9]*)$/
+
+/** Orders decimal revision strings, which can exceed a JSON number's precision. */
+export function compareRevisions(left: string, right: string): number {
+    const a = BigInt(left)
+    const b = BigInt(right)
+    return a < b ? -1 : a > b ? 1 : 0
+}
+
+function expectDecimal(value: unknown, endpoint: string, field: string): string {
+    if (typeof value !== 'string' || !DECIMAL.test(value)) {
+        throw new ApiSchemaError(endpoint, `Expected "${field}" to be a decimal string.`)
+    }
+    return value
 }
 
 function parseConversationTurnResponse(value: unknown): ConversationTurnResponse | null {
@@ -384,6 +457,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         || record.status === 'streaming'
         || record.status === 'failed'
         || record.status === 'running'
+        || record.status === 'delivery_pending'
         ? record.status
         : 'complete'
     const toolCall = asUnknownRecord(record.tool_call)
@@ -626,47 +700,266 @@ function parseProposedPlanArtifactResponse(value: unknown): ProposedPlanArtifact
     }
 }
 
-export function parseConversationSummaryResponse(value: unknown): ConversationSummaryResponse | null {
-    const record = asUnknownRecord(value)
-    if (
-        !record
-        || typeof record.conversation_id !== 'string'
-        || typeof record.project_path !== 'string'
-        || typeof record.title !== 'string'
-        || typeof record.created_at !== 'string'
-        || typeof record.updated_at !== 'string'
-        || typeof record.revision !== 'number'
-        || !Number.isFinite(record.revision)
-    ) {
-        return null
-    }
+function parseConversationRowPayload(value: unknown, endpoint: string): ConversationRowPayload {
+    const record = expectObjectRecord(value, endpoint)
+    const metadata = asUnknownRecord(record.metadata) ?? {}
+    const effective = asUnknownRecord(record.effective) ?? {}
+    const field = (key: string) => asOptionalNullableString(effective[key]) ?? asOptionalNullableString(metadata[key]) ?? null
+    const modelSettingsView = record.settings == null ? undefined : parseModelSettingsView(record.settings, endpoint)
+    const metadataRevision = typeof metadata.revision === 'number' ? String(metadata.revision) : metadata.revision
     return {
-        conversation_id: record.conversation_id,
-        conversation_handle: asOptionalNullableString(record.conversation_handle),
-        project_path: record.project_path,
-        title: record.title,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-        revision: record.revision,
-        last_message_preview: asOptionalNullableString(record.last_message_preview),
+        handle: asOptionalNullableString(record.handle) ?? null,
+        project_path: expectString(record.project_path, endpoint, 'project_path'),
+        title: asOptionalString(record.title) || 'New thread',
+        created_at: asOptionalString(record.created_at) || '',
+        updated_at: asOptionalString(record.updated_at) || asOptionalString(record.created_at) || '',
+        preview: asOptionalNullableString(record.preview) || null,
+        running: record.running === true,
+        needs_attention: record.needs_attention === true,
         launched_run_ids: Array.isArray(record.launched_run_ids)
             ? record.launched_run_ids.filter((id): id is string => typeof id === 'string')
             : [],
-        standing_role: parseStandingRole(record.standing_role),
-        running: record.running === true,
+        chat_mode: metadata.chat_mode === 'plan' ? 'plan' : 'chat',
+        provider: field('provider') || 'codex',
+        model: field('model'),
+        reasoning_effort: field('reasoning_effort'),
+        model_settings_view: modelSettingsView,
+        settings_revision: modelSettingsView?.revision
+            ?? (metadataRevision == null ? null : expectDecimal(metadataRevision, endpoint, 'metadata.revision')),
+        ...('standing_role' in record ? { standing_role: parseStandingRole(record.standing_role) } : {}),
+        placeholder: record.placeholder === true,
     }
 }
 
-export function parseConversationSummaryListResponse(
+const ARTIFACT_PARSERS: Record<ConversationArtifactCollection, (value: unknown) => unknown> = {
+    flow_run_requests: parseFlowRunRequestResponse,
+    flow_launches: parseFlowLaunchResponse,
+    proposed_plans: parseProposedPlanArtifactResponse,
+    event_log: parseWorkflowEventResponse,
+    run_recoveries: asUnknownRecord,
+}
+
+function parseConversationRow(value: unknown, endpoint: string): ConversationRow {
+    const record = expectObjectRecord(value, endpoint)
+    const kind = record.kind
+    const deleted = record.deleted
+    if (typeof deleted !== 'boolean') {
+        throw new ApiSchemaError(endpoint, 'Expected row "deleted" to be a boolean.')
+    }
+    const base = {
+        conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
+        id: expectString(record.id, endpoint, 'id'),
+        revision: expectDecimal(record.revision, endpoint, 'revision'),
+        deleted,
+        ...(record.turn_id == null ? {} : { turn_id: expectString(record.turn_id, endpoint, 'turn_id') }),
+        ...(record.position == null ? {} : { position: expectDecimal(record.position, endpoint, 'position') }),
+        ...(record.order == null ? {} : { order: expectDecimal(record.order, endpoint, 'order') }),
+    }
+    const invalid = (what: string): never => {
+        throw new ApiSchemaError(endpoint, `Invalid ${what} row ${base.id}.`)
+    }
+    // Every upsert carries its whole entity; a payload that fails validation fails the whole response.
+    const payload = <T>(parse: (value: unknown) => T | null): T | null => (
+        deleted ? null : parse(record.payload) ?? invalid(String(kind))
+    )
+    switch (kind) {
+    case 'conversation':
+        if (base.id !== base.conversation_id) invalid(kind)
+        return { ...base, kind, payload: payload((entry) => parseConversationRowPayload(entry, endpoint)) }
+    case 'turn': {
+        if (!deleted && base.position === undefined) invalid(kind)
+        const turn = payload(parseConversationTurnResponse)
+        if (turn && turn.id !== base.id) invalid(kind)
+        return { ...base, kind, payload: turn }
+    }
+    case 'segment': {
+        if (base.turn_id === undefined || (!deleted && base.order === undefined)) invalid(kind)
+        const segment = payload(parseConversationSegmentResponse)
+        if (segment && (segment.id !== base.id || segment.turn_id !== base.turn_id)) invalid(kind)
+        return { ...base, kind, payload: segment }
+    }
+    case 'attachment':
+        return { ...base, kind, payload: payload(parseConversationAttachment) }
+    case 'artifact': {
+        const collection = record.collection as ConversationArtifactCollection
+        const parse = typeof collection === 'string' ? ARTIFACT_PARSERS[collection] : undefined
+        if (!parse) invalid(kind)
+        return { ...base, kind, collection, payload: payload(parse!) as Extract<ConversationRow, { kind: 'artifact' }>['payload'] }
+    }
+    default:
+        throw new ApiSchemaError(endpoint, `Unknown row kind ${String(kind)}.`)
+    }
+}
+
+function parseRows(value: unknown, endpoint: string, conversationId?: string): ConversationRow[] {
+    if (!Array.isArray(value)) {
+        throw new ApiSchemaError(endpoint, 'Expected "rows" to be an array.')
+    }
+    return value.map((entry) => {
+        const row = parseConversationRow(entry, endpoint)
+        if (conversationId !== undefined && row.conversation_id !== conversationId) {
+            throw new ApiSchemaError(endpoint, `Row ${row.id} belongs to another conversation.`)
+        }
+        return row
+    })
+}
+
+function expectAtOrBelow(rows: ConversationRow[], watermark: string, endpoint: string) {
+    if (rows.some((row) => compareRevisions(row.revision, watermark) > 0)) {
+        throw new ApiSchemaError(endpoint, 'A row is newer than its response watermark.')
+    }
+}
+
+function expectStringArray(value: unknown, endpoint: string, field: string): string[] {
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+        throw new ApiSchemaError(endpoint, `Expected "${field}" to be an array of strings.`)
+    }
+    return value
+}
+
+/**
+ * A revision batch, validated whole. A catch-up batch holds exactly the changes after
+ * `from_revision`; a mutation result only promises nothing past its watermark.
+ */
+export function parseConversationBatchResponse(
+    payload: unknown,
+    endpoint = '/workspace/api/conversations/{id}/changes',
+    kind: 'catch_up' | 'mutation' = 'catch_up',
+): ConversationBatch {
+    const record = expectObjectRecord(payload, endpoint)
+    const generation = expectString(record.generation, endpoint, 'generation')
+    const from_revision = expectDecimal(record.from_revision, endpoint, 'from_revision')
+    const watermark = expectDecimal(record.watermark, endpoint, 'watermark')
+    if (compareRevisions(from_revision, watermark) > 0) {
+        throw new ApiSchemaError(endpoint, 'Batch starts after its watermark.')
+    }
+    const rows = parseRows(record.rows, endpoint)
+    expectAtOrBelow(rows, watermark, endpoint)
+    if (kind === 'catch_up' && rows.some((row) => compareRevisions(row.revision, from_revision) <= 0)) {
+        throw new ApiSchemaError(endpoint, 'A catch-up row is not after the batch start.')
+    }
+    return { generation, from_revision, watermark, rows }
+}
+
+export function parseConversationPageResponse(
+    payload: unknown,
+    endpoint = '/workspace/api/conversations/{id}',
+): ConversationPage {
+    const record = expectObjectRecord(payload, endpoint)
+    const conversation_id = expectString(record.conversation_id, endpoint, 'conversation_id')
+    const watermark = expectDecimal(record.watermark, endpoint, 'watermark')
+    const rows = parseRows(record.rows, endpoint, conversation_id)
+    expectAtOrBelow(rows, watermark, endpoint)
+    if (!Array.isArray(record.pinned_artifact_ids)) {
+        throw new ApiSchemaError(endpoint, 'Expected "pinned_artifact_ids" to be an array.')
+    }
+    return {
+        generation: expectString(record.generation, endpoint, 'generation'),
+        watermark,
+        conversation_id,
+        rows,
+        turn_ids: expectStringArray(record.turn_ids, endpoint, 'turn_ids'),
+        pinned_turn_ids: expectStringArray(record.pinned_turn_ids, endpoint, 'pinned_turn_ids'),
+        pinned_artifact_ids: record.pinned_artifact_ids.map((entry) => {
+            const pinned = expectObjectRecord(entry, endpoint)
+            return {
+                collection: expectString(pinned.collection, endpoint, 'collection'),
+                id: expectString(pinned.id, endpoint, 'id'),
+            }
+        }),
+        older_cursor: record.older_cursor == null ? null : expectString(record.older_cursor, endpoint, 'older_cursor'),
+    }
+}
+
+export function parseConversationSummarySnapshotResponse(
     payload: unknown,
     endpoint = '/workspace/api/projects/conversations',
-): ConversationSummaryResponse[] {
-    if (!Array.isArray(payload)) {
-        throw new ApiSchemaError(endpoint, 'Expected an array of conversation summaries.')
+): ConversationSummarySnapshot {
+    const record = expectObjectRecord(payload, endpoint)
+    const watermark = expectDecimal(record.watermark, endpoint, 'watermark')
+    const rows = parseRows(record.rows, endpoint)
+    expectAtOrBelow(rows, watermark, endpoint)
+    if (rows.some((row) => row.kind !== 'conversation')) {
+        throw new ApiSchemaError(endpoint, 'A summary snapshot holds conversation rows only.')
     }
-    return payload
-        .map((entry) => parseConversationSummaryResponse(entry))
-        .filter((entry): entry is ConversationSummaryResponse => entry !== null)
+    return {
+        generation: expectString(record.generation, endpoint, 'generation'),
+        watermark,
+        project_path: record.project_path == null ? null : expectString(record.project_path, endpoint, 'project_path'),
+        rows,
+    }
+}
+
+export function parseConversationMutationAckResponse(
+    payload: unknown,
+    endpoint = '/workspace/api/conversations/{id}',
+): ConversationMutationAck {
+    const record = expectObjectRecord(payload, endpoint)
+    return {
+        generation: expectString(record.generation, endpoint, 'generation'),
+        revision: expectDecimal(record.revision, endpoint, 'revision'),
+        changes: parseConversationBatchResponse(record.changes, endpoint, 'mutation'),
+    }
+}
+
+export function parseConversationAcceptanceResponse(
+    payload: unknown,
+    endpoint = '/workspace/api/conversations/{id}/turns',
+): ConversationAcceptance {
+    const record = expectObjectRecord(payload, endpoint)
+    const status = record.status
+    if (status !== 'accepted' && status !== 'queued' && status !== 'delivery_pending') {
+        throw new ApiSchemaError(endpoint, 'Invalid acceptance status.')
+    }
+    const user_turn_id = expectString(record.user_turn_id, endpoint, 'user_turn_id')
+    return {
+        ...parseConversationMutationAckResponse(record, endpoint),
+        user_turn_id,
+        client_turn_id: record.client_turn_id == null ? user_turn_id : expectString(record.client_turn_id, endpoint, 'client_turn_id'),
+        assistant_turn_id: record.assistant_turn_id == null ? null : expectString(record.assistant_turn_id, endpoint, 'assistant_turn_id'),
+        status,
+    }
+}
+
+const RESET_CODES = ['window_reset', 'resync_required'] as const
+const RESET_REASONS = ['order_changed', 'generation_changed', 'cursor_ahead', 'catchup_limit'] as const
+
+export function parseConversationResetResponse(
+    payload: unknown,
+    endpoint = '/workspace/api/live/events',
+): ConversationReset {
+    const record = expectObjectRecord(payload, endpoint)
+    const code = RESET_CODES.find((entry) => entry === record.code)
+    const reason = RESET_REASONS.find((entry) => entry === record.reason)
+    if (!code || !reason) {
+        throw new ApiSchemaError(endpoint, 'Invalid reset code or reason.')
+    }
+    return {
+        code,
+        reason,
+        generation: expectString(record.generation, endpoint, 'generation'),
+        watermark: expectDecimal(record.watermark, endpoint, 'watermark'),
+    }
+}
+
+/** The thread-list entry for a conversation row; summary-scope rows carry the standing role. */
+export function conversationSummaryFromRow(
+    row: Extract<ConversationRow, { kind: 'conversation' }> & { payload: ConversationRowPayload },
+): ConversationSummaryResponse {
+    const { payload } = row
+    return {
+        conversation_id: row.id,
+        conversation_handle: payload.handle,
+        project_path: payload.project_path,
+        title: payload.title,
+        created_at: payload.created_at,
+        updated_at: payload.updated_at,
+        revision: row.revision,
+        last_message_preview: payload.preview || undefined,
+        launched_run_ids: payload.launched_run_ids,
+        standing_role: payload.standing_role ?? null,
+        running: payload.running,
+    }
 }
 
 export function parseConversationDeleteResponse(
@@ -680,169 +973,6 @@ export function parseConversationDeleteResponse(
         conversation_handle: asOptionalNullableString(record.conversation_handle),
         project_path: expectString(record.project_path, endpoint, 'project_path'),
     }
-}
-
-export function parseConversationSnapshotResponse(
-    payload: unknown,
-    endpoint = '/workspace/api/conversations/{id}',
-): ConversationSnapshotResponse {
-    const record = expectObjectRecord(payload, endpoint)
-    const schemaVersion = record.schema_version
-    if (typeof schemaVersion !== 'number') {
-        throw new ApiSchemaError(endpoint, 'Expected conversation snapshot schema_version.')
-    }
-    const revision = record.revision
-    if (typeof revision !== 'number' || !Number.isFinite(revision)) {
-        throw new ApiSchemaError(endpoint, 'Expected conversation snapshot revision.')
-    }
-    const turns = Array.isArray(record.turns)
-        ? record.turns
-            .map((entry) => parseConversationTurnResponse(entry))
-            .filter((entry): entry is ConversationTurnResponse => entry !== null)
-        : []
-    const event_log = Array.isArray(record.event_log)
-        ? record.event_log
-            .map((entry) => parseWorkflowEventResponse(entry))
-            .filter((entry): entry is WorkflowEventResponse => entry !== null)
-        : []
-    const segments = Array.isArray(record.segments)
-        ? record.segments
-            .map((entry) => parseConversationSegmentResponse(entry))
-            .filter((entry): entry is ConversationSegmentResponse => entry !== null)
-        : []
-    const flow_run_requests = Array.isArray(record.flow_run_requests)
-        ? record.flow_run_requests
-            .map((entry) => parseFlowRunRequestResponse(entry))
-            .filter((entry): entry is FlowRunRequestResponse => entry !== null)
-        : []
-    const flow_launches = Array.isArray(record.flow_launches)
-        ? record.flow_launches
-            .map((entry) => parseFlowLaunchResponse(entry))
-            .filter((entry): entry is FlowLaunchResponse => entry !== null)
-        : []
-    const proposed_plans = Array.isArray(record.proposed_plans)
-        ? record.proposed_plans
-            .map((entry) => parseProposedPlanArtifactResponse(entry))
-            .filter((entry): entry is ProposedPlanArtifactResponse => entry !== null)
-        : []
-    return {
-        schema_version: schemaVersion,
-        revision,
-        conversation_id: expectString(record.conversation_id, endpoint, 'conversation_id'),
-        conversation_handle: asOptionalNullableString(record.conversation_handle),
-        project_path: expectString(record.project_path, endpoint, 'project_path'),
-        chat_mode: record.chat_mode === 'plan' ? 'plan' : 'chat',
-        model_settings_view: record.settings == null ? undefined : parseModelSettingsView(record.settings, endpoint),
-        provider: asOptionalNullableString(record.provider) || 'codex',
-        model: asOptionalNullableString(record.model),
-        reasoning_effort: asOptionalNullableString(record.reasoning_effort),
-        title: asOptionalString(record.title) || 'New thread',
-        created_at: asOptionalString(record.created_at) || '',
-        updated_at: asOptionalString(record.updated_at) || asOptionalString(record.created_at) || '',
-        turns,
-        segments,
-        event_log,
-        flow_run_requests,
-        flow_launches,
-        proposed_plans,
-    }
-}
-
-export function parseConversationStreamEventResponse(
-    payload: unknown,
-    endpoint = '/workspace/api/live/events',
-): ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse | ConversationSegmentTombstoneEventResponse | null {
-    const record = expectObjectRecord(payload, endpoint)
-    const type = typeof record.type === 'string' ? record.type : ''
-    const eventRevision = typeof record.revision === 'number' && Number.isFinite(record.revision)
-        ? record.revision
-        : null
-    if (type === 'turn_upsert') {
-        const turn = parseConversationTurnResponse(record.turn)
-        if (
-            !turn
-            || typeof record.conversation_id !== 'string'
-            || typeof record.project_path !== 'string'
-            || typeof record.title !== 'string'
-            || typeof record.updated_at !== 'string'
-            || eventRevision === null
-        ) {
-            return null
-        }
-        return {
-            type: 'turn_upsert',
-            revision: eventRevision,
-            conversation_id: record.conversation_id,
-            project_path: record.project_path,
-            title: record.title,
-            updated_at: record.updated_at,
-            turn,
-        }
-    }
-    if (type === 'segment_upsert') {
-        const segment = parseConversationSegmentResponse(record.segment)
-        const flow_run_requests = Array.isArray(record.flow_run_requests)
-            ? record.flow_run_requests
-                .map((entry) => parseFlowRunRequestResponse(entry))
-                .filter((entry): entry is FlowRunRequestResponse => entry !== null)
-            : undefined
-        const flow_launches = Array.isArray(record.flow_launches)
-            ? record.flow_launches
-                .map((entry) => parseFlowLaunchResponse(entry))
-                .filter((entry): entry is FlowLaunchResponse => entry !== null)
-            : undefined
-        const proposed_plans = Array.isArray(record.proposed_plans)
-            ? record.proposed_plans
-                .map((entry) => parseProposedPlanArtifactResponse(entry))
-                .filter((entry): entry is ProposedPlanArtifactResponse => entry !== null)
-            : undefined
-        if (
-            !segment
-            || typeof record.conversation_id !== 'string'
-            || typeof record.project_path !== 'string'
-            || typeof record.title !== 'string'
-            || typeof record.updated_at !== 'string'
-            || eventRevision === null
-        ) {
-            return null
-        }
-        return {
-            type: 'segment_upsert',
-            revision: eventRevision,
-            conversation_id: record.conversation_id,
-            project_path: record.project_path,
-            title: record.title,
-            updated_at: record.updated_at,
-            segment,
-            ...(flow_run_requests ? { flow_run_requests } : {}),
-            ...(flow_launches ? { flow_launches } : {}),
-            ...(proposed_plans ? { proposed_plans } : {}),
-        }
-    }
-    if (type === 'segment_tombstone') {
-        if (
-            typeof record.conversation_id !== 'string'
-            || typeof record.project_path !== 'string'
-            || typeof record.title !== 'string'
-            || typeof record.updated_at !== 'string'
-            || typeof record.turn_id !== 'string'
-            || typeof record.segment_id !== 'string'
-            || eventRevision === null
-        ) {
-            return null
-        }
-        return {
-            type: 'segment_tombstone',
-            revision: eventRevision,
-            conversation_id: record.conversation_id,
-            project_path: record.project_path,
-            title: record.title,
-            updated_at: record.updated_at,
-            turn_id: record.turn_id,
-            segment_id: record.segment_id,
-        }
-    }
-    return null
 }
 
 export function parseConversationStreamDeltaEventResponse(
@@ -883,26 +1013,62 @@ export function parseConversationStreamDeltaEventResponse(
     return null
 }
 
+/** A conversation read whose 409 carries a Reset rather than an error detail. */
+async function fetchConversationRead<T>(
+    path: string,
+    endpoint: string,
+    parser: (payload: unknown, endpoint: string) => T,
+): Promise<T> {
+    const response = await fetch(workspaceUrl(path))
+    if (response.status === 409) {
+        const reset = await response.clone().json()
+            .then((payload: unknown) => parseConversationResetResponse(payload, endpoint))
+            .catch(() => null)
+        if (reset) {
+            throw new ConversationResetError(endpoint, reset)
+        }
+    }
+    if (!response.ok) {
+        throw await extractHttpError(response, endpoint)
+    }
+    return parser(await parseJsonPayload(response, endpoint), endpoint)
+}
+
+/** Every project's summaries without a project path. */
 export async function fetchProjectConversationListValidated(
-    projectPath: string,
-): Promise<ConversationSummaryResponse[]> {
+    projectPath: string | null,
+): Promise<ConversationSummarySnapshot> {
     return fetchWorkspaceJsonValidated(
-        `/projects/conversations?project_path=${encodeURIComponent(projectPath)}`,
+        `/projects/conversations${projectPath === null ? '' : `?project_path=${encodeURIComponent(projectPath)}`}`,
         undefined,
         '/workspace/api/projects/conversations',
-        parseConversationSummaryListResponse,
+        parseConversationSummarySnapshotResponse,
     )
 }
 
-export async function fetchConversationSnapshotValidated(
+/** The newest page, or the page before `before`; a stale cursor throws ConversationResetError. */
+export async function fetchConversationPageValidated(
     conversationId: string,
     projectPath: string,
-): Promise<ConversationSnapshotResponse> {
-    return fetchWorkspaceJsonValidated(
-        `/conversations/${encodeURIComponent(conversationId)}?project_path=${encodeURIComponent(projectPath)}`,
-        undefined,
+    before: string | null = null,
+): Promise<ConversationPage> {
+    return fetchConversationRead(
+        `/conversations/${encodeURIComponent(conversationId)}?project_path=${encodeURIComponent(projectPath)}&limit=50${before === null ? '' : `&before=${encodeURIComponent(before)}`}`,
         '/workspace/api/conversations/{id}',
-        parseConversationSnapshotResponse,
+        parseConversationPageResponse,
+    )
+}
+
+export async function fetchConversationChangesValidated(
+    conversationId: string,
+    projectPath: string,
+    generation: string,
+    since: string,
+): Promise<ConversationBatch> {
+    return fetchConversationRead(
+        `/conversations/${encodeURIComponent(conversationId)}/changes?project_path=${encodeURIComponent(projectPath)}&generation=${encodeURIComponent(generation)}&since=${encodeURIComponent(since)}`,
+        '/workspace/api/conversations/{id}/changes',
+        (payload, endpoint) => parseConversationBatchResponse(payload, endpoint),
     )
 }
 
@@ -998,7 +1164,7 @@ export async function sendConversationTurnValidated(
         reasoning_effort?: string | null
         chat_mode?: ConversationChatMode | null
     },
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationAcceptance> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/turns`,
         {
@@ -1007,7 +1173,7 @@ export async function sendConversationTurnValidated(
             body: JSON.stringify(payload),
         },
         '/workspace/api/conversations/{id}/turns',
-        parseConversationSnapshotResponse,
+        parseConversationAcceptanceResponse,
     )
 }
 
@@ -1016,7 +1182,7 @@ export async function retryConversationTurnValidated(
     conversationId: string,
     turnId: string,
     projectPath: string,
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationAcceptance> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
         {
@@ -1025,7 +1191,7 @@ export async function retryConversationTurnValidated(
             body: JSON.stringify({ project_path: projectPath }),
         },
         '/workspace/api/conversations/{id}/turns/{turnId}/retry',
-        parseConversationSnapshotResponse,
+        parseConversationAcceptanceResponse,
     )
 }
 
@@ -1040,7 +1206,7 @@ export async function updateConversationSettingsValidated(
         model?: string | null
         reasoning_effort?: string | null
     },
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/settings`,
         {
@@ -1049,7 +1215,7 @@ export async function updateConversationSettingsValidated(
             body: JSON.stringify({ ...payload, model_settings: modelSettingsForApi(payload.model_settings) }),
         },
         '/workspace/api/conversations/{id}/settings',
-        parseConversationSnapshotResponse,
+        parseConversationMutationAckResponse,
     )
 }
 
@@ -1060,7 +1226,7 @@ export async function submitConversationRequestUserInputValidated(
         project_path: string
         answers: Record<string, string>
     },
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/request-user-input/${encodeURIComponent(requestId)}/answer`,
         {
@@ -1069,7 +1235,7 @@ export async function submitConversationRequestUserInputValidated(
             body: JSON.stringify(payload),
         },
         '/workspace/api/conversations/{id}/request-user-input/{requestId}/answer',
-        parseConversationSnapshotResponse,
+        parseConversationMutationAckResponse,
     )
 }
 
@@ -1086,7 +1252,7 @@ export async function reviewFlowRunRequestValidated(
         llm_profile?: string | null
         reasoning_effort?: string | null
     },
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/flow-run-requests/${encodeURIComponent(requestId)}/review`,
         {
@@ -1095,7 +1261,7 @@ export async function reviewFlowRunRequestValidated(
             body: JSON.stringify(payload),
         },
         '/workspace/api/conversations/{id}/flow-run-requests/{requestId}/review',
-        parseConversationSnapshotResponse,
+        parseConversationMutationAckResponse,
     )
 }
 
@@ -1107,7 +1273,7 @@ export async function reviewProposedPlanValidated(
         disposition: 'approved' | 'rejected'
         review_note?: string | null
     },
-): Promise<ConversationSnapshotResponse> {
+): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/proposed-plans/${encodeURIComponent(planId)}/review`,
         {
@@ -1116,7 +1282,7 @@ export async function reviewProposedPlanValidated(
             body: JSON.stringify(payload),
         },
         '/workspace/api/conversations/{id}/proposed-plans/{planId}/review',
-        parseConversationSnapshotResponse,
+        parseConversationMutationAckResponse,
     )
 }
 

@@ -5,7 +5,10 @@ import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import {
+    ConversationResetError,
+    compareRevisions,
     conversationAttachmentUrl,
+    fetchConversationPageValidated,
     submitConversationRequestUserInputValidated,
     interruptConversationTurnValidated,
     updateConversationSettingsValidated,
@@ -33,6 +36,8 @@ import {
 
 const INHERITED_MODEL_SETTINGS: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 
+const getConversationRecord = (conversationId: string) => useStore.getState().homeConversationCache.conversationsById[conversationId]
+
 export function useProjectsHomeController() {
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -54,11 +59,10 @@ export function useProjectsHomeController() {
     const activeConversationId = activeProjectScope?.conversationId ?? null
     const inheritedModelSettings = useInheritedModelSettings(activeProjectPath)
     const {
-        applyConversationSnapshot,
+        applyConversationBatch,
+        applyConversationPage,
         commitConversationCache,
         conversationCache,
-        conversationCacheRef,
-        setConversationSummaryList,
     } = useProjectConversationCache({
         persistProjectState,
         projectSessionsByPath,
@@ -71,7 +75,8 @@ export function useProjectsHomeController() {
     const activeConversationSummary = activeProjectPath && activeConversationId
         ? conversationCache.summariesByProjectPath[activeProjectPath]?.find((entry) => entry.conversation_id === activeConversationId) ?? null
         : null
-    const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationRecord === null
+    const isConversationUnavailable = Boolean(activeConversationId && conversationCache.unavailableConversationIds?.[activeConversationId])
+    const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationRecord === null && !isConversationUnavailable
     const {
         chatDraft,
         expandedThinkingEntries,
@@ -205,7 +210,7 @@ export function useProjectsHomeController() {
         }
         if (
             pendingConversationTurn.conversationId === activeConversationRecord.conversation_id
-            && activeConversationRecord.revision > pendingConversationTurn.afterRevision
+            && compareRevisions(activeConversationRecord.latestRevision, pendingConversationTurn.afterRevision) > 0
         ) {
             setPendingConversationTurn(null)
         }
@@ -245,15 +250,13 @@ export function useProjectsHomeController() {
         chatDraft,
         attachments: composerAttachments.attachments,
         isUploadBlocking: composerAttachments.isUploadBlocking,
-        isChatInputDisabled: isChatSubmissionDisabled,
+        isChatInputDisabled: isChatSubmissionDisabled || isConversationUnavailable,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
         ),
-        getCurrentConversationRevision: (conversationId) => (
-            conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
-        ),
-        applyConversationSnapshot,
+        getConversationRecord,
+        applyConversationBatch,
         formatErrorMessage: extractApiErrorMessage,
         setChatDraft,
         setPanelError,
@@ -273,19 +276,19 @@ export function useProjectsHomeController() {
         }
         const save = { values }
         chatSettingsSaves.current.set(conversationId, save)
-        let revision = String(conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0)
+        let revision = getConversationRecord(conversationId)?.settingsRevision ?? '0'
         try {
             // Coalesce edits while a save is in flight, then use its acknowledged revision.
             // A conflict stops the queue and retains the draft; never retry over another writer.
             while (true) {
                 const saving = save.values
-                const snapshot = await updateConversationSettingsValidated(conversationId, {
+                const ack = await updateConversationSettingsValidated(conversationId, {
                     project_path: activeProjectPath,
                     expected_revision: revision,
                     model_settings: saving,
                 })
-                revision = String(snapshot.revision)
-                applyConversationSnapshot(activeProjectPath, snapshot, 'chat-settings-response')
+                revision = ack.revision
+                applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
                 if (save.values === saving) break
             }
             setChatSettingsDrafts((drafts) => {
@@ -298,7 +301,7 @@ export function useProjectsHomeController() {
         } finally {
             chatSettingsSaves.current.delete(conversationId)
         }
-    }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError, conversationCacheRef, currentModelSettings])
+    }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
 
     const onUseModelDefaults = () => {
         if (!activeProjectPath || !activeConversationId || pendingChatSettings) return
@@ -310,10 +313,8 @@ export function useProjectsHomeController() {
         onDeleteConversationThread,
         onSelectConversationThread,
     } = useProjectThreadActions({
-        conversationCacheRef,
-        setConversationSummaryList,
         activateConversationThread,
-        applyConversationSnapshot,
+        applyConversationBatch,
         updateProjectSessionState,
         clearHomeConversationSession,
         setPanelError,
@@ -330,7 +331,7 @@ export function useProjectsHomeController() {
     } = useConversationReviews({
         activeConversationId,
         activeProjectPath,
-        applyConversationSnapshot,
+        applyConversationBatch,
         formatErrorMessage: extractApiErrorMessage,
         model,
         setPanelError,
@@ -364,7 +365,7 @@ export function useProjectsHomeController() {
             [requestId]: true,
         }))
         try {
-            const snapshot = await submitConversationRequestUserInputValidated(
+            const ack = await submitConversationRequestUserInputValidated(
                 activeConversationId,
                 requestId,
                 {
@@ -372,7 +373,7 @@ export function useProjectsHomeController() {
                     answers,
                 },
             )
-            applyConversationSnapshot(activeProjectPath, snapshot, 'request-user-input-answer')
+            applyConversationBatch(activeProjectPath, activeConversationId, ack.changes, 'mutation', 'request-user-input-answer')
         } catch (error) {
             const message = extractApiErrorMessage(error, 'Unable to submit the requested input.')
             setRequestUserInputActionError(message)
@@ -383,7 +384,43 @@ export function useProjectsHomeController() {
                 return next
             })
         }
-    }, [activeConversationId, activeProjectPath, applyConversationSnapshot])
+    }, [activeConversationId, activeProjectPath, applyConversationBatch])
+
+    // Older pages load on request; the newest window loads with the chat.
+    const [olderMessages, setOlderMessages] = useState<{ conversationId: string; loading: boolean; error: string | null } | null>(null)
+    const activeOlderMessages = olderMessages?.conversationId === activeConversationId ? olderMessages : null
+    const onLoadOlderMessages = useCallback(async () => {
+        const record = activeConversationId ? getConversationRecord(activeConversationId) : undefined
+        const cursor = record?.olderCursor
+        if (!activeProjectPath || !record || !cursor) return
+        const conversationId = record.conversation_id
+        setOlderMessages({ conversationId, loading: true, error: null })
+        // A newer window, a reset or a generation change replaces the window this request was
+        // issued for, and its response is then stale for good, even if the cursor comes back.
+        const { windowEpoch } = record
+        const isCurrentWindow = () => {
+            const current = getConversationRecord(conversationId)
+            return current?.windowEpoch === windowEpoch && current.olderCursor === cursor && !current.resetting
+        }
+        try {
+            try {
+                const page = await fetchConversationPageValidated(conversationId, activeProjectPath, cursor)
+                if (isCurrentWindow()) {
+                    applyConversationPage(activeProjectPath, page, 'older', 'older-page')
+                }
+            } catch (error) {
+                if (!(error instanceof ConversationResetError)) throw error
+                // Turns moved or the store changed under the cursor: start again from the newest window.
+                const page = await fetchConversationPageValidated(conversationId, activeProjectPath)
+                if (isCurrentWindow()) {
+                    applyConversationPage(activeProjectPath, page, 'window', 'older-page-reset')
+                }
+            }
+            setOlderMessages(null)
+        } catch (error) {
+            setOlderMessages({ conversationId, loading: false, error: extractApiErrorMessage(error, 'Unable to load older messages.') })
+        }
+    }, [activeConversationId, activeProjectPath, applyConversationPage])
 
     return {
         isNarrowViewport,
@@ -414,6 +451,11 @@ export function useProjectsHomeController() {
             onReviewProposedPlan,
             onOpenFlowRun,
             onRetryTurn,
+            isConversationUnavailable,
+            hasOlderMessages: Boolean(activeConversationRecord?.olderCursor),
+            isLoadingOlderMessages: activeOlderMessages?.loading === true,
+            olderMessagesError: activeOlderMessages?.error ?? null,
+            onLoadOlderMessages,
         },
         sidebarProps: {
             isNarrowViewport,
@@ -458,8 +500,9 @@ export function useProjectsHomeController() {
             isAttachmentSendPending: composerAttachments.isSending,
             isUploadBlocking: composerAttachments.isUploadBlocking,
             chatSendButtonLabel,
-            isChatInputDisabled,
-            isChatSendDisabled: isChatSubmissionDisabled,
+            // A deleted chat takes no more messages.
+            isChatInputDisabled: isChatInputDisabled || isConversationUnavailable,
+            isChatSendDisabled: isChatSubmissionDisabled || isConversationUnavailable,
             panelError: panelError || activeConversationRecord?.model_settings_view?.validation_errors?.join(' ') || null,
             onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn ? onStopTurn : undefined,
             onChatComposerSubmit,

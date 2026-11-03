@@ -2,6 +2,9 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { applyConversationPage } from '@/features/projects/model/projectsHomeState'
+import { conversationPage } from '@/test/conversationWire'
 import { MissionTranscript } from '../MissionTranscript'
 
 const retry = vi.hoisted(() => vi.fn(async () => ({})))
@@ -24,11 +27,14 @@ const snapshot = (segmentKind: 'reasoning' | 'plan'): ConversationSnapshotRespon
     }],
     event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [],
 })
+// Turns share a timestamp, so each carries its transcript position.
+const positioned = (fixture: ConversationSnapshotResponse) => ({ ...fixture, turns: fixture.turns.map((turn, index) => ({ ...turn, position: index + 1 })) })
+const record = (fixture: ConversationSnapshotResponse) => applyConversationPage(undefined, parseConversationPageResponse(conversationPage(positioned(fixture))), 'window') ?? null
 
 it.each(['reasoning', 'plan'] as const)('offers sign-in and Retry on a failed mission turn with only a %s segment', async (kind) => {
     retry.mockClear()
     const reload = vi.fn()
-    render(<MissionTranscript conversation={{ conversationId: 'mission-1', snapshot: snapshot(kind), loading: false, error: '', reload }} project="/project" runs={new Map()} />)
+    render(<MissionTranscript conversation={{ conversationId: 'mission-1', record: record(snapshot(kind)), loading: false, error: '', reload }} project="/project" runs={new Map()} />)
 
     expect(screen.getByText('Claude Code needs sign-in. Your conversation is saved.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign in to Claude' })).toBeInTheDocument()
@@ -55,7 +61,7 @@ it('shows a message delivered into the running turn where it was sent, and one q
             segment('reply', 3, 'assistant_message', 'Read your note.'),
         ],
     }
-    render(<MissionTranscript conversation={{ conversationId: 'mission-1', snapshot: live, loading: false, error: '', reload: vi.fn() }} project="/project" runs={new Map()} />)
+    render(<MissionTranscript conversation={{ conversationId: 'mission-1', record: record(live), loading: false, error: '', reload: vi.fn() }} project="/project" runs={new Map()} />)
 
     expect(screen.getByText('Sent into the running turn')).toBeInTheDocument()
     expect(screen.getByText('Queued · starts when the current turn ends')).toBeInTheDocument()
@@ -63,4 +69,22 @@ it('shows a message delivered into the running turn where it was sent, and one q
     expect(text.indexOf('Working.')).toBeLessThan(text.indexOf('Use the docs.'))
     expect(text.indexOf('Use the docs.')).toBeLessThan(text.indexOf('Read your note.'))
     expect(text.indexOf('Read your note.')).toBeLessThan(text.indexOf('Then write the summary.'))
+})
+
+it('shows a message whose delivery into the running turn is unresolved as still sending, never as sent', () => {
+    const live: ConversationSnapshotResponse = {
+        ...snapshot('reasoning'),
+        turns: [
+            { id: 'turn-user', role: 'user', content: 'Deliver the prompt.', timestamp: at, kind: 'message', status: 'complete', artifact_id: null },
+            { id: 'turn-running', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'streaming', artifact_id: null },
+        ],
+        segments: [{
+            id: 'segment-user-message-sent-1', turn_id: 'turn-running', order: 1, kind: 'user_message', role: 'user',
+            status: 'delivery_pending', timestamp: at, updated_at: at, completed_at: null, content: 'Use the docs.',
+            artifact_id: null, error: null, source: null, tool_call: null,
+        }],
+    }
+    render(<MissionTranscript conversation={{ conversationId: 'mission-1', record: record(live), loading: false, error: '', reload: vi.fn() }} project="/project" runs={new Map()} />)
+    expect(screen.getByText('Sending into the running turn…')).toBeInTheDocument()
+    expect(screen.queryByText('Sent into the running turn')).toBeNull()
 })

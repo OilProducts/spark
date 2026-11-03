@@ -6,6 +6,19 @@ import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
+import { dispatchConversationLiveEnvelope, type LiveEnvelope } from '@/features/workspace/services/liveEvents'
+import {
+  artifactRow,
+  conversationAcceptance,
+  conversationBatch,
+  conversationMutationAck,
+  conversationPage,
+  liveEnvelope,
+  segmentRow,
+  summarySnapshot,
+  turnRow,
+  TEST_GENERATION,
+} from '@/test/conversationWire'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
@@ -47,27 +60,34 @@ const testRevisionFromTimestamp = (value: unknown): number => {
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
 }
 
-const withSnapshotSchema = <T extends Record<string, unknown>>(snapshot: T) => {
+const projectPathParam = (url: string) => new URL(url, 'http://localhost').searchParams.get('project_path')
+
+const conversationIdOf = (url: string) => decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
+
+const clientTurnIdOf = (init?: RequestInit) => String(JSON.parse(String(init?.body ?? '{}')).client_turn_id ?? '')
+
+/** A transcript-shaped conversation fixture; its revision is `revision_override`, else `updated_at` in seconds. */
+const conversationFixture = <T extends Record<string, unknown>>(fixture: T) => {
   const {
-    schema_version: _schemaVersion,
     revision: _revision,
     revision_override: revisionOverride,
     ...rest
-  } = snapshot
+  } = fixture
   return {
-    schema_version: 5,
     revision: typeof revisionOverride === 'number' ? revisionOverride : testRevisionFromTimestamp(rest.updated_at),
     ...rest,
   }
 }
 
-const asSegmentUpsertEvent = (payload: {
+/** The segment row a streamed event commits, at the event's revision. */
+const streamedSegmentRow = (payload: {
   conversation_id: string
   project_path: string
-  title: string
+  title?: string
   updated_at: string
   revision?: number
   event: {
+    id?: string
     turn_id: string
     sequence?: number
     timestamp: string
@@ -76,6 +96,7 @@ const asSegmentUpsertEvent = (payload: {
     content_delta?: string
     segment_id?: string
     segment?: Record<string, unknown>
+    tool_call_id?: string
     tool_call?: Record<string, unknown> | null
   }
 }) => {
@@ -114,39 +135,57 @@ const asSegmentUpsertEvent = (payload: {
     tool_call: payload.event.tool_call ?? null,
     source: null,
   }
-
-  return {
-    type: 'segment_upsert' as const,
-    revision: payload.revision ?? testRevisionFromTimestamp(payload.updated_at),
-    conversation_id: payload.conversation_id,
-    project_path: payload.project_path,
-    title: payload.title,
-    updated_at: payload.updated_at,
-    segment,
-  }
+  return segmentRow(payload.conversation_id, segment, String(payload.revision ?? testRevisionFromTimestamp(payload.updated_at)))
 }
 
-const dispatchConversationLivePayload = (payload: Record<string, unknown>) => {
-  const conversationId = typeof payload.conversation_id === 'string'
-    ? payload.conversation_id
-    : null
-  const projectPath = typeof payload.project_path === 'string'
-    ? payload.project_path
-    : null
-  if (!conversationId || !projectPath) {
-    return
-  }
+/** A live `conversation.changes` batch of `rows`, starting just below its oldest row. */
+const liveChangesBatch = (rows: Record<string, unknown>[]) => {
+  const oldest = rows.reduce((min, row) => {
+    const revision = BigInt(String(row.revision))
+    return revision < min ? revision : min
+  }, BigInt(String(rows[0]!.revision)))
+  return conversationBatch(rows, { from_revision: String(oldest - 1n) })
+}
 
+/** An SSE frame carrying a live `conversation.changes` batch. */
+const liveChangesData = (conversationId: string, projectPath: string, rows: Record<string, unknown>[]) => JSON.stringify(
+  liveEnvelope('conversation.changes', liveChangesBatch(rows), { conversationId, projectPath }),
+)
+
+/** An SSE frame opening a chat at the fixture's newest page. */
+const liveWindowData = (fixture: Record<string, unknown>) => JSON.stringify(liveEnvelope('conversation.window', conversationPage(fixture), {
+  conversationId: String(fixture.conversation_id),
+  projectPath: String(fixture.project_path),
+}))
+
+/** An SSE frame committing one turn at `revision`. */
+const liveTurnData = ({ conversation_id, project_path, revision, turn }: {
+  conversation_id: string | null | undefined
+  project_path: string
+  revision: number
+  turn: Record<string, unknown>
+}) => liveChangesData(String(conversation_id), project_path, [turnRow(String(conversation_id), turn, String(revision))])
+
+/** An SSE frame committing one streamed segment. */
+const liveSegmentData = (payload: Parameters<typeof streamedSegmentRow>[0] & { conversation_id: string | null | undefined }) => (
+  liveChangesData(String(payload.conversation_id), payload.project_path, [streamedSegmentRow({ ...payload, conversation_id: String(payload.conversation_id) })])
+)
+
+/** Delivers a live conversation envelope's payload to the open chat, as the live-events controller does. */
+const dispatchConversationLive = (type: string, conversationId: string, projectPath: string, payload: unknown) => {
   window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
-    detail: {
-      type: payload.type,
-      conversationId,
-      projectPath,
-      payload,
-    },
+    detail: { type, conversationId, projectPath, payload },
   }))
 }
 
+const ignoreSummaryFeed = {
+  onSummarySnapshot: () => {},
+  onSummaryChanges: () => {},
+  onSummaryReset: () => {},
+  onConversationReset: () => {},
+}
+
+/** Routes the live stream's conversation envelopes to the open chat, like the live-events controller. */
 function TestConversationLiveBridge() {
   useEffect(() => {
     if (typeof EventSource === 'undefined') {
@@ -155,8 +194,7 @@ function TestConversationLiveBridge() {
     const eventSource = new EventSource('/workspace/api/live/events')
     eventSource.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as Record<string, unknown>
-        dispatchConversationLivePayload(payload)
+        dispatchConversationLiveEnvelope(JSON.parse(event.data) as LiveEnvelope, ignoreSummaryFeed)
       } catch {
         // Tests intentionally ignore malformed stream payloads.
       }
@@ -185,7 +223,7 @@ const buildPendingSendSnapshot = ({
   assistantTurnId?: string
   createdAt: string
   updatedAt: string
-}) => withSnapshotSchema({
+}) => conversationFixture({
   conversation_id: conversationId,
   project_path: '/tmp/chat-project',
   title,
@@ -214,7 +252,6 @@ const buildPendingSendSnapshot = ({
     },
   ],
   segments: [],
-  event_log: [],
 })
 
 // Opens a chat in the chat project already shown.
@@ -285,7 +322,7 @@ describe('ProjectsPanel', () => {
         })
       }
       if (url.includes('/workspace/api/projects/conversations')) {
-        return new Response(JSON.stringify([]), {
+        return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
@@ -390,7 +427,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -445,6 +482,7 @@ describe('ProjectsPanel', () => {
     const user = userEvent.setup()
     let resolveTurnResponse: ((response: Response) => void) | null = null
     let clientTurnId = ''
+    let conversationId = ''
 
     vi.stubGlobal(
       'fetch',
@@ -458,7 +496,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -470,7 +508,8 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
-          clientTurnId = JSON.parse(String(init.body)).client_turn_id
+          clientTurnId = clientTurnIdOf(init)
+          conversationId = conversationIdOf(url)
           return await new Promise<Response>((resolve) => {
             resolveTurnResponse = resolve
           })
@@ -500,8 +539,8 @@ describe('ProjectsPanel', () => {
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
-          conversation_id: 'conversation-chat-project-1',
+        JSON.stringify(conversationAcceptance(conversationFixture({
+          conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           turns: [
             {
@@ -524,8 +563,7 @@ describe('ProjectsPanel', () => {
               parent_turn_id: clientTurnId,
             },
           ],
-          event_log: [],
-        })),
+        }), clientTurnId, { assistant_turn_id: 'turn-assistant-1' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -553,7 +591,7 @@ describe('ProjectsPanel', () => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
@@ -573,7 +611,6 @@ describe('ProjectsPanel', () => {
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
     renderProjectsPanel()
 
-    const conversationIdOf = (url: string) => decodeURIComponent(url.split('/workspace/api/conversations/')[1]!.split('/')[0]!)
     const userTurn = (id: string, content: string) => ({
       id, role: 'user', content, timestamp: '2026-03-06T21:45:00Z', status: 'complete', kind: 'message', artifact_id: null,
     })
@@ -581,7 +618,7 @@ describe('ProjectsPanel', () => {
       id: 'turn-assistant-1', role: 'assistant', content: '', timestamp: '2026-03-06T21:45:02Z',
       status: 'streaming', kind: 'message', artifact_id: null,
     }
-    const state = (conversationId: string, revision: number, turns: unknown[], segments: unknown[] = []) => withSnapshotSchema({
+    const state = (conversationId: string, revision: number, turns: unknown[], segments: unknown[] = []) => conversationFixture({
       conversation_id: conversationId,
       project_path: '/tmp/chat-project',
       title: 'Thread',
@@ -590,7 +627,6 @@ describe('ProjectsPanel', () => {
       revision_override: revision,
       turns,
       segments,
-      event_log: [],
     })
     const rowOf = (text: string) => {
       const history = screen.getByTestId('project-ai-conversation-history-list')
@@ -606,15 +642,10 @@ describe('ProjectsPanel', () => {
     const conversationId = conversationIdOf(posts[0]!.url)
     const firstId = String(posts[0]!.body.client_turn_id)
     const firstRow = await waitFor(() => rowOf('First message.'))
-    act(() => dispatchConversationLivePayload({
-      type: 'conversation_snapshot',
-      conversation_id: conversationId,
-      project_path: '/tmp/chat-project',
-      state: state(conversationId, 1, []),
-    }))
+    act(() => dispatchConversationLive('conversation.window', conversationId, '/tmp/chat-project', conversationPage(state(conversationId, 1, []))))
     expect(rowOf('First message.')).toBe(firstRow)
     await act(async () => posts[0]!.respond(new Response(
-      JSON.stringify(state(conversationId, 3, [userTurn(firstId, 'First message.'), runningTurn])),
+      JSON.stringify(conversationAcceptance(state(conversationId, 3, [userTurn(firstId, 'First message.'), runningTurn]), firstId, { assistant_turn_id: 'turn-assistant-1' })),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     )))
     await waitFor(() => expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn'))
@@ -626,21 +657,21 @@ describe('ProjectsPanel', () => {
     await waitFor(() => expect(posts).toHaveLength(2))
     const secondId = String(posts[1]!.body.client_turn_id)
     const secondRow = await waitFor(() => rowOf('Second message.'))
-    act(() => dispatchConversationLivePayload(asSegmentUpsertEvent({
+    act(() => dispatchConversationLive('conversation.changes', conversationId, '/tmp/chat-project', liveChangesBatch([streamedSegmentRow({
       conversation_id: conversationId,
       project_path: '/tmp/chat-project',
       title: 'Thread',
       updated_at: '2026-03-06T21:45:03Z',
       revision: 4,
       event: { turn_id: 'turn-assistant-1', sequence: 1, timestamp: '2026-03-06T21:45:03Z', kind: 'content_delta', content_delta: 'Working' },
-    })))
+    })])))
     expect(rowOf('Second message.')).toBe(secondRow)
     await act(async () => posts[1]!.respond(new Response(
-      JSON.stringify(state(conversationId, 4, [userTurn(firstId, 'First message.'), runningTurn])),
+      JSON.stringify(conversationAcceptance(state(conversationId, 4, [userTurn(firstId, 'First message.'), runningTurn]), secondId, { assistant_turn_id: 'turn-assistant-1' })),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     )))
     expect(rowOf('Second message.')).toBe(secondRow)
-    act(() => dispatchConversationLivePayload(asSegmentUpsertEvent({
+    act(() => dispatchConversationLive('conversation.changes', conversationId, '/tmp/chat-project', liveChangesBatch([streamedSegmentRow({
       conversation_id: conversationId,
       project_path: '/tmp/chat-project',
       title: 'Thread',
@@ -656,7 +687,7 @@ describe('ProjectsPanel', () => {
           completed_at: null, artifact_id: null, error: null, tool_call: null, source: null,
         },
       },
-    })))
+    })])))
     await waitFor(() => expect(useStore.getState().homeConversationSessionsById[conversationId]?.pendingMessages).toEqual([]))
     expect(rowOf('Second message.')).toBe(secondRow)
     expect(rowOf('First message.')).toBe(firstRow)
@@ -679,7 +710,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -692,8 +723,8 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
           return new Response(
-            JSON.stringify(withSnapshotSchema({
-              conversation_id: 'conversation-home-project-1',
+            JSON.stringify(conversationAcceptance(conversationFixture({
+              conversation_id: conversationIdOf(url),
               project_path: canonicalProjectPath,
               title: 'Reply with a one-line acknowledgement only.',
               created_at: '2026-03-07T15:55:00Z',
@@ -701,7 +732,7 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-07T15:55:04Z'),
               turns: [
                 {
-                  id: 'turn-user-1',
+                  id: clientTurnIdOf(init),
                   role: 'user',
                   content: 'Reply with a one-line acknowledgement only.',
                   timestamp: '2026-03-07T15:55:00Z',
@@ -717,11 +748,7 @@ describe('ProjectsPanel', () => {
                   artifact_id: null,
                 },
               ],
-              event_log: [],
-
-
-
-            })),
+            }), clientTurnIdOf(init), { assistant_turn_id: 'turn-assistant-1' })),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -800,10 +827,6 @@ describe('ProjectsPanel', () => {
                 source: null,
               },
             ],
-            event_log: [],
-
-
-
           })
 
     vi.stubGlobal(
@@ -823,7 +846,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-active-turn',
               conversation_handle: 'amber-otter',
@@ -834,13 +857,13 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
               last_message_preview: 'Still working on it.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-active-turn') && !url.includes('/turns')) {
-          return new Response(JSON.stringify(withSnapshotSchema(activeSnapshot([]))), {
+          return new Response(JSON.stringify(conversationPage(conversationFixture(activeSnapshot([])))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -848,15 +871,15 @@ describe('ProjectsPanel', () => {
         if (url.endsWith('/turns') && init?.method === 'POST') {
           sendRequests.push(url)
           // The running turn could not take it, so the server queued it.
-          return new Response(JSON.stringify(withSnapshotSchema(activeSnapshot([{
-            id: 'turn-user-queued',
+          return new Response(JSON.stringify(conversationAcceptance(conversationFixture(activeSnapshot([{
+            id: clientTurnIdOf(init),
             role: 'user',
             content: 'Can I interrupt?',
             timestamp: '2026-03-15T14:05:03Z',
             status: 'queued',
             kind: 'message',
             artifact_id: null,
-          }]))), {
+          }])), clientTurnIdOf(init), { status: 'queued' })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -906,14 +929,14 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           return new Response(
-            JSON.stringify(withSnapshotSchema({
+            JSON.stringify(conversationPage(conversationFixture({
               conversation_id: 'conversation-ordering-1',
               project_path: '/tmp/chat-project',
               title: 'Ordering thread',
@@ -1010,11 +1033,7 @@ describe('ProjectsPanel', () => {
                   source: null,
                 },
               ],
-              event_log: [],
-
-
-
-            })),
+            }))),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -1064,14 +1083,14 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           return new Response(
-            JSON.stringify(withSnapshotSchema({
+            JSON.stringify(conversationPage(conversationFixture({
               conversation_id: 'conversation-tool-collapse-1',
               project_path: '/tmp/chat-project',
               title: 'Collapsed tool call thread',
@@ -1143,11 +1162,7 @@ describe('ProjectsPanel', () => {
                   source: null,
                 },
               ],
-              event_log: [],
-
-
-
-            })),
+            }))),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -1193,14 +1208,14 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           return new Response(
-            JSON.stringify(withSnapshotSchema({
+            JSON.stringify(conversationPage(conversationFixture({
               conversation_id: 'conversation-thinking-collapse-1',
               project_path: '/tmp/chat-project',
               title: 'Collapsed thinking thread',
@@ -1247,11 +1262,7 @@ describe('ProjectsPanel', () => {
                   source: null,
                 },
               ],
-              event_log: [],
-
-
-
-            })),
+            }))),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -1303,7 +1314,7 @@ describe('ProjectsPanel', () => {
 
     let resolveSnapshot: ((response: Response) => void) | null = null
     let snapshotFetchCount = 0
-    const initialSnapshot = withSnapshotSchema({
+    const initialSnapshot = conversationFixture({
       conversation_id: 'conversation-pre-snapshot-replay',
       project_path: '/tmp/chat-project',
       title: 'Pre-snapshot replay',
@@ -1322,7 +1333,6 @@ describe('ProjectsPanel', () => {
         },
       ],
       segments: [],
-      event_log: [],
       flow_run_requests: [],
       flow_launches: [],
       proposed_plans: [],
@@ -1339,7 +1349,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-pre-snapshot-replay',
               project_path: '/tmp/chat-project',
@@ -1349,7 +1359,7 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-07T15:30:01Z'),
               last_message_preview: 'Start from the real snapshot.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -1379,14 +1389,15 @@ describe('ProjectsPanel', () => {
     expect(MockEventSource.instances).toHaveLength(1)
     expect(snapshotFetchCount).toBe(1)
 
+    // The stream opens with its own window and goes live while the page request is still out.
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveWindowData(initialSnapshot),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveTurnData({
           conversation_id: 'conversation-pre-snapshot-replay',
           project_path: '/tmp/chat-project',
-          title: 'Pre-snapshot replay',
-          updated_at: '2026-03-07T15:30:02Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           turn: {
             id: 'turn-assistant-live',
@@ -1400,7 +1411,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: 'conversation-pre-snapshot-replay',
           project_path: '/tmp/chat-project',
           title: 'Pre-snapshot replay',
@@ -1415,15 +1426,18 @@ describe('ProjectsPanel', () => {
               channel: 'assistant',
             content_delta: 'Working on the streamed update.',
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
-    expect(screen.queryByText('Working on the streamed update.')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Working on the streamed update.')
+    })
 
+    // The page read before those changes lands last; the newer live rows survive it.
     resolveSnapshot?.(
       new Response(
-        JSON.stringify(initialSnapshot),
+        JSON.stringify(conversationPage(initialSnapshot)),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -1471,20 +1485,20 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-stale-stream')
-          return new Response(JSON.stringify(buildPendingSendSnapshot({
+          return new Response(JSON.stringify(conversationPage(buildPendingSendSnapshot({
             conversationId,
             title: 'Keep the streamed thinking visible.',
             userContent: 'Keep the streamed thinking visible.',
             createdAt: '2026-03-07T15:31:00Z',
             updatedAt: '2026-03-07T15:31:01Z',
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -1517,12 +1531,9 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Keep the streamed thinking visible.',
-          updated_at: '2026-03-07T15:31:02Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:31:02Z'),
           turn: {
             id: 'turn-assistant-live',
@@ -1537,7 +1548,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Keep the streamed thinking visible.',
@@ -1570,7 +1581,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
@@ -1583,7 +1594,7 @@ describe('ProjectsPanel', () => {
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Keep the streamed thinking visible.',
@@ -1630,11 +1641,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-user-1', { assistant_turn_id: 'turn-assistant-live' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -1651,7 +1658,7 @@ describe('ProjectsPanel', () => {
     const user = userEvent.setup()
     const reviewCalls: Array<{ url: string; body: Record<string, unknown> }> = []
 
-    const pendingSnapshot = withSnapshotSchema({
+    const pendingSnapshot = conversationFixture({
       conversation_id: 'conversation-flow-run',
       conversation_handle: 'amber-otter',
       project_path: '/tmp/chat-project',
@@ -1698,7 +1705,6 @@ describe('ProjectsPanel', () => {
           source: null,
         },
       ],
-      event_log: [],
 
       flow_run_requests: [
         {
@@ -1720,11 +1726,9 @@ describe('ProjectsPanel', () => {
           review_message: null,
         },
       ],
-
-
     })
 
-    const launchedSnapshot = withSnapshotSchema({
+    const launchedSnapshot = conversationFixture({
       ...pendingSnapshot,
       updated_at: '2026-03-09T21:00:05Z',
       revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
@@ -1751,7 +1755,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-flow-run',
               conversation_handle: 'amber-otter',
@@ -1762,7 +1766,7 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'I can request that launch.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -1772,13 +1776,13 @@ describe('ProjectsPanel', () => {
             url,
             body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
           })
-          return new Response(JSON.stringify(launchedSnapshot), {
+          return new Response(JSON.stringify(conversationMutationAck(launchedSnapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-flow-run') && !init?.method) {
-          return new Response(JSON.stringify(pendingSnapshot), {
+          return new Response(JSON.stringify(conversationPage(pendingSnapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -1824,7 +1828,7 @@ describe('ProjectsPanel', () => {
     const user = userEvent.setup()
     const reviewCalls: Array<{ url: string; body: Record<string, unknown> }> = []
 
-    const pendingSnapshot = withSnapshotSchema({
+    const pendingSnapshot = conversationFixture({
       conversation_id: 'conversation-proposed-plan',
       conversation_handle: 'amber-otter',
       project_path: '/tmp/chat-project',
@@ -1872,7 +1876,6 @@ describe('ProjectsPanel', () => {
           source: null,
         },
       ],
-      event_log: [],
       flow_run_requests: [],
       flow_launches: [],
       proposed_plans: [
@@ -1897,7 +1900,7 @@ describe('ProjectsPanel', () => {
       ],
     })
 
-    const approvedSnapshot = withSnapshotSchema({
+    const approvedSnapshot = conversationFixture({
       ...pendingSnapshot,
       updated_at: '2026-03-09T21:00:05Z',
       revision: testRevisionFromTimestamp('2026-03-09T21:00:05Z'),
@@ -1966,7 +1969,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-proposed-plan',
               conversation_handle: 'amber-otter',
@@ -1977,7 +1980,7 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'Draft the implementation plan.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -1987,13 +1990,13 @@ describe('ProjectsPanel', () => {
             url,
             body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
           })
-          return new Response(JSON.stringify(approvedSnapshot), {
+          return new Response(JSON.stringify(conversationMutationAck(approvedSnapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-proposed-plan') && !init?.method) {
-          return new Response(JSON.stringify(pendingSnapshot), {
+          return new Response(JSON.stringify(conversationPage(pendingSnapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2051,7 +2054,7 @@ describe('ProjectsPanel', () => {
 
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
-    const snapshotWithoutArtifact = withSnapshotSchema({
+    const snapshotWithoutArtifact = conversationFixture({
       conversation_id: 'conversation-streamed-plan',
       conversation_handle: 'amber-otter',
       project_path: '/tmp/chat-project',
@@ -2081,7 +2084,6 @@ describe('ProjectsPanel', () => {
         },
       ],
       segments: [],
-      event_log: [],
       flow_run_requests: [],
       flow_launches: [],
       proposed_plans: [],
@@ -2118,7 +2120,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-streamed-plan',
               conversation_handle: 'amber-otter',
@@ -2129,14 +2131,14 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-09T21:00:03Z'),
               last_message_preview: 'Draft the implementation plan.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-streamed-plan') && !url.includes('/events')) {
           snapshotFetchCount += 1
-          return new Response(JSON.stringify(snapshotWithoutArtifact), {
+          return new Response(JSON.stringify(conversationPage(snapshotWithoutArtifact)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2159,10 +2161,11 @@ describe('ProjectsPanel', () => {
 
     expect(screen.queryByTestId('project-proposed-plan-approve-button-proposed-plan-inline')).not.toBeInTheDocument()
 
+    // The plan segment and its proposed-plan artifact commit in one live batch.
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          ...asSegmentUpsertEvent({
+        data: liveChangesData('conversation-streamed-plan', '/tmp/chat-project', [
+          streamedSegmentRow({
             conversation_id: 'conversation-streamed-plan',
             project_path: '/tmp/chat-project',
             title: 'Plan review',
@@ -2193,8 +2196,8 @@ describe('ProjectsPanel', () => {
               },
             },
           }),
-          proposed_plans: [proposedPlan],
-        }),
+          artifactRow('conversation-streamed-plan', 'proposed_plans', proposedPlan, String(testRevisionFromTimestamp('2026-03-09T21:00:02Z')), 1),
+        ]),
       } as MessageEvent<string>)
     })
 
@@ -2236,20 +2239,20 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-completes-before-post')
-          return new Response(JSON.stringify(buildPendingSendSnapshot({
+          return new Response(JSON.stringify(conversationPage(buildPendingSendSnapshot({
             conversationId,
             title: 'Stream this reply.',
             userContent: 'Stream this reply.',
             createdAt: '2026-03-07T15:30:00Z',
             updatedAt: '2026-03-07T15:30:01Z',
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2282,12 +2285,9 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Stream this reply.',
-          updated_at: '2026-03-07T15:30:02Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:30:02Z'),
           turn: {
             id: 'turn-assistant-live',
@@ -2301,7 +2301,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
@@ -2316,7 +2316,7 @@ describe('ProjectsPanel', () => {
               channel: 'assistant',
             content_delta: 'Working on',
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
@@ -2326,7 +2326,7 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
@@ -2359,15 +2359,12 @@ describe('ProjectsPanel', () => {
               phase: 'final_answer',
             },
           },
-        })),
+        }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Stream this reply.',
-          updated_at: '2026-03-07T15:30:04Z',
           revision: testRevisionFromTimestamp('2026-03-07T15:30:04Z'),
           turn: {
             id: 'turn-assistant-live',
@@ -2389,7 +2386,7 @@ describe('ProjectsPanel', () => {
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Stream this reply.',
@@ -2436,11 +2433,7 @@ describe('ProjectsPanel', () => {
               phase: 'final_answer',
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-user-1', { assistant_turn_id: 'turn-assistant-live' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -2484,21 +2477,21 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-compacted-transient')
-          return new Response(JSON.stringify(buildPendingSendSnapshot({
+          return new Response(JSON.stringify(conversationPage(buildPendingSendSnapshot({
             conversationId,
             title: 'Draft a spec.',
             userContent: 'Draft a spec.',
             assistantTurnId: 'turn-assistant-1',
             createdAt: '2026-03-08T19:10:00Z',
             updatedAt: '2026-03-08T19:10:01Z',
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2531,13 +2524,10 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Draft a spec.',
-          updated_at: '2026-03-08T19:10:01Z',
-          revision: testRevisionFromTimestamp('2026-03-08T19:10:01Z'),
+          revision: testRevisionFromTimestamp('2026-03-08T19:10:02Z'),
           turn: {
             id: 'turn-assistant-1',
             role: 'assistant',
@@ -2551,7 +2541,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
@@ -2584,10 +2574,10 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
@@ -2620,10 +2610,10 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
@@ -2672,10 +2662,10 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Draft a spec.',
@@ -2708,7 +2698,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
@@ -2721,7 +2711,7 @@ describe('ProjectsPanel', () => {
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: conversationId,
           revision_override: 9_999_999_999,
           project_path: '/tmp/chat-project',
@@ -2811,11 +2801,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-user-1', { assistant_turn_id: 'turn-assistant-1' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -2865,7 +2851,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -2902,14 +2888,18 @@ describe('ProjectsPanel', () => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
 
+    // The stream opens the not-yet-committed chat empty; the first commit then streams into it.
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: JSON.stringify(liveEnvelope('conversation.window', {
+          generation: TEST_GENERATION, watermark: '0', conversation_id: conversationId, rows: [],
+          turn_ids: [], pinned_turn_ids: [], pinned_artifact_ids: [], older_cursor: null,
+        }, { conversationId: String(conversationId), projectPath: '/tmp/chat-project' })),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Can you use the flow run request too?',
-          updated_at: '2026-03-08T19:28:40Z',
           revision: testRevisionFromTimestamp('2026-03-08T19:28:40Z'),
           turn: {
             id: 'turn-assistant-1',
@@ -2924,7 +2914,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
@@ -2957,10 +2947,10 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
@@ -2993,13 +2983,13 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
@@ -3063,11 +3053,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-user-1', { assistant_turn_id: 'turn-assistant-1' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -3122,7 +3108,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -3159,14 +3145,18 @@ describe('ProjectsPanel', () => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
 
+    // The stream opens the not-yet-committed chat empty; the first commit then streams into it.
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: JSON.stringify(liveEnvelope('conversation.window', {
+          generation: TEST_GENERATION, watermark: '0', conversation_id: conversationId, rows: [],
+          turn_ids: [], pinned_turn_ids: [], pinned_artifact_ids: [], older_cursor: null,
+        }, { conversationId: String(conversationId), projectPath: '/tmp/chat-project' })),
+      } as MessageEvent)
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Can you use the flow run request too?',
-          updated_at: '2026-03-08T21:18:16Z',
           revision: testRevisionFromTimestamp('2026-03-08T21:18:16Z'),
           turn: {
             id: 'turn-assistant-1',
@@ -3181,7 +3171,7 @@ describe('ProjectsPanel', () => {
         }),
       } as MessageEvent)
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
@@ -3214,13 +3204,13 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
           title: 'Can you use the flow run request too?',
@@ -3284,11 +3274,7 @@ describe('ProjectsPanel', () => {
               source: null,
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-user-1', { assistant_turn_id: 'turn-assistant-1' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -3336,14 +3322,14 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
           const conversationId = decodeURIComponent(url.match(/\/workspace\/api\/conversations\/([^/?]+)/)?.[1] ?? 'conversation-interleaved-streaming')
-          return new Response(JSON.stringify(buildPendingSendSnapshot({
+          return new Response(JSON.stringify(conversationPage(buildPendingSendSnapshot({
             conversationId,
             title: 'Test interleaved streaming.',
             userContent: 'Test interleaved streaming.',
@@ -3351,7 +3337,7 @@ describe('ProjectsPanel', () => {
             assistantTurnId: 'turn-assistant-interleaved',
             createdAt: '2026-03-08T20:09:59Z',
             updatedAt: '2026-03-08T20:10:00Z',
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -3382,13 +3368,10 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: conversationId,
           project_path: '/tmp/chat-project',
-          title: 'Test interleaved streaming.',
-          updated_at: '2026-03-08T20:10:00Z',
-          revision: testRevisionFromTimestamp('2026-03-08T20:10:00Z'),
+          revision: testRevisionFromTimestamp('2026-03-08T20:10:01Z'),
           turn: {
             id: 'turn-assistant-interleaved',
             role: 'assistant',
@@ -3509,7 +3492,7 @@ describe('ProjectsPanel', () => {
       ]
       for (const event of events) {
         MockEventSource.instances[0]?.onmessage?.({
-          data: JSON.stringify(asSegmentUpsertEvent({
+          data: liveSegmentData({
             conversation_id: conversationId,
             project_path: '/tmp/chat-project',
             title: 'Test interleaved streaming.',
@@ -3524,7 +3507,7 @@ describe('ProjectsPanel', () => {
               segment_id: event.segment_id,
               segment: event.segment,
             },
-          })),
+          }),
         } as MessageEvent)
       }
     })
@@ -3551,7 +3534,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-segments',
               project_path: '/tmp/chat-project',
@@ -3561,13 +3544,13 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-13T10:00:05Z'),
               last_message_preview: 'Here is the grounded plan.',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-segments') && !url.includes('/turns')) {
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationPage(conversationFixture({
             conversation_id: 'conversation-segments',
             project_path: '/tmp/chat-project',
             title: 'Segment thread',
@@ -3662,12 +3645,7 @@ describe('ProjectsPanel', () => {
                 },
               },
             ],
-            turn_events: [],
-            event_log: [],
-
-
-
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -3716,7 +3694,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([
+          return new Response(JSON.stringify(summarySnapshot([
             {
               conversation_id: 'conversation-segment-upsert',
               project_path: '/tmp/chat-project',
@@ -3726,13 +3704,13 @@ describe('ProjectsPanel', () => {
               revision: testRevisionFromTimestamp('2026-03-13T11:00:01Z'),
               last_message_preview: 'Planning',
             },
-          ]), {
+          ], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-segment-upsert') && !url.includes('/turns')) {
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationPage(conversationFixture({
             conversation_id: 'conversation-segment-upsert',
             project_path: '/tmp/chat-project',
             title: 'Segment upsert thread',
@@ -3783,12 +3761,7 @@ describe('ProjectsPanel', () => {
                 },
               },
             ],
-            turn_events: [],
-            event_log: [],
-
-
-
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -3817,7 +3790,7 @@ describe('ProjectsPanel', () => {
 
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify(asSegmentUpsertEvent({
+        data: liveSegmentData({
           conversation_id: 'conversation-segment-upsert',
           project_path: '/tmp/chat-project',
           title: 'Segment upsert thread',
@@ -3855,7 +3828,7 @@ describe('ProjectsPanel', () => {
               },
             },
           },
-        })),
+        }),
       } as MessageEvent)
     })
 
@@ -3879,7 +3852,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -3944,13 +3917,13 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/workspace/api/conversations/') && !init?.method) {
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationPage(conversationFixture({
             conversation_id: 'conversation-scroll-1',
             project_path: '/tmp/chat-scroll-project',
             title: 'Scroll thread',
@@ -3977,12 +3950,7 @@ describe('ProjectsPanel', () => {
                 artifact_id: null,
               },
             ],
-            turn_events: [],
-            event_log: [],
-
-
-
-          })), {
+          }))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4037,12 +4005,9 @@ describe('ProjectsPanel', () => {
     scrollHeight = 520
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: 'conversation-scroll-1',
           project_path: '/tmp/chat-scroll-project',
-          title: 'Scroll thread',
-          updated_at: '2026-03-06T18:00:10Z',
           revision: testRevisionFromTimestamp('2026-03-06T18:00:10Z'),
           turn: {
             id: 'turn-assistant-2',
@@ -4072,12 +4037,9 @@ describe('ProjectsPanel', () => {
     scrollHeight = 640
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
-        data: JSON.stringify({
-          type: 'turn_upsert',
+        data: liveTurnData({
           conversation_id: 'conversation-scroll-1',
           project_path: '/tmp/chat-scroll-project',
-          title: 'Scroll thread',
-          updated_at: '2026-03-06T18:00:15Z',
           revision: testRevisionFromTimestamp('2026-03-06T18:00:15Z'),
           turn: {
             id: 'turn-assistant-3',
@@ -4126,7 +4088,7 @@ describe('ProjectsPanel', () => {
       },
     ]
     const conversationSnapshots = {
-      'conversation-thread-a': withSnapshotSchema({
+      'conversation-thread-a': conversationFixture({
         conversation_id: 'conversation-thread-a',
         project_path: '/tmp/thread-project',
         title: 'Design thread',
@@ -4143,12 +4105,8 @@ describe('ProjectsPanel', () => {
             artifact_id: null,
           },
         ],
-        event_log: [],
-
-
-
       }),
-      'conversation-thread-b': withSnapshotSchema({
+      'conversation-thread-b': conversationFixture({
         conversation_id: 'conversation-thread-b',
         project_path: '/tmp/thread-project',
         title: 'Planning thread',
@@ -4165,10 +4123,6 @@ describe('ProjectsPanel', () => {
             artifact_id: null,
           },
         ],
-        event_log: [],
-
-
-
       }),
     }
 
@@ -4184,7 +4138,7 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/projects/conversations')) {
           return new Response(
-            JSON.stringify(conversationSummaries),
+            JSON.stringify(summarySnapshot(conversationSummaries, { project_path: projectPathParam(url) })),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -4194,7 +4148,7 @@ describe('ProjectsPanel', () => {
         const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
         const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
         if (conversationId && !url.includes('/turns')) {
-          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+          return new Response(JSON.stringify(conversationPage(conversationSnapshots[conversationId as keyof typeof conversationSnapshots])), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4312,7 +4266,7 @@ describe('ProjectsPanel', () => {
     ]
 
     const conversationSnapshots = {
-      'conversation-thread-a': withSnapshotSchema({
+      'conversation-thread-a': conversationFixture({
         conversation_id: 'conversation-thread-a',
         project_path: '/tmp/thread-project',
         title: 'Design thread',
@@ -4329,12 +4283,8 @@ describe('ProjectsPanel', () => {
             artifact_id: null,
           },
         ],
-        event_log: [],
-
-
-
       }),
-      'conversation-thread-b': withSnapshotSchema({
+      'conversation-thread-b': conversationFixture({
         conversation_id: 'conversation-thread-b',
         project_path: '/tmp/thread-project',
         title: 'Planning thread',
@@ -4351,10 +4301,6 @@ describe('ProjectsPanel', () => {
             artifact_id: null,
           },
         ],
-        event_log: [],
-
-
-
       }),
     }
 
@@ -4370,7 +4316,7 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/projects/conversations')) {
           return new Response(
-            JSON.stringify(conversationSummaries),
+            JSON.stringify(summarySnapshot(conversationSummaries, { project_path: projectPathParam(url) })),
             {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -4380,7 +4326,7 @@ describe('ProjectsPanel', () => {
         const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
         const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
         if (conversationId && !url.includes('/turns')) {
-          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+          return new Response(JSON.stringify(conversationPage(conversationSnapshots[conversationId as keyof typeof conversationSnapshots])), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4420,7 +4366,7 @@ describe('ProjectsPanel', () => {
 
     resolveTurnResponse?.(
       new Response(
-        JSON.stringify(withSnapshotSchema({
+        JSON.stringify(conversationAcceptance(conversationFixture({
           conversation_id: 'conversation-thread-a',
           project_path: '/tmp/thread-project',
           title: 'Design thread',
@@ -4467,11 +4413,7 @@ describe('ProjectsPanel', () => {
               message: 'Assistant turn completed.',
             },
           ],
-          event_log: [],
-
-
-
-        })),
+        }), 'turn-a-2', { assistant_turn_id: 'turn-a-3' })),
         {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -4511,7 +4453,7 @@ describe('ProjectsPanel', () => {
     ]
 
     const conversationSnapshots = {
-      'conversation-thread-a': withSnapshotSchema({
+      'conversation-thread-a': conversationFixture({
         conversation_id: 'conversation-thread-a',
         project_path: '/tmp/thread-project',
         title: 'Design thread',
@@ -4528,10 +4470,8 @@ describe('ProjectsPanel', () => {
             timestamp: '2026-03-07T12:30:00Z',
           },
         ],
-        turn_events: [],
-        event_log: [],
       }),
-      'conversation-thread-b': withSnapshotSchema({
+      'conversation-thread-b': conversationFixture({
         conversation_id: 'conversation-thread-b',
         project_path: '/tmp/thread-project',
         title: 'Planning thread',
@@ -4548,8 +4488,6 @@ describe('ProjectsPanel', () => {
             timestamp: '2026-03-07T12:40:00Z',
           },
         ],
-        turn_events: [],
-        event_log: [],
       }),
     }
 
@@ -4564,7 +4502,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify(conversationSummaries), {
+          return new Response(JSON.stringify(summarySnapshot(conversationSummaries, { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4583,7 +4521,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (conversationId && !url.includes('/turns')) {
-          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+          return new Response(JSON.stringify(conversationPage(conversationSnapshots[conversationId as keyof typeof conversationSnapshots])), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4621,7 +4559,7 @@ describe('ProjectsPanel', () => {
 
   describe('creating empty threads', () => {
     const projectPath = '/tmp/empty-thread-project'
-    const snapshotFor = (conversationId: string, title: string, snapshotProjectPath = projectPath) => withSnapshotSchema({
+    const snapshotFor = (conversationId: string, title: string, snapshotProjectPath = projectPath) => conversationFixture({
       conversation_id: conversationId,
       project_path: snapshotProjectPath,
       title,
@@ -4629,7 +4567,6 @@ describe('ProjectsPanel', () => {
       updated_at: '2026-09-29T10:00:00Z',
       turns: [],
       segments: [],
-      event_log: [],
     })
     // Fake workspace server: threads exist only once persisted through its routes.
     const stubThreadServer = (persisted: Record<string, ReturnType<typeof snapshotFor>> = {}) => {
@@ -4647,15 +4584,9 @@ describe('ProjectsPanel', () => {
         })
         if (url.includes('/workspace/api/projects/conversations')) {
           const listedProjectPath = new URL(url, 'http://localhost').searchParams.get('project_path') ?? projectPath
-          return json(Object.values(server.persisted).filter((snapshot) => snapshot.project_path === listedProjectPath).map((snapshot) => ({
-            conversation_id: snapshot.conversation_id,
-            project_path: snapshot.project_path,
-            title: snapshot.title,
-            created_at: snapshot.created_at,
-            updated_at: snapshot.updated_at,
-            revision: snapshot.revision,
-            last_message_preview: null,
-          })))
+          return json(summarySnapshot(Object.values(server.persisted).filter((snapshot) => snapshot.project_path === listedProjectPath), {
+            project_path: listedProjectPath,
+          }))
         }
         const conversationId = decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
         if (conversationId && init?.method === 'PUT' && url.includes('/settings')) {
@@ -4663,7 +4594,7 @@ describe('ProjectsPanel', () => {
           await server.settingsGate
           if (server.failSettings) return json({ detail: 'Disk is read-only.' }, 500)
           server.persisted[conversationId] = snapshotFor(conversationId, 'New thread', String(server.settingsRequests.at(-1)?.body.project_path))
-          return json(server.persisted[conversationId])
+          return json(conversationMutationAck(server.persisted[conversationId]))
         }
         if (conversationId && init?.method === 'DELETE') {
           delete server.persisted[conversationId]
@@ -4671,7 +4602,7 @@ describe('ProjectsPanel', () => {
         }
         if (conversationId && !url.includes('/turns')) {
           const snapshot = server.persisted[conversationId]
-          return snapshot ? json(snapshot) : json({ detail: 'Unknown conversation' }, 404)
+          return snapshot ? json(conversationPage(snapshot)) : json({ detail: 'Unknown conversation' }, 404)
         }
         return json({})
       }))
@@ -4827,7 +4758,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4837,7 +4768,7 @@ describe('ProjectsPanel', () => {
         if (conversationId && init?.method === 'PUT' && url.includes('/settings')) {
           const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
           settingsRequests.push({ conversationId, body })
-          const snapshot = withSnapshotSchema({
+          const snapshot = conversationFixture({
             conversation_id: conversationId,
             conversation_handle: '',
             project_path: '/tmp/mode-project',
@@ -4918,12 +4849,11 @@ describe('ProjectsPanel', () => {
                 },
               },
             ],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
           })
           conversationSnapshots[conversationId] = snapshot
-          return new Response(JSON.stringify(snapshot), {
+          return new Response(JSON.stringify(conversationMutationAck(snapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4933,7 +4863,7 @@ describe('ProjectsPanel', () => {
           if (!snapshot) {
             return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
           }
-          return new Response(JSON.stringify(snapshot), {
+          return new Response(JSON.stringify(conversationPage(snapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -4999,7 +4929,7 @@ describe('ProjectsPanel', () => {
       },
     ]
     const conversationSnapshots = {
-      'conversation-thread-a': withSnapshotSchema({
+      'conversation-thread-a': conversationFixture({
         conversation_id: 'conversation-thread-a',
         project_path: '/tmp/mode-project',
         chat_mode: 'plan',
@@ -5025,9 +4955,8 @@ describe('ProjectsPanel', () => {
             timestamp: '2026-04-16T18:10:00Z',
           },
         ],
-        event_log: [],
       }),
-      'conversation-thread-b': withSnapshotSchema({
+      'conversation-thread-b': conversationFixture({
         conversation_id: 'conversation-thread-b',
         project_path: '/tmp/mode-project',
         chat_mode: 'chat',
@@ -5045,7 +4974,6 @@ describe('ProjectsPanel', () => {
             timestamp: '2026-04-16T18:20:00Z',
           },
         ],
-        event_log: [],
       }),
     }
 
@@ -5060,7 +4988,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify(conversationSummaries), {
+          return new Response(JSON.stringify(summarySnapshot(conversationSummaries, { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5076,7 +5004,7 @@ describe('ProjectsPanel', () => {
               })
             }
           }
-          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+          return new Response(JSON.stringify(conversationPage(conversationSnapshots[conversationId as keyof typeof conversationSnapshots])), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5124,7 +5052,7 @@ describe('ProjectsPanel', () => {
     })
 
     resolveThreadARestore?.(
-      new Response(JSON.stringify(conversationSnapshots['conversation-thread-a']), {
+      new Response(JSON.stringify(conversationPage(conversationSnapshots['conversation-thread-a'])), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -5152,7 +5080,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5166,7 +5094,7 @@ describe('ProjectsPanel', () => {
         if (conversationId && init?.method === 'POST' && url.includes('/turns')) {
           const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
           turnRequests.push({ conversationId, body })
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationAcceptance(conversationFixture({
             conversation_id: conversationId,
             conversation_handle: '',
             project_path: '/tmp/mode-project',
@@ -5186,7 +5114,7 @@ describe('ProjectsPanel', () => {
                 artifact_id: null,
               },
               {
-                id: 'turn-user-1',
+                id: clientTurnIdOf(init),
                 role: 'user',
                 content: 'Draft the settings endpoint.',
                 timestamp: '2026-04-16T18:10:00Z',
@@ -5205,10 +5133,9 @@ describe('ProjectsPanel', () => {
               },
             ],
             segments: [],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
-          })), {
+          }), clientTurnIdOf(init), { assistant_turn_id: 'turn-assistant-1' })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5284,7 +5211,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5294,7 +5221,7 @@ describe('ProjectsPanel', () => {
         if (conversationId && init?.method === 'POST' && url.includes('/turns')) {
           const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
           turnRequests.push(body)
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationAcceptance(conversationFixture({
             conversation_id: conversationId,
             conversation_handle: '',
             project_path: '/tmp/model-project',
@@ -5307,7 +5234,7 @@ describe('ProjectsPanel', () => {
             revision: testRevisionFromTimestamp('2026-04-16T18:10:01Z'),
             turns: [
               {
-                id: 'turn-user-1',
+                id: clientTurnIdOf(init),
                 role: 'user',
                 content: body.message,
                 timestamp: '2026-04-16T18:10:00Z',
@@ -5324,10 +5251,9 @@ describe('ProjectsPanel', () => {
               },
             ],
             segments: [],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
-          })), {
+          }), clientTurnIdOf(init), { assistant_turn_id: 'turn-assistant-1' })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5384,7 +5310,7 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
-        return new Response(JSON.stringify(url.includes('/workspace/api/projects/conversations') ? [] : {}), {
+        return new Response(JSON.stringify(url.includes('/workspace/api/projects/conversations') ? summarySnapshot([], { project_path: projectPathParam(url) }) : {}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
@@ -5452,7 +5378,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5463,7 +5389,7 @@ describe('ProjectsPanel', () => {
           const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
           settingsRequests.push(body)
           const updateIndex = settingsRequests.length
-          const snapshot = withSnapshotSchema({
+          const snapshot = conversationFixture({
             conversation_id: conversationId,
             conversation_handle: '',
             project_path: '/tmp/model-project',
@@ -5476,12 +5402,11 @@ describe('ProjectsPanel', () => {
             updated_at: `2026-04-16T18:10:0${updateIndex}Z`,
             turns: [],
             segments: [],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
           })
           conversationSnapshots[conversationId] = snapshot
-          return new Response(JSON.stringify(snapshot), {
+          return new Response(JSON.stringify(conversationMutationAck(snapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5489,7 +5414,7 @@ describe('ProjectsPanel', () => {
         if (conversationId && init?.method === 'POST' && url.includes('/turns')) {
           const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>
           turnRequests.push(body)
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(conversationAcceptance(conversationFixture({
             conversation_id: conversationId,
             conversation_handle: '',
             project_path: '/tmp/model-project',
@@ -5502,10 +5427,9 @@ describe('ProjectsPanel', () => {
             revision: testRevisionFromTimestamp('2026-04-16T18:10:01Z'),
             turns: [],
             segments: [],
-            event_log: [],
             flow_run_requests: [],
             flow_launches: [],
-          })), {
+          }), clientTurnIdOf(init))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5515,7 +5439,7 @@ describe('ProjectsPanel', () => {
           if (!snapshot) {
             return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
           }
-          return new Response(JSON.stringify(snapshot), {
+          return new Response(JSON.stringify(conversationPage(snapshot)), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5574,11 +5498,11 @@ describe('ProjectsPanel', () => {
     let revision = 1
     const requests: { expected_revision: string; model_settings: typeof initial }[] = []
     const saves: (() => void)[] = []
-    const snapshot = () => withSnapshotSchema({
+    const snapshot = () => conversationFixture({
       conversation_id: 'codex-thread', project_path: '/tmp/model-project', chat_mode: 'chat',
       provider: effective.provider, model: effective.model, reasoning_effort: effective.reasoning_effort,
       title: 'Codex thread', created_at: '2026-04-16T18:00:00Z', updated_at: '2026-04-16T18:01:00Z', revision_override: revision,
-      turns: [], segments: [], event_log: [], flow_run_requests: [], flow_launches: [],
+      turns: [], segments: [], flow_run_requests: [], flow_launches: [],
       settings: { models: { scope: 'conversation', revision: String(revision), stored: effective, effective, source: 'conversation' } },
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -5586,7 +5510,7 @@ describe('ProjectsPanel', () => {
       let response: unknown = {}
       if (url.includes('/projects/chat-models')) return availableCodexModelsResponse()
       if (url.includes('/projects/metadata')) response = { branch: 'main', commit: 'abc123' }
-      else if (url.includes('/projects/conversations')) response = [snapshot()]
+      else if (url.includes('/projects/conversations')) response = summarySnapshot([snapshot()], { project_path: projectPathParam(url) })
       else if (url.includes('/conversations/codex-thread')) {
         if (init?.method === 'PUT') {
           const body = JSON.parse(String(init.body))
@@ -5597,8 +5521,8 @@ describe('ProjectsPanel', () => {
           }
           effective = body.model_settings
           revision += 1
-          response = snapshot()
-        } else response = snapshot()
+          response = conversationMutationAck(snapshot())
+        } else response = conversationPage(snapshot())
       }
       return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }))
@@ -5658,11 +5582,11 @@ describe('ProjectsPanel', () => {
     let stored: typeof group | null = null
     let revision = 1
     const requests: Record<string, unknown>[] = []
-    const snapshot = () => withSnapshotSchema({
+    const snapshot = () => conversationFixture({
       conversation_id: 'profile-thread', project_path: '/tmp/model-project', chat_mode: 'chat',
       provider: effective.provider || 'openai_compatible', model: effective.model, reasoning_effort: effective.reasoning_effort,
       title: 'Profile thread', created_at: '2026-04-16T18:00:00Z', updated_at: `2026-04-16T18:00:0${revision}Z`, revision_override: revision,
-      turns: [], segments: [], event_log: [], flow_run_requests: [], flow_launches: [],
+      turns: [], segments: [], flow_run_requests: [], flow_launches: [],
       settings: { models: { scope: 'conversation', revision: String(revision), stored, effective, source: stored ? 'conversation' : 'workspace' } },
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -5671,7 +5595,7 @@ describe('ProjectsPanel', () => {
       if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], reasoning_efforts:['high'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
       else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}, 'claude-code':{status:'available',error:null}}, models:[{provider:'claude-code',id:'claude-opus-4-6',supported_reasoning_efforts:[]}] }
       else if (url.includes('/projects/metadata')) response = {branch:'main',commit:'abc123'}
-      else if (url.includes('/projects/conversations')) response = [snapshot()]
+      else if (url.includes('/projects/conversations')) response = summarySnapshot([snapshot()], { project_path: projectPathParam(url) })
       else if (url.includes('/conversations/profile-thread')) {
         if (init?.method === 'PUT') {
           const body = JSON.parse(String(init.body)) as Record<string, unknown>
@@ -5679,8 +5603,8 @@ describe('ProjectsPanel', () => {
           stored = body.model_settings as typeof group | null
           effective = stored || { ...group }
           revision += 1
-        }
-        response = snapshot()
+          response = conversationMutationAck(snapshot())
+        } else response = conversationPage(snapshot())
       }
       return new Response(JSON.stringify(response), {status:200, headers:{'Content-Type':'application/json'}})
     }))
@@ -5733,7 +5657,7 @@ describe('ProjectsPanel', () => {
       },
     ]
     const conversationSnapshots = {
-      'conversation-thread-a': withSnapshotSchema({
+      'conversation-thread-a': conversationFixture({
         conversation_id: 'conversation-thread-a',
         project_path: '/tmp/model-project',
         chat_mode: 'chat',
@@ -5745,11 +5669,10 @@ describe('ProjectsPanel', () => {
         revision: testRevisionFromTimestamp('2026-04-16T18:10:00Z'),
         turns: [],
         segments: [],
-        event_log: [],
         flow_run_requests: [],
         flow_launches: [],
       }),
-      'conversation-thread-b': withSnapshotSchema({
+      'conversation-thread-b': conversationFixture({
         conversation_id: 'conversation-thread-b',
         project_path: '/tmp/model-project',
         chat_mode: 'chat',
@@ -5761,7 +5684,6 @@ describe('ProjectsPanel', () => {
         revision: testRevisionFromTimestamp('2026-04-16T18:20:00Z'),
         turns: [],
         segments: [],
-        event_log: [],
         flow_run_requests: [],
         flow_launches: [],
       }),
@@ -5802,7 +5724,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify(conversationSummaries), {
+          return new Response(JSON.stringify(summarySnapshot(conversationSummaries, { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5810,7 +5732,7 @@ describe('ProjectsPanel', () => {
         const conversationIdMatch = url.match(/\/api\/conversations\/([^/?]+)/)
         const conversationId = conversationIdMatch ? decodeURIComponent(conversationIdMatch[1]!) : null
         if (conversationId && !url.includes('/turns')) {
-          return new Response(JSON.stringify(conversationSnapshots[conversationId as keyof typeof conversationSnapshots]), {
+          return new Response(JSON.stringify(conversationPage(conversationSnapshots[conversationId as keyof typeof conversationSnapshots])), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -5871,7 +5793,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/projects/conversations')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
