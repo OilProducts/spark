@@ -373,6 +373,107 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
 }
 
 #[test]
+fn an_invalid_project_copy_rejects_launch_with_its_path_instead_of_running_the_bundled_flow() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    let service = AttractorApiService::new(settings.clone());
+    let write_flow = |dir: &Path, flow: serde_json::Value| {
+        let flow = serde_json::from_value(flow).expect("flow definition JSON");
+        attractor_dsl::write_flow_dir(dir, &flow).expect("write flow");
+    };
+    write_flow(&settings.bundled_dir().join("flows/shared"), simple_flow());
+    let copy = spark_common::project::definitions_dir(&project).join("flows/shared");
+    fs::create_dir_all(&copy).expect("copy dir");
+    let project_path = project.to_string_lossy().to_string();
+    let launch = |run_id: &str| {
+        service.start_pipeline(PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some(run_id.to_string()),
+            flow_name: Some("shared".to_string()),
+            working_directory: project_path.clone(),
+            project_path: Some(project_path.clone()),
+            ..PipelineStartRequest::default()
+        })
+    };
+    let copy_text = copy.display().to_string();
+    let rejected = |response: &attractor_api::RuntimeRouteResponse, reason: &str| {
+        let error = response.body["error"].as_str().expect("error");
+        assert!(error.contains(&copy_text), "{}", response.body);
+        assert!(error.contains(reason), "{}", response.body);
+        assert!(response.body.get("run_id").is_none(), "{}", response.body);
+    };
+    let node = "---\ntype: start\nroutes:\n- to: done\n  condition: outcome=success\n---\n";
+
+    // Schema 1: the version is the reason, not the node that fails to parse.
+    fs::write(copy.join("start.md"), node).expect("start.md");
+    fs::write(
+        copy.join("flow.md"),
+        "---\ntype: Flow\nid: old\nschema_version: '1'\n---\n",
+    )
+    .expect("flow.md");
+    let old = launch("run-old-copy");
+    assert_eq!(
+        old.body["status"],
+        json!("validation_error"),
+        "{}",
+        old.body
+    );
+    rejected(&old, "convert this flow's routes");
+    assert_eq!(
+        old.body["diagnostics"][0]["rule_id"],
+        json!("schema_version")
+    );
+    let read = service.get_flow("shared", Some(&project_path));
+    assert_eq!(read.status_code, 422, "{}", read.body);
+    assert!(read.body["detail"]
+        .as_str()
+        .expect("detail")
+        .contains(&copy_text));
+
+    // A current-schema copy whose nodes do not load.
+    fs::write(
+        copy.join("flow.md"),
+        "---\ntype: Flow\nid: new\nschema_version: '2'\n---\n",
+    )
+    .expect("flow.md");
+    let broken = launch("run-broken-copy");
+    assert_eq!(broken.body["status"], json!("failed"), "{}", broken.body);
+    rejected(&broken, "start.md");
+
+    // A role the copy references but nothing provides.
+    fs::remove_file(copy.join("start.md")).expect("start.md");
+    write_flow(&copy, {
+        let mut flow = simple_flow();
+        flow["nodes"]["task"]["role"] = json!("nobody");
+        flow
+    });
+    let roleless = launch("run-roleless-copy");
+    assert_eq!(
+        roleless.body["status"],
+        json!("validation_error"),
+        "{}",
+        roleless.body
+    );
+    rejected(&roleless, "unknown role 'nobody'");
+
+    // A copy that lost its flow.md does not resolve past itself.
+    fs::remove_file(copy.join("flow.md")).expect("flow.md");
+    let headless = launch("run-headless-copy");
+    assert_eq!(
+        headless.body["status"],
+        json!("failed"),
+        "{}",
+        headless.body
+    );
+    rejected(&headless, "no readable flow.md");
+
+    // Without any files of its own, the project falls through to the bundled flow.
+    fs::remove_dir_all(&copy).expect("remove copy");
+    assert_eq!(launch("run-bundled").body["status"], json!("started"));
+}
+
+#[test]
 fn mounted_start_route_accepts_current_json_payload() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

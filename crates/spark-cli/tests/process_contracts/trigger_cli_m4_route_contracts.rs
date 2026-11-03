@@ -294,6 +294,59 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_ne!(missing_project.status.code(), Some(0));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flow_validate_through_the_api_reports_an_invalid_project_copy_without_bundled_fallback() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/run");
+    let project = registered_project(&settings, &temp.path().join("project"));
+    let copy = spark_common::project::definitions_dir(Path::new(&project)).join("flows/ops/run");
+    fs::create_dir_all(&copy).expect("copy dir");
+    fs::write(
+        copy.join("flow.md"),
+        "---\ntype: Flow\nid: old\nschema_version: '1'\n---\n",
+    )
+    .expect("flow.md");
+    fs::write(
+        copy.join("start.md"),
+        "---\ntype: start\nroutes:\n- to: done\n  condition: outcome=success\n---\n",
+    )
+    .expect("start.md");
+    let copy = copy
+        .canonicalize()
+        .expect("canonical")
+        .display()
+        .to_string();
+    let server = spawn_server(settings).await;
+    let validate = |extra: &[&str]| {
+        let mut args = vec![
+            "flow",
+            "validate",
+            "--flow",
+            "ops/run",
+            "--project",
+            project.as_str(),
+            "--base-url",
+            server.base_url.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        let output = run_spark(temp.path(), args);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        stdout(&output)
+    };
+
+    let payload: Value = serde_json::from_str(&validate(&[])).expect("validation JSON");
+    assert_eq!(payload["status"], "validation_error", "{payload}");
+    assert_eq!(payload["path"], copy.as_str());
+    let error = payload["error"].as_str().expect("error");
+    assert!(error.contains(&copy), "{payload}");
+    assert!(error.contains("convert this flow's routes"), "{payload}");
+
+    let text = validate(&["--text"]);
+    assert!(text.contains(&format!("Path: {copy}")), "{text}");
+    assert!(text.contains("convert this flow's routes"), "{text}");
+}
+
 struct TestServer {
     base_url: String,
     handle: JoinHandle<()>,

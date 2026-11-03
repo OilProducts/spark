@@ -856,3 +856,86 @@ mod org_init {
         assert!(plan.stderr.contains("local command"), "{}", plan.stderr);
     }
 }
+
+#[test]
+fn process_flow_validate_dir_reports_why_a_flow_failed_to_load() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let validate = |dir: &std::path::Path, extra: &[&str]| {
+        let output = Command::new(spark_bin())
+            .args(["flow", "validate", "--dir"])
+            .arg(dir)
+            .args(extra)
+            .env_clear()
+            .env("HOME", temp.path())
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        String::from_utf8(output.stdout).expect("stdout utf8")
+    };
+    // Schema 1 nodes list their routes, which do not parse as schema 2.
+    let write = |name: &str, header: &str| {
+        let dir = temp.path().join(name);
+        fs::create_dir_all(&dir).expect("flow dir");
+        fs::write(dir.join("flow.md"), header).expect("flow.md");
+        fs::write(
+            dir.join("start.md"),
+            "---\ntype: start\nroutes:\n- to: done\n  condition: outcome=success\n---\n",
+        )
+        .expect("start.md");
+        dir
+    };
+
+    for (name, header, found) in [
+        (
+            "quoted",
+            "---\ntype: Flow\nid: old\nschema_version: '1'\n---\n",
+            "found '1'",
+        ),
+        (
+            "integer",
+            "---\ntype: Flow\nid: old\nschema_version: 1\n---\n",
+            "found '1'",
+        ),
+        ("missing", "---\ntype: Flow\nid: old\n---\n", "found ''"),
+        (
+            "unknown-header-field",
+            "---\ntype: Flow\nid: old\nschema_version: '1'\nretired: true\n---\n",
+            "found '1'",
+        ),
+    ] {
+        let dir = write(name, header);
+        let dir_text = dir.display().to_string();
+
+        let payload: Value = serde_json::from_str(&validate(&dir, &[])).expect("validation JSON");
+        assert_eq!(payload["status"], "validation_error", "{payload}");
+        let error = payload["error"].as_str().expect("error");
+        assert!(error.contains(&dir_text), "{payload}");
+        assert!(error.contains(found), "{payload}");
+        assert!(error.contains("convert this flow's routes"), "{payload}");
+        assert_eq!(payload["diagnostics"][0]["rule_id"], "schema_version");
+        assert_eq!(payload["errors"], payload["diagnostics"]);
+
+        let text = validate(&dir, &["--text"]);
+        let path = dir.canonicalize().expect("canonical").display().to_string();
+        assert!(text.contains(&format!("Path: {path}")), "{text}");
+        assert!(text.contains("convert this flow's routes"), "{text}");
+        assert!(text.contains("Diagnostics: 1"), "{text}");
+    }
+
+    // A failure carrying only detail still surfaces it, as a diagnostic too.
+    let broken = write(
+        "broken",
+        "---\ntype: Flow\nid: new\nschema_version: '2'\n---\n",
+    );
+    let broken_text = broken.display().to_string();
+    let payload: Value = serde_json::from_str(&validate(&broken, &[])).expect("validation JSON");
+    let message = payload["diagnostics"][0]["message"]
+        .as_str()
+        .expect("message");
+    assert!(message.contains(&broken_text), "{payload}");
+    assert!(message.contains("start.md"), "{payload}");
+    assert_eq!(payload["error"], payload["diagnostics"][0]["message"]);
+    let text = validate(&broken, &["--text"]);
+    assert!(text.contains("Diagnostics: 1"), "{text}");
+    assert!(text.contains("start.md"), "{text}");
+}

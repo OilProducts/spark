@@ -1501,7 +1501,8 @@ impl AttractorApiService {
             .resolve_flow(name)
             .and_then(|resolved| {
                 let texts = attractor_dsl::read_flow_dir_texts(&resolved.path)?;
-                let flow = assemble_flow_files(&texts)?;
+                let flow = assemble_flow_files(&texts)
+                    .map_err(|error| attractor_dsl::in_flow_dir(&resolved.path, error))?;
                 Ok((resolved, texts, flow))
             });
         match loaded {
