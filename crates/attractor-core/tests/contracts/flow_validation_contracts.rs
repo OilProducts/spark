@@ -494,3 +494,33 @@ fn subflows_map_every_local_decision_from_child_results() {
         "{found:?}"
     );
 }
+
+#[test]
+fn switch_duplicate_cases_compare_exact_numbers() {
+    let reads = json!(["context.count"]);
+    // Distinct large integers are distinct cases, even where f64 rounds them together.
+    assert_eq!(
+        rules(switch_flow(
+            json!({"9007199254740992": "clean", "9007199254740993": "conflicts"}),
+            "conflicts",
+            reads.clone(),
+            true,
+        )),
+        Vec::new()
+    );
+    for duplicate in [
+        json!({"1": "clean", "1.0": "clean"}),
+        json!({"9007199254740992": "clean", "9.007199254740992e15": "clean"}),
+    ] {
+        let found = rules(switch_flow(
+            duplicate.clone(),
+            "conflicts",
+            reads.clone(),
+            true,
+        ));
+        assert!(
+            has(&found, "decision_domain", "duplicates another case value"),
+            "{duplicate}: {found:?}"
+        );
+    }
+}

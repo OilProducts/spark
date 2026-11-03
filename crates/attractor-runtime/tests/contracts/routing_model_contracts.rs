@@ -1349,3 +1349,246 @@ fn branches_retry_execution_errors_like_the_root() {
     assert_eq!(results[1]["status"], json!("error"));
     assert_eq!(results[1]["error"]["attempts"], json!(2));
 }
+
+/// `b` returns only after `a` blocked and the fork raised cancellation, so
+/// its error lands while the cancellation flag is set.
+fn after_cancellation(error: Outcome) -> RuntimeHandlerRunner {
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
+        if runtime.node_id == "a" {
+            return Ok(Outcome {
+                notes: "a cannot review".into(),
+                ..completed("blocked")
+            });
+        }
+        let cancel = runtime.cancel.clone().expect("branch cancellation flag");
+        while !cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(error.clone())
+    });
+    runner
+}
+
+#[test]
+fn an_independent_fatal_sibling_error_after_blocked_fails_the_owner() {
+    for tolerate in [false, true] {
+        for (error, kind) in [
+            (
+                Outcome::error(FailureKind::Routing, "child result unmapped", Some(false)),
+                "routing",
+            ),
+            (
+                Outcome::error(FailureKind::Contract, "bad envelope", Some(false)),
+                "contract",
+            ),
+        ] {
+            let run = execute(fork_flow(tolerate), after_cancellation(error.clone()), None);
+            let results = fork_results(&run);
+            assert_eq!(results[0]["status"], json!("terminal_result"));
+            // The sibling's own error keeps its kind and reason.
+            assert_eq!(results[1]["status"], json!("error"), "{tolerate} {kind}");
+            assert_eq!(results[1]["error"]["kind"], json!(kind));
+            assert_eq!(results[1]["error"]["reason"], json!(error.failure_reason));
+            let fatal = kind == "routing" || !tolerate;
+            if fatal {
+                assert_eq!(run.result.status, "failed", "{tolerate} {kind}");
+                assert_eq!(
+                    run.record().last_error,
+                    format!("branch b (index 1) failed at b: {}", error.failure_reason)
+                );
+            } else {
+                // A tolerated error does not override the failure exit.
+                assert_eq!(run.result.status, "completed", "{tolerate} {kind}");
+                assert_eq!(run.record().outcome_reason_code.as_deref(), Some("blocked"));
+            }
+        }
+    }
+    // A runtime error after cancellation is the cancellation interrupting
+    // the node: canceled, with the interruption kept as evidence.
+    let run = execute(
+        fork_flow(false),
+        after_cancellation(Outcome::error(
+            FailureKind::Runtime,
+            "turn aborted",
+            Some(true),
+        )),
+        None,
+    );
+    assert_eq!(run.result.status, "completed");
+    let results = fork_results(&run);
+    assert_eq!(results[1]["status"], json!("canceled"));
+    assert_eq!(results[1]["interruption"], json!("turn aborted"));
+}
+
+const INTERRUPT_CHILD_ENV: &str = "SPARK_BRANCH_INTERRUPT_CHILD_DIR";
+const INTERRUPT_PAUSE_ENV: &str = "SPARK_BRANCH_INTERRUPT_PAUSE";
+
+fn flow_pauses(flow: &FlowDefinition) -> bool {
+    flow.nodes["t1"]
+        .runtime
+        .as_ref()
+        .is_some_and(|runtime| runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause)
+}
+
+/// `t1` (a side-effecting tool) then `a2` in branch one; `b` in branch two.
+fn interrupted_fork_flow(log: &Path, tool_tail: &str, pause: bool) -> FlowDefinition {
+    let mut flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["t1", "b"], "join": "join"}},
+        "t1": {"kind": "tool", "config": {"kind": "tool",
+            "command": format!("echo ran >> '{}'{tool_tail}", log.display()), "exit_codes": {"0": "done"}},
+            "routes": {"done": route("a2")}},
+        "a2": agent(json!({"done": route("join")})),
+        "b": agent(json!({"done": route("join")})),
+        "join": {"kind": "fan_in", "routes": {"next": route("synth")}},
+        "synth": agent(json!({"done": route("done")})),
+        "done": exit("completed", "success"),
+    }));
+    if pause {
+        flow.nodes.get_mut("t1").unwrap().runtime = Some(attractor_core::NodeRuntimeConfig {
+            recovery_policy: attractor_core::RecoveryPolicy::Pause,
+            ..Default::default()
+        });
+    }
+    flow
+}
+
+/// Runs `flow` in `dir` until the process dies inside it.
+fn run_until_interrupted(dir: &Path, flow: &FlowDefinition, test: &str) {
+    if let Ok(child_dir) = std::env::var(INTERRUPT_CHILD_ENV) {
+        let child_dir = PathBuf::from(child_dir);
+        let mut runner = RuntimeHandlerRunner::new();
+        runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, |runtime: HandlerRuntime| {
+            if runtime.node_id == "a2" {
+                // The process dies after t1 was accepted, before a2 finishes.
+                std::process::exit(7);
+            }
+            if runtime.node_id == "b" {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+            Ok(completed("done"))
+        });
+        let store = RunStore::for_runs_dir(child_dir.join("runs"));
+        let _ = PipelineExecutor::new(runner).execute(ExecuteRunRequest {
+            store,
+            record: RunRecord::new("run-contract", child_dir.to_string_lossy()),
+            flow: flow.clone(),
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: Default::default(),
+        });
+        panic!("the child run should have been interrupted");
+    }
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("routing_model_contracts::{test}"),
+            "--nocapture",
+        ])
+        .env(INTERRUPT_CHILD_ENV, dir)
+        .env(INTERRUPT_PAUSE_ENV, flow_pauses(flow).to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success(), "the child must die mid-run");
+}
+
+fn resume(
+    dir: &Path,
+    flow: FlowDefinition,
+    runner: RuntimeHandlerRunner,
+) -> PipelineExecutionResult {
+    let store = RunStore::for_runs_dir(dir.join("runs"));
+    let bundle = store.read_run_bundle("run-contract").unwrap().unwrap();
+    let checkpoint = bundle.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "fork");
+    PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store,
+            record: bundle.record.unwrap(),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: ExecutionStart::Resume {
+                paths: bundle.paths,
+                checkpoint,
+            },
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_resumed_branch_never_reruns_an_accepted_side_effect() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = std::env::var(INTERRUPT_CHILD_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| temp.path().to_path_buf());
+    let log = dir.join("side-effect.log");
+    let flow = interrupted_fork_flow(&log, "", false);
+    run_until_interrupted(
+        &dir,
+        &flow,
+        "a_resumed_branch_never_reruns_an_accepted_side_effect",
+    );
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "ran\n");
+
+    let answers = script(&[
+        ("a2", vec![completed("done")]),
+        ("b", vec![completed("done")]),
+        ("synth", vec![completed("done")]),
+    ]);
+    let (runner, calls) = scripted_runner(answers, false);
+    let result = resume(&dir, flow, runner);
+    assert_eq!(result.status, "completed");
+    // t1 ran once in total; the branch continued at a2 with t1's transition.
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "ran\n");
+    assert_eq!(count(&calls, "a2"), 1);
+    let store = RunStore::for_runs_dir(dir.join("runs"));
+    let paths = store.find_run_root("run-contract").unwrap().unwrap();
+    let root = store.node_execution_root(&paths, "fork", 1, 0).unwrap();
+    let status: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("status.json")).unwrap()).unwrap();
+    let branch = &status["context_updates"]["parallel.results"][0];
+    assert_eq!(branch["status"], json!("completed"));
+    assert_eq!(branch["route_trace"], json!(["t1", "a2", "join"]));
+    // The visit counts were restored, not reset.
+    assert_eq!(branch["visits"]["t1"], json!(1));
+    assert_eq!(branch["visits"]["a2"], json!(1));
+}
+
+#[test]
+fn an_interrupted_pause_node_in_a_branch_requires_a_recovery_decision() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = std::env::var(INTERRUPT_CHILD_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| temp.path().to_path_buf());
+    let log = dir.join("side-effect.log");
+    // The tool kills its own runner while it runs. A child process runs the
+    // variant its parent names.
+    let variants = match std::env::var(INTERRUPT_PAUSE_ENV) {
+        Ok(pause) => vec![pause == "true"],
+        Err(_) => vec![true, false],
+    };
+    for pause in variants {
+        let flow = interrupted_fork_flow(&log, "; kill -9 $PPID; sleep 5", pause);
+        if std::env::var(INTERRUPT_CHILD_ENV).is_err() {
+            let _ = std::fs::remove_dir_all(dir.join("runs"));
+        }
+        run_until_interrupted(
+            &dir,
+            &flow,
+            "an_interrupted_pause_node_in_a_branch_requires_a_recovery_decision",
+        );
+        let store = RunStore::for_runs_dir(dir.join("runs"));
+        let paths = store.find_run_root("run-contract").unwrap().unwrap();
+        let pending =
+            attractor_runtime::fork_branch_requiring_recovery_decision(&paths, &flow, "fork", 1, 0);
+        assert_eq!(pending.as_deref(), pause.then_some("t1"), "pause={pause}");
+    }
+}

@@ -1593,13 +1593,41 @@ fn config_kind(config: &NodeConfig) -> NodeKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwitchScalar {
     Bool(bool),
-    Number(f64),
+    Number(SwitchNumber),
     String(String),
+}
+
+/// A JSON number by exact value: integers (including integral floats such
+/// as 0.0) compare as integers without rounding; other floats as floats.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SwitchNumber {
+    Integer(i128),
+    Float(f64),
+}
+
+impl SwitchNumber {
+    fn from_json(number: &serde_json::Number) -> Option<Self> {
+        if let Some(value) = number.as_i64() {
+            return Some(Self::Integer(value.into()));
+        }
+        if let Some(value) = number.as_u64() {
+            return Some(Self::Integer(value.into()));
+        }
+        let value = number.as_f64().filter(|value| value.is_finite())?;
+        // An integral float is exactly that integer; f64 values below 2^127
+        // convert to i128 without loss.
+        Some(if value.fract() == 0.0 && value.abs() < 2f64.powi(127) {
+            Self::Integer(value as i128)
+        } else {
+            Self::Float(value)
+        })
+    }
 }
 
 impl SwitchScalar {
     /// Exact scalar equality: no coercion between types; numbers compare by
-    /// value, so 0 and 0.0 are the same.
+    /// exact value, so 0 and 0.0 are the same and distinct large integers
+    /// never are.
     pub fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Bool(left), Self::Bool(right)) => left == right,
@@ -1613,9 +1641,7 @@ impl SwitchScalar {
     pub fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Bool(value) => Ok(Self::Bool(*value)),
-            Value::Number(number) => number
-                .as_f64()
-                .filter(|value| value.is_finite())
+            Value::Number(number) => SwitchNumber::from_json(number)
                 .map(Self::Number)
                 .ok_or_else(|| format!("number {number} is not finite")),
             Value::String(value) => Ok(Self::String(value.clone())),

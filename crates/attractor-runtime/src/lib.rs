@@ -69,11 +69,11 @@ pub use executor::{
     RuntimeNodeError,
 };
 pub use handlers::{
-    AutoApproveInterviewer, ChildInterventionRequest, ChildInterventionResult, ChildRunRequest,
-    ChildRunResult, HandlerRuntime, HumanAnswer, HumanOption, HumanQuestion, Interviewer,
-    QueueInterviewer, RuntimeHandlerFn, RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_EXIT,
-    HANDLER_FAN_IN, HANDLER_MANAGER_LOOP, HANDLER_PARALLEL, HANDLER_START, HANDLER_SWITCH,
-    HANDLER_TOOL, HANDLER_WAIT_HUMAN,
+    fork_branch_requiring_recovery_decision, AutoApproveInterviewer, ChildInterventionRequest,
+    ChildInterventionResult, ChildRunRequest, ChildRunResult, HandlerRuntime, HumanAnswer,
+    HumanOption, HumanQuestion, Interviewer, QueueInterviewer, RuntimeHandlerFn,
+    RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP,
+    HANDLER_PARALLEL, HANDLER_START, HANDLER_SWITCH, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
 pub use journals::{journal_entries_from_events, journal_entry_from_event};
 pub use paths::{RunRootPaths, RuntimePaths};

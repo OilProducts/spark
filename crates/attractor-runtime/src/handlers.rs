@@ -1779,8 +1779,9 @@ impl RuntimeHandlerRunner {
     /// Runs a fork's declared branches and settles every one before
     /// returning. Each branch ends completed (at the paired join), with a
     /// terminal result (a failure exit), with an execution error, or
-    /// canceled by the fork. Records persist as they settle, so a resumed
-    /// fork never reruns a settled branch.
+    /// canceled by the fork. Records persist as they settle, and each
+    /// unsettled branch saves its progress around every invocation, so a
+    /// resumed fork never reruns a settled branch or an accepted invocation.
     fn execute_parallel(
         &self,
         runtime: HandlerRuntime,
@@ -1841,6 +1842,9 @@ impl RuntimeHandlerRunner {
                 let entry = branches[index].clone();
                 let join = join.clone();
                 let cancel = cancel.clone();
+                let progress = state_dir
+                    .as_ref()
+                    .map(|dir| branch_progress_path(dir, index));
                 scope.spawn(move || {
                     let _ = self.emit(
                         runtime,
@@ -1852,7 +1856,14 @@ impl RuntimeHandlerRunner {
                         ),
                     );
                     let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.execute_branch(runtime, &entry, index, &join, &cancel)
+                        self.execute_branch(
+                            runtime,
+                            &entry,
+                            index,
+                            &join,
+                            &cancel,
+                            progress.as_deref(),
+                        )
                     }))
                     .unwrap_or_else(|payload| {
                         branch_error_record(
@@ -2010,8 +2021,10 @@ impl RuntimeHandlerRunner {
         index: usize,
         join: &str,
         cancel: &Arc<AtomicBool>,
+        progress_path: Option<&Path>,
     ) -> Value {
         let flow = &runtime.flow;
+        let saved = progress_path.and_then(read_branch_progress);
         let mut values = crate::flow_runtime::flow_context_seed(flow);
         values.extend(runtime.context.clone());
         let mut context = match AttractorContext::from_map(values)
@@ -2040,6 +2053,53 @@ impl RuntimeHandlerRunner {
         let mut decisions = Vec::<Value>::new();
         let mut steps = 0_u64;
         let mut last: Option<(String, String, String)> = None;
+        // A resumed fork continues each unsettled branch where it stopped:
+        // the same context, position, budgets and, for an invocation that
+        // completed before the interruption, its accepted result.
+        let mut accepted = None;
+        if let Some(saved) = saved {
+            match AttractorContext::from_map(saved.context) {
+                Ok(restored) => context = restored,
+                Err(error) => {
+                    return branch_error_record(
+                        entry,
+                        index,
+                        &saved.current,
+                        FailureKind::Runtime,
+                        &error.to_string(),
+                        0,
+                    )
+                }
+            }
+            current = saved.current;
+            visits = saved.visits;
+            retries = saved.retries;
+            trace = saved.trace;
+            decisions = saved.decisions;
+            steps = saved.steps;
+            last = saved.last;
+            accepted = saved.accepted;
+        }
+        macro_rules! save_progress {
+            ($started:expr, $accepted:expr) => {{
+                let progress = BranchProgress {
+                    context: context.snapshot(),
+                    current: current.clone(),
+                    visits: visits.clone(),
+                    retries: retries.clone(),
+                    trace: trace.clone(),
+                    decisions: decisions.clone(),
+                    steps,
+                    last: last.clone(),
+                    started: $started,
+                    accepted: $accepted,
+                };
+                match progress_path.map(|path| write_branch_progress(path, &progress)) {
+                    Some(Err(error)) => Err(error),
+                    _ => Ok(()),
+                }
+            }};
+        }
         macro_rules! record {
             ($status:expr, $extra:expr $(,)?) => {{
                 let mut record = json!({
@@ -2131,16 +2191,30 @@ impl RuntimeHandlerRunner {
                     &current,
                 ),
             );
-            let mut node_runtime = HandlerRuntime::from_request(request);
-            node_runtime.cancel = Some(cancel.clone());
-            let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.execute_runtime(node_runtime)
-            })) {
-                Ok(Ok(outcome)) => outcome,
-                Ok(Err(error)) => outcome_from_node_error(error),
-                Err(payload) => outcome_from_node_error(RuntimeNodeError::terminal(
-                    panic_payload_message(payload),
-                )),
+            // An invocation accepted before an interruption is never run
+            // again; its context updates are already in the saved context.
+            let (raw, already_applied) = match accepted.take() {
+                Some(outcome) => (outcome, true),
+                None => {
+                    if let Err(error) = save_progress!(Some(current.clone()), None) {
+                        return record!(
+                            "error",
+                            error_value(&current, FailureKind::Runtime, &error, 0)
+                        );
+                    }
+                    let mut node_runtime = HandlerRuntime::from_request(request);
+                    node_runtime.cancel = Some(cancel.clone());
+                    let raw = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.execute_runtime(node_runtime)
+                    })) {
+                        Ok(Ok(outcome)) => outcome,
+                        Ok(Err(error)) => outcome_from_node_error(error),
+                        Err(payload) => outcome_from_node_error(RuntimeNodeError::terminal(
+                            panic_payload_message(payload),
+                        )),
+                    };
+                    (raw, false)
+                }
             };
             let _ = self.emit(
                 runtime,
@@ -2153,30 +2227,49 @@ impl RuntimeHandlerRunner {
                     raw.status.to_string(),
                 ),
             );
-            let outcome = match crate::context::apply_outcome_context_updates(
-                &current,
-                &node_attrs,
-                &mut context,
-                &raw,
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    outcome_from_node_error(RuntimeNodeError::terminal(error.to_string()))
+            let outcome = if already_applied {
+                raw
+            } else {
+                match crate::context::apply_outcome_context_updates(
+                    &current,
+                    &node_attrs,
+                    &mut context,
+                    &raw,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        outcome_from_node_error(RuntimeNodeError::terminal(error.to_string()))
+                    }
                 }
             };
             if outcome.is_error() {
-                // An interruption the fork caused is a cancellation, not an
-                // execution error of this branch.
-                if cancel.load(Ordering::SeqCst) {
-                    return record!("canceled", json!({"canceled_at": current}));
+                // Cancellation interrupts a running node as a runtime error
+                // (a killed tool, an aborted agent turn): that is the fork's
+                // cancellation, recorded as canceled with the interruption as
+                // evidence. Contract and routing errors are the branch's own
+                // and keep their kind, reason and precedence.
+                let kind = outcome.error_kind().unwrap_or(FailureKind::Runtime);
+                if kind == FailureKind::Runtime && cancel.load(Ordering::SeqCst) {
+                    return record!(
+                        "canceled",
+                        json!({
+                            "canceled_at": current,
+                            "interruption": stage_failure_reason(&outcome),
+                        })
+                    );
                 }
                 let retries_so_far = retries.get(&current).copied().unwrap_or(0);
                 let policy = retry_policy_for_outcome(flow, &current, &outcome);
                 if should_retry_attempt(&outcome, retries_so_far, &policy) {
                     retries.insert(current.clone(), retries_so_far + 1);
+                    if let Err(error) = save_progress!(None, None) {
+                        return record!(
+                            "error",
+                            error_value(&current, FailureKind::Runtime, &error, 0)
+                        );
+                    }
                     continue;
                 }
-                let kind = outcome.error_kind().unwrap_or(FailureKind::Runtime);
                 return record!(
                     "error",
                     error_value(
@@ -2186,6 +2279,20 @@ impl RuntimeHandlerRunner {
                         retries_so_far + 1
                     ),
                 );
+            }
+            if !already_applied {
+                // The accepted result is durable before its transition.
+                let stored = Outcome {
+                    context_updates: ContextMap::new(),
+                    raw_response_text: String::new(),
+                    ..outcome.clone()
+                };
+                if let Err(error) = save_progress!(Some(current.clone()), Some(stored)) {
+                    return record!(
+                        "error",
+                        error_value(&current, FailureKind::Runtime, &error, 0)
+                    );
+                }
             }
             retries.remove(&current);
             steps += 1;
@@ -2211,6 +2318,12 @@ impl RuntimeHandlerRunner {
             *visits.entry(transition.target.clone()).or_default() += 1;
             trace.push(transition.target.clone());
             current = transition.target;
+            if let Err(error) = save_progress!(None, None) {
+                return record!(
+                    "error",
+                    error_value(&current, FailureKind::Runtime, &error, 0)
+                );
+            }
         }
     }
 
@@ -2962,6 +3075,85 @@ fn take_branch_sessions(parent: &ContextMap, results: &mut [Value]) -> Option<Va
         }
     }
     (merged != before).then_some(merged)
+}
+
+/// An unsettled branch's position, saved in its fork's execution directory
+/// before and after every invocation and transition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BranchProgress {
+    context: ContextMap,
+    current: String,
+    visits: BTreeMap<String, u64>,
+    retries: BTreeMap<String, u64>,
+    trace: Vec<String>,
+    decisions: Vec<Value>,
+    steps: u64,
+    last: Option<(String, String, String)>,
+    /// The node whose invocation began and has not been accepted yet.
+    #[serde(default)]
+    started: Option<String>,
+    /// That node's accepted result, saved before its transition.
+    #[serde(default)]
+    accepted: Option<Outcome>,
+}
+
+fn branch_progress_path(dir: &Path, index: usize) -> PathBuf {
+    dir.join(format!("{index}.progress.json"))
+}
+
+fn read_branch_progress(path: &Path) -> Option<BranchProgress> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_branch_progress(
+    path: &Path,
+    progress: &BranchProgress,
+) -> std::result::Result<(), String> {
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, serde_json::to_vec(progress).unwrap_or_default())?;
+        fs::rename(&temp, path)
+    };
+    write().map_err(|error| format!("could not save branch progress: {error}"))
+}
+
+/// The branch node of the fork at `fork_id` (stage/attempt) whose invocation
+/// was interrupted before it was accepted and whose `recovery_policy` is
+/// `pause`: resuming would rerun it, so recovery needs an explicit decision,
+/// as for a root node.
+pub fn fork_branch_requiring_recovery_decision(
+    paths: &RunRootPaths,
+    flow: &FlowDefinition,
+    fork_id: &str,
+    stage_index: u64,
+    attempt: u64,
+) -> Option<String> {
+    let Some(NodeConfig::Parallel { branches, .. }) = flow.nodes.get(fork_id)?.config.as_ref()
+    else {
+        return None;
+    };
+    let dir = paths
+        .logs_dir()
+        .join(fork_id)
+        .join("executions")
+        .join(format!("{stage_index}-{attempt}"))
+        .join("branches");
+    (0..branches.len()).find_map(|index| {
+        if dir.join(format!("{index}.json")).exists() {
+            return None;
+        }
+        let progress = read_branch_progress(&branch_progress_path(&dir, index))?;
+        let node = progress.started.filter(|_| progress.accepted.is_none())?;
+        flow.nodes
+            .get(&node)?
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause)
+            .then_some(node)
+    })
 }
 
 /// Whether the user asked to cancel the run this branch belongs to.

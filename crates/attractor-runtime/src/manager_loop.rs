@@ -610,11 +610,31 @@ fn resume_existing_child(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "recovery_missing_lineage: captured child flow unavailable".to_string())?;
     let child_id = record.run_id.clone();
-    let pause = flow
-        .nodes
-        .get(&checkpoint.current_node)
-        .and_then(|node| node.runtime.as_ref())
-        .is_some_and(|runtime| runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause);
+    let branch_pause = crate::handlers::fork_branch_requiring_recovery_decision(
+        &bundle.paths,
+        &flow,
+        &checkpoint.current_node,
+        checkpoint.completed_nodes.len() as u64,
+        crate::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?,
+    )
+    .is_some();
+    let pause = branch_pause
+        || flow
+            .nodes
+            .get(&checkpoint.current_node)
+            .and_then(|node| node.runtime.as_ref())
+            .is_some_and(|runtime| {
+                runtime.recovery_policy == attractor_core::RecoveryPolicy::Pause
+            });
     let durable_response = crate::executor::durable_outcome(
         &store,
         &bundle.paths,

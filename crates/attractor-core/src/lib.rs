@@ -51,7 +51,8 @@ pub use flow_definition::{
     ExitResult, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
     FlowEdgeKind, FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute,
     ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RecoveryPolicy,
-    RetryConfig, SwitchScalar, UiConfig, DECISION_ENVELOPE, FLOW_SCHEMA_VERSION, NEXT_DECISION,
+    RetryConfig, SwitchNumber, SwitchScalar, UiConfig, DECISION_ENVELOPE, FLOW_SCHEMA_VERSION,
+    NEXT_DECISION,
 };
 pub use graph::{
     attr_bool, attr_i64, attr_string, attr_text, dot_value_text, dot_value_to_json,

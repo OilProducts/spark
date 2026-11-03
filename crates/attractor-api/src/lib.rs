@@ -1164,11 +1164,31 @@ impl AttractorApiService {
             .read_graph_source(&bundle.paths)
             .map_err(|e| format!("captured flow does not load: {e}"))?
             .ok_or_else(|| "captured flow unavailable".to_string())?;
-        let pause = flow
-            .nodes
-            .get(&checkpoint.current_node)
-            .and_then(|node| node.runtime.as_ref())
-            .is_some_and(|runtime| runtime.recovery_policy == RecoveryPolicy::Pause);
+        let attempt = attractor_runtime::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?;
+        // An interrupted pause node inside a fork's branch needs the same
+        // explicit decision as a root node.
+        let branch_node = attractor_runtime::fork_branch_requiring_recovery_decision(
+            &bundle.paths,
+            &flow,
+            &checkpoint.current_node,
+            checkpoint.completed_nodes.len() as u64,
+            attempt,
+        );
+        let pause = branch_node.is_some()
+            || flow
+                .nodes
+                .get(&checkpoint.current_node)
+                .and_then(|node| node.runtime.as_ref())
+                .is_some_and(|runtime| runtime.recovery_policy == RecoveryPolicy::Pause);
         let durable_response = attractor_runtime::durable_outcome(
             store,
             &bundle.paths,
@@ -1177,18 +1197,10 @@ impl AttractorApiService {
                 .get(&checkpoint.current_node)
                 .ok_or_else(|| "checkpoint node unavailable".to_string())?,
             checkpoint.completed_nodes.len() as u64,
-            attractor_runtime::retry::execution_attempt(
-                &checkpoint.context,
-                &checkpoint.current_node,
-                checkpoint
-                    .retry_counts
-                    .get(&checkpoint.current_node)
-                    .copied()
-                    .unwrap_or(0),
-            )
-            .map_err(|e| e.to_string())?,
+            attempt,
         )
         .is_some();
+        let pending_node = branch_node.unwrap_or_else(|| checkpoint.current_node.clone());
         if pause
             && !durable_response
             && !attractor_runtime::retry::retry_authorizes_checkpoint(
@@ -1208,8 +1220,7 @@ impl AttractorApiService {
                     record.status = "waiting".to_string();
                     record.outcome_reason_code = Some("recovery_decision_required".to_string());
                     record.outcome_reason_message = Some(format!(
-                        "Explicit retry is required to rerun node '{}'.",
-                        checkpoint.current_node
+                        "Explicit retry is required to rerun node '{pending_node}'."
                     ));
                     record.ended_at = None;
                 })
@@ -1217,10 +1228,7 @@ impl AttractorApiService {
             store
                 .append_event(
                     &bundle.paths,
-                    attractor_runtime::recovery_decision_required_event(
-                        run_id,
-                        &checkpoint.current_node,
-                    ),
+                    attractor_runtime::recovery_decision_required_event(run_id, &pending_node),
                 )
                 .map_err(|e| e.to_string())?;
             return Ok(());

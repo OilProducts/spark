@@ -366,7 +366,7 @@ fn identifier_newtypes_reject_empty_text_and_serialize_as_strings() {
 
 #[test]
 fn switch_cases_compare_exact_json_scalars_without_coercion() {
-    use attractor_core::{decode_case_key, switch_decision, SwitchScalar};
+    use attractor_core::{decode_case_key, switch_decision, SwitchNumber, SwitchScalar};
     let cases = BTreeMap::from([
         ("0".to_string(), "clean".to_string()),
         ("true".to_string(), "flagged".to_string()),
@@ -390,7 +390,10 @@ fn switch_cases_compare_exact_json_scalars_without_coercion() {
         assert!(pick(value.clone()).is_err(), "{value}");
     }
 
-    assert_eq!(decode_case_key("0"), Ok(SwitchScalar::Number(0.0)));
+    assert_eq!(
+        decode_case_key("0"),
+        Ok(SwitchScalar::Number(SwitchNumber::Integer(0)))
+    );
     assert_eq!(
         decode_case_key(r#""0""#),
         Ok(SwitchScalar::String("0".to_string()))
@@ -398,8 +401,30 @@ fn switch_cases_compare_exact_json_scalars_without_coercion() {
     for invalid in ["null", "[1]", "{}", "ready", "1e999"] {
         assert!(decode_case_key(invalid).is_err(), "{invalid}");
     }
-    assert!(SwitchScalar::Number(0.0).same(&SwitchScalar::Number(-0.0)));
-    assert!(!SwitchScalar::Number(1.0).same(&SwitchScalar::String("1".to_string())));
+    assert_eq!(decode_case_key("-0.0"), decode_case_key("0"));
+    assert_eq!(
+        decode_case_key("0.5"),
+        Ok(SwitchScalar::Number(SwitchNumber::Float(0.5)))
+    );
+    assert!(!SwitchScalar::Number(SwitchNumber::Integer(1))
+        .same(&SwitchScalar::String("1".to_string())));
+
+    // Large integers keep their identity: no rounding through f64.
+    let big = BTreeMap::from([
+        ("9007199254740992".to_string(), "low".to_string()),
+        ("18446744073709551615".to_string(), "max_u64".to_string()),
+        ("-9223372036854775808".to_string(), "min_i64".to_string()),
+    ]);
+    let pick = |value: serde_json::Value| switch_decision(&big, "other", &value);
+    assert_eq!(pick(json!(9007199254740992_u64)).as_deref(), Ok("low"));
+    assert_eq!(pick(json!(9007199254740993_u64)).as_deref(), Ok("other"));
+    assert_eq!(pick(json!(u64::MAX)).as_deref(), Ok("max_u64"));
+    assert_eq!(pick(json!(u64::MAX - 1)).as_deref(), Ok("other"));
+    assert_eq!(pick(json!(i64::MIN)).as_deref(), Ok("min_i64"));
+    assert_eq!(pick(json!(i64::MIN + 1)).as_deref(), Ok("other"));
+    // An integral float equals that integer; a fractional one never does.
+    assert_eq!(pick(json!(9007199254740992.0_f64)).as_deref(), Ok("low"));
+    assert_eq!(pick(json!(2.5)).as_deref(), Ok("other"));
 }
 
 #[test]
