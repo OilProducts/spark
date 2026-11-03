@@ -144,6 +144,11 @@ impl ContainerCommandRunner for FakeDocker {
         let is_run = spec.args.first().map(String::as_str) == Some("run");
         let is_resolve = spec.args.get(2).is_some_and(|arg| arg == "sh");
         let is_exec = spec.args.first().map(String::as_str) == Some("exec");
+        // Each node answers with its own declared decision.
+        let decision = match serde_json::from_str::<serde_json::Value>(&spec.stdin) {
+            Ok(request) if request["node_id"] == "start" => "next",
+            _ => "done",
+        };
         self.commands.lock().expect("commands").push(spec);
         Ok(CommandResult {
             exit_code: 0,
@@ -155,9 +160,8 @@ impl ContainerCommandRunner for FakeDocker {
                 serde_json::to_string(&json!({
                     "type": "result",
                     "outcome": {
-                        "status": "success",
-                        "preferred_label": "",
-                        "suggested_next_ids": [],
+                        "status": "completed",
+                        "decision": decision,
                         "context_updates": {},
                         "failure_reason": "",
                         "notes": "",
@@ -175,9 +179,9 @@ impl ContainerCommandRunner for FakeDocker {
                         "internal.run_id": "run-fake",
                         "internal.run_workdir": "/work",
                         "current_node": "work",
-                        "outcome": "success",
-                        "preferred_label": "",
-                        "_attractor.node_outcomes": {"work": "success"},
+                        "_attractor.node_outcomes": {
+                            "work": {"status": "completed", "decision": "done"}
+                        },
                         "_attractor.runtime.execution_mode": "local_container"
                     }
                 }))
@@ -263,23 +267,30 @@ image = "spark-worker:test"
 
 fn worker_flow() -> serde_json::Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "docker_dispatch",
         "nodes": {
-            "start": {"kind": "start"},
-            "task": {
-                "kind": "agent_task",
-                "config": {
-                    "kind": "agent_task",
-                    "prompt": "Exercise the worker"
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
                 }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "task"},
-            {"from": "task", "to": "done"}
-        ]
+            "task": {
+                "kind": "agent_task",
+                "config": {"kind": "agent_task", "prompt": "Exercise the worker"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -650,7 +661,9 @@ fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcom
                 if request["node_id"] == "task" && (self.failure || request["attempt"] == 0) {
                     let mut frame: serde_json::Value =
                         serde_json::from_str(result.stdout.trim()).unwrap();
-                    frame["outcome"]["status"] = json!("fail");
+                    frame["outcome"]["status"] = json!("error");
+                    frame["outcome"]["decision"] = json!("");
+                    frame["outcome"]["failure_kind"] = json!("runtime");
                     frame["outcome"]["failure_reason"] = json!("original node failure");
                     frame["outcome"]["retryable"] = json!(!self.failure);
                     result.stdout = format!("{frame}\n");
@@ -692,7 +705,7 @@ fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcom
             for run_id in ["first", "second"] {
                 let mut flow = worker_flow();
                 flow["nodes"]["task"]["retry"] = json!({"max_retries": 1});
-                flow["nodes"]["done"]["config"] = json!({"kind": "exit", "result_summary": true});
+                flow["nodes"]["done"]["config"]["result_summary"] = json!(true);
                 let response = service.start_pipeline(PipelineStartRequest {
                     run_id: Some(run_id.into()),
                     flow_name: Some(crate::install_flow(&settings, flow)),
@@ -810,31 +823,42 @@ fn real_docker_run_lifetime() {
         }),
     );
     let flow = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "container_smoke",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "write", "description": "Enter the first workflow step."}
+                }
+            },
             "write": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "test ! -e /tmp/spark-cr119 && printf preserved > /tmp/spark-cr119"
-                }
+                    "command": "test ! -e /tmp/spark-cr119 && printf preserved > /tmp/spark-cr119",
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "read", "description": "The step is complete."}}
             },
             "read": {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "test $(cat /tmp/spark-cr119) = preserved"
-                }
+                    "command": "test $(cat /tmp/spark-cr119) = preserved",
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "write"},
-            {"from": "write", "to": "read"},
-            {"from": "read", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     });
     for run_id in ["smoke-first", "smoke-second"] {
         let response = service.start_pipeline(PipelineStartRequest {

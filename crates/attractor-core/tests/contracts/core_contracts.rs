@@ -1,16 +1,14 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    apply_launch_context, attr_bool, attr_i64, attr_text, best_edge_by_weight_then_lexical,
-    evaluate_condition, is_exact_outcome_fail_condition, node_has_explicit_attr,
-    normalize_condition_literal, normalize_context_read_key, normalize_context_update_key,
-    normalize_context_updates, normalize_label, parse_context_read_contract,
+    apply_launch_context, attr_bool, attr_i64, attr_text, evaluate_condition,
+    node_has_explicit_attr, normalize_condition_literal, normalize_context_read_key,
+    normalize_context_update_key, normalize_context_updates, parse_context_read_contract,
     parse_context_write_contract, resolve_context_read_contract, resolve_context_write_contract,
-    routing_edge_from_dot_edge, select_failure_route_edge_with_context, select_next_edge,
-    select_next_edge_with_condition_results, select_next_edge_with_context,
-    validate_context_updates_against_contract, AttractorContext, AttractorCoreError, ContextMap,
-    DotAttribute, DotEdge, DotValue, DotValueType, EdgeId, FailureKind, FlowName, GraphId,
-    LaunchContext, NodeId, Outcome, OutcomeStatus, RawRuntimeEvent, RoutingEdge, RunId, RunRecord,
+    routing_edge_from_dot_edge, validate_context_updates_against_contract, AttractorContext,
+    AttractorCoreError, ContextMap, DotAttribute, DotEdge, DotValue, DotValueType, EdgeId,
+    FailureKind, FlowName, GraphId, LaunchContext, NodeId, Outcome, OutcomeStatus, RawRuntimeEvent,
+    RunId, RunRecord,
 };
 use serde_json::json;
 
@@ -19,13 +17,6 @@ fn context_map(entries: impl IntoIterator<Item = (&'static str, serde_json::Valu
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect()
-}
-
-fn edge(source: &str, target: &str) -> RoutingEdge {
-    RoutingEdge::new(
-        NodeId::try_from(source).expect("source id"),
-        NodeId::try_from(target).expect("target id"),
-    )
 }
 
 fn dot_string_attr(key: &str, value: &str) -> DotAttribute {
@@ -310,52 +301,45 @@ fn graph_attr_contract_resolvers_and_context_update_normalization_are_runtime_re
 }
 
 #[test]
-fn outcome_payload_round_trips_and_omits_runtime_only_fields() {
-    let mut outcome = Outcome::new(OutcomeStatus::Fail);
-    outcome.preferred_label = "Fix".to_string();
-    outcome.suggested_next_ids = vec!["retry_stage".to_string(), "fallback_stage".to_string()];
-    outcome.context_updates = context_map([
-        ("context.retry_count", json!(2)),
-        ("context.metadata", json!({"source": "validator"})),
-    ]);
-    outcome.notes = "validation failed".to_string();
-    outcome.failure_reason = "lint failed".to_string();
-    outcome.failure_kind = Some(FailureKind::Contract);
-    outcome.retryable = Some(false);
-    outcome.raw_response_text = r#"{"outcome":"fail"}"#.to_string();
-
-    let payload = outcome.to_payload();
-    let payload_json = serde_json::to_value(&payload).expect("payload json");
+fn outcomes_separate_completed_decisions_from_classified_errors() {
+    let mut completed = Outcome::completed("ready");
+    completed.context_updates = context_map([("context.review.summary", json!("ok"))]);
+    completed.notes = "reviewed".to_string();
+    let value = serde_json::to_value(&completed).expect("completed json");
+    assert_eq!(value["status"], json!("completed"));
+    assert_eq!(value["decision"], json!("ready"));
+    assert!(value.get("failure_kind").is_none());
+    assert!(value.get("preferred_label").is_none());
     assert_eq!(
-        payload_json,
-        json!({
-            "status": "fail",
-            "preferred_label": "Fix",
-            "suggested_next_ids": ["retry_stage", "fallback_stage"],
-            "context_updates": {
-                "context.metadata": {"source": "validator"},
-                "context.retry_count": 2
-            },
-            "notes": "validation failed",
-            "failure_reason": "lint failed",
-            "failure_kind": "contract"
-        })
+        serde_json::from_value::<Outcome>(value).expect("round trip"),
+        completed
     );
-    assert!(payload_json.get("retryable").is_none());
-    assert!(payload_json.get("raw_response_text").is_none());
+    assert!(!completed.is_error());
+    assert_eq!(completed.error_kind(), None);
 
-    let skipped = Outcome::new(OutcomeStatus::Skipped).to_payload();
+    let error = Outcome::error(FailureKind::Contract, "bad envelope", Some(false));
+    let value = serde_json::to_value(&error).expect("error json");
+    assert_eq!(value["status"], json!("error"));
+    assert_eq!(value["decision"], json!(""));
+    assert_eq!(value["failure_kind"], json!("contract"));
+    assert_eq!(value["retryable"], json!(false));
+    assert_eq!(error.error_kind(), Some(FailureKind::Contract));
+    // An unclassified error is a runtime error.
     assert_eq!(
-        serde_json::to_value(skipped).expect("skipped"),
-        json!({
-            "status": "skipped",
-            "preferred_label": "",
-            "suggested_next_ids": [],
-            "context_updates": {},
-            "notes": "",
-            "failure_reason": ""
-        })
+        Outcome::new(OutcomeStatus::Error).error_kind(),
+        Some(FailureKind::Runtime)
     );
+
+    // Only routing errors are never tolerable inside a fork.
+    assert!(FailureKind::Runtime.is_tolerable());
+    assert!(FailureKind::Contract.is_tolerable());
+    assert!(!FailureKind::Routing.is_tolerable());
+
+    // The legacy statuses are not outcome statuses any more.
+    for legacy in ["success", "fail", "partial_success", "retry", "skipped"] {
+        assert!(legacy.parse::<OutcomeStatus>().is_err(), "{legacy}");
+        assert!(serde_json::from_value::<Outcome>(json!({"status": legacy})).is_err());
+    }
 }
 
 #[test]
@@ -381,61 +365,41 @@ fn identifier_newtypes_reject_empty_text_and_serialize_as_strings() {
 }
 
 #[test]
-fn routing_normalizes_labels_preserves_suggestion_order_and_tiebreaks() {
-    assert_eq!(normalize_label("[Y] Approve"), "approve");
-    assert_eq!(normalize_label("Y) Approve"), "approve");
-    assert_eq!(normalize_label("Y - Approve"), "approve");
+fn switch_cases_compare_exact_json_scalars_without_coercion() {
+    use attractor_core::{decode_case_key, switch_decision, SwitchScalar};
+    let cases = BTreeMap::from([
+        ("0".to_string(), "clean".to_string()),
+        ("true".to_string(), "flagged".to_string()),
+        (r#""0""#.to_string(), "text_zero".to_string()),
+        (r#""ready""#.to_string(), "ready".to_string()),
+    ]);
+    let pick = |value: serde_json::Value| switch_decision(&cases, "other", &value);
+    assert_eq!(pick(json!(0)).as_deref(), Ok("clean"));
+    // Numerically equal spellings are the same number.
+    assert_eq!(pick(json!(0.0)).as_deref(), Ok("clean"));
+    assert_eq!(pick(json!(true)).as_deref(), Ok("flagged"));
+    assert_eq!(pick(json!("0")).as_deref(), Ok("text_zero"));
+    assert_eq!(pick(json!("ready")).as_deref(), Ok("ready"));
+    // No truthiness or string/number/boolean coercion: unmatched scalars take otherwise.
+    assert_eq!(pick(json!(3)).as_deref(), Ok("other"));
+    assert_eq!(pick(json!(false)).as_deref(), Ok("other"));
+    assert_eq!(pick(json!("true")).as_deref(), Ok("other"));
+    assert_eq!(pick(json!("")).as_deref(), Ok("other"));
+    // Unsupported values are errors, never otherwise.
+    for value in [json!(null), json!([0]), json!({"count": 0})] {
+        assert!(pick(value.clone()).is_err(), "{value}");
+    }
 
-    let mut c2 = edge("a", "c2");
-    c2.condition = "outcome=success".to_string();
-    c2.weight = 4;
-    let mut c1 = edge("a", "c1");
-    c1.condition = "outcome=success".to_string();
-    c1.weight = 4;
-    let mut label_hit = edge("a", "label_hit");
-    label_hit.label = "[Y] Approve".to_string();
-    label_hit.weight = 99;
-    let mut suggested_hit = edge("a", "suggested_hit");
-    suggested_hit.weight = 50;
-
-    let outcome = Outcome {
-        preferred_label: "Approve".to_string(),
-        suggested_next_ids: vec!["suggested_hit".to_string()],
-        ..Outcome::new(OutcomeStatus::Success)
-    };
-    let mut conditions = BTreeMap::new();
-    conditions.insert("outcome=success".to_string(), true);
-    let selected = select_next_edge_with_condition_results(
-        &[
-            c2.clone(),
-            c1.clone(),
-            label_hit.clone(),
-            suggested_hit.clone(),
-        ],
-        &outcome,
-        &conditions,
-    )
-    .expect("condition selected");
-    assert_eq!(selected.target.as_str(), "c1");
-
-    let preferred = select_next_edge(&[label_hit.clone(), suggested_hit.clone()], &outcome)
-        .expect("preferred selected");
-    assert_eq!(preferred.target.as_str(), "label_hit");
-
-    let suggested = Outcome {
-        suggested_next_ids: vec!["missing".to_string(), "suggested_hit".to_string()],
-        ..Outcome::new(OutcomeStatus::Fail)
-    };
-    let selected = select_next_edge(&[label_hit, suggested_hit.clone()], &suggested)
-        .expect("suggested selected");
-    assert_eq!(selected.target.as_str(), "suggested_hit");
-
-    let mut beta = edge("a", "beta");
-    beta.weight = 7;
-    let mut alpha = edge("a", "alpha");
-    alpha.weight = 7;
-    let best = best_edge_by_weight_then_lexical(&[beta, alpha]).expect("best edge");
-    assert_eq!(best.target.as_str(), "alpha");
+    assert_eq!(decode_case_key("0"), Ok(SwitchScalar::Number(0.0)));
+    assert_eq!(
+        decode_case_key(r#""0""#),
+        Ok(SwitchScalar::String("0".to_string()))
+    );
+    for invalid in ["null", "[1]", "{}", "ready", "1e999"] {
+        assert!(decode_case_key(invalid).is_err(), "{invalid}");
+    }
+    assert!(SwitchScalar::Number(0.0).same(&SwitchScalar::Number(-0.0)));
+    assert!(!SwitchScalar::Number(1.0).same(&SwitchScalar::String("1".to_string())));
 }
 
 #[test]
@@ -454,46 +418,25 @@ fn conditions_match_python_resolution_and_literal_rules() {
         "logs": []
     }))
     .expect("context");
-    let outcome = Outcome {
-        status: OutcomeStatus::PartialSuccess,
-        preferred_label: "[Y] Ship".to_string(),
-        ..Outcome::new(OutcomeStatus::PartialSuccess)
-    };
 
-    assert!(evaluate_condition("", &outcome, &context));
-    assert!(evaluate_condition(
-        r#"outcome=partial_success && preferred_label="[Y] Ship""#,
-        &outcome,
-        &context
-    ));
+    assert!(evaluate_condition("", &context));
+    // Conditions read context only; there is no inherited outcome or label.
+    assert!(!evaluate_condition("outcome=success", &context));
+    assert!(!evaluate_condition(r#"preferred_label="Ship""#, &context));
     assert!(evaluate_condition(
         r#"context.flag=true && number=3 && enabled"#,
-        &outcome,
         &context
     ));
-    assert!(evaluate_condition(
-        "context.nested.value=nested",
-        &outcome,
-        &context
-    ));
-    assert!(evaluate_condition("flat.direct=direct", &outcome, &context));
-    assert!(evaluate_condition(
-        "context.flat.key=flat",
-        &outcome,
-        &context
-    ));
-    assert!(!evaluate_condition("flat.key=flat", &outcome, &context));
-    assert!(evaluate_condition(r#"phrase="a && b""#, &outcome, &context));
+    assert!(evaluate_condition("context.nested.value=nested", &context));
+    assert!(evaluate_condition("flat.direct=direct", &context));
+    assert!(evaluate_condition("context.flat.key=flat", &context));
+    assert!(!evaluate_condition("flat.key=flat", &context));
+    assert!(evaluate_condition(r#"phrase="a && b""#, &context));
     assert!(evaluate_condition(
         r#"escaped="say \"hi\" \\ end""#,
-        &outcome,
         &context
     ));
-    assert!(!evaluate_condition(
-        "context.flag ~~ true",
-        &outcome,
-        &context
-    ));
+    assert!(!evaluate_condition("context.flag ~~ true", &context));
     assert_eq!(
         normalize_condition_literal(r#""a \"b\" \\ c""#),
         "a \"b\" \\ c"
@@ -501,70 +444,66 @@ fn conditions_match_python_resolution_and_literal_rules() {
 }
 
 #[test]
-fn context_aware_routing_preserves_condition_failure_and_dot_edge_priority() {
-    let context = AttractorContext::from_map(context_map([
-        ("context.ready", json!(true)),
-        ("context.error", json!(true)),
-    ]))
-    .expect("context");
-    let outcome = Outcome {
-        preferred_label: "Approve".to_string(),
-        suggested_next_ids: vec!["suggested".to_string()],
-        ..Outcome::new(OutcomeStatus::Success)
-    };
-
-    let mut conditional = edge("a", "conditional");
-    conditional.condition = "context.ready=true".to_string();
-    conditional.weight = 1;
-    let mut unconditional = edge("a", "unconditional");
-    unconditional.label = "[Y] Approve".to_string();
-    unconditional.weight = 99;
-    let selected = select_next_edge_with_context(
-        &[unconditional.clone(), conditional.clone()],
-        &outcome,
-        &context,
-    )
-    .expect("condition wins");
-    assert_eq!(selected.target.as_str(), "conditional");
-
-    conditional.condition = "context.missing=true".to_string();
-    assert!(select_next_edge_with_context(&[conditional.clone()], &outcome, &context).is_none());
-
-    let mut exact_fail = edge("a", "exact_fail");
-    exact_fail.condition = " outcome = fail ".to_string();
-    exact_fail.weight = 1;
-    let mut general_fail = edge("a", "general_fail");
-    general_fail.condition = "context.error=true".to_string();
-    general_fail.weight = 100;
-    let selected = select_failure_route_edge_with_context(
-        &[general_fail, exact_fail],
-        &Outcome::new(OutcomeStatus::Fail),
-        &context,
-    )
-    .expect("failure route");
-    assert_eq!(selected.target.as_str(), "exact_fail");
-    assert!(is_exact_outcome_fail_condition(" outcome = fail "));
-    assert!(is_exact_outcome_fail_condition("OUTCOME=FAIL"));
-
+fn dot_projection_carries_each_route_decision_description_and_label() {
     let dot_edge = DotEdge {
         source: "source".to_string(),
         target: "target".to_string(),
         attrs: BTreeMap::from([
-            ("label".to_string(), dot_string_attr("label", "ship")),
+            ("label".to_string(), dot_string_attr("label", "Ship")),
+            ("decision".to_string(), dot_string_attr("decision", "ship")),
             (
-                "condition".to_string(),
-                dot_string_attr("condition", "outcome=success"),
+                "description".to_string(),
+                dot_string_attr("description", "Ready to ship."),
             ),
-            ("weight".to_string(), dot_string_attr("weight", "7")),
         ]),
         line: 1,
     };
     let routing_edge = routing_edge_from_dot_edge(&dot_edge).expect("routing edge");
     assert_eq!(routing_edge.source.as_str(), "source");
     assert_eq!(routing_edge.target.as_str(), "target");
-    assert_eq!(routing_edge.label, "ship");
-    assert_eq!(routing_edge.condition, "outcome=success");
-    assert_eq!(routing_edge.weight, 7);
+    assert_eq!(routing_edge.decision, "ship");
+    assert_eq!(routing_edge.description, "Ready to ship.");
+    assert_eq!(routing_edge.display_label(), "Ship");
+
+    let flow: attractor_core::FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "dot",
+        "nodes": {
+            "start": {"kind": "start", "routes": {"next": {"to": "gate", "description": "Enter."}}},
+            "gate": {"kind": "human_gate", "routes": {
+                "approve": {"to": "done", "label": "Approve", "description": "Approved."},
+                "stop": {"to": "done", "description": "Stopped."}
+            }},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
+    }))
+    .expect("flow");
+    let graph = flow.to_runtime_dot_graph();
+    let edges = graph
+        .edges
+        .iter()
+        .map(|edge| {
+            let edge = routing_edge_from_dot_edge(edge).expect("edge");
+            (
+                edge.source.to_string(),
+                edge.decision.clone(),
+                edge.target.to_string(),
+                edge.display_label().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges,
+        vec![
+            (
+                "gate".into(),
+                "approve".into(),
+                "done".into(),
+                "Approve".into()
+            ),
+            ("gate".into(), "stop".into(), "done".into(), "stop".into()),
+            ("start".into(), "next".into(), "gate".into(), "next".into()),
+        ]
+    );
 }
 
 #[test]
@@ -683,17 +622,15 @@ fn node_runtime_timeout_accepts_durations_and_rejects_invalid_values() {
     }
 
     let flow = serde_json::from_value::<attractor_core::FlowDefinition>(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "timeouts",
         "nodes": {
-            "start": { "kind": "start" },
-            "work": { "kind": "agent_task", "runtime": { "timeout": "1e100s" } },
-            "done": { "kind": "exit" }
-        },
-        "edges": [
-            { "from": "start", "to": "work" },
-            { "from": "work", "to": "done" }
-        ]
+            "start": { "kind": "start", "routes": { "next": { "to": "work", "description": "Enter." } } },
+            "work": { "kind": "agent_task", "runtime": { "timeout": "1e100s" },
+                "contracts": { "response": "decision_envelope" },
+                "routes": { "done": { "to": "done", "description": "Done." } } },
+            "done": { "kind": "exit", "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } } }
+        }
     }))
     .unwrap();
     let diagnostics = flow.diagnostics();
@@ -709,10 +646,13 @@ fn node_runtime_timeout_accepts_durations_and_rejects_invalid_values() {
 fn execution_locks_require_project_scope_a_key_and_queue_policy() {
     let rules = |lock: serde_json::Value| {
         serde_json::from_value::<attractor_core::FlowDefinition>(json!({
+            "schema_version": "2",
             "id": "locked",
             "execution_lock": lock,
-            "nodes": { "start": { "kind": "start" }, "done": { "kind": "exit" } },
-            "edges": [{ "from": "start", "to": "done" }]
+            "nodes": {
+                "start": { "kind": "start", "routes": { "next": { "to": "done", "description": "Enter." } } },
+                "done": { "kind": "exit", "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } } }
+            }
         }))
         .unwrap()
         .diagnostics()
@@ -743,37 +683,61 @@ fn execution_locks_require_project_scope_a_key_and_queue_policy() {
 
 #[test]
 fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
-    let flow = |nodes: serde_json::Value, edges: serde_json::Value| {
+    let route = |to: &str| json!({"done": {"to": to, "description": "Done."}});
+    let exit = json!({"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}});
+    let start = json!({"kind": "start", "routes": {"next": {"to": "a", "description": "Enter."}}});
+    // start -> a -> b -> done, with `a` and `b` given by the caller.
+    let linear = |a: serde_json::Value, b: serde_json::Value| {
+        let mut a = a;
+        let mut b = b;
+        a["routes"] = route("b");
+        if b.get("routes").is_none() {
+            b["routes"] = route("done");
+        }
+        json!({"start": start, "done": exit, "a": a, "b": b})
+    };
+    let rules = |nodes: serde_json::Value| {
         serde_json::from_value::<attractor_core::FlowDefinition>(json!({
-            "id": "sessions", "nodes": nodes, "edges": edges
+            "schema_version": "2", "id": "sessions", "nodes": nodes
         }))
+        .expect("flow JSON")
+        .diagnostics()
+        .into_iter()
+        .map(|d| (d.rule_id, d.message))
+        .collect::<Vec<_>>()
     };
-    let rules = |nodes: serde_json::Value, edges: serde_json::Value| {
-        flow(nodes, edges)
-            .expect("flow JSON")
-            .diagnostics()
-            .into_iter()
-            .map(|d| (d.rule_id, d.message))
-            .collect::<Vec<_>>()
+    let agent = |runtime: serde_json::Value, execution: serde_json::Value| {
+        json!({"kind": "agent_task", "runtime": runtime, "execution": execution,
+            "contracts": {"response": "decision_envelope"}})
     };
-    let linear = json!([{"from": "start", "to": "a"}, {"from": "a", "to": "b"}, {"from": "b", "to": "done"}]);
-    let agent = |runtime: serde_json::Value, execution: serde_json::Value| json!({"kind": "agent_task", "runtime": runtime, "execution": execution});
+    let tool = |runtime: serde_json::Value| {
+        json!({"kind": "tool", "runtime": runtime,
+            "config": {"kind": "tool", "command": "true", "exit_codes": {"0": "done"}}})
+    };
 
     // Shared sessions with matching (or unset) providers and models are valid.
-    let shared = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "a": agent(json!({"session": "author"}), json!({"llm_provider": "codex"})),
-        "b": agent(json!({"session": "author"}), json!({})),
-    });
-    assert_eq!(rules(shared, linear.clone()), Vec::new());
+    assert_eq!(
+        rules(linear(
+            agent(
+                json!({"session": "author"}),
+                json!({"llm_provider": "codex"})
+            ),
+            agent(json!({"session": "author"}), json!({})),
+        )),
+        Vec::new()
+    );
 
     // Conflicting providers or models in one session are rejected.
-    let conflicting = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "a": agent(json!({"session": "author"}), json!({"llm_provider": "codex", "llm_model": "m1"})),
-        "b": agent(json!({"session": "author"}), json!({"llm_provider": "claude-code", "llm_model": "m2"})),
-    });
-    let diagnostics = rules(conflicting, linear.clone());
+    let diagnostics = rules(linear(
+        agent(
+            json!({"session": "author"}),
+            json!({"llm_provider": "codex", "llm_model": "m1"}),
+        ),
+        agent(
+            json!({"session": "author"}),
+            json!({"llm_provider": "claude-code", "llm_model": "m2"}),
+        ),
+    ));
     assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
     assert!(diagnostics
         .iter()
@@ -781,12 +745,10 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
     assert!(diagnostics[0].1.contains("llm_provider") && diagnostics[1].1.contains("llm_model"));
 
     // `session` is only for agent tasks, and its name must be a valid id.
-    let misplaced = json!({
-        "start": {"kind": "start"}, "done": {"kind": "exit"},
-        "a": {"kind": "tool", "runtime": {"session": "author"}, "config": {"kind": "tool", "command": "true"}},
-        "b": agent(json!({"session": "bad name"}), json!({})),
-    });
-    let diagnostics = rules(misplaced, linear.clone());
+    let diagnostics = rules(linear(
+        tool(json!({"session": "author"})),
+        agent(json!({"session": "bad name"}), json!({})),
+    ));
     assert!(
         diagnostics
             .iter()
@@ -798,25 +760,17 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
         .any(|(rule, message)| rule == "session" && message.contains("invalid session name")));
 
     // `workdir_from` is only for agent tasks, and must be a valid context key.
-    let workdir = |a: serde_json::Value, b: serde_json::Value| json!({"start": {"kind": "start"}, "done": {"kind": "exit"}, "a": a, "b": b});
     assert_eq!(
-        rules(
-            workdir(
-                agent(json!({"workdir_from": "context.workspace.path"}), json!({})),
-                agent(json!({}), json!({}))
-            ),
-            linear.clone()
-        ),
+        rules(linear(
+            agent(json!({"workdir_from": "context.workspace.path"}), json!({})),
+            agent(json!({}), json!({}))
+        )),
         Vec::new()
     );
-    let diagnostics = rules(
-        workdir(
-            json!({"kind": "tool", "runtime": {"workdir_from": "context.workspace.path"},
-                "config": {"kind": "tool", "command": "true"}}),
-            agent(json!({"workdir_from": "invalid.namespace"}), json!({})),
-        ),
-        linear.clone(),
-    );
+    let diagnostics = rules(linear(
+        tool(json!({"workdir_from": "context.workspace.path"})),
+        agent(json!({"workdir_from": "invalid.namespace"}), json!({})),
+    ));
     assert_eq!(
         diagnostics
             .iter()
@@ -832,19 +786,16 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
 
     // Every output_map parent key must be declared in writes_context.
     let subflow = |writes: serde_json::Value| {
-        json!({
-            "start": {"kind": "start"}, "done": {"kind": "exit"},
-            "a": {"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child",
-                "output_map": {"context.child.result": "context.result"}},
-                "contracts": {"writes_context": writes}},
-            "b": {"kind": "conditional"},
-        })
+        linear(
+            json!({"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child",
+                "output_map": {"context.child.result": "context.result"},
+                "results": {"completed": "done"}},
+                "contracts": {"writes_context": writes}}),
+            agent(json!({}), json!({})),
+        )
     };
-    assert_eq!(
-        rules(subflow(json!(["context.result"])), linear.clone()),
-        Vec::new()
-    );
-    assert!(rules(subflow(json!([])), linear.clone())
+    assert_eq!(rules(subflow(json!(["context.result"]))), Vec::new());
+    assert!(rules(subflow(json!([])))
         .iter()
         .any(|(rule, message)| rule == "subflow_output_map" && message.contains("context.result")));
 
@@ -861,7 +812,7 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
         (json!({}), json!({"fidelity": "summary:high"})),
     ] {
         let error = serde_json::from_value::<attractor_core::FlowDefinition>(
-            json!({"id": "old", "nodes": nodes, "defaults": defaults}),
+            json!({"schema_version": "2", "id": "old", "nodes": nodes, "defaults": defaults}),
         )
         .expect_err("removed field");
         assert!(
@@ -870,19 +821,10 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
             "{error}"
         );
     }
-    let edge_fidelity = json!([
-        {"from": "start", "to": "a", "extensions": {"fidelity": "full"}},
-        {"from": "a", "to": "b", "extensions": {"thread_id": "t"}},
-        {"from": "b", "to": "done"}
-    ]);
-    let diagnostics = rules(
-        json!({"start": {"kind": "start"}, "done": {"kind": "exit"},
-            "a": agent(json!({}), json!({})), "b": agent(json!({}), json!({}))}),
-        edge_fidelity,
-    );
-    assert!(diagnostics
-        .iter()
-        .any(|(rule, message)| rule == "removed_field" && message.contains("fidelity")));
+    let mut nodes = linear(agent(json!({}), json!({})), agent(json!({}), json!({})));
+    nodes["a"]["routes"]["done"]["extensions"] = json!({"fidelity": "full"});
+    nodes["b"]["extensions"] = json!({"thread_id": "t"});
+    let diagnostics = rules(nodes);
     assert!(diagnostics
         .iter()
         .any(|(rule, message)| rule == "removed_field" && message.contains("thread_id")));

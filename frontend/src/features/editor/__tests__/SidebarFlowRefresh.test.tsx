@@ -192,10 +192,18 @@ describe('Editor sidebar manual refresh', () => {
             expect(saveFlowContentMock).toHaveBeenCalledWith(
                 'beta',
                 { flow: expect.objectContaining({
-                    schema_version: '1.0',
+                    schema_version: '2',
                     id: 'beta',
-                    nodes: expect.objectContaining({ start: expect.anything(), end: expect.anything() }),
-                    edges: [{ from: 'start', to: 'end' }],
+                    nodes: {
+                        start: expect.objectContaining({
+                            kind: 'start',
+                            routes: { next: { to: 'end', description: 'Enter the first workflow step.' } },
+                        }),
+                        end: expect.objectContaining({
+                            kind: 'exit',
+                            config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } },
+                        }),
+                    },
                 }) },
             )
         })

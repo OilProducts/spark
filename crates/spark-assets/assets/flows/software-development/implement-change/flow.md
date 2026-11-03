@@ -3,7 +3,7 @@ type: Flow
 id: implement_change
 title: Implement Change
 description: Implement one bounded repository change in an isolated worktree, gatekeep it against its contract, and commit the validated result.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.objective
   label: Objective

@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use attractor_core::{normalize_flow_ref, FlowDefinition, FlowDefinitionError, FlowDiagnostic};
+use attractor_core::{
+    normalize_flow_ref, FlowDefinition, FlowDefinitionError, FlowDiagnostic, NodeConfig,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -42,6 +44,12 @@ impl FlowSourceError {
 
     pub fn diagnostics(&self) -> &[FlowDiagnostic] {
         &self.diagnostics
+    }
+
+    /// The same error with `detail` replaced.
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
     }
 }
 
@@ -351,6 +359,7 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
             message: d.message,
             node_id: d.node_id,
             edge: None,
+            decision: None,
         })
         .collect();
     if !diagnostics.is_empty() {
@@ -365,6 +374,87 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
         });
     }
     Ok(())
+}
+
+/// Checks every subflow against its effective child, resolved project first
+/// then bundled, recursively: the child must exist, be valid, not recurse,
+/// and its terminal result names must equal the subflow's `config.results`
+/// keys.
+pub fn validate_flow_children(
+    roots: &FlowRoots,
+    flow_name: Option<&str>,
+    flow: &FlowDefinition,
+) -> Result<(), FlowDefinitionError> {
+    let mut stack = flow_name
+        .and_then(|name| normalize_flow_name(name).ok())
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut diagnostics = Vec::new();
+    child_diagnostics(roots, flow_name, flow, &mut stack, &mut diagnostics);
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(FlowDefinitionError::from_diagnostics(diagnostics))
+    }
+}
+
+fn child_diagnostics(
+    roots: &FlowRoots,
+    flow_name: Option<&str>,
+    flow: &FlowDefinition,
+    stack: &mut Vec<String>,
+    diagnostics: &mut Vec<FlowDiagnostic>,
+) {
+    for (node_id, node) in &flow.nodes {
+        let Some(NodeConfig::Subflow {
+            flow_ref, results, ..
+        }) = node.config.as_ref()
+        else {
+            continue;
+        };
+        let Some(child_name) = flow_ref_name(flow_name, flow_ref) else {
+            continue;
+        };
+        let mut problem = |message: String| {
+            diagnostics.push(FlowDiagnostic {
+                rule_id: "subflow_child".to_string(),
+                message: format!("{node_id}.md: subflow '{child_name}': {message}"),
+                node_id: Some(node_id.clone()),
+                edge: None,
+                decision: None,
+            });
+        };
+        if stack.contains(&child_name) {
+            problem(format!("recursive reference ({})", stack.join(" -> ")));
+            continue;
+        }
+        let child = match roots
+            .resolve_flow(&child_name)
+            .and_then(|resolved| read_flow_dir(&resolved.path))
+        {
+            Ok(child) => child,
+            Err(error) => {
+                problem(error.detail().to_string());
+                continue;
+            }
+        };
+        let child_results = child.terminal_results();
+        for name in child_results.keys() {
+            if !results.contains_key(name) {
+                problem(format!("config.results does not map child result '{name}'"));
+            }
+        }
+        for name in results.keys() {
+            if !child_results.contains_key(name) {
+                problem(format!(
+                    "config.results maps '{name}', which the child never returns"
+                ));
+            }
+        }
+        stack.push(child_name.clone());
+        child_diagnostics(roots, Some(&child_name), &child, stack, diagnostics);
+        stack.pop();
+    }
 }
 
 fn path_safety_error() -> FlowSourceError {

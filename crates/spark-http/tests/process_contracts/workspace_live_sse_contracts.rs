@@ -2715,12 +2715,26 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "live-route",
         "title": "Live Route",
         "goal": "Run live route",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -2860,20 +2874,23 @@ async fn live_route_streams_detached_run_progress_mid_flight() {
         "/attractor/pipelines",
         Some(json!({
             "flow_name": crate::install_flow(&settings, json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "slow_live",
                 "title": "Slow Live",
                 "nodes": {
-                    "start": {"kind": "start"},
-                    "a": {"kind": "tool", "config": {"kind": "tool", "command": "sleep 1"}},
-                    "b": {"kind": "tool", "config": {"kind": "tool", "command": "sleep 1"}},
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "a"},
-                    {"from": "a", "to": "b"},
-                    {"from": "b", "to": "done"}
-                ]
+                    "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "a", "description": "Enter the first workflow step."}}},
+                    "a": {
+                        "kind": "tool",
+                        "config": {"kind": "tool", "command": "sleep 1", "exit_codes": {"0": "done"}},
+                        "routes": {"done": {"to": "b", "description": "The first sleep finished."}}
+                    },
+                    "b": {
+                        "kind": "tool",
+                        "config": {"kind": "tool", "command": "sleep 1", "exit_codes": {"0": "done"}},
+                        "routes": {"done": {"to": "done", "description": "The second sleep finished."}}
+                    },
+                    "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+                }
             })),
             "working_directory": project_path_text,
             "run_id": "run-mid-flight",
@@ -2945,20 +2962,24 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
         "/attractor/pipelines",
         Some(json!({
             "flow_name": crate::install_flow(&settings, json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "gate_live",
                 "title": "Gate Live",
                 "nodes": {
-                    "start": {"kind": "start"},
-                    "review": {"kind": "human_gate", "config": {"kind": "human_gate", "prompt": "Ship it?"}},
-                    "approved": {"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "ship"}},
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "review"},
-                    {"from": "review", "to": "approved", "label": "Approve"},
-                    {"from": "approved", "to": "done"}
-                ]
+                    "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "review", "description": "Enter the first workflow step."}}},
+                    "review": {
+                        "kind": "human_gate",
+                        "config": {"kind": "human_gate", "prompt": "Ship it?"},
+                        "routes": {"approve": {"to": "approved", "label": "Approve", "description": "The change is approved for shipping."}}
+                    },
+                    "approved": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "ship"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {"done": {"to": "done", "description": "The change shipped."}}
+                    },
+                    "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+                }
             })),
             "working_directory": project_path_text,
             "run_id": "run-gate-live",
@@ -3042,7 +3063,7 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
         app.clone(),
         "POST",
         &format!("/attractor/pipelines/run-gate-live/questions/{question_id}/answer"),
-        Some(json!({"question_id": question_id, "selected_value": "Approve"})),
+        Some(json!({"question_id": question_id, "selected_value": "approve"})),
     )
     .await;
     assert_eq!(answered.status(), StatusCode::OK);
@@ -3118,11 +3139,25 @@ async fn live_route_streams_execution_transcript_upserts_through_the_publisher()
     record.flow_name = "segment-live".to_string();
     record.status = "failed".to_string();
     let flow = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "seg_live",
         "title": "Seg Live",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     });
     let checkpoint = attractor_core::CheckpointState {
         timestamp: "2026-07-08T12:00:00Z".to_string(),
@@ -3260,7 +3295,7 @@ impl spark_agent_adapter::CodergenBackend for SlowStreamingCodergenBackend {
         std::thread::sleep(Duration::from_millis(900));
         Ok(spark_agent_adapter::CodergenBackendOutput {
             response: spark_agent_adapter::CodergenBackendResponse::Text(
-                "{\"outcome\":\"success\"}".to_string(),
+                "{\"decision\":\"done\"}".to_string(),
             ),
             events: vec![streamed],
             usage: None,
@@ -3292,18 +3327,19 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         "/attractor/pipelines",
         Some(json!({
             "flow_name": crate::install_flow(&settings, json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "mid_node",
                 "title": "Mid Node",
                 "nodes": {
-                    "start": {"kind": "start"},
-                    "work": {"kind": "agent_task", "config": {"kind": "agent_task", "prompt": "stream"}},
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "work"},
-                    {"from": "work", "to": "done"}
-                ]
+                    "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}}},
+                    "work": {
+                        "kind": "agent_task",
+                        "config": {"kind": "agent_task", "prompt": "stream"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {"done": {"to": "done", "description": "The streamed work is complete."}}
+                    },
+                    "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+                }
             })),
             "working_directory": project_path_text,
             "run_id": "run-mid-node",

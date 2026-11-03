@@ -3,7 +3,7 @@ export type HandlerType =
     | 'exit'
     | 'codergen'
     | 'wait.human'
-    | 'conditional'
+    | 'switch'
     | 'parallel'
     | 'parallel.fan_in'
     | 'tool'
@@ -15,7 +15,7 @@ const NODE_KIND_HANDLER_TYPE: Record<string, HandlerType> = {
     exit: 'exit',
     agent_task: 'codergen',
     human_gate: 'wait.human',
-    conditional: 'conditional',
+    switch: 'switch',
     parallel: 'parallel',
     fan_in: 'parallel.fan_in',
     tool: 'tool',
@@ -28,14 +28,14 @@ export function getHandlerType(kind?: string): HandlerType {
 
 export function getNodeFieldVisibility(handlerType: HandlerType) {
     const isStartOrExit = handlerType === 'start' || handlerType === 'exit'
-    const isHumanOrConditional = handlerType === 'wait.human' || handlerType === 'conditional'
+    const isHumanOrSwitch = handlerType === 'wait.human' || handlerType === 'switch'
 
-    const showPrompt = handlerType === 'codergen' || handlerType === 'parallel.fan_in'
+    const showPrompt = handlerType === 'codergen'
     const showToolCommand = handlerType === 'tool'
     const showParallelOptions = handlerType === 'parallel'
     const showManagerOptions = handlerType === 'stack.manager_loop'
-    const showLlmSettings = handlerType === 'codergen' || handlerType === 'parallel.fan_in'
-    const showAdvanced = !(isStartOrExit || isHumanOrConditional)
+    const showLlmSettings = handlerType === 'codergen'
+    const showAdvanced = !(isStartOrExit || isHumanOrSwitch)
     const showGeneralAdvanced = showAdvanced
 
     return {

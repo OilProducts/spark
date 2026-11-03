@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: sweep
+  next:
+    to: sweep
+    description: Enter the first workflow step.
 ---

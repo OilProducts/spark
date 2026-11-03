@@ -288,21 +288,21 @@ impl RustLlmCodergenBackend {
             .and_then(usage_from_codex_token_payload);
         let response = if let Some(failure) = output.thread_resume_failure.as_ref() {
             CodergenBackendResponse::Outcome(Outcome {
-                status: OutcomeStatus::Fail,
+                status: OutcomeStatus::Error,
                 failure_reason: failure.message.clone(),
                 retryable: Some(false),
                 failure_kind: Some(FailureKind::Runtime),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::new(OutcomeStatus::Error)
             })
         } else if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
             CodergenBackendResponse::Text(text.to_string())
         } else {
             CodergenBackendResponse::Outcome(Outcome {
-                status: OutcomeStatus::Fail,
+                status: OutcomeStatus::Error,
                 failure_reason: "codex app-server completed without assistant text".to_string(),
                 retryable: Some(false),
                 failure_kind: Some(FailureKind::Runtime),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::new(OutcomeStatus::Error)
             })
         };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
@@ -443,11 +443,11 @@ impl RustLlmCodergenBackend {
             CodergenBackendResponse::Text(text.to_string())
         } else {
             CodergenBackendResponse::Outcome(Outcome {
-                status: OutcomeStatus::Fail,
+                status: OutcomeStatus::Error,
                 failure_reason: "claude code completed without assistant text".to_string(),
                 retryable: Some(false),
                 failure_kind: Some(FailureKind::Runtime),
-                ..Outcome::new(OutcomeStatus::Fail)
+                ..Outcome::new(OutcomeStatus::Error)
             })
         };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
@@ -757,12 +757,12 @@ impl NodeStop {
                     if slot.is_none() {
                         if cancel_check.as_ref().is_some_and(|canceled| canceled()) {
                             *slot = Some(Outcome {
-                                status: OutcomeStatus::Fail,
+                                status: OutcomeStatus::Error,
                                 failure_reason: "Run canceled while the node was running"
                                     .to_string(),
                                 retryable: Some(false),
                                 failure_kind: Some(FailureKind::Runtime),
-                                ..Outcome::new(OutcomeStatus::Fail)
+                                ..Outcome::new(OutcomeStatus::Error)
                             });
                         } else if deadline.is_some_and(|at| {
                             // Time spent waiting on a human answer does not count.
@@ -773,13 +773,13 @@ impl NodeStop {
                                     .is_some_and(|at| std::time::Instant::now() >= at)
                         }) {
                             *slot = Some(Outcome {
-                                status: OutcomeStatus::Fail,
+                                status: OutcomeStatus::Error,
                                 failure_reason: format!(
                                     "Agent node timed out after {} seconds",
                                     timeout.unwrap_or_default()
                                 ),
                                 failure_kind: Some(FailureKind::Runtime),
-                                ..Outcome::new(OutcomeStatus::Fail)
+                                ..Outcome::new(OutcomeStatus::Error)
                             });
                         }
                     }
@@ -884,7 +884,7 @@ impl Drop for HumanWait {
 fn status_envelope_schema(request: &CodergenBackendRequest) -> Option<Value> {
     request
         .metadata
-        .get(crate::codergen::STATUS_ENVELOPE_SCHEMA_METADATA_KEY)
+        .get(crate::codergen::DECISION_ENVELOPE_SCHEMA_METADATA_KEY)
         .filter(|schema| schema.is_object())
         .cloned()
 }
@@ -973,21 +973,21 @@ fn codergen_output_from_session(
         });
     let response = if let Some(error) = process_error.as_ref() {
         CodergenBackendResponse::Outcome(Outcome {
-            status: OutcomeStatus::Fail,
+            status: OutcomeStatus::Error,
             failure_reason: format_adapter_error(error),
             retryable: Some(error.retryable),
             failure_kind: Some(FailureKind::Runtime),
-            ..Outcome::new(OutcomeStatus::Fail)
+            ..Outcome::new(OutcomeStatus::Error)
         })
     } else if let Some(text) = final_assistant_text.as_deref().and_then(non_empty) {
         CodergenBackendResponse::Text(text.to_string())
     } else {
         CodergenBackendResponse::Outcome(Outcome {
-            status: OutcomeStatus::Fail,
+            status: OutcomeStatus::Error,
             failure_reason: "agent-backed codergen completed without assistant text".to_string(),
             retryable: Some(false),
             failure_kind: Some(FailureKind::Runtime),
-            ..Outcome::new(OutcomeStatus::Fail)
+            ..Outcome::new(OutcomeStatus::Error)
         })
     };
 

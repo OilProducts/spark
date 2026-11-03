@@ -7,7 +7,6 @@ use crate::error::{Result, RuntimeStorageError};
 use crate::paths::RunRootPaths;
 
 pub const DEFAULT_RESULT_SUMMARY_PROMPT: &str = "You are writing the final result of a Spark flow run from its recorded artifacts in the current working directory. Read run.json, events.jsonl, checkpoint.json, and the per-node records under logs/ (prompt.md, response.md, status.json, tool_output.txt) as needed. Report concisely, in markdown: what the flow accomplished; what was actually built or changed (branches, commits, validation outcomes); deviations from the requested task; blockers or issues encountered, especially when the run failed; and anything else the user should know. Be faithful to the artifacts and do not speculate beyond them. Do not modify any files. Respond with only the markdown report.";
-const SUCCESSFUL_SOURCE_OUTCOMES: &[&str] = &["success", "partial_success"];
 
 /// The prompt and outcome of one summarizer-agent attempt.
 pub type ResultSummaryAttempt = (String, std::result::Result<String, String>);
@@ -38,6 +37,7 @@ fn exit_summary_prompt(node: &attractor_core::FlowNode) -> Option<String> {
         Some(NodeConfig::Exit {
             result_summary: true,
             result_summary_prompt,
+            ..
         }) => Some(
             result_summary_prompt
                 .as_deref()
@@ -200,8 +200,8 @@ fn select_source_node_id(flow: &FlowDefinition, checkpoint: &CheckpointState) ->
     }
 
     let exit_predecessors = flow
-        .edges
-        .iter()
+        .edges()
+        .into_iter()
         .filter(|edge| {
             flow.nodes
                 .get(&edge.to)
@@ -210,7 +210,7 @@ fn select_source_node_id(flow: &FlowDefinition, checkpoint: &CheckpointState) ->
                     || edge.to == checkpoint.current_node
                     || !flow.nodes.contains_key(&checkpoint.current_node))
         })
-        .map(|edge| edge.from.clone())
+        .map(|edge| edge.from)
         .collect::<Vec<_>>();
 
     for node_id in checkpoint.completed_nodes.iter().rev() {
@@ -244,8 +244,9 @@ fn source_node_is_valid(
     if let Some(outcomes) = outcomes.and_then(|value| value.as_object()) {
         return outcomes
             .get(node_id)
+            .and_then(|value| value.get("status"))
             .and_then(|value| value.as_str())
-            .is_some_and(|outcome| SUCCESSFUL_SOURCE_OUTCOMES.contains(&outcome));
+            == Some("completed");
     }
     checkpoint
         .completed_nodes

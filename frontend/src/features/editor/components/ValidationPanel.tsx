@@ -112,8 +112,9 @@ export function ValidationPanel() {
         centerOnNode(nodeId);
     };
 
-    const selectEdge = (source: string, target: string) => {
-        const edge = getEdges().find((edge) => edge.source === source && edge.target === target);
+    const selectEdge = (source: string, target: string, decision?: string | null) => {
+        const pairEdges = getEdges().filter((edge) => edge.source === source && edge.target === target);
+        const edge = pairEdges.find((edge) => decision && edge.data?.decision === decision) ?? pairEdges[0];
         if (!edge) return;
         setSelectedNodeId(null);
         setSelectedEdgeId(edge.id);
@@ -201,7 +202,7 @@ export function ValidationPanel() {
                                 diag.edge.length === 2 &&
                                 getEdges().some((edge) => edge.source === diag.edge?.[0] && edge.target === diag.edge?.[1])
                             ) {
-                                selectEdge(diag.edge[0], diag.edge[1]);
+                                selectEdge(diag.edge[0], diag.edge[1], diag.decision);
                             } else {
                                 handleUnmappedDiagnosticFallback();
                             }
@@ -225,6 +226,7 @@ export function ValidationPanel() {
                                 <div className="text-foreground">{diag.message}</div>
                                 <div className="text-xs text-muted-foreground">
                                     {diag.rule_id}
+                                    {diag.decision ? ` • decision ${diag.decision}` : ''}
                                     {diag.line ? ` • line ${diag.line}` : ''}
                                 </div>
                                 {!hasDirectMapping(diag) ? (

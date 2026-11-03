@@ -91,7 +91,7 @@ fn event(kind: &str, run_id: &str, sequence: u64) -> String {
 fn result() -> String {
     serde_json::to_string(&WorkerFrame::Result(ResultFrame {
         outcome: json!({
-            "status": "success", "preferred_label": "", "suggested_next_ids": [],
+            "status": "completed", "decision": "done",
             "context_updates": {}, "failure_reason": "", "notes": "",
             "retryable": false, "raw_response_text": "ok"
         }),
@@ -123,10 +123,19 @@ fn fixture(
         .unwrap();
     let flow = attractor_dsl::validated_flow(
         serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "stream",
-            "nodes": { "task": { "kind": "start" }, "done": { "kind": "exit" } },
-            "edges": [{ "from": "task", "to": "done" }]
+            "nodes": {
+                "task": {
+                    "kind": "start",
+                    "config": { "kind": "start" },
+                    "routes": { "next": { "to": "done", "description": "Enter the first workflow step." } }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } }
+                }
+            }
         }))
         .unwrap(),
     )
@@ -220,7 +229,7 @@ fn streams_canonical_events_to_host_once_in_order_before_exit_and_notifies() {
     request.stage_index = 7;
     request.attempt = 2;
     let outcome = executor.execute(request).unwrap();
-    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(outcome.status, OutcomeStatus::Completed);
     assert_eq!(*delivered.lock().unwrap(), 3);
     assert!(*live_observed.lock().unwrap());
     assert_eq!(
@@ -312,14 +321,25 @@ fn worker_protocol_preserves_repeated_visit_and_retry_execution_identity() {
         .unwrap();
     let flow = attractor_dsl::validated_flow(
         serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "worker-identity",
             "nodes": {
-                "start": { "kind": "start" },
-                "task": { "kind": "agent_task" },
-                "done": { "kind": "exit" }
-            },
-            "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+                "start": {
+                    "kind": "start",
+                    "config": { "kind": "start" },
+                    "routes": { "next": { "to": "task", "description": "Enter the first workflow step." } }
+                },
+                "task": {
+                    "kind": "agent_task",
+                    "config": { "kind": "agent_task", "prompt": "" },
+                    "contracts": { "response": "decision_envelope" },
+                    "routes": { "done": { "to": "done", "description": "The task is complete." } }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } }
+                }
+            }
         }))
         .unwrap(),
     )
@@ -362,7 +382,7 @@ fn worker_protocol_preserves_repeated_visit_and_retry_execution_identity() {
                 "{\"type\":\"provider_detail\"}\n",
             )
             .unwrap();
-            Ok(attractor_core::Outcome::new(OutcomeStatus::Success))
+            Ok(attractor_core::Outcome::completed("done"))
         });
         let input = serde_json::to_vec(&request).unwrap();
         assert_eq!(
@@ -441,7 +461,7 @@ fn finalization_records_both_removal_failure_types_and_never_retries() {
             });
         assert_eq!(
             executor.execute(request).unwrap().status,
-            OutcomeStatus::Success
+            OutcomeStatus::Completed
         );
         assert_eq!(*removals.lock().unwrap(), 0);
         executor.finalize();
@@ -484,10 +504,13 @@ impl spark_agent_adapter::CodergenBackend for AskingBackend {
             std::thread::sleep(std::time::Duration::from_millis(25));
         };
         Ok(spark_agent_adapter::CodergenBackendOutput {
-            response: spark_agent_adapter::CodergenBackendResponse::Text(format!(
-                "Audience: {}",
-                answers["question-1"]
-            )),
+            response: spark_agent_adapter::CodergenBackendResponse::Text(
+                serde_json::json!({
+                    "decision": "done",
+                    "notes": format!("Audience: {}", answers["question-1"]),
+                })
+                .to_string(),
+            ),
             events: Vec::new(),
             usage: None,
             resume_metadata: Default::default(),
@@ -510,20 +533,28 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
         .unwrap();
     let flow = attractor_dsl::validated_flow(
         serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "worker-clarify",
             "nodes": {
-                "start": { "kind": "start" },
+                "start": {
+                    "kind": "start",
+                    "config": { "kind": "start" },
+                    "routes": { "next": { "to": "task", "description": "Enter the first workflow step." } }
+                },
                 "task": {
                     "kind": "agent_task",
                     "config": {
                         "kind": "agent_task",
                         "prompt": "Pick an audience"
-                    }
+                    },
+                    "contracts": { "response": "decision_envelope" },
+                    "routes": { "done": { "to": "done", "description": "The audience is chosen." } }
                 },
-                "done": { "kind": "exit" }
-            },
-            "edges": [{ "from": "start", "to": "task" }, { "from": "task", "to": "done" }]
+                "done": {
+                    "kind": "exit",
+                    "config": { "kind": "exit", "result": { "name": "completed", "outcome": "success" } }
+                }
+            }
         }))
         .unwrap(),
     )
@@ -607,7 +638,8 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
     let Some(WorkerFrame::Result(result)) = frames.last() else {
         panic!("worker ended without a result: {output}");
     };
-    assert_eq!(result.outcome["status"], "success", "{output}");
+    assert_eq!(result.outcome["status"], "completed", "{output}");
+    assert_eq!(result.outcome["decision"], "done", "{output}");
     assert_eq!(
         store.read_run_record(&paths).unwrap().unwrap().status,
         "running"

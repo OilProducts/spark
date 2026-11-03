@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use attractor_core::{
     evaluate_condition, AttractorContext, CheckpointState, ContextMap, FailureKind, FlowDefinition,
-    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, OutcomeStatus, RunRecord,
-    RUNTIME_SESSIONS_KEY,
+    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, RunRecord, RUNTIME_SESSIONS_KEY,
 };
 use serde_json::{json, Value};
 
@@ -85,8 +84,27 @@ pub(crate) fn execute_manager_loop(
     let mut last_steer_at: Option<Instant> = None;
     let mut automatic_steer_attempts = BTreeMap::<(String, Option<String>, String), u64>::new();
 
-    for cycle in 1..=max_cycles {
-        if actions.contains("observe") {
+    // Cycle bounds and the stop condition govern observation and steering,
+    // never completion: past them the same invocation keeps waiting for the
+    // child's terminal result.
+    let mut observing = true;
+    for cycle in 1.. {
+        if cycle > max_cycles {
+            observing = false;
+            // Without a child there is nothing to wait for.
+            if context_string(&context, "context.stack.child.run_id").is_empty() {
+                return Ok(outcome_with_context_updates(
+                    &runtime,
+                    fail_outcome(format!(
+                        "subflow {} has no child run after {max_cycles} cycles",
+                        runtime.node_id
+                    )),
+                    &original_context,
+                    &context,
+                ));
+            }
+        }
+        if observing && actions.contains("observe") {
             ingest_child_telemetry(runner, &runtime, &mut context);
             append_manager_artifact(
                 runtime.logs_root.as_deref(),
@@ -97,7 +115,10 @@ pub(crate) fn execute_manager_loop(
         }
 
         let now = Instant::now();
-        if actions.contains("steer") && steer_cooldown_elapsed(now, last_steer_at, steer_cooldown) {
+        if observing
+            && actions.contains("steer")
+            && steer_cooldown_elapsed(now, last_steer_at, steer_cooldown)
+        {
             if let Some(intervention) = request_child_intervention(
                 runner,
                 &runtime,
@@ -124,7 +145,7 @@ pub(crate) fn execute_manager_loop(
             }
         }
 
-        if let Some(outcome) = resolve_child_status(&context) {
+        if let Some(outcome) = resolve_child_status(&runtime, &context) {
             return Ok(outcome_with_context_updates(
                 &runtime,
                 outcome,
@@ -132,37 +153,30 @@ pub(crate) fn execute_manager_loop(
                 &context,
             ));
         }
-
-        if !stop_condition.is_empty() && stop_condition_met(&stop_condition, &context) {
-            return Ok(outcome_with_context_updates(
-                &runtime,
-                Outcome {
-                    status: OutcomeStatus::Success,
-                    notes: "Stop condition satisfied".to_string(),
-                    ..Outcome::new(OutcomeStatus::Success)
-                },
-                &original_context,
-                &context,
+        if runtime
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Ok(Outcome::error(
+                FailureKind::Runtime,
+                "Branch canceled by its fork while its child ran",
+                Some(false),
             ));
         }
 
-        if actions.contains("wait") {
+        if observing && !stop_condition.is_empty() && stop_condition_met(&stop_condition, &context)
+        {
+            observing = false;
+        }
+
+        if actions.contains("wait") || !observing {
             if !poll_interval.is_zero() {
                 std::thread::sleep(poll_interval);
             }
         }
     }
-
-    Ok(outcome_with_context_updates(
-        &runtime,
-        Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "Max cycles exceeded".to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        },
-        &original_context,
-        &context,
-    ))
+    unreachable!("the manager loop returns once the child ends")
 }
 
 fn autostart_child_pipeline(
@@ -1252,7 +1266,11 @@ fn apply_intervention_result(
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))
 }
 
-fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
+/// The local decision a finished child selects: its declared terminal
+/// result name mapped through `config.results`. A failed, canceled or
+/// unmapped child is an execution error carrying the child's identity and
+/// reason; it is never mapped to a business result.
+fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Option<Outcome> {
     let child_status = context_string(context, "context.stack.child.status").to_lowercase();
     if !matches!(
         child_status.as_str(),
@@ -1260,24 +1278,27 @@ fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
     ) {
         return None;
     }
-    let child_outcome = context_string(context, "context.stack.child.outcome").to_lowercase();
-    if child_status == "completed" && child_outcome == "success" {
-        return Some(Outcome {
-            status: OutcomeStatus::Success,
-            notes: "Child completed".to_string(),
-            ..Outcome::new(OutcomeStatus::Success)
-        });
-    }
-    if child_status == "completed" && child_outcome == "failure" {
-        let failure_reason = non_empty(context_string(
-            context,
-            "context.stack.child.outcome_reason_message",
-        ))
-        .unwrap_or_else(|| "Child completed with failure outcome".to_string());
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason,
-            ..Outcome::new(OutcomeStatus::Fail)
+    let child_run_id = context_string(context, "context.stack.child.run_id");
+    if child_status == "completed" {
+        let result = context_string(context, "context.stack.child.outcome_reason_code");
+        let results = match runtime.node.config.as_ref() {
+            Some(NodeConfig::Subflow { results, .. }) => results.clone(),
+            _ => BTreeMap::new(),
+        };
+        return Some(match results.get(&result) {
+            Some(decision) => Outcome {
+                notes: non_empty(context_string(
+                    context,
+                    "context.stack.child.outcome_reason_message",
+                ))
+                .unwrap_or_else(|| format!("Child {child_run_id} reached {result}")),
+                ..Outcome::completed(decision.clone())
+            },
+            None => Outcome::error(
+                FailureKind::Routing,
+                format!("child {child_run_id} reached result {result:?}, which config.results does not map"),
+                Some(false),
+            ),
         });
     }
     if child_status == "failed" {
@@ -1286,20 +1307,17 @@ fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
             "context.stack.child.failure_reason",
         ))
         .unwrap_or_else(|| "Child failed".to_string());
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason,
-            ..Outcome::new(OutcomeStatus::Fail)
-        });
+        return Some(Outcome::error(
+            FailureKind::Runtime,
+            format!("child {child_run_id} failed: {failure_reason}"),
+            Some(false),
+        ));
     }
-    if matches!(child_status.as_str(), "aborted" | "canceled" | "cancelled") {
-        return Some(Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "aborted_by_user".to_string(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        });
-    }
-    None
+    Some(Outcome::error(
+        FailureKind::Runtime,
+        "aborted_by_user",
+        Some(false),
+    ))
 }
 
 fn manager_config(runtime: &HandlerRuntime) -> Option<&ManagerLoopConfig> {
@@ -1351,7 +1369,7 @@ fn stop_condition_met(condition: &str, context: &ContextMap) -> bool {
     let Ok(context) = AttractorContext::from_map(context.clone()) else {
         return false;
     };
-    evaluate_condition(condition, &Outcome::new(OutcomeStatus::Success), &context)
+    evaluate_condition(condition, &context)
 }
 
 fn child_flow_ref(runtime: &HandlerRuntime) -> String {
@@ -1835,13 +1853,7 @@ fn outcome_with_context_updates(
 }
 
 fn fail_outcome(reason: impl Into<String>) -> Outcome {
-    Outcome {
-        status: OutcomeStatus::Fail,
-        failure_reason: reason.into(),
-        retryable: Some(false),
-        failure_kind: Some(FailureKind::Runtime),
-        ..Outcome::new(OutcomeStatus::Fail)
-    }
+    Outcome::error(FailureKind::Runtime, reason, Some(false))
 }
 
 fn parse_duration_string(raw: &str, default: Duration) -> Option<Duration> {

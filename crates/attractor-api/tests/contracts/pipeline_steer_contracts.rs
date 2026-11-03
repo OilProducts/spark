@@ -27,6 +27,8 @@ fn in_child_process(test: &str, envs: &[(&str, String)]) -> bool {
             "--nocapture",
         ])
         .env(CHILD_ENV, "1")
+        // The fake agents' steered turns end with a decision envelope.
+        .env("SPARK_FAKE_FINAL_ANSWER", r#"{"decision":"done"}"#)
         .envs(envs.iter().map(|(key, value)| (key, value)))
         .output()
         .unwrap();
@@ -217,20 +219,30 @@ fn content(settings: &SparkSettings, flow: Value) -> PipelineStartRequest {
 
 fn agent_flow(id: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "work", "description": "Enter the first workflow step."}
+                }
+            },
             "work": {
                 "kind": "agent_task",
-                "config": {"kind": "agent_task", "prompt": "Do the work"}
+                "config": {"kind": "agent_task", "prompt": "Do the work"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "work"},
-            {"from": "work", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -424,20 +436,36 @@ fn steer_targets_agent_node_of_child_run() {
     let parent = crate::install_flow(
         &settings,
         json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "steer_parent",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "branch",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
                 "branch": {
                     "kind": "subflow",
-                    "config": {"kind": "subflow", "flow_ref": "steer-child"}
+                    "config": {
+                        "kind": "subflow",
+                        "flow_ref": "steer-child",
+                        "results": {"completed": "done"}
+                    },
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}}
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [
-                {"from": "start", "to": "branch"},
-                {"from": "branch", "to": "done"}
-            ]
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }),
     );
     let service = service(&settings);
@@ -497,36 +525,57 @@ fn steer_rejects_ambiguous_target_until_a_node_is_named() {
         content(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "steer_fork",
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "fork",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "fork": {
                         "kind": "parallel",
-                        "config": {
-                            "kind": "parallel",
-                            "join_policy": "wait_all"
-                        }
+                        "config": {"kind": "parallel", "branches": ["left", "right"], "join": "join"}
                     },
                     "left": {
                         "kind": "agent_task",
-                        "config": {"kind": "agent_task", "prompt": "Left work"}
+                        "config": {"kind": "agent_task", "prompt": "Left work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "join", "description": "The step is complete."}
+                        }
                     },
                     "right": {
                         "kind": "agent_task",
-                        "config": {"kind": "agent_task", "prompt": "Right work"}
+                        "config": {"kind": "agent_task", "prompt": "Right work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "join", "description": "The step is complete."}
+                        }
                     },
-                    "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "fork"},
-                    {"from": "fork", "to": "left"},
-                    {"from": "fork", "to": "right"},
-                    {"from": "left", "to": "join"},
-                    {"from": "right", "to": "join"},
-                    {"from": "join", "to": "done"}
-                ]
+                    "join": {
+                        "kind": "fan_in",
+                        "config": {"kind": "fan_in"},
+                        "routes": {
+                            "next": {
+                                "to": "done",
+                                "description": "All branches settled; continue."
+                            }
+                        }
+                    },
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         ),
     );
@@ -550,24 +599,22 @@ fn steer_rejects_ambiguous_target_until_a_node_is_named() {
         assert_eq!(result["status"], "delivered", "{result}");
         assert_eq!(result["target_node_id"], node);
     }
-    // The runtime then enters `left` again from the fork; with one node
-    // active, an untargeted steer finds it.
-    wait_for_log(&log, "turn/start", 3);
-    let result = steer(&service, "steer-fork", json!({"message": "Finish."}));
-    assert_eq!(result["status"], "delivered", "{result}");
+    // Both branches completed, so the fork enters its join once.
     wait_for_status(&settings, "steer-fork", "completed");
+    assert_eq!(
+        fs::read_to_string(&log)
+            .unwrap()
+            .matches("turn/start")
+            .count(),
+        2
+    );
     let statuses = intervention_events(&settings, "steer-fork")
         .iter()
         .map(|event| event["intervention_status"].clone())
         .collect::<Vec<_>>();
     assert_eq!(
         statuses,
-        [
-            json!("rejected"),
-            json!("delivered"),
-            json!("delivered"),
-            json!("delivered")
-        ]
+        [json!("rejected"), json!("delivered"), json!("delivered")]
     );
 }
 
@@ -589,45 +636,63 @@ fn steer_follows_a_parallel_branch_past_its_entry_node() {
         content(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "steer_chain",
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "fork",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "fork": {
                         "kind": "parallel",
-                        "config": {
-                            "kind": "parallel",
-                            "join_policy": "wait_all"
-                        }
+                        "config": {"kind": "parallel", "branches": ["first"], "join": "join"}
                     },
                     "first": {
                         "kind": "agent_task",
-                        "config": {"kind": "agent_task", "prompt": "First work"}
+                        "config": {"kind": "agent_task", "prompt": "First work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "second", "description": "The step is complete."}
+                        }
                     },
                     "second": {
                         "kind": "agent_task",
-                        "config": {
-                            "kind": "agent_task",
-                            "prompt": "Second work"
+                        "config": {"kind": "agent_task", "prompt": "Second work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "join", "description": "The step is complete."}
                         }
                     },
-                    "join": {"kind": "fan_in", "config": {"kind": "fan_in"}},
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "fork"},
-                    {"from": "fork", "to": "first"},
-                    {"from": "first", "to": "second"},
-                    {"from": "second", "to": "join"},
-                    {"from": "join", "to": "done"}
-                ]
+                    "join": {
+                        "kind": "fan_in",
+                        "config": {"kind": "fan_in"},
+                        "routes": {
+                            "next": {
+                                "to": "done",
+                                "description": "All branches settled; continue."
+                            }
+                        }
+                    },
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         ),
     );
     // Each steer ends the fake's open turn, so `first` completes and the
-    // branch moves on to `second`; the runtime then runs both again from
-    // the fork.
-    for (node, count) in [("first", 1), ("second", 2), ("first", 3), ("second", 4)] {
+    // branch moves on to `second`, whose `done` reaches the join.
+    for (node, count) in [("first", 1), ("second", 2)] {
         wait_for_log(&log, "turn/start", count);
         let result = steer(
             &service,
@@ -651,10 +716,27 @@ fn steer_rejects_when_no_agent_node_is_active() {
         flow_name: Some(crate::install_flow(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "idle",
-                "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-                "edges": [{"from": "start", "to": "done"}]
+                "nodes": {
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "done",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         )),
         wait: Some(true),
@@ -691,28 +773,43 @@ fn steer_counts_unsteerable_agent_nodes_when_resolving_the_target() {
         content(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "steer_mixed",
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "work",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "work": {
                         "kind": "agent_task",
-                        "config": {
-                            "kind": "agent_task",
-                            "prompt": "Do the work"
+                        "config": {"kind": "agent_task", "prompt": "Do the work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "other", "description": "The step is complete."}
                         }
                     },
                     "other": {
                         "kind": "agent_task",
-                        "config": {"kind": "agent_task", "prompt": "Other work"}
+                        "config": {"kind": "agent_task", "prompt": "Other work"},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "done", "description": "The step is complete."}
+                        }
                     },
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "work"},
-                    {"from": "work", "to": "other"},
-                    {"from": "other", "to": "done"}
-                ]
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         ),
     );
@@ -766,45 +863,57 @@ fn steer_rejects_unsteerable_parallel_agent_nodes() {
             record,
             flow_definition_json: Some(
                 json!({
-                    "schema_version": "1",
+                    "schema_version": "2",
                     "id": "steer_unsupported",
                     "nodes": {
-                        "start": {"kind": "start"},
+                        "start": {
+                            "kind": "start",
+                            "config": {"kind": "start"},
+                            "routes": {
+                                "next": {
+                                    "to": "fork",
+                                    "description": "Enter the first workflow step."
+                                }
+                            }
+                        },
                         "fork": {
                             "kind": "parallel",
-                            "config": {
-                                "kind": "parallel",
-                                "join_policy": "wait_all"
-                            }
+                            "config": {"kind": "parallel", "branches": ["left", "right"], "join": "join"}
                         },
                         "left": {
                             "kind": "agent_task",
-                            "config": {
-                                "kind": "agent_task",
-                                "prompt": "Left work"
+                            "config": {"kind": "agent_task", "prompt": "Left work"},
+                            "contracts": {"response": "decision_envelope"},
+                            "routes": {
+                                "done": {"to": "join", "description": "The step is complete."}
                             }
                         },
                         "right": {
                             "kind": "agent_task",
-                            "config": {
-                                "kind": "agent_task",
-                                "prompt": "Right work"
+                            "config": {"kind": "agent_task", "prompt": "Right work"},
+                            "contracts": {"response": "decision_envelope"},
+                            "routes": {
+                                "done": {"to": "join", "description": "The step is complete."}
                             }
                         },
                         "join": {
                             "kind": "fan_in",
-                            "config": {"kind": "fan_in"}
+                            "config": {"kind": "fan_in"},
+                            "routes": {
+                                "next": {
+                                    "to": "done",
+                                    "description": "All branches settled; continue."
+                                }
+                            }
                         },
-                        "done": {"kind": "exit"}
-                    },
-                    "edges": [
-                        {"from": "start", "to": "fork"},
-                        {"from": "fork", "to": "left"},
-                        {"from": "fork", "to": "right"},
-                        {"from": "left", "to": "join"},
-                        {"from": "right", "to": "join"},
-                        {"from": "join", "to": "done"}
-                    ]
+                        "done": {
+                            "kind": "exit",
+                            "config": {
+                                "kind": "exit",
+                                "result": {"name": "completed", "outcome": "success"}
+                            }
+                        }
+                    }
                 })
                 .to_string(),
             ),

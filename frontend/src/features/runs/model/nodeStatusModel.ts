@@ -14,8 +14,8 @@ const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
 
 // Merges the durable checkpoint snapshot with live journal-driven statuses into
 // the per-node status map the run graph renders. Precedence, lowest to highest:
-// checkpoint completions, per-node checkpoint outcomes (a failed node sits in
-// completed_nodes too, so failure must override), live stage statuses, the
+// checkpoint completions, per-node checkpoint statuses (an errored node sits in
+// completed_nodes too, so the error must override), live stage statuses, the
 // active current node, the failed run's terminal node, and a pending gate.
 export function buildRunNodeStatuses({
     completedNodes,
@@ -31,7 +31,7 @@ export function buildRunNodeStatuses({
         statuses[nodeId] = 'success'
     }
     for (const [nodeId, outcome] of Object.entries(nodeOutcomes)) {
-        if (outcome === 'fail' && statuses[nodeId]) {
+        if (outcome === 'error' && statuses[nodeId]) {
             statuses[nodeId] = 'failed'
         }
     }

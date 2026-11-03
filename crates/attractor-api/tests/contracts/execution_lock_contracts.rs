@@ -58,21 +58,34 @@ fn init_git_repo(dir: &Path) {
 
 fn tool_flow(id: &str, command: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "title": id,
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "work", "description": "Enter the first workflow step."}
+                }
+            },
             "work": {
                 "kind": "tool",
-                "config": {"kind": "tool", "command": command}
+                "config": {
+                    "kind": "tool",
+                    "command": command,
+                    "exit_codes": {"0": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "work"},
-            {"from": "work", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -451,33 +464,35 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     );
     assert_eq!(child, "tests/child");
     let parent_flow = json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "parent",
         "nodes": {
-            "start": {"kind": "start"},
-            "child": {
-                "kind": "subflow",
-                "runtime": {"error_policy": "continue"},
-                "config": {"kind": "subflow", "flow_ref": "child"}
-            },
-            "wait": {
-                "kind": "tool",
-                "config": {
-                    "kind": "tool",
-                    "command": wait_for_release_file_command("release-parent")
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "child", "description": "Enter the first workflow step."}
                 }
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "child"},
-            {
-                "from": "child",
-                "to": "wait",
-                "condition": "outcome=fail"
+            "child": {
+                "kind": "subflow",
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "child",
+                    "results": {"completed": "child_completed"}
+                },
+                "routes": {
+                    "child_completed": {"to": "done", "description": "The child run completed."}
+                }
             },
-            {"from": "wait", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     });
     let service = AttractorApiService::new(settings.clone());
     let store = RunStore::for_settings(&settings);
@@ -522,13 +537,21 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
         read_status(&settings, &child_id) == "failed"
     });
     assert_eq!(read_lock(&settings, &child_id).unwrap().state, "released");
-    assert_eq!(read_lock(&settings, "parent").unwrap().state, "holding");
-    assert_eq!(read_status(&settings, "competitor"), "queued");
-    fs::write(project.join("release-parent"), "go").unwrap();
-    wait_until("parent releases and competitor takes lock", || {
-        read_lock(&settings, "parent").is_some_and(|l| l.state == "released")
+    // A child's execution failure is never a business result: it fails the
+    // parent, which releases the lock to the queued competitor.
+    wait_until("parent fails, releases and competitor takes lock", || {
+        read_status(&settings, "parent") == "failed"
+            && read_lock(&settings, "parent").is_some_and(|l| l.state == "released")
             && read_lock(&settings, "competitor").is_some_and(|l| l.state == "holding")
     });
+    let parent_error = RunStore::for_settings(&settings)
+        .read_run_meta("parent")
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap()
+        .last_error;
+    assert!(parent_error.contains(&child_id), "{parent_error}");
     fs::write(project.join("retry-child"), "go").unwrap();
     wait_until("parent executor exits and child retry is accepted", || {
         let response = service.retry_pipeline_route(&child_id);

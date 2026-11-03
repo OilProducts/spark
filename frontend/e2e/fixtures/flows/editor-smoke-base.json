@@ -1,5 +1,5 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "id": "editor_smoke_base",
   "title": "Editor Smoke Base",
   "description": "Exercise editor and execution smoke-test surfaces without relying on shipped example flows.",
@@ -14,6 +14,12 @@
       "label": "Start",
       "config": {
         "kind": "start"
+      },
+      "routes": {
+        "next": {
+          "to": "ingest_spec",
+          "description": "Enter the first workflow step."
+        }
       }
     },
     "ingest_spec": {
@@ -22,6 +28,15 @@
       "config": {
         "kind": "agent_task",
         "prompt": "Load the test spec source and prepare working state."
+      },
+      "contracts": {
+        "response": "decision_envelope"
+      },
+      "routes": {
+        "done": {
+          "to": "extract_declarations",
+          "description": "The spec source is loaded and working state is prepared."
+        }
       }
     },
     "extract_declarations": {
@@ -30,6 +45,15 @@
       "config": {
         "kind": "agent_task",
         "prompt": "Inspect the repository and write a bounded set of testable declarations."
+      },
+      "contracts": {
+        "response": "decision_envelope"
+      },
+      "routes": {
+        "done": {
+          "to": "audit_human_gate",
+          "description": "The testable declarations are written."
+        }
       }
     },
     "audit_human_gate": {
@@ -38,6 +62,18 @@
       "config": {
         "kind": "human_gate",
         "prompt": "Choose whether to rework or accept risk."
+      },
+      "routes": {
+        "rework": {
+          "to": "audit_rework",
+          "label": "Rework Queue State",
+          "description": "The queued work needs rework."
+        },
+        "accept_risk": {
+          "to": "done",
+          "label": "Accept Risk",
+          "description": "The remaining risk is accepted."
+        }
       }
     },
     "audit_rework": {
@@ -46,60 +82,27 @@
       "config": {
         "kind": "agent_task",
         "prompt": "Repair the queued work and continue."
+      },
+      "contracts": {
+        "response": "decision_envelope"
+      },
+      "routes": {
+        "done": {
+          "to": "done",
+          "description": "The queued work is repaired."
+        }
       }
     },
     "done": {
       "kind": "exit",
       "label": "Done",
       "config": {
-        "kind": "exit"
+        "kind": "exit",
+        "result": {
+          "name": "completed",
+          "outcome": "success"
+        }
       }
     }
-  },
-  "edges": [
-    {
-      "from": "start",
-      "to": "ingest_spec",
-      "extensions": {
-        "loop_restart": false
-      }
-    },
-    {
-      "from": "ingest_spec",
-      "to": "extract_declarations",
-      "extensions": {
-        "loop_restart": false
-      }
-    },
-    {
-      "from": "extract_declarations",
-      "to": "audit_human_gate",
-      "extensions": {
-        "loop_restart": false
-      }
-    },
-    {
-      "from": "audit_human_gate",
-      "to": "audit_rework",
-      "label": "Rework Queue State",
-      "extensions": {
-        "loop_restart": false
-      }
-    },
-    {
-      "from": "audit_human_gate",
-      "to": "done",
-      "label": "Accept Risk",
-      "extensions": {
-        "loop_restart": false
-      }
-    },
-    {
-      "from": "audit_rework",
-      "to": "done",
-      "extensions": {
-        "loop_restart": false
-      }
-    }
-  ]
+  }
 }

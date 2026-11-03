@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: prepare_workspace
+  next:
+    to: prepare_workspace
+    description: Enter the first workflow step.
 ---

@@ -7,14 +7,17 @@ config:
     SPARK_RUN_ID: internal.run_id
     SPARK_SOURCE_REF: context.task.source_ref
     SPARK_TARGET_COMMIT: context.integration.target_commit
+  exit_codes:
+    '0': done
   output_map:
     context.integration.merge_commit: merge_commit
 contracts:
   writes_context:
   - context.integration.merge_commit
 routes:
-- to: done
-  condition: outcome=success
+  done:
+    to: done
+    description: The bounded work required by this node’s prompt is complete, including its required outputs; this does not assert that the whole workflow objective is achieved.
 ---
 
 ```sh

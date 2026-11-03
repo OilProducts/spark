@@ -216,14 +216,21 @@ fn owned_run(
 
 pub(crate) fn tool_flow(command: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "tool",
         "nodes": {
-            "start": {"kind": "start"},
-            "work": {"kind": "tool", "config": {"kind": "tool", "command": command}},
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done", "condition": "outcome=success"}]
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}}
+            },
+            "work": {
+                "kind": "tool",
+                "config": {"kind": "tool", "command": command, "exit_codes": {"0": "done"}},
+                "routes": {"done": {"to": "done", "description": "The command succeeded."}}
+            },
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 
@@ -1388,26 +1395,29 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     harness.install(
         "work/parent",
         json!({
-            "schema_version":"1", "id":"parent",
+            "schema_version":"2", "id":"parent",
             "nodes": {
-                "start":{"kind":"start"},
-                "child":{"kind":"subflow","config":{"kind":"subflow","flow_ref":"child"}},
-                "done":{"kind":"exit"}
-            },
-            "edges":[{"from":"start","to":"child"},{"from":"child","to":"done"}]
+                "start":{"kind":"start","config":{"kind":"start"},
+                    "routes":{"next":{"to":"child","description":"Enter the first workflow step."}}},
+                "child":{"kind":"subflow",
+                    "config":{"kind":"subflow","flow_ref":"child","results":{"completed":"child_completed"}},
+                    "routes":{"child_completed":{"to":"done","description":"The child flow completed."}}},
+                "done":{"kind":"exit","config":{"kind":"exit","result":{"name":"completed","outcome":"success"}}}
+            }
         }),
     );
     crate::install_named_flow(
         &harness.settings,
         "work/child",
         json!({
-            "schema_version":"1", "id":"child",
+            "schema_version":"2", "id":"child",
             "nodes": {
-                "start":{"kind":"start"},
-                "gate":{"kind":"human_gate","config":{"kind":"human_gate","prompt":"Proceed?"}},
-                "done":{"kind":"exit"}
-            },
-            "edges":[{"from":"start","to":"gate"},{"from":"gate","to":"done","label":"Proceed"}]
+                "start":{"kind":"start","config":{"kind":"start"},
+                    "routes":{"next":{"to":"gate","description":"Enter the first workflow step."}}},
+                "gate":{"kind":"human_gate","config":{"kind":"human_gate","prompt":"Proceed?"},
+                    "routes":{"proceed":{"to":"done","label":"Proceed","description":"The human chose to proceed."}}},
+                "done":{"kind":"exit","config":{"kind":"exit","result":{"name":"completed","outcome":"success"}}}
+            }
         }),
     );
     let mission = harness.create(json!({"title":"Live gate"}));

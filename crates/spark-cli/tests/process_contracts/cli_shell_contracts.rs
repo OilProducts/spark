@@ -787,11 +787,14 @@ fn flow_validate_dir_checks_stylesheet_controls_and_inherited_budgets() {
             true,
         ),
     ] {
-        let source = serde_json::json!({"schema_version":"1", "id":"flow",
+        let source = serde_json::json!({"schema_version":"2", "id":"flow",
             "defaults":{"thinking":"budget", "thinking_budget_tokens":2048},
             "metadata":{"model_stylesheet":stylesheet},
-            "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
-            "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+            "nodes":{
+                "start":{"kind":"start", "config":{"kind":"start"}, "routes":{"next":{"to":"work", "description":"Enter the first workflow step."}}},
+                "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "contracts":{"response":"decision_envelope"}, "execution":{"thinking_budget_tokens":4096}, "routes":{"done":{"to":"end", "description":"The work is complete."}}},
+                "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}
+            }
         });
         crate::write_flow_json(&flow_path, source);
         let output = run_with_args_and_env(
@@ -857,10 +860,11 @@ fn flow_validate_dir_text_renders_diagnostics() {
             "Name: validation-error-flow\n\
 Path: {}\n\
 Status: validation_error\n\
-Diagnostics: 2\n\
-Errors: 2\n\
+Diagnostics: 3\n\
+Errors: 3\n\
 - ERROR start_node: flow must have exactly one start node, found 0\n\
-- ERROR exit_node: flow must have exactly one exit node, found 0\n",
+- ERROR exit_node: flow must have at least one exit node\n\
+- ERROR decision_domain: task.md: agent_task nodes declare at least one decision\n",
             fs::canonicalize(&flow_path)
                 .expect("canonical path")
                 .display()
@@ -1411,25 +1415,33 @@ fn temp_dir(label: &str) -> PathBuf {
 
 fn valid_flow() -> Value {
     serde_json::json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workflow",
         "title": "Workflow",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}},
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
                 "config": {"kind": "agent_task", "prompt": "Do work"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The task is complete."}},
             },
-            "done": {"kind": "exit"},
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+            },
         },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
     })
 }
 
 fn validation_error_flow() -> Value {
     serde_json::json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workflow",
         "title": "Workflow",
         "nodes": {
@@ -1437,9 +1449,9 @@ fn validation_error_flow() -> Value {
                 "kind": "agent_task",
                 "label": "Task",
                 "config": {"kind": "agent_task", "prompt": "No start or done"},
+                "contracts": {"response": "decision_envelope"},
             },
         },
-        "edges": [],
     })
 }
 

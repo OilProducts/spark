@@ -791,11 +791,13 @@ fn install_run_flow(settings: &SparkSettings) {
 
 fn trigger_flow(id: &str) -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": id,
         "title": "Trigger Route",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
     })
 }
 
@@ -882,23 +884,24 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     let slow_flow = crate::install_flow(
         &settings,
         json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "slow_hook",
             "title": "Slow Hook",
             "nodes": {
-                "start": {"kind": "start"},
+                "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}}},
                 "work": {
                     "kind": "tool",
                     "config": {
                         "kind": "tool",
                         "command": format!(
                             "for i in $(seq 1 600); do [ -f \"{release_path_text}\" ] && exit 0; sleep 0.1; done; exit 1"
-                        )
-                    }
+                        ),
+                        "exit_codes": {"0": "done"}
+                    },
+                    "routes": {"done": {"to": "done", "description": "The release file appeared."}}
                 },
-                "done": {"kind": "exit"}
-            },
-            "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done"}]
+                "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+            }
         }),
     );
 

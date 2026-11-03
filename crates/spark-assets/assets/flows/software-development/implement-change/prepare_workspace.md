@@ -6,6 +6,8 @@ config:
     SPARK_BASE_REF: context.task.base_ref
     SPARK_RUN_ID: internal.run_id
     SPARK_TASK_ARTIFACT: context.task.artifact_path
+  exit_codes:
+    '0': done
   output_map:
     context.workspace.base_commit: base_commit
     context.workspace.branch: branch
@@ -18,8 +20,9 @@ contracts:
   - context.workspace.base_commit
   - context.workspace.source_dirty
 routes:
-- to: implement
-  condition: outcome=success
+  done:
+    to: implement
+    description: The bounded work required by this node’s prompt is complete, including its required outputs; this does not assert that the whole workflow objective is achieved.
 ---
 
 ```sh

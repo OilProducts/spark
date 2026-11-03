@@ -179,19 +179,32 @@ fn sse_data_entries(body: &str) -> Vec<Value> {
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "api-inspect",
         "title": "API Inspect",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {"kind": "agent_task", "prompt": "Write an inspection note"}
+                "config": {"kind": "agent_task", "prompt": "Write an inspection note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 

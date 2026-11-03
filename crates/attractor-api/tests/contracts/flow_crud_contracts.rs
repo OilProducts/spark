@@ -10,20 +10,35 @@ use spark_common::settings::SparkSettings;
 
 fn valid_flow_json() -> Value {
     json!({
-    "schema_version": "1",
-    "id": "workflow",
-    "title": "Workflow",
-    "goal": "Do work",
-    "nodes": {
-        "start": {"kind": "start", "label": "Start"},
-        "task": {
-            "kind": "agent_task",
-            "label": "Task",
-            "config": {"kind": "agent_task", "prompt": "Do work"}
-        },
-        "done": {"kind": "exit", "label": "Done"}
-    },
-    "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+        "schema_version": "2",
+        "id": "workflow",
+        "title": "Workflow",
+        "goal": "Do work",
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "label": "Start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
+            "task": {
+                "kind": "agent_task",
+                "label": "Task",
+                "config": {"kind": "agent_task", "prompt": "Do work"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
+            },
+            "done": {
+                "kind": "exit",
+                "label": "Done",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -411,10 +426,27 @@ fn save_validation_error_reports_diagnostics_without_writing() {
     let response = service.save_flow(save(
         "broken",
         &serde_json::from_value(json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "broken",
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "missing"}]
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {
+                        "next": {
+                            "to": "missing",
+                            "description": "Enter the first workflow step."
+                        }
+                    }
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {
+                        "kind": "exit",
+                        "result": {"name": "completed", "outcome": "success"}
+                    }
+                }
+            }
         }))
         .expect("flow definition JSON"),
         &project,
@@ -424,11 +456,15 @@ fn save_validation_error_reports_diagnostics_without_writing() {
     assert_eq!(response.body["detail"]["status"], json!("validation_error"));
     assert_eq!(
         response.body["detail"]["errors"][0]["rule_id"],
-        json!("edge_target")
+        json!("route_target")
     );
     assert_eq!(
         response.body["detail"]["errors"][0]["edge"],
         json!(["start", "missing"])
+    );
+    assert_eq!(
+        response.body["detail"]["errors"][0]["decision"],
+        json!("next")
     );
     assert!(!project.exists());
 }
@@ -527,15 +563,28 @@ fn editor_save_deletes_dropped_node_files_and_leaves_other_files_alone() {
     fs::write(org.join("flows/work/unrelated.txt"), "draft\n").expect("unrelated");
 
     let without_task = flow(json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workflow",
         "title": "Workflow",
         "goal": "Do work",
         "nodes": {
-            "start": {"kind": "start", "label": "Start"},
-            "done": {"kind": "exit", "label": "Done"}
-        },
-        "edges": [{"from": "start", "to": "done"}]
+            "start": {
+                "kind": "start",
+                "label": "Start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "label": "Done",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     }));
     assert_eq!(
         service

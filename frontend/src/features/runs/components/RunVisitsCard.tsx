@@ -19,6 +19,8 @@ import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
+    formatVisitErrorKind,
+    parallelBranchResults,
     visitContextWrites,
     visitDurationMs,
     visitMark,
@@ -31,10 +33,10 @@ import {
 } from '../model/visitModel'
 import { useRunActions, type SteerResult } from '../hooks/useRunActions'
 
-// Colour marks exceptions: a successful visit carries no icon, a visit that was sent
-// back (or didn't pass) a warning return arrow, a failure a destructive cross.
+// Colour marks exceptions: a completed visit carries no icon, a visit that was sent
+// back a warning return arrow, an error a warning cross, a failure a destructive cross.
 const MARKS: Record<VisitMark, { Icon: LucideIcon; label: string; tone: StatusTone }> = {
-    did_not_pass: { Icon: Undo2, label: "Didn't pass", tone: 'warning' },
+    error: { Icon: X, label: 'Error', tone: 'warning' },
     failed: { Icon: X, label: 'Failed', tone: 'destructive' },
     interrupted: { Icon: Minus, label: 'Interrupted', tone: 'warning' },
     waiting: { Icon: CircleHelp, label: 'Waiting on a question', tone: 'info' },
@@ -42,9 +44,8 @@ const MARKS: Record<VisitMark, { Icon: LucideIcon; label: string; tone: StatusTo
 }
 
 const OUTCOME_TONES: Record<RunVisit['outcome'], StatusTone> = {
-    succeeded: 'success',
-    partly_succeeded: 'warning',
-    did_not_pass: 'warning',
+    completed: 'success',
+    error: 'warning',
     failed: 'destructive',
     interrupted: 'warning',
     running: 'info',
@@ -114,9 +115,9 @@ export function RunVisitsCard({
     onViewArtifact,
     graph,
 }: RunVisitsCardProps) {
-    // An exit node that simply succeeded says nothing the status item doesn't.
+    // An exit node that simply completed says nothing the status item doesn't.
     const visits = useMemo(
-        () => allVisits.filter((visit) => visit.kind !== 'exit' || visit.outcome !== 'succeeded'),
+        () => allVisits.filter((visit) => visit.kind !== 'exit' || visit.outcome !== 'completed'),
         [allVisits],
     )
     // The status item leads and is selected when a run opens.
@@ -392,6 +393,8 @@ function RunVisitView({
     const hasThinking = entries.some(isThinkingEntry)
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
+    const errorKind = formatVisitErrorKind(visit)
+    const branchResults = parallelBranchResults(visit)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
     const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
@@ -461,6 +464,14 @@ function RunVisitView({
                     <div className="flex flex-wrap items-center gap-2.5">
                         <SectionHeading as="h4">Returned</SectionHeading>
                         {outcomePill}
+                        {visit.decision ? (
+                            <span data-testid="run-visit-decision" className="text-sm text-muted-foreground">
+                                Decision <code className="font-mono text-foreground">{visit.decision}</code>
+                            </span>
+                        ) : null}
+                        {errorKind ? (
+                            <span data-testid="run-visit-error-kind" className="text-sm text-muted-foreground">{errorKind}</span>
+                        ) : null}
                         {next ? (
                             <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
                                 {visit.next?.loopBack ? 'Sent back to' : 'Next'}
@@ -480,6 +491,7 @@ function RunVisitView({
                     {visit.reason ? (
                         <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{visit.reason}</p>
                     ) : null}
+                    {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
                     {writes.length > 0 ? (
                         <ul data-testid="run-visit-writes" className="flex flex-col gap-1 text-xs text-muted-foreground">
                             {writes.map(([key, value]) => (
@@ -620,6 +632,47 @@ function RunVisitView({
                 </p>
             ) : null}
         </article>
+    )
+}
+
+const BRANCH_STATUS: Record<string, { label: string; tone: StatusTone }> = {
+    completed: { label: 'Completed', tone: 'success' },
+    error: { label: 'Error', tone: 'destructive' },
+    terminal_result: { label: 'Reached an exit', tone: 'warning' },
+    canceled: { label: 'Canceled', tone: 'muted' },
+}
+
+// Each declared branch of a fan-out, with the evidence for any branch that did not complete.
+function BranchResults({ results }: { results: ReturnType<typeof parallelBranchResults> }) {
+    return (
+        <ul data-testid="run-visit-branches" className="flex flex-col gap-1.5 text-sm">
+            {results.map((branch) => {
+                const status = BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
+                const error = branch.error
+                const terminal = branch.terminal
+                const evidence = error
+                    ? [
+                        error.node ? `at ${error.node}` : null,
+                        [error.kind ? `${error.kind} error` : null, error.tolerable === true ? 'tolerable' : error.tolerable === false ? 'not tolerable' : null].filter(Boolean).join(', ') || null,
+                        error.attempts !== null ? `${error.attempts} ${error.attempts === 1 ? 'attempt' : 'attempts'}` : null,
+                    ].filter(Boolean).join(' · ')
+                    : terminal
+                        ? [terminal.name ? `result ${terminal.name}` : null, terminal.outcome, terminal.node ? `from ${terminal.node}` : null].filter(Boolean).join(' · ')
+                        : null
+                return (
+                    <li key={`${branch.index}-${branch.id}`} data-testid="run-visit-branch" data-status={branch.status} className="flex max-w-[72ch] flex-col gap-0.5">
+                        <span className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-foreground">{branch.id}</span>
+                            <StatusPill tone={status.tone}>{status.label}</StatusPill>
+                            {evidence ? <span data-testid="run-visit-branch-evidence" className="text-muted-foreground">{evidence}</span> : null}
+                        </span>
+                        {error?.reason ? (
+                            <span data-testid="run-visit-branch-reason" className="whitespace-pre-wrap break-words text-foreground/90">{error.reason}</span>
+                        ) : null}
+                    </li>
+                )
+            })}
+        </ul>
     )
 }
 

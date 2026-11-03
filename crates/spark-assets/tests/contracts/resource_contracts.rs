@@ -16,6 +16,7 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "math-research/explore-conjecture",
     "math-research/formalize-result",
     "math-research/prove-refute",
+    "math-research/research-program",
     "organization/review-change",
     "software-development/audit-codebase",
     "software-development/design-change",
@@ -133,11 +134,8 @@ fn frontend_asset_lookup_rejects_unsafe_paths_and_symlink_escapes() {
 
 #[test]
 fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
-    let names = flows::starter_flow_names()
-        .expect("starter flow names")
-        .into_iter()
-        .filter(|name| name != "math-research/research-program")
-        .collect::<Vec<_>>();
+    let names = flows::starter_flow_names().expect("starter flow names");
+    assert_eq!(names.len(), 20);
     assert_eq!(
         names,
         STARTER_FLOW_NAMES
@@ -146,10 +144,24 @@ fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
             .collect::<Vec<_>>()
     );
 
+    // Each flow loads as a run would: roles resolved and every subflow
+    // child validated against its effective definition.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roots = materialized_bundle(temp.path());
     for name in &names {
         let files = flows::starter_flow_files(name).expect("flow files");
         assert!(files.keys().all(|file| file.ends_with(".md")), "{name}");
         let flow = bundled_flow(name);
+        let failed = flow.exit_result("failed").expect("failed.md exit");
+        assert_eq!(
+            (failed.name.as_str(), failed.outcome.as_str()),
+            ("blocked", "failure"),
+            "{name}"
+        );
+        let loaded = attractor_dsl::load_flow(&roots, name)
+            .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
+        attractor_dsl::validate_flow_children(&roots, Some(name), &loaded.flow)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
         let software_metadata = flow.metadata.get("software_development");
         if name.contains("/spec-implementation/implement-milestone") {
             assert_ne!(
@@ -164,11 +176,7 @@ fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
     // Every bundled file belongs to a flow directory.
     for asset in flows::starter_flow_assets().expect("starter flow assets") {
         let (flow, _) = asset.name.rsplit_once('/').expect("nested file");
-        assert!(
-            flow == "math-research/research-program" || STARTER_FLOW_NAMES.contains(&flow),
-            "{}",
-            asset.name
-        );
+        assert!(STARTER_FLOW_NAMES.contains(&flow), "{}", asset.name);
     }
 
     for unsafe_name in ["../bad", "/tmp/bad", "examples", "examples/bad.txt"] {
@@ -187,13 +195,22 @@ fn bundled_flows_round_trip_through_the_directory_writer() {
     for (name, text) in spark_assets::roles::assets() {
         fs::write(temp.path().join("roles").join(name), text).expect("role");
     }
+    let mut unrendered = Vec::new();
     for name in flows::starter_flow_names().expect("names") {
         let flow = bundled_flow(&name);
         // Bundled files are exactly what the shared writer renders.
+        let rendered = attractor_dsl::render_flow_files(&flow).expect("render");
+        let files = flows::starter_flow_files(&name).expect("files");
         assert_eq!(
-            attractor_dsl::render_flow_files(&flow).expect("render"),
-            flows::starter_flow_files(&name).expect("files"),
+            rendered.keys().collect::<Vec<_>>(),
+            files.keys().collect::<Vec<_>>(),
             "{name}"
+        );
+        unrendered.extend(
+            files
+                .iter()
+                .filter(|(file, text)| rendered[*file] != **text)
+                .map(|(file, _)| format!("{name}/{file}")),
         );
         // The JSON interchange form, validated and written back as files, is lossless.
         let json = serde_json::to_string(&flow).expect("json");
@@ -212,6 +229,12 @@ fn bundled_flows_round_trip_through_the_directory_writer() {
         attractor_dsl::resolve_flow_roles(&flow, &roots)
             .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
     }
+    assert!(
+        unrendered.is_empty(),
+        "{} bundled files differ from the writer's rendering:\n{}",
+        unrendered.len(),
+        unrendered.join("\n")
+    );
 }
 
 #[test]
@@ -620,6 +643,27 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
     }
 }
 
+/// Writes the bundled roles and flows under `root`, as Spark seeds them.
+fn materialized_bundle(root: &Path) -> attractor_dsl::FlowRoots {
+    fs::create_dir_all(root.join("roles")).expect("roles dir");
+    for (name, text) in spark_assets::roles::assets() {
+        fs::write(root.join("roles").join(name), text).expect("role");
+    }
+    for asset in flows::starter_flow_assets().expect("starter flow assets") {
+        let path = root.join("flows").join(&asset.name);
+        fs::create_dir_all(path.parent().unwrap()).expect("flow dir");
+        fs::write(path, asset.content).expect("flow file");
+    }
+    attractor_dsl::FlowRoots::new(root, None)
+}
+
+/// The target `decision` selects at `node` in `flow`.
+fn route_to<'a>(flow: &'a attractor_dsl::FlowDefinition, node: &str, decision: &str) -> &'a str {
+    flow.route(node, decision)
+        .map(|route| route.to.as_str())
+        .unwrap_or_else(|| panic!("{node} declares no {decision} route"))
+}
+
 /// A bundled flow in its authored form, assembled like the loader does.
 fn bundled_flow(name: &str) -> attractor_dsl::FlowDefinition {
     let files = flows::starter_flow_files(name).expect("bundled flow files");
@@ -630,39 +674,20 @@ fn bundled_flow(name: &str) -> attractor_dsl::FlowDefinition {
 #[test]
 fn implement_milestone_reviews_before_expensive_validation_and_blocks_invalid_state() {
     let flow = bundled_flow("software-development/spec-implementation/implement-milestone");
-    for (from, to, condition) in [
-        (
-            "validate_active_item_state",
-            "review_current",
-            "outcome=success",
-        ),
-        ("review_current", "prepare_validation", "outcome=success"),
-        ("prepare_validation", "validate_repo", ""),
-        (
-            "assess_validation",
-            "gate_item_completion",
-            "outcome=success",
-        ),
-        (
-            "prepare_milestone_state",
-            "blocked_exit",
-            "outcome=fail && preferred_label=Blocked",
-        ),
-        (
-            "prepare_milestone_state",
-            "extract_items",
-            "outcome=success",
-        ),
+    for (from, decision, to) in [
+        ("validate_active_item_state", "verified", "review_current"),
+        ("review_current", "validate", "prepare_validation"),
+        ("prepare_validation", "done", "validate_repo"),
+        ("assess_validation", "complete", "gate_item_completion"),
+        ("prepare_milestone_state", "blocked", "blocked_exit"),
+        ("prepare_milestone_state", "done", "extract_items"),
     ] {
-        assert!(flow
-            .edges
-            .iter()
-            .any(|edge| edge.from == from && edge.to == to && edge.condition == condition));
+        assert_eq!(route_to(&flow, from, decision), to, "{from}.{decision}");
     }
-    assert!(!flow
-        .edges
-        .iter()
-        .any(|edge| edge.from == "validate_item_plan" && edge.to == "extract_items"));
+    assert!(!flow.nodes["validate_item_plan"]
+        .routes
+        .values()
+        .any(|route| route.to == "extract_items"));
 }
 
 #[test]
@@ -683,15 +708,12 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
         );
     }
     let flow = bundled_flow("software-development/investigate-bug");
-    for (from, to, condition) in [
-        ("propose_plan", "verify_plan", "outcome=success"),
-        ("verify_plan", "done", "outcome=success"),
-        ("verify_plan", "propose_plan", "outcome=fail"),
+    for (from, decision, to) in [
+        ("propose_plan", "ready_for_review", "verify_plan"),
+        ("verify_plan", "verified", "done"),
+        ("verify_plan", "gaps", "propose_plan"),
     ] {
-        assert!(flow
-            .edges
-            .iter()
-            .any(|edge| edge.from == from && edge.to == to && edge.condition == condition));
+        assert_eq!(route_to(&flow, from, decision), to, "{from}.{decision}");
     }
 }
 
@@ -711,6 +733,7 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
     let mut expected = vec![
         "done",
         "draft",
+        "failed",
         "fan_in",
         "resolve",
         "review",
@@ -730,7 +753,7 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
             .contains(&json!("context.review.contested")));
     }
     assert_eq!(node("review")["kind"], json!("parallel"));
-    assert_eq!(node("review")["runtime"]["max_visits"], json!(2));
+    assert_eq!(node("review")["runtime"]["max_visits"], json!(3));
     for id in reviewers {
         let reviewer = node(id);
         assert_eq!(reviewer["role"], json!("adversarial-reviewer"), "{id}");
@@ -755,76 +778,64 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
         json!(["context.review.findings"])
     );
 
+    // Branches settle at fan_in; every lens ends there or at the shared failure.
     let mut edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            (
-                edge.from.as_str(),
-                edge.to.as_str(),
-                edge.label.as_str(),
-                edge.condition.as_str(),
-            )
-        })
+        .edges()
+        .into_iter()
+        .map(|edge| (edge.from, edge.to))
         .collect::<Vec<_>>();
     edges.sort();
+    edges.dedup();
     let mut expected = vec![
-        ("start", "draft", "", ""),
-        ("draft", "review", "", "outcome=success"),
-        ("fan_in", "synthesize", "", ""),
-        ("synthesize", "resolve", "", "outcome=success"),
-        ("resolve", "review", "Re-review", ""),
-        ("resolve", "done", "Done", ""),
-        ("review", "fan_in", "", ""),
+        ("start", "draft"),
+        ("draft", "draft"),
+        ("draft", "failed"),
+        ("draft", "review"),
+        ("fan_in", "synthesize"),
+        ("synthesize", "failed"),
+        ("synthesize", "resolve"),
+        ("synthesize", "synthesize"),
+        ("resolve", "done"),
+        ("resolve", "failed"),
+        ("resolve", "resolve"),
+        ("resolve", "review"),
+        ("review", "fan_in"),
     ];
     for id in reviewers {
-        expected.push(("review", id, "", ""));
-        expected.push((id, "fan_in", "", ""));
+        expected.extend([("review", id), (id, "fan_in"), (id, "failed"), (id, id)]);
     }
+    let mut expected = expected
+        .into_iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect::<Vec<_>>();
     expected.sort();
     assert_eq!(edges, expected);
-    // After the fan-out, `review` continues to the join, not to a reviewer.
-    let heaviest = flow
-        .edges
-        .iter()
-        .filter(|edge| edge.from == "review")
-        .max_by_key(|edge| edge.weight)
-        .unwrap();
-    assert_eq!((heaviest.to.as_str(), heaviest.weight), ("fan_in", 1));
 }
 
 #[test]
 fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
     let flow = bundled_flow("software-development/merge-change");
-    let routes = flow
-        .edges
-        .iter()
-        .filter(|edge| edge.from == "prepare_integration")
-        .collect::<Vec<_>>();
-    assert_eq!(routes.len(), 2);
-    for (to, condition) in [
-        (
-            "finish_merge",
-            "outcome=success && context.integration.conflict_count=0",
-        ),
-        (
-            "resolve_conflicts",
-            "outcome=success && context.integration.conflict_count!=0",
-        ),
+    // Preparation only publishes data; the check_conflicts switch routes on it.
+    assert_eq!(
+        flow.nodes["prepare_integration"]
+            .routes
+            .keys()
+            .collect::<Vec<_>>(),
+        ["next"]
+    );
+    for (from, decision, to) in [
+        ("prepare_integration", "next", "check_conflicts"),
+        ("check_conflicts", "clean", "finish_merge"),
+        ("check_conflicts", "conflicts", "resolve_conflicts"),
+        ("resolve_conflicts", "done", "validate"),
+        ("validate", "done", "finish_merge"),
     ] {
-        assert!(routes
-            .iter()
-            .any(|edge| edge.to == to && edge.condition == condition));
+        assert_eq!(route_to(&flow, from, decision), to, "{from}.{decision}");
     }
-    assert!(flow
-        .edges
-        .iter()
-        .any(|edge| edge.from == "resolve_conflicts"
-            && edge.to == "validate"
-            && edge.condition == "outcome=success"));
-    assert!(flow.edges.iter().any(|edge| edge.from == "validate"
-        && edge.to == "finish_merge"
-        && edge.condition == "outcome=success"));
+    let switch = json!(flow.nodes["check_conflicts"].config);
+    assert_eq!(switch["on"], json!("context.integration.conflict_count"));
+    assert_eq!(switch["cases"], json!({"0": "clean"}));
+    assert_eq!(switch["otherwise"], json!("conflicts"));
     let prepare = serde_json::to_value(&flow.nodes["prepare_integration"].config).unwrap();
     let finish = serde_json::to_value(&flow.nodes["finish_merge"].config).unwrap();
     for scenario in ["clean", "conflict", "unrelated", "already-integrated"] {

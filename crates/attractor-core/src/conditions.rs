@@ -1,7 +1,8 @@
 use crate::context::{context_value_to_string, AttractorContext};
-use crate::outcomes::Outcome;
 
-pub fn evaluate_condition(condition: &str, outcome: &Outcome, context: &AttractorContext) -> bool {
+/// Evaluates a manager `stop_condition` against context values. Routing
+/// never uses conditions.
+pub fn evaluate_condition(condition: &str, context: &AttractorContext) -> bool {
     let text = condition.trim();
     if text.is_empty() {
         return true;
@@ -15,7 +16,7 @@ pub fn evaluate_condition(condition: &str, outcome: &Outcome, context: &Attracto
 
         if let Some((key, op, expected)) = parse_comparison_clause(clause) {
             let expected = normalize_condition_literal(expected);
-            let actual = resolve_condition_key(key, outcome, context);
+            let actual = resolve_condition_key(key, context);
             if op == "=" && actual != expected {
                 return false;
             }
@@ -25,9 +26,7 @@ pub fn evaluate_condition(condition: &str, outcome: &Outcome, context: &Attracto
             continue;
         }
 
-        if !is_bare_condition_key(clause)
-            || resolve_condition_key(clause, outcome, context).is_empty()
-        {
+        if !is_bare_condition_key(clause) || resolve_condition_key(clause, context).is_empty() {
             return false;
         }
     }
@@ -122,13 +121,7 @@ fn is_bare_condition_key(value: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
-fn resolve_condition_key(key: &str, outcome: &Outcome, context: &AttractorContext) -> String {
-    if key == "outcome" {
-        return outcome.status.as_str().to_string();
-    }
-    if key == "preferred_label" {
-        return outcome.preferred_label.clone();
-    }
+fn resolve_condition_key(key: &str, context: &AttractorContext) -> String {
     if let Some(unprefixed_key) = key.strip_prefix("context.") {
         if let Some(value) = context.get(key) {
             return context_value_to_string(value);

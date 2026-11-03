@@ -9,7 +9,7 @@ import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const DEMO_FLOW = { flow: { schema_version: '1.0', id: 'demo', nodes: {}, edges: [] } }
+const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
 const resetSaveState = () => {
   useStore.setState((state) => ({

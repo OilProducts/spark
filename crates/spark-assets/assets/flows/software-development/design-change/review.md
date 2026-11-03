@@ -2,16 +2,15 @@
 type: parallel
 title: Review Design
 config:
-  join_policy: wait_all
+  branches:
+  - codebase_check
+  - critic
+  - naive_reader
+  - readiness
+  - zoom_out
+  join: fan_in
   max_parallel: 5
+  tolerate_branch_execution_errors: true
 runtime:
-  max_visits: 2
-routes:
-- to: codebase_check
-- to: critic
-- to: naive_reader
-- to: readiness
-- to: zoom_out
-- to: fan_in
-  weight: 1
+  max_visits: 3
 ---

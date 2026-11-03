@@ -5,15 +5,25 @@ const MOBILE_PROJECT_PATH = '/tmp/ui-smoke-mobile-project'
 const MOBILE_FLOW_NAME = 'mobile-smoke.yaml'
 const MOBILE_RUN_ID = 'run-mobile-ops'
 const MOBILE_FLOW = {
-  schema_version: '1',
+  schema_version: '2',
   id: 'mobile_smoke',
   title: 'Mobile Smoke',
   nodes: {
-    start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-    task: { kind: 'agent_task', label: 'Task', config: { kind: 'agent_task', prompt: 'Check the mobile smoke surface.' } },
-    done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+    start: {
+      kind: 'start',
+      label: 'Start',
+      config: { kind: 'start' },
+      routes: { next: { to: 'task', description: 'Enter the first workflow step.' } },
+    },
+    task: {
+      kind: 'agent_task',
+      label: 'Task',
+      config: { kind: 'agent_task', prompt: 'Check the mobile smoke surface.' },
+      contracts: { response: 'decision_envelope' },
+      routes: { done: { to: 'done', description: 'The mobile smoke check is complete.' } },
+    },
+    done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
   },
-  edges: [{ from: 'start', to: 'task' }, { from: 'task', to: 'done' }],
 }
 
 const seedRouteState = async (page: Page) => {

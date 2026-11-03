@@ -6,6 +6,8 @@ mod failure_reason_contracts;
 mod flow_definition_typed_runtime_contracts;
 #[path = "contracts/result_summary_contracts.rs"]
 mod result_summary_contracts;
+#[path = "contracts/routing_model_contracts.rs"]
+mod routing_model_contracts;
 #[path = "contracts/storage_contracts.rs"]
 mod storage_contracts;
 #[path = "contracts/usage_contracts.rs"]

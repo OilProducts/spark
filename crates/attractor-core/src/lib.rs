@@ -28,9 +28,6 @@ pub mod graph;
 /// Terminal outcome boundary.
 pub mod outcomes;
 
-/// Routing input and next-id boundary.
-pub mod routing;
-
 /// Runtime identifier boundary.
 pub mod runtime;
 
@@ -49,10 +46,12 @@ pub use context_contracts::{
 };
 pub use error::{AttractorCoreError, Result};
 pub use flow_definition::{
-    flow_definition_schema_value, normalize_flow_ref, ExecutionConfig, FlowDefaults,
-    FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge, FlowExecutionLock, FlowInput,
-    FlowMetadata, FlowNode, HumanDecision, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
-    NodeRuntimeConfig, RecoveryPolicy, RetryConfig, UiConfig,
+    decode_case_key, dot_edge, flow_definition_schema_value, is_legacy_routing_field,
+    normalize_flow_ref, switch_decision, valid_decision_id, ExecutionConfig, ExitOutcome,
+    ExitResult, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
+    FlowEdgeKind, FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute,
+    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RecoveryPolicy,
+    RetryConfig, SwitchScalar, UiConfig, DECISION_ENVELOPE, FLOW_SCHEMA_VERSION, NEXT_DECISION,
 };
 pub use graph::{
     attr_bool, attr_i64, attr_string, attr_text, dot_value_text, dot_value_to_json,
@@ -61,13 +60,7 @@ pub use graph::{
     DotValueType, DurationLiteral, EdgeAttribute, EdgeId, EdgeRef, FlowId, FlowName,
     GraphAttribute, GraphId, GraphRef, NodeAttribute, NodeId, NodeRef, RoutingEdge,
 };
-pub use outcomes::{FailureKind, Outcome, OutcomePayload, OutcomeStatus};
-pub use routing::{
-    best_edge_by_weight_then_lexical, is_exact_outcome_fail_condition, normalize_label,
-    select_failure_route_edge_with_context, select_next_edge,
-    select_next_edge_with_condition_results, select_next_edge_with_context, NextNodeSuggestion,
-    RoutingDecision, RoutingInput, SuggestedNextIds,
-};
+pub use outcomes::{BranchTerminal, FailureKind, Outcome, OutcomeStatus};
 pub use runtime::{
     ArtifactInfo, CheckpointId, CheckpointState, JournalEntry, JournalSequence, RawRuntimeEvent,
     RunExecutionLock, RunId, RunManifest, RunRecord, RunResult, RunStatus, RuntimeNodeState,

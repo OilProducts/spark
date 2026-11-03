@@ -7,7 +7,7 @@ execution_lock:
   scope: project
   key: software-development-integration
   conflict_policy: queue
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.source_ref
   label: Source Ref

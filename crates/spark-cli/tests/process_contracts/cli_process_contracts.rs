@@ -502,19 +502,27 @@ fn temp_dir(label: &str) -> PathBuf {
 
 fn valid_flow() -> Value {
     serde_json::json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "workflow",
         "title": "Workflow",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}},
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
                 "config": {"kind": "agent_task", "prompt": "Do work"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The task is complete."}},
             },
-            "done": {"kind": "exit"},
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+            },
         },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
     })
 }
 
@@ -586,13 +594,26 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     crate::write_flow_json(
         &flow_dir,
         serde_json::json!({
+            "schema_version": "2",
             "id": "work",
             "nodes": {
-                "start": {"kind": "start"},
-                "task": {"kind": "agent_task", "role": "reviewer", "prompt": "Review."},
-                "done": {"kind": "exit"},
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}},
+                },
+                "task": {
+                    "kind": "agent_task",
+                    "role": "reviewer",
+                    "config": {"kind": "agent_task", "prompt": "Review."},
+                    "contracts": {"response": "decision_envelope"},
+                    "routes": {"done": {"to": "done", "description": "The review is complete."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
             },
-            "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}],
         }),
     );
     let spark = |args: &[&str]| {

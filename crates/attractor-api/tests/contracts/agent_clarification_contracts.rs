@@ -101,7 +101,7 @@ while True:
         round+=1
         if round==1: ask()
         else:
-            send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':'Done'}}})
+            send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':json.dumps({'decision':'done'})}}})
             send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'completed'}}})
 "#).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -124,23 +124,38 @@ while True:
         flow_name: Some(crate::install_flow(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "clarify",
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "work",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "work": {
                         "kind": "agent_task",
                         "config": {
                             "kind": "agent_task",
                             "prompt": "Resolve the intended audience"
+                        },
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "done", "description": "The step is complete."}
                         }
                     },
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "work"},
-                    {"from": "work", "to": "done"}
-                ]
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         )),
         ..Default::default()
@@ -458,6 +473,7 @@ fn dead_executor_questions_remain_historical_and_cannot_be_answered() {
 
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
 import json, sys
+DONE = {'decision': 'done'}
 def send(x):
     print(json.dumps(x), flush=True)
 def read():
@@ -472,14 +488,14 @@ if 'ASK' in prompt:
     answer = read()['response']['response']
     assert answer['behavior'] == 'allow', answer
     assert answer['updatedInput']['answers'] == {'Which audience?': 'Developers'}, answer
-    send({'type':'result','subtype':'success','is_error':False,'result':'Done','session_id':'s1'})
+    send({'type':'result','subtype':'success','is_error':False,'result':json.dumps(DONE),'structured_output':DONE,'session_id':'s1'})
 elif 'STEER' in prompt:
     open('started','w').close()
     m = read()
     assert m['type'] == 'user' and 'priority' not in m, m
     open('steered','w').write(m['message']['content'])
-    send({'type':'assistant','session_id':'s1','message':{'role':'assistant','content':[{'type':'text','text':'Steered'}]}})
-    send({'type':'result','subtype':'success','is_error':False,'result':'Steered','session_id':'s1','user_message_uuids':[m['uuid']]})
+    send({'type':'assistant','session_id':'s1','message':{'role':'assistant','content':[{'type':'text','text':json.dumps(DONE)}]}})
+    send({'type':'result','subtype':'success','is_error':False,'result':json.dumps(DONE),'structured_output':DONE,'session_id':'s1','user_message_uuids':[m['uuid']]})
 elif 'LONG' in prompt:
     open('started','w').close()
     while True:
@@ -521,7 +537,7 @@ for line in sys.stdin:
     elif method == 'turn/steer':
         open(cwd+'/steered','w').write(m['params']['input'][0]['text'])
         send({'id':m['id'],'result':{}})
-        send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':'Steered'}}})
+        send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':json.dumps({'decision':'done'})}}})
         send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'completed'}}})
     elif method == 'turn/interrupt':
         send({'id':m['id'],'result':{}})
@@ -597,21 +613,36 @@ fn start_node(
         flow_name: Some(crate::install_flow(
             settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": id,
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "work",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "work": {
                         "kind": "agent_task",
                         "runtime": runtime,
-                        "config": {"kind": "agent_task", "prompt": prompt}
+                        "config": {"kind": "agent_task", "prompt": prompt},
+                        "contracts": {"response": "decision_envelope"},
+                        "routes": {
+                            "done": {"to": "done", "description": "The step is complete."}
+                        }
                     },
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "work"},
-                    {"from": "work", "to": "done"}
-                ]
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         )),
         ..Default::default()
@@ -950,7 +981,7 @@ fn native_node_steer_cancel_and_timeout() {
         let project = root.join(&id);
         if text.contains("Use the docs.") {
             fs::write(project.join("steered"), "Use the docs.").unwrap();
-            sse.text("Done.");
+            sse.text(r#"{"decision": "done", "notes": "Done."}"#);
             return sse.finish();
         }
         fs::write(project.join("started"), "").unwrap();
@@ -988,21 +1019,35 @@ fn native_node_steer_cancel_and_timeout() {
         flow_name: Some(crate::install_flow(
             &settings,
             json!({
-                "schema_version": "1",
+                "schema_version": "2",
                 "id": "native_steer",
                 "nodes": {
-                    "start": {"kind": "start"},
+                    "start": {
+                        "kind": "start",
+                        "config": {"kind": "start"},
+                        "routes": {
+                            "next": {
+                                "to": "work",
+                                "description": "Enter the first workflow step."
+                            }
+                        }
+                    },
                     "work": {
                         "kind": "agent_task",
-                        "contracts": {"runtime_mode": "agent"},
-                        "config": {"kind": "agent_task", "prompt": "STEER work"}
+                        "contracts": {"runtime_mode": "agent", "response": "decision_envelope"},
+                        "config": {"kind": "agent_task", "prompt": "STEER work"},
+                        "routes": {
+                            "done": {"to": "done", "description": "The step is complete."}
+                        }
                     },
-                    "done": {"kind": "exit"}
-                },
-                "edges": [
-                    {"from": "start", "to": "work"},
-                    {"from": "work", "to": "done"}
-                ]
+                    "done": {
+                        "kind": "exit",
+                        "config": {
+                            "kind": "exit",
+                            "result": {"name": "completed", "outcome": "success"}
+                        }
+                    }
+                }
             }),
         )),
         ..Default::default()
@@ -1072,7 +1117,7 @@ fn native_node_clarification_outlasts_its_timeout_and_stops_on_cancel() {
     fs::create_dir_all(&settings.project_root).unwrap();
     let base_url = serve(|body, sse| {
         if body.to_string().contains("Answer: Developers") {
-            sse.text("Writing for developers.");
+            sse.text(r#"{"decision": "done", "notes": "Writing for developers."}"#);
         } else {
             sse.tool_call(
                 "ask-1",
@@ -1114,25 +1159,39 @@ fn native_node_clarification_outlasts_its_timeout_and_stops_on_cancel() {
             flow_name: Some(crate::install_flow(
                 &settings,
                 json!({
-                    "schema_version": "1",
+                    "schema_version": "2",
                     "id": id,
                     "nodes": {
-                        "start": {"kind": "start"},
+                        "start": {
+                            "kind": "start",
+                            "config": {"kind": "start"},
+                            "routes": {
+                                "next": {
+                                    "to": "work",
+                                    "description": "Enter the first workflow step."
+                                }
+                            }
+                        },
                         "work": {
                             "kind": "agent_task",
                             "runtime": {"timeout": "1s"},
-                            "contracts": {"runtime_mode": "agent"},
-                            "config": {
-                                "kind": "agent_task",
-                                "prompt": "ASK about the audience"
+                            "contracts": {
+                                "runtime_mode": "agent",
+                                "response": "decision_envelope"
+                            },
+                            "config": {"kind": "agent_task", "prompt": "ASK about the audience"},
+                            "routes": {
+                                "done": {"to": "done", "description": "The step is complete."}
                             }
                         },
-                        "done": {"kind": "exit"}
-                    },
-                    "edges": [
-                        {"from": "start", "to": "work"},
-                        {"from": "work", "to": "done"}
-                    ]
+                        "done": {
+                            "kind": "exit",
+                            "config": {
+                                "kind": "exit",
+                                "result": {"name": "completed", "outcome": "success"}
+                            }
+                        }
+                    }
                 }),
             )),
             ..Default::default()

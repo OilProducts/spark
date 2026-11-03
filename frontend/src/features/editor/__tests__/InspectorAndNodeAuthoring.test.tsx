@@ -43,15 +43,15 @@ describe('Inspector and node authoring behavior', () => {
     const nodeDiagnostics = resolveNodeFieldDiagnostics(
       [
         {
-          rule_id: 'goal_gate_has_retry',
+          rule_id: 'switch_writer',
           severity: 'error',
-          message: 'goal_gate requires retry_target or fallback_retry_target.',
+          message: 'context.count has no upstream writer.',
           node_id: 'node_a',
         },
         {
-          rule_id: 'retry_target_exists',
+          rule_id: 'fork_structure',
           severity: 'error',
-          message: 'fallback_retry_target references missing node.',
+          message: 'join must be a fan_in node.',
           node_id: 'node_a',
         },
         {
@@ -64,109 +64,98 @@ describe('Inspector and node authoring behavior', () => {
       'node_a',
     )
 
-    expect(nodeDiagnostics.goal_gate).toHaveLength(1)
-    expect(nodeDiagnostics.retry_target).toHaveLength(1)
-    expect(nodeDiagnostics.fallback_retry_target).toHaveLength(2)
+    expect(nodeDiagnostics.config).toHaveLength(2)
     expect(nodeDiagnostics.prompt).toHaveLength(1)
     expect(nodeDiagnostics.label).toHaveLength(1)
   })
 
-  it('maps edge diagnostics to condition fields', () => {
+  it('maps route diagnostics to the decision fields of the edge they name', () => {
     const diagnostics = [
       {
-        rule_id: 'condition_syntax',
+        rule_id: 'route_description',
         severity: 'error' as const,
-        message: 'Condition parser failed near token.',
-        edge: ['start', 'review'] as [string, string],
+        message: 'Route approve needs a description.',
+        edge: ['review', 'done'] as [string, string],
+        decision: 'approve',
+      },
+      {
+        rule_id: 'decision_id',
+        severity: 'error' as const,
+        message: 'Decision Waive is not a valid decision ID.',
+        edge: ['review', 'done'] as [string, string],
+        decision: 'Waive',
       },
     ]
 
-    const edgeDiagnostics = resolveEdgeFieldDiagnostics(diagnostics, 'start', 'review')
-    expect(edgeDiagnostics.condition).toHaveLength(1)
+    const approve = resolveEdgeFieldDiagnostics(diagnostics, 'review', 'done', 'approve')
+    expect(approve.description).toHaveLength(1)
+    expect(approve.decision).toBeUndefined()
+    const waive = resolveEdgeFieldDiagnostics(diagnostics, 'review', 'done', 'Waive')
+    expect(waive.decision).toHaveLength(1)
+    expect(waive.description).toBeUndefined()
   })
 
-  it('renders conditional parallel threshold fields in the node inspector', () => {
-    const onPropertyChange = vi.fn()
-    const baseProps = {
-      selectedNodeId: 'fan',
-      visibility: getNodeFieldVisibility('parallel'),
-      readsContextDraft: '',
-      readsContextError: null,
-      writesContextDraft: '',
-      writesContextError: null,
-      showAdvanced: false,
-      nodeFieldDiagnostics: {},
-      selectedNodeExtensionEntries: [],
-      selectedNodeToolHookPreWarning: null,
-      selectedNodeToolHookPostWarning: null,
-      onPropertyChange,
-      onOpenGraphChildSettings: vi.fn(),
-      onReadsContextChange: vi.fn(),
-      onWritesContextChange: vi.fn(),
-      onSetShowAdvanced: vi.fn(),
-      onNodeExtensionValueChange: vi.fn(),
-      onNodeExtensionRemove: vi.fn(),
-      onNodeExtensionAdd: vi.fn(),
-      renderFieldDiagnostics: vi.fn(() => null),
+  it('renders fork structure and branch-error tolerance in the node inspector', () => {
+    const props = panelProps('parallel')
+    render(
+      <NodeInspectorPanel
+        {...props}
+        selectedNodeFork={{ branches: ['lens_a', 'lens_b'], join: 'fan_in' }}
+      />,
+    )
+
+    expect(screen.getByTestId('parallel-fork-structure')).toHaveTextContent('branches: lens_a, lens_b')
+    expect(screen.getByTestId('parallel-fork-structure')).toHaveTextContent('join: fan_in')
+    for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
+      expect(screen.queryByText(legacy)).not.toBeInTheDocument()
     }
-
-    const { rerender } = render(
-      <NodeInspectorPanel
-        {...baseProps}
-        selectedNode={{
-          id: 'fan',
-          position: { x: 0, y: 0 },
-          data: { label: 'Fan', shape: 'component', join_policy: 'k_of_n', join_k: '2' },
-        }}
-      />,
-    )
-
-    expect(screen.getByText('K Threshold')).toBeInTheDocument()
-    expect(screen.queryByText('Quorum Threshold')).not.toBeInTheDocument()
-    fireEvent.change(screen.getByRole('textbox', { name: 'K Threshold' }), { target: { value: '3' } })
-    expect(onPropertyChange).toHaveBeenCalledWith('join_k', '3')
-
-    rerender(
-      <NodeInspectorPanel
-        {...baseProps}
-        selectedNode={{
-          id: 'fan',
-          position: { x: 0, y: 0 },
-          data: { label: 'Fan', shape: 'component', join_policy: 'quorum', join_quorum: '0.75' },
-        }}
-      />,
-    )
-
-    expect(screen.queryByText('K Threshold')).not.toBeInTheDocument()
-    expect(screen.getByText('Quorum Threshold')).toBeInTheDocument()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Quorum Threshold' }), { target: { value: '0.6' } })
-    expect(onPropertyChange).toHaveBeenCalledWith('join_quorum', '0.6')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tolerate Branch Execution Errors' }))
+    expect(props.onPropertyChange).toHaveBeenCalledWith('config.tolerate_branch_execution_errors', true)
   })
 
-  it('clears stale parallel threshold attrs when inspector join policy changes', () => {
-    expect(
-      applyNodePropertyChangeToData(
-        { join_policy: 'k_of_n', join_k: '2', join_quorum: '0.75' },
-        'join_policy',
-        'wait_all',
-      ),
-    ).toEqual({ join_policy: 'wait_all' })
+  it('edits switch, exit, tool and subflow config through typed config fields', () => {
+    const switchProps = panelProps('switch', { config: { kind: 'switch', on: 'context.count', cases: { '0': 'zero', '"0"': 'text_zero' }, otherwise: 'other' } })
+    const view = render(<NodeInspectorPanel {...switchProps} />)
+    expect(screen.getByRole('textbox', { name: 'Switch On' })).toHaveValue('context.count')
+    const cases = screen.getByRole('textbox', { name: 'Cases' })
+    expect(cases).toHaveValue('0 = zero\n"0" = text_zero')
+    fireEvent.change(cases, { target: { value: '0 = zero\n"0" = text_zero\ntrue = zero' } })
+    expect(switchProps.onPropertyChange).toHaveBeenLastCalledWith('config.cases', { '0': 'zero', '"0"': 'text_zero', 'true': 'zero' })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Otherwise Decision' }), { target: { value: 'fallback' } })
+    expect(switchProps.onPropertyChange).toHaveBeenLastCalledWith('config.otherwise', 'fallback')
+    expectLabelsAndReferences()
 
-    expect(
-      applyNodePropertyChangeToData(
-        { join_policy: 'k_of_n', join_k: '2', join_quorum: '0.75' },
-        'join_policy',
-        'quorum',
-      ),
-    ).toEqual({ join_policy: 'quorum', join_quorum: '0.75' })
+    const exitProps = panelProps('exit', { config: { kind: 'exit', result: { name: 'blocked', outcome: 'failure' } } })
+    view.rerender(<NodeInspectorPanel {...exitProps} />)
+    expect(screen.getByRole('textbox', { name: 'Result Name' })).toHaveValue('blocked')
+    expect(screen.getByRole('combobox', { name: 'Run Outcome' })).toHaveValue('failure')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Run Outcome' }), { target: { value: 'success' } })
+    expect(exitProps.onPropertyChange).toHaveBeenLastCalledWith('config.result', { name: 'blocked', outcome: 'success' })
 
+    const toolProps = panelProps('tool', { config: { kind: 'tool', command: 'make', exit_codes: { '0': 'passed', '1': 'rejected' } } })
+    view.rerender(<NodeInspectorPanel {...toolProps} />)
+    expect(screen.getByRole('textbox', { name: 'Exit Codes' })).toHaveValue('0 = passed\n1 = rejected')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Decision Adapter' }), { target: { value: 'decision_field' } })
+    expect(toolProps.onPropertyChange).toHaveBeenCalledWith('config.exit_codes', '')
+    expect(toolProps.onPropertyChange).toHaveBeenCalledWith('config.decision_field', 'decision')
+
+    const subflowProps = panelProps('subflow', { config: { kind: 'subflow', flow_ref: 'child', results: { completed: 'child_completed' } } })
+    view.rerender(<NodeInspectorPanel {...subflowProps} />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Child Results' }), { target: { value: 'completed = child_completed\nblocked = child_blocked' } })
+    expect(subflowProps.onPropertyChange).toHaveBeenLastCalledWith('config.results', { completed: 'child_completed', blocked: 'child_blocked' })
+    expectLabelsAndReferences()
+  })
+
+  it('writes config fields into the typed config and resets it when the kind changes', () => {
     expect(
-      applyNodePropertyChangeToData(
-        { join_policy: 'quorum', join_k: '2', join_quorum: '0.75' },
-        'join_policy',
-        'k_of_n',
-      ),
-    ).toEqual({ join_policy: 'k_of_n', join_k: '2' })
+      applyNodePropertyChangeToData({ kind: 'switch', config: { kind: 'switch', on: 'context.a' } }, 'config.otherwise', 'other'),
+    ).toEqual({ kind: 'switch', config: { kind: 'switch', on: 'context.a', otherwise: 'other' } })
+    expect(
+      applyNodePropertyChangeToData({ kind: 'parallel', config: { kind: 'parallel', tolerate_branch_execution_errors: true } }, 'config.tolerate_branch_execution_errors', false),
+    ).toEqual({ kind: 'parallel', config: { kind: 'parallel' } })
+    expect(
+      applyNodePropertyChangeToData({ kind: 'agent_task', config: { kind: 'agent_task', prompt: 'Do it' } }, 'kind', 'switch'),
+    ).toMatchObject({ kind: 'switch', shape: 'diamond', config: { kind: 'switch' } })
   })
 
   it('maps node kind edits to typed config and visual shape data', () => {
@@ -179,7 +168,7 @@ describe('Inspector and node authoring behavior', () => {
       label: 'Task',
       kind: 'subflow',
       shape: 'house',
-      config: { kind: 'subflow', prompt: 'Do it' },
+      config: { kind: 'subflow' },
       flow_ref: 'child',
     })
     expect(subflowData).not.toHaveProperty('type')
@@ -226,6 +215,7 @@ describe('Inspector and node authoring behavior', () => {
         selectedNodeExtensionEntries={[]}
         selectedNodeToolHookPreWarning={null}
         selectedNodeToolHookPostWarning={null}
+        selectedNodeFork={{ branches: [], join: null }}
         onPropertyChange={onPropertyChange}
         onOpenGraphChildSettings={vi.fn()}
         onReadsContextChange={vi.fn()}
@@ -246,15 +236,16 @@ describe('Inspector and node authoring behavior', () => {
   })
 })
 
-function panelProps(kind = 'agent_task'): ComponentProps<typeof NodeInspectorPanel> {
+function panelProps(kind = 'agent_task', data: Record<string, unknown> = {}): ComponentProps<typeof NodeInspectorPanel> {
   return {
     selectedNodeId: 'node',
-    selectedNode: { id: 'node', position: { x: 0, y: 0 }, data: { kind, label: 'Implement' } },
+    selectedNode: { id: 'node', position: { x: 0, y: 0 }, data: { kind, label: 'Implement', ...data } },
     visibility: getNodeFieldVisibility(getHandlerType(kind)),
     readsContextDraft: '', readsContextError: null,
     writesContextDraft: '', writesContextError: null,
     showAdvanced: true, nodeFieldDiagnostics: {}, selectedNodeExtensionEntries: [],
     selectedNodeToolHookPreWarning: null, selectedNodeToolHookPostWarning: null,
+    selectedNodeFork: { branches: [], join: null },
     onPropertyChange: vi.fn(), onOpenGraphChildSettings: vi.fn(),
     onReadsContextChange: vi.fn(), onWritesContextChange: vi.fn(), onSetShowAdvanced: vi.fn(),
     onNodeExtensionValueChange: vi.fn(), onNodeExtensionRemove: vi.fn(), onNodeExtensionAdd: vi.fn(),
@@ -281,7 +272,7 @@ function expectLabelsAndReferences() {
 describe('Accessible node inspector fields', () => {
   it.each([
     ['agent_task', [['Prompt Instruction', 'prompt'], ['Max Retries', 'max_retries'], ['Timeout', 'timeout'],
-      ['Retry Target', 'retry_target'], ['Fallback Retry Target', 'fallback_retry_target'], ['Session', 'session'],
+      ['Session', 'session'],
       ['Class', 'class']]],
     ['tool', [['Tool Command', 'tool.command'], ['Pre Hook Override', 'tool.hooks.pre'],
       ['Post Hook Override', 'tool.hooks.post'], ['Artifact Paths', 'tool.artifacts.paths'],
@@ -308,15 +299,8 @@ describe('Accessible node inspector fields', () => {
       view.rerender(<NodeInspectorPanel {...props} selectedNode={{ ...props.selectedNode!, data: { ...props.selectedNode!.data, llm_provider: 'openai', llm_model: 'gpt-5.5' } }} />)
       fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
-      for (const [name, key] of [['Goal Gate', 'goal_gate'], ['Auto Status', 'auto_status'], ['Allow Partial', 'allow_partial']]) {
-        fireEvent.click(screen.getByRole('checkbox', { name }))
-        expect(props.onPropertyChange).toHaveBeenCalledWith(key, true)
-      }
-    }
-    if (kind === 'parallel') {
-      for (const [name, key, value] of [['Join Policy', 'join_policy', 'quorum'], ['Error Policy', 'error_policy', 'fail_fast']]) {
-        fireEvent.change(screen.getByRole('combobox', { name }), { target: { value } })
-        expect(props.onPropertyChange).toHaveBeenCalledWith(key, value)
+      for (const name of ['Goal Gate', 'Auto Status', 'Allow Partial', 'Retry Target', 'Fallback Retry Target']) {
+        expect(screen.queryByLabelText(name)).not.toBeInTheDocument()
       }
     }
     expectLabelsAndReferences()
@@ -345,23 +329,18 @@ describe('Accessible node inspector fields', () => {
 
   it('associates diagnostics and clears errors and references after selection changes', () => {
     const props = panelProps()
-    const error = { rule_id: 'test', severity: 'error' as const, message: 'Retry target is missing.' }
+    const error = { rule_id: 'response_contract', severity: 'error' as const, message: 'contracts.response must be decision_envelope.' }
     const warning = { rule_id: 'test', severity: 'warning' as const, message: 'Prompt is recommended.' }
-    props.nodeFieldDiagnostics = { prompt: [warning], goal_gate: [error], retry_target: [error], fallback_retry_target: [error] }
+    props.nodeFieldDiagnostics = { prompt: [warning], config: [error] }
     const { rerender } = render(<NodeInspectorPanel {...props} />)
     const prompt = screen.getByRole('textbox', { name: 'Prompt Instruction' })
     expect(prompt).toHaveAccessibleDescription(warning.message)
     expect(prompt).not.toHaveAttribute('aria-invalid')
-    for (const name of ['Retry Target', 'Fallback Retry Target', 'Goal Gate']) {
-      const control = screen.getByLabelText(name, { exact: true })
-      expect(control).toHaveAccessibleDescription(error.message)
-      expect(control).toHaveAttribute('aria-invalid', 'true')
-    }
-    expect(props.renderFieldDiagnostics).toHaveBeenCalledWith('node', 'retry_target', props.nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')
+    expect(screen.getByTestId('node-field-diagnostics-config')).toHaveTextContent(error.message)
+    expect(props.renderFieldDiagnostics).toHaveBeenCalledWith('node', 'config', props.nodeFieldDiagnostics, 'node-field-diagnostics-config')
     expectLabelsAndReferences()
     rerender(<NodeInspectorPanel {...props} nodeFieldDiagnostics={{}} />)
     expect(prompt).not.toHaveAttribute('aria-describedby')
-    expect(screen.getByRole('textbox', { name: 'Retry Target', exact: true })).not.toHaveAttribute('aria-invalid')
     expect(screen.queryByText(error.message)).not.toBeInTheDocument()
     rerender(<NodeInspectorPanel {...panelProps('subflow')} selectedNodeId="implement" />)
     expect(screen.queryByRole('textbox', { name: 'Prompt Instruction' })).not.toBeInTheDocument()

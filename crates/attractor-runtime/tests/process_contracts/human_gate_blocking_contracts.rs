@@ -1,97 +1,48 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use attractor_core::{
-    FlowDefinition, FlowEdge, FlowNode, LaunchContext, NodeConfig, NodeContracts, NodeKind,
-    Outcome, OutcomeStatus, RunRecord,
-};
+use attractor_core::{FlowDefinition, LaunchContext, Outcome, RunRecord};
 use attractor_runtime::{
     disk_execution_control, human_gate_answered_event, prepare_fresh_run, ExecuteRunRequest,
     ExecutionStart, HumanAnswer, PipelineExecutor, QueueInterviewer, RunStore, RuntimeControls,
     RuntimeHandlerRunner, HANDLER_CODERGEN,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
-fn agent_node(prompt: &str) -> FlowNode {
-    FlowNode {
-        kind: NodeKind::AgentTask,
-        config: Some(NodeConfig::AgentTask {
-            prompt: prompt.to_string(),
-        }),
-        ..FlowNode::default()
-    }
-}
-
-fn edge(from: &str, to: &str, label: &str) -> FlowEdge {
-    FlowEdge {
-        from: from.to_string(),
-        to: to.to_string(),
-        label: label.to_string(),
-        ..FlowEdge::default()
-    }
+fn agent(prompt: &str, to: &str) -> Value {
+    json!({"kind": "agent_task", "config": {"kind": "agent_task", "prompt": prompt},
+        "contracts": {"response": "decision_envelope"},
+        "routes": {"done": {"to": to, "description": "The step is complete."}}})
 }
 
 fn gate_flow() -> FlowDefinition {
-    FlowDefinition {
-        schema_version: "1".to_string(),
-        id: "gate-contract".to_string(),
-        title: "Gate Contract".to_string(),
-        nodes: [
-            (
-                "start".to_string(),
-                FlowNode {
-                    kind: NodeKind::Start,
-                    config: Some(NodeConfig::Start {}),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "review".to_string(),
-                FlowNode {
-                    kind: NodeKind::HumanGate,
-                    config: Some(NodeConfig::HumanGate {
-                        prompt: "Approve the change?".to_string(),
-                        decisions: Vec::new(),
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
-            (
-                "prep".to_string(),
-                FlowNode {
-                    contracts: Some(NodeContracts {
-                        writes_context: vec!["context.review.summary".to_string()],
-                        ..NodeContracts::default()
-                    }),
-                    ..agent_node("prepare summary")
-                },
-            ),
-            ("approved".to_string(), agent_node("ship")),
-            ("rejected".to_string(), agent_node("revise")),
-            (
-                "done".to_string(),
-                FlowNode {
-                    kind: NodeKind::Exit,
-                    config: Some(NodeConfig::Exit {
-                        result_summary: false,
-                        result_summary_prompt: None,
-                    }),
-                    ..FlowNode::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        edges: vec![
-            edge("start", "prep", ""),
-            edge("prep", "review", ""),
-            edge("review", "approved", "Approve"),
-            edge("review", "rejected", "Reject"),
-            edge("approved", "done", ""),
-            edge("rejected", "done", ""),
-        ],
-        ..FlowDefinition::default()
-    }
+    let mut prep = agent("prepare summary", "review");
+    prep["contracts"]["writes_context"] = json!(["context.review.summary"]);
+    serde_json::from_value(json!({
+        "schema_version": "2",
+        "id": "gate-contract",
+        "title": "Gate Contract",
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"},
+                "routes": {"next": {"to": "prep", "description": "Prepare the summary."}}},
+            "prep": prep,
+            "review": {
+                "kind": "human_gate",
+                "config": {"kind": "human_gate", "prompt": "Approve the change?"},
+                "routes": {
+                    "approve": {"to": "approved", "description": "Ship the change.", "label": "Approve"},
+                    "reject": {"to": "rejected", "description": "Revise the change.", "label": "Reject"}
+                }
+            },
+            "approved": agent("ship", "shipped"),
+            "rejected": agent("revise", "revised"),
+            "shipped": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "shipped", "outcome": "success"}}},
+            "revised": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "rejected", "outcome": "failure"}}}
+        }
+    }))
+    .expect("flow json")
 }
 
 fn temp_store(temp: &tempfile::TempDir) -> RunStore {
@@ -191,12 +142,85 @@ fn wait_for_pending_gate(harness: &GateHarness) -> (String, String) {
     }
 }
 
+fn join_run(harness: GateHarness) -> attractor_runtime::PipelineExecutionResult {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !harness.handle.is_finished() {
+        assert!(Instant::now() < deadline, "run never finished");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    harness
+        .handle
+        .join()
+        .expect("executor thread")
+        .expect("execution result")
+}
+
+fn final_record(store: &RunStore, paths: &attractor_runtime::paths::RunRootPaths) -> RunRecord {
+    store
+        .read_run_record(paths)
+        .expect("record")
+        .expect("record")
+}
+
+/// The durable `status.json` of `node_id`'s only execution.
+fn node_status(
+    store: &RunStore,
+    paths: &attractor_runtime::paths::RunRootPaths,
+    node_id: &str,
+) -> Value {
+    let execution = store
+        .list_node_executions(paths)
+        .expect("execution inventory")
+        .into_iter()
+        .find(|execution| execution.node_id == node_id)
+        .unwrap_or_else(|| panic!("{node_id} execution"));
+    let root = store
+        .node_execution_root(
+            paths,
+            &execution.node_id,
+            execution.stage_index,
+            execution.attempt,
+        )
+        .expect("execution root");
+    serde_json::from_str(
+        &std::fs::read_to_string(root.join("status.json")).expect("status artifact"),
+    )
+    .expect("status json")
+}
+
+fn answer(harness: &GateHarness, run_id: &str, question_id: &str, value: &str, note: Option<&str>) {
+    harness
+        .store
+        .append_event(
+            &harness.paths,
+            human_gate_answered_event(
+                run_id,
+                question_id,
+                Some("review".to_string()),
+                Some("gate-contract".to_string()),
+                Some("Approve the change?".to_string()),
+                value,
+                note.map(str::to_string),
+            ),
+        )
+        .expect("append answer");
+}
+
+fn stage_completed(harness: &GateHarness, node_id: &str) -> bool {
+    harness
+        .store
+        .read_raw_events(&harness.paths)
+        .expect("events")
+        .iter()
+        .any(|event| event.event_type == "StageCompleted" && event.payload["node_id"] == node_id)
+}
+
 #[test]
-fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
+fn blocking_gate_waits_for_journaled_answer_and_selects_its_decision() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut runner = RuntimeHandlerRunner::new().with_blocking_human_gates();
     runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, |runtime| {
-        let mut outcome = Outcome::new(OutcomeStatus::Success);
+        let mut outcome = Outcome::completed("done");
         if runtime.node_id == "prep" {
             outcome.context_updates.insert(
                 "context.review.summary".to_string(),
@@ -211,7 +235,8 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
     assert_eq!(status, "waiting");
     assert_eq!(question_id, format!("review-{}", 2));
 
-    // The pending question carries the edge-derived options.
+    // The pending question offers the gate's declared decisions: the
+    // decision id is the value, the route label the button text.
     let events = harness
         .store
         .read_raw_events(&harness.paths)
@@ -221,7 +246,18 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
         .find(|event| event.event_type == "human_gate")
         .expect("pending event");
     assert_eq!(pending.payload["prompt"], "Approve the change?");
-    assert_eq!(pending.payload["options"][0]["label"], "Approve");
+    let options = pending.payload["options"].as_array().expect("options");
+    let offered = options
+        .iter()
+        .map(|option| (option["value"].clone(), option["label"].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        offered,
+        vec![
+            (json!("approve"), json!("Approve")),
+            (json!("reject"), json!("Reject"))
+        ]
+    );
     assert_eq!(pending.payload["flow_name"], "gate-contract");
     let details = pending.payload["details"].as_str().expect("gate details");
     assert!(
@@ -233,65 +269,48 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
         "details use the context key as a heading: {details}"
     );
 
-    // Answer exactly like the API route does: journal an InterviewCompleted.
-    harness
-        .store
-        .append_event(
-            &harness.paths,
-            human_gate_answered_event(
-                "run-gate-answer",
-                &question_id,
-                Some("review".to_string()),
-                Some("gate-contract".to_string()),
-                Some("Approve the change?".to_string()),
-                "Approve",
-                Some("Looks right, but double-check the lock cleanup.".to_string()),
-            ),
-        )
-        .expect("append answer");
+    // Answer exactly like the API route does, with the decision id.
+    answer(
+        &harness,
+        "run-gate-answer",
+        &question_id,
+        "approve",
+        Some("Looks right, but double-check the lock cleanup."),
+    );
 
-    let result = harness
-        .handle
-        .join()
-        .expect("executor thread")
-        .expect("execution result");
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
     assert_eq!(result.status, "completed");
     assert!(
         result.completed_nodes.contains(&"approved".to_string()),
-        "answer must route down the Approve edge: {:?}",
+        "answer must select the approve route: {:?}",
         result.completed_nodes,
     );
     assert!(!result.completed_nodes.contains(&"rejected".to_string()));
-    let final_record = harness
-        .store
-        .read_run_record(&harness.paths)
-        .expect("record")
-        .expect("record");
-    assert_eq!(final_record.status, "completed");
+    let record = final_record(&store, &paths);
+    assert_eq!(record.status, "completed");
+    assert_eq!(record.outcome.as_deref(), Some("success"));
+    assert_eq!(record.outcome_reason_code.as_deref(), Some("shipped"));
+
+    // The journal records the selected decision and its target.
+    let transition = store
+        .read_raw_events(&paths)
+        .expect("events")
+        .into_iter()
+        .find(|event| event.event_type == "StageTransition" && event.payload["node_id"] == "review")
+        .expect("gate transition");
+    assert_eq!(transition.payload["decision"], "approve");
+    assert_eq!(transition.payload["target"], "approved");
 
     // The note travels with the selection into the gate's context updates so
     // downstream nodes can read it as `human.gate.note`.
-    let gate_execution = harness
-        .store
-        .list_node_executions(&harness.paths)
-        .expect("execution inventory")
-        .into_iter()
-        .find(|execution| execution.node_id == "review")
-        .expect("review execution");
-    let gate_status_path = harness
-        .store
-        .node_execution_root(
-            &harness.paths,
-            &gate_execution.node_id,
-            gate_execution.stage_index,
-            gate_execution.attempt,
-        )
-        .expect("execution root")
-        .join("status.json");
-    let gate_status: Value = serde_json::from_str(
-        &std::fs::read_to_string(&gate_status_path).expect("gate status artifact"),
-    )
-    .expect("gate status json");
+    let gate_status = node_status(&store, &paths, "review");
+    assert_eq!(gate_status["status"], "completed");
+    assert_eq!(gate_status["decision"], "approve");
+    assert_eq!(
+        gate_status["context_updates"]["human.gate.selected"],
+        "approve"
+    );
     assert_eq!(
         gate_status["context_updates"]["human.gate.label"],
         "Approve"
@@ -300,6 +319,36 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
         gate_status["context_updates"]["human.gate.note"],
         "Looks right, but double-check the lock cleanup."
     );
+}
+
+#[test]
+fn skipped_and_undeclared_answers_keep_the_gate_waiting() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    // The interviewer skips; a skip is not a decision, so the gate waits.
+    let runner =
+        RuntimeHandlerRunner::with_interviewer(QueueInterviewer::new([HumanAnswer::skipped()]))
+            .with_blocking_human_gates();
+    let harness = spawn_gate_run(&temp, "run-gate-invalid", runner);
+
+    let (question_id, _) = wait_for_pending_gate(&harness);
+    // An answer naming no declared decision is rejected; the gate keeps waiting.
+    answer(&harness, "run-gate-invalid", &question_id, "maybe", None);
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(!harness.handle.is_finished());
+    assert_eq!(
+        final_record(&harness.store, &harness.paths).status,
+        "waiting"
+    );
+    assert!(!stage_completed(&harness, "review"));
+
+    // A later declared decision is accepted; the label works as well as the id.
+    answer(&harness, "run-gate-invalid", &question_id, "Reject", None);
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
+    assert_eq!(result.status, "completed");
+    assert!(result.completed_nodes.contains(&"rejected".to_string()));
+    assert!(!result.completed_nodes.contains(&"approved".to_string()));
+    assert_eq!(node_status(&store, &paths, "review")["decision"], "reject");
 }
 
 #[test]
@@ -313,18 +362,12 @@ fn cancel_while_waiting_finalizes_the_run_canceled() {
         .request_cancel("run-gate-cancel")
         .expect("cancel");
 
-    let result = harness
-        .handle
-        .join()
-        .expect("executor thread")
-        .expect("execution result");
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
     assert_eq!(result.status, "canceled");
-    let final_record = harness
-        .store
-        .read_run_record(&harness.paths)
-        .expect("record")
-        .expect("record");
-    assert_eq!(final_record.status, "canceled");
+    assert_eq!(final_record(&store, &paths).status, "canceled");
+    assert!(!result.completed_nodes.contains(&"approved".to_string()));
+    assert!(!result.completed_nodes.contains(&"rejected".to_string()));
 }
 
 #[test]
@@ -337,36 +380,40 @@ fn queued_interviewer_answers_bypass_the_wait() {
         .with_blocking_human_gates();
     let harness = spawn_gate_run(&temp, "run-gate-queued", runner);
 
-    let result = harness
-        .handle
-        .join()
-        .expect("executor thread")
-        .expect("execution result");
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
     assert_eq!(result.status, "completed");
     assert!(result.completed_nodes.contains(&"rejected".to_string()));
+    // The rejected path ends at a failure exit: completed, but not a success.
+    let record = final_record(&store, &paths);
+    assert_eq!(record.status, "completed");
+    assert_eq!(record.outcome.as_deref(), Some("failure"));
+    assert_eq!(record.outcome_reason_code.as_deref(), Some("rejected"));
     // No pending question was ever published.
-    let events = harness
-        .store
-        .read_raw_events(&harness.paths)
-        .expect("events");
+    let events = store.read_raw_events(&paths).expect("events");
     assert!(!events.iter().any(|event| event.event_type == "human_gate"));
 }
 
 #[test]
-fn without_the_flag_gates_keep_skip_semantics() {
+fn a_gate_that_cannot_wait_fails_the_run_instead_of_choosing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness = spawn_gate_run(&temp, "run-gate-skip", RuntimeHandlerRunner::new());
 
-    let result = harness
-        .handle
-        .join()
-        .expect("executor thread")
-        .expect("execution result");
-    // The empty default interviewer skips, which fails the gate immediately.
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
+    // The default interviewer skips and nothing can deliver an answer: an
+    // execution error, never a route.
     assert_eq!(result.status, "failed");
-    let events = harness
-        .store
-        .read_raw_events(&harness.paths)
-        .expect("events");
+    assert!(
+        result.failure_reason.contains("no valid answer"),
+        "{}",
+        result.failure_reason
+    );
+    assert_eq!(final_record(&store, &paths).status, "failed");
+    let gate_status = node_status(&store, &paths, "review");
+    assert_eq!(gate_status["status"], "error");
+    assert!(!result.completed_nodes.contains(&"approved".to_string()));
+    assert!(!result.completed_nodes.contains(&"rejected".to_string()));
+    let events = store.read_raw_events(&paths).expect("events");
     assert!(!events.iter().any(|event| event.event_type == "human_gate"));
 }

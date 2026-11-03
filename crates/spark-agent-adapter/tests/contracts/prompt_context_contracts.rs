@@ -552,11 +552,10 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
             Ok(CodergenBackendOutput::text("done"))
         }
     }
-    let source = json!({"schema_version":"1", "id":"flow",
+    let source = json!({"schema_version":"2", "id":"flow",
         "defaults":{"reasoning_mode":"standard"},
         "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; reasoning_effort: ultra; reasoning_summary: detailed; }"},
-        "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_mode":"pro", "thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
-        "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+        "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"work", "description":"Begin."}}}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_mode":"pro", "thinking_budget_tokens":4096}, "contracts":{"response":"decision_envelope"}, "routes":{"done":{"to":"end", "description":"Done."}}}, "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
     });
     let flow =
         attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
@@ -607,10 +606,9 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
 
 #[test]
 fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
-    let source = json!({"schema_version":"1", "id":"flow",
+    let source = json!({"schema_version":"2", "id":"flow",
         "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; }"},
-        "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
-        "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+        "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"work", "description":"Begin."}}}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}, "contracts":{"response":"decision_envelope"}, "routes":{"done":{"to":"end", "description":"Done."}}}, "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
     });
     attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
     for (execution, stylesheet, defaults, field) in [

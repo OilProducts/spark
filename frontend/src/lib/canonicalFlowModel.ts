@@ -53,7 +53,8 @@ const PREVIEW_NODE_META_KEYS = new Set<string>(['id'])
 const PREVIEW_EDGE_META_KEYS = new Set<string>(['from', 'to', 'source', 'target'])
 const EPHEMERAL_NODE_ATTR_KEYS = new Set<string>(['status'])
 const EPHEMERAL_EDGE_ATTR_KEYS = new Set<string>([EDGE_RENDER_ROUTE_KEY])
-const UNSUPPORTED_NODE_ATTR_KEYS = new Set<string>(['human.default_choice'])
+// Routes are carried by the canvas edges, not by node attrs.
+const UNSUPPORTED_NODE_ATTR_KEYS = new Set<string>(['human.default_choice', 'routes'])
 const PREVIEW_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
     ...PREVIEW_NODE_META_KEYS,
     ...UNSUPPORTED_NODE_ATTR_KEYS,
@@ -101,7 +102,7 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'flow_ref',
     'input_map',
     'output_map',
-    'decisions',
+    'routes',
     'stack.child_flow_ref',
     'retry_policy',
     'max_retries',
@@ -114,15 +115,9 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'reasoning_mode',
     'reasoning_summary',
     // Flattened runtime/manager/contracts/parallel fields, serialized back into their typed sections.
-    'allow_partial',
-    'auto_status',
-    'goal_gate',
-    'error_policy',
     'session',
     'class',
     'timeout',
-    'retry_target',
-    'fallback_retry_target',
     'spark.reads_context',
     'spark.writes_context',
     'manager.poll_interval',
@@ -131,18 +126,15 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'manager.actions',
     'manager.steer_cooldown',
     'stack.child_autostart',
-    'join_policy',
     'max_parallel',
-    'join_k',
-    'join_quorum',
 ])
-const EDGE_EXTENSION_CORE_KEYS = new Set(['label', 'condition', 'weight', 'transition', 'extensions'])
+const EDGE_EXTENSION_CORE_KEYS = new Set(['kind', 'decision', 'description', 'label', 'extensions'])
 const VALID_NODE_KINDS = new Set([
     'start',
     'exit',
     'agent_task',
     'human_gate',
-    'conditional',
+    'switch',
     'parallel',
     'fan_in',
     'tool',
@@ -240,9 +232,37 @@ function typedNodeConfig(node: Record<string, unknown> | null): Record<string, u
     return asRecord(node?.config)
 }
 
-function typedFlowEdgeByIndex(flow: CanonicalFlowDefinition | null, index: number): Record<string, unknown> | null {
-    const edges = Array.isArray(flow?.edges) ? flow.edges : []
-    return asRecord(edges[index])
+// Canvas edges are a view of each node's `routes` map plus each fork's
+// structural branch and join connections, in the server's preview order.
+function flowEdgesFromDefinition(flow: CanonicalFlowDefinition): CanonicalFlowEdge[] {
+    return Object.entries(asRecord(flow.nodes) ?? {}).flatMap(([source, nodeValue]) => {
+        const node = asRecord(nodeValue)
+        const routeEdges: CanonicalFlowEdge[] = Object.entries(asRecord(node?.routes) ?? {}).flatMap(([decision, routeValue]) => {
+            const route = asRecord(routeValue)
+            if (typeof route?.to !== 'string') return []
+            return [{
+                source,
+                target: route.to,
+                attrs: {
+                    ...cloneCanonicalAttrMap(route.extensions),
+                    kind: 'route',
+                    decision,
+                    description: typeof route.description === 'string' ? route.description : '',
+                    label: typeof route.label === 'string' ? route.label : '',
+                },
+            }]
+        })
+        const config = asRecord(node?.config)
+        if (node?.kind !== 'parallel' || !config) return routeEdges
+        const branches = Array.isArray(config.branches)
+            ? config.branches.filter((branch): branch is string => typeof branch === 'string')
+            : []
+        return [
+            ...routeEdges,
+            ...branches.map((target) => ({ source, target, attrs: { kind: 'branch' } })),
+            ...(typeof config.join === 'string' && config.join ? [{ source, target: config.join, attrs: { kind: 'join' } }] : []),
+        ]
+    })
 }
 
 function nodeKindFromPayload(payload: Record<string, unknown>, fallbackNode?: Record<string, unknown> | null): string {
@@ -278,9 +298,6 @@ function enrichNodeAttrsFromTypedPayload(
         if ((kind === 'agent_task' || kind === 'human_gate') && typeof config.prompt === 'string') {
             attrs.prompt = typeof attrs.prompt === 'string' && attrs.prompt ? attrs.prompt : config.prompt
         }
-        if (kind === 'human_gate' && Array.isArray(config.decisions)) {
-            attrs.decisions = config.decisions as CanonicalAttrValue
-        }
         if (kind === 'tool' && typeof config.command === 'string') {
             attrs['tool.command'] = typeof attrs['tool.command'] === 'string' && attrs['tool.command']
                 ? attrs['tool.command']
@@ -297,12 +314,8 @@ function enrichNodeAttrsFromTypedPayload(
                 attrs.output_map = cloneCanonicalAttrMap(config.output_map)
             }
         }
-        if (kind === 'parallel') {
-            ;(['join_policy', 'max_parallel', 'join_k', 'join_quorum'] as const).forEach((key) => {
-                if (config[key] !== undefined && isCanonicalAttrValue(config[key])) {
-                    attrs[key] = cloneCanonicalAttrValue(config[key])
-                }
-            })
+        if (kind === 'parallel' && typeof config.max_parallel === 'number') {
+            attrs.max_parallel = config.max_parallel
         }
     }
 
@@ -325,12 +338,7 @@ function enrichNodeAttrsFromTypedPayload(
     }
     const runtime = asRecord(attrs.runtime)
     if (runtime) {
-        ;(['allow_partial', 'auto_status', 'goal_gate'] as const).forEach((key) => {
-            if (typeof runtime[key] === 'boolean') {
-                attrs[key] = runtime[key]
-            }
-        })
-        ;(['error_policy', 'session', 'class', 'timeout', 'retry_target', 'fallback_retry_target'] as const).forEach((key) => {
+        ;(['session', 'class', 'timeout'] as const).forEach((key) => {
             if (typeof runtime[key] === 'string') {
                 attrs[key] = runtime[key]
             }
@@ -415,7 +423,7 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         }]
     })
 
-    const edges: CanonicalFlowEdge[] = graph.edges.flatMap((edgePayload, index) => {
+    const edges: CanonicalFlowEdge[] = baseFlow && asRecord(baseFlow.nodes) ? flowEdgesFromDefinition(baseFlow) : graph.edges.flatMap((edgePayload) => {
         const source = typeof edgePayload.from === 'string'
             ? edgePayload.from
             : typeof edgePayload.source === 'string'
@@ -429,14 +437,10 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         if (!source || !target) {
             return []
         }
-        const fallbackEdge = typedFlowEdgeByIndex(baseFlow, index)
         return [{
             source,
             target,
-            attrs: cloneCanonicalAttrMap({
-                ...(fallbackEdge ?? {}),
-                ...edgePayload,
-            }, PREVIEW_EDGE_META_KEYS),
+            attrs: cloneCanonicalAttrMap(edgePayload, PREVIEW_EDGE_META_KEYS),
         }]
     })
 
@@ -556,39 +560,93 @@ function parseStringArrayJson(value: unknown): string[] {
     }
 }
 
-function nodeConfigFromAttrs(kind: string, attrs: CanonicalAttrMap, baseConfig?: Record<string, unknown> | null): Record<string, unknown> {
-    const base = { ...(baseConfig ?? {}) }
-    if (kind === 'agent_task') return compactObject({ ...base, kind, prompt: readStringAttr(attrs, 'prompt') })
-    if (kind === 'human_gate') {
-        return compactObject({
-            ...base,
-            kind,
-            prompt: readStringAttr(attrs, 'prompt'),
-            decisions: Array.isArray(attrs.decisions) ? attrs.decisions : base.decisions,
-        })
+export const DEFAULT_EXIT_RESULT = { name: 'completed', outcome: 'success' }
+
+// The node's config: its editor config (`attrs.config`, else the stored one)
+// with the flattened editor fields applied. Fields the server requires stay
+// present even when empty, so an incomplete node reaches validation.
+function nodeConfigFromAttrs(
+    kind: string,
+    attrs: CanonicalAttrMap,
+    baseConfig: Record<string, unknown> | null | undefined,
+    fork: { branches: string[]; join: string | undefined },
+): Record<string, unknown> {
+    const base = { ...(asRecord(attrs.config) ?? baseConfig ?? {}) }
+    if (kind === 'agent_task' || kind === 'human_gate') {
+        return compactObject({ ...base, kind, prompt: readStringAttr(attrs, 'prompt') })
     }
     if (kind === 'tool') return compactObject({ ...base, kind, command: readStringAttr(attrs, 'tool.command') })
     if (kind === 'subflow') {
-        return compactObject({
-            ...base,
-            kind,
-            flow_ref: readStringAttr(attrs, 'flow_ref')
-                || String(base.flow_ref ?? 'child'),
-            input_map: asRecord(attrs.input_map) ?? asRecord(base.input_map) ?? undefined,
-            output_map: asRecord(attrs.output_map) ?? asRecord(base.output_map) ?? undefined,
-        })
+        return {
+            ...compactObject({
+                ...base,
+                kind,
+                input_map: asRecord(attrs.input_map) ?? asRecord(base.input_map) ?? undefined,
+                output_map: asRecord(attrs.output_map) ?? asRecord(base.output_map) ?? undefined,
+            }),
+            flow_ref: readStringAttr(attrs, 'flow_ref') || String(base.flow_ref ?? 'child'),
+            results: asRecord(base.results) ?? {},
+        }
     }
     if (kind === 'parallel') {
-        return compactObject({
+        return {
+            ...compactObject({
+                ...base,
+                kind,
+                max_parallel: readNumberAttr(attrs, 'max_parallel') ?? base.max_parallel,
+            }),
+            branches: fork.branches,
+            join: fork.join ?? (typeof base.join === 'string' ? base.join : ''),
+        }
+    }
+    if (kind === 'switch') {
+        return {
             ...base,
             kind,
-            join_policy: readStringAttr(attrs, 'join_policy') || base.join_policy,
-            max_parallel: readNumberAttr(attrs, 'max_parallel') ?? base.max_parallel,
-            join_k: readNumberAttr(attrs, 'join_k') ?? base.join_k,
-            join_quorum: readNumberAttr(attrs, 'join_quorum') ?? base.join_quorum,
-        })
+            on: typeof base.on === 'string' ? base.on : '',
+            cases: asRecord(base.cases) ?? {},
+            otherwise: typeof base.otherwise === 'string' ? base.otherwise : '',
+        }
+    }
+    if (kind === 'exit') {
+        return { ...compactObject({ ...base, kind }), result: asRecord(base.result) ?? { ...DEFAULT_EXIT_RESULT } }
     }
     return compactObject({ ...base, kind })
+}
+
+// Edges leaving a node, serialized back into that node's own `routes` map
+// (or, for a fork, its branches and join). A drawn edge without a decision ID
+// gets a free `next`-style ID; validation then asks for its description.
+function nodeRoutingFromEdges(kind: string, edges: CanonicalFlowEdge[]) {
+    if (kind === 'parallel') {
+        const joinEdge = edges.find((edge) => edge.attrs.kind === 'join')
+        return {
+            routes: undefined,
+            fork: {
+                branches: edges.filter((edge) => edge !== joinEdge).map((edge) => edge.target),
+                join: joinEdge?.target,
+            },
+        }
+    }
+    const routes: Record<string, Record<string, unknown>> = {}
+    const taken = new Set(edges.map((edge) => readStringAttr(edge.attrs, 'decision')).filter(Boolean))
+    edges.forEach((edge) => {
+        let decision = readStringAttr(edge.attrs, 'decision')
+        if (!decision || routes[decision]) {
+            let suffix = 1
+            do {
+                decision = suffix === 1 ? 'next' : `next_${suffix}`
+                suffix += 1
+            } while (taken.has(decision) || routes[decision])
+        }
+        routes[decision] = compactObject({
+            to: edge.target,
+            description: readStringAttr(edge.attrs, 'description'),
+            label: readStringAttr(edge.attrs, 'label') || undefined,
+            extensions: extensionAttrs(edge.attrs, EDGE_EXTENSION_CORE_KEYS),
+        })
+    })
+    return { routes: Object.keys(routes).length > 0 ? routes : undefined, fork: { branches: [], join: undefined } }
 }
 
 function extensionAttrs(attrs: CanonicalAttrMap, coreKeys: Set<string>): CanonicalAttrMap {
@@ -657,15 +715,9 @@ function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<stri
 function runtimeFromAttrs(attrs: CanonicalAttrMap, baseRuntime?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseRuntime ?? {}),
-        allow_partial: readBooleanAttr(attrs, 'allow_partial') ?? baseRuntime?.allow_partial,
-        auto_status: readBooleanAttr(attrs, 'auto_status') ?? baseRuntime?.auto_status,
-        goal_gate: readBooleanAttr(attrs, 'goal_gate') ?? baseRuntime?.goal_gate,
-        error_policy: readStringAttr(attrs, 'error_policy') || baseRuntime?.error_policy,
         session: 'session' in attrs ? readStringAttr(attrs, 'session') || undefined : baseRuntime?.session,
         class: readStringAttr(attrs, 'class') || baseRuntime?.class,
         timeout: readStringAttr(attrs, 'timeout') || baseRuntime?.timeout,
-        retry_target: readStringAttr(attrs, 'retry_target') || baseRuntime?.retry_target,
-        fallback_retry_target: readStringAttr(attrs, 'fallback_retry_target') || baseRuntime?.fallback_retry_target,
     })
 }
 
@@ -710,16 +762,18 @@ function mergeExtensions(
 function nodeFromCanonicalAttrs(
     nodeId: string,
     attrs: CanonicalAttrMap,
-    baseNode?: Record<string, unknown> | null,
+    baseNode: Record<string, unknown> | null | undefined,
+    outgoingEdges: CanonicalFlowEdge[],
 ): Record<string, unknown> {
     const kind = nodeKindFromAttrs(attrs, baseNode)
+    const { routes, fork } = nodeRoutingFromEdges(kind, outgoingEdges)
     const nextNode = compactObject({
         ...(baseNode ?? {}),
         kind,
         label: readStringAttr(attrs, 'label') || String(baseNode?.label ?? nodeId),
         description: readStringAttr(attrs, 'description') || baseNode?.description,
         role: 'role' in attrs ? readStringAttr(attrs, 'role') || undefined : baseNode?.role,
-        config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config)),
+        config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config), fork),
         context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
         contracts: contractsFromAttrs(attrs, asRecord(baseNode?.contracts)),
         runtime: runtimeFromAttrs(attrs, asRecord(baseNode?.runtime)),
@@ -728,24 +782,9 @@ function nodeFromCanonicalAttrs(
         execution: executionFromAttrs(attrs, asRecord(baseNode?.execution)),
         ui: asRecord(attrs.ui) ?? asRecord(baseNode?.ui) ?? undefined,
         extensions: mergeExtensions(asRecord(baseNode?.extensions), attrs, NODE_EXTENSION_CORE_KEYS),
+        routes,
     })
     return nextNode
-}
-
-function edgeFromCanonicalAttrs(
-    edge: CanonicalFlowEdge,
-    baseEdge?: Record<string, unknown> | null,
-): Record<string, unknown> {
-    return compactObject({
-        ...(baseEdge ?? {}),
-        from: edge.source,
-        to: edge.target,
-        label: readStringAttr(edge.attrs, 'label') || baseEdge?.label,
-        condition: readStringAttr(edge.attrs, 'condition') || baseEdge?.condition,
-        weight: readNumberAttr(edge.attrs, 'weight') ?? baseEdge?.weight,
-        transition: readStringAttr(edge.attrs, 'transition') || baseEdge?.transition,
-        extensions: mergeExtensions(asRecord(baseEdge?.extensions), edge.attrs, EDGE_EXTENSION_CORE_KEYS),
-    })
 }
 
 // The editor edits only the lock key; scope and conflict policy have one allowed value each.
@@ -759,15 +798,15 @@ export function buildFlowDefinitionFromCanonicalFlowModel(flowName: string, mode
     const flowMetadata = model.flowMetadata
     const baseFlow = cloneFlowDefinition(model.flow) ?? {}
     const baseNodes = asRecord(baseFlow.nodes)
-    const baseEdges = Array.isArray(baseFlow.edges) ? baseFlow.edges : []
+    delete baseFlow.edges
     const nodes = Object.fromEntries(model.nodes.map((node) => {
-        return [node.id, nodeFromCanonicalAttrs(node.id, node.attrs, asRecord(baseNodes?.[node.id]))]
+        const outgoingEdges = model.edges.filter((edge) => edge.source === node.id)
+        return [node.id, nodeFromCanonicalAttrs(node.id, node.attrs, asRecord(baseNodes?.[node.id]), outgoingEdges)]
     }))
-    const edges = model.edges.map((edge, index) => edgeFromCanonicalAttrs(edge, asRecord(baseEdges[index])))
     const inputs = flowInputsFromAttrs(flowMetadata)
     return {
         ...baseFlow,
-        schema_version: readStringAttr(flowMetadata, 'schema_version') || String(baseFlow.schema_version ?? '1.0'),
+        schema_version: '2',
         id: readStringAttr(flowMetadata, 'id') || String(baseFlow.id ?? sanitizeFlowId(flowName)),
         title: readStringAttr(flowMetadata, 'title') || flowName,
         description: readStringAttr(flowMetadata, 'description') || String(baseFlow.description ?? ''),
@@ -776,7 +815,6 @@ export function buildFlowDefinitionFromCanonicalFlowModel(flowName: string, mode
         inputs: inputs.length > 0 ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
         defaults: flowDefaultsFromAttrs(flowMetadata, asRecord(baseFlow.defaults)),
         nodes,
-        edges,
         metadata: mergeExtensions(asRecord(baseFlow.metadata), flowMetadata, FLOW_METADATA_CORE_KEYS),
     }
 }

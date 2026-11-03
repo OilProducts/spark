@@ -165,12 +165,12 @@ fn write_result<W: Write>(
 
 fn runtime_failure(message: String) -> Outcome {
     Outcome {
-        status: OutcomeStatus::Fail,
+        status: OutcomeStatus::Error,
         failure_reason: message,
         retryable: Some(false),
         failure_kind: Some(FailureKind::Runtime),
         raw_response_text: json!({"error": "runtime"}).to_string(),
-        ..Outcome::new(OutcomeStatus::Fail)
+        ..Outcome::new(OutcomeStatus::Error)
     }
 }
 
@@ -219,12 +219,7 @@ mod tests {
         for thread in threads {
             thread.join().unwrap();
         }
-        write_result(
-            &writer,
-            &Outcome::new(OutcomeStatus::Success),
-            ContextMap::new(),
-        )
-        .unwrap();
+        write_result(&writer, &Outcome::completed("done"), ContextMap::new()).unwrap();
 
         let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
         let frames = text

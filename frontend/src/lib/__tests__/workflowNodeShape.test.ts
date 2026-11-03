@@ -19,7 +19,7 @@ describe('workflowNodeShape', () => {
         expect(getReactFlowNodeTypeForShape('hexagon')).toBe('humanGateNode')
         expect(getShapeNodeDimensions('hexagon')).toEqual({ width: 228, height: 116 })
 
-        expect(getReactFlowNodeTypeForShape('diamond')).toBe('conditionalNode')
+        expect(getReactFlowNodeTypeForShape('diamond')).toBe('switchNode')
         expect(getShapeNodeDimensions('diamond')).toEqual({ width: 176, height: 104 })
 
         expect(getReactFlowNodeTypeForShape('component')).toBe('parallelNode')

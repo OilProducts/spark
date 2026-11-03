@@ -12,15 +12,37 @@ describe('timelineModel', () => {
       kind: 'stage',
       sequence: 7,
       emitted_at: '2026-07-08T10:00:07Z',
-      summary: 'Stage verify completed (success) — checksums ok',
+      summary: 'Stage verify completed (decision done) — checksums ok',
       node_id: 'verify',
       stage_index: 3,
       source_scope: 'root',
       severity: 'info',
       id: 'journal-7',
-      payload: { outcome: 'success', notes: 'checksums ok', node_id: 'verify' },
+      payload: { outcome: 'completed', decision: 'done', notes: 'checksums ok', node_id: 'verify' },
     })
     expect(event?.summary).toContain('checksums ok')
+  })
+
+  it('summarizes a live stage completion by its decision and a transition by decision, target and visit', () => {
+    expect(toTimelineEvent({
+      type: 'StageCompleted', sequence: 4, emitted_at: '2026-07-08T10:00:04Z',
+      index: 2, node_id: 'review', outcome: 'completed', decision: 'revise', notes: 'needs a test',
+    })).toMatchObject({ category: 'stage', severity: 'info', summary: 'Stage review completed (decision revise) — needs a test' })
+
+    const transition = toTimelineEvent({
+      type: 'StageTransition', sequence: 5, emitted_at: '2026-07-08T10:00:05Z',
+      index: 2, node_id: 'review', decision: 'revise', target: 'implement', visit: 2,
+    })
+    expect(transition).toMatchObject({
+      type: 'StageTransition', category: 'stage', severity: 'info', nodeId: 'review', stageIndex: 2,
+      summary: 'review → implement on revise (visit 2)',
+    })
+    expect(humanizeTimelineType('StageTransition')).toBe('Transition')
+    // A first visit needs no visit number.
+    expect(toTimelineEvent({
+      type: 'StageTransition', sequence: 6, emitted_at: '2026-07-08T10:00:06Z',
+      index: 0, node_id: 'start', decision: 'next', target: 'review', visit: 1,
+    })?.summary).toBe('start → review on next')
   })
 
 

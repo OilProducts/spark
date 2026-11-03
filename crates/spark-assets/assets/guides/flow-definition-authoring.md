@@ -49,6 +49,7 @@ examples/minimal/
   start.md
   plan.md
   done.md
+  failed.md
 ```
 
 `flow.md`:
@@ -59,7 +60,7 @@ type: Flow
 id: simple_linear
 title: Simple Linear Workflow
 description: Plan, implement, and summarize a small change.
-schema_version: '1'
+schema_version: '2'
 ---
 
 Inspect the repository, make one targeted improvement, and summarize it.
@@ -72,7 +73,9 @@ Inspect the repository, make one targeted improvement, and summarize it.
 type: start
 title: Start
 routes:
-- to: plan
+  next:
+    to: plan
+    description: Enter the first workflow step.
 ---
 ```
 
@@ -82,11 +85,22 @@ routes:
 ---
 type: agent_task
 title: Plan
+contracts:
+  response: decision_envelope
 routes:
-- to: done
+  done:
+    to: done
+    description: The plan is complete and recorded.
+  unfinished:
+    to: plan
+    description: Required planning work remains and can be continued in the same session.
+  blocked:
+    to: failed
+    description: Planning cannot complete without unavailable input or authority; record the blocker in notes.
 ---
 
-Inspect the repository and plan the work.
+Inspect the repository and plan the work. Choose `done` once the plan is
+complete. Respond with ONLY a JSON decision envelope.
 ```
 
 `done.md`:
@@ -95,6 +109,23 @@ Inspect the repository and plan the work.
 ---
 type: exit
 title: Done
+config:
+  result:
+    name: completed
+    outcome: success
+---
+```
+
+`failed.md`:
+
+```markdown
+---
+type: exit
+title: Failed
+config:
+  result:
+    name: blocked
+    outcome: failure
 ---
 ```
 
@@ -104,7 +135,8 @@ title: Done
 
 - `id`: stable flow id, using letters, digits, `_`, or `-`.
 - `title` and `description`: catalog metadata.
-- `schema_version`: current value is `"1"`.
+- `schema_version`: required; the only accepted value is `'2'`. A missing
+  version or `'1'` is rejected.
 - `inputs`: launch inputs with `key`, `label`, `type`, `description`, `required`,
   and optional `default`.
 - `defaults`: common model, provider, reasoning, and retry defaults.
@@ -118,14 +150,14 @@ Each node is `<node id>.md`. Node ids use letters, digits, `_`, or `-`; `flow`,
 `index`, and `log` are reserved.
 
 - `type` is the node kind: `start`, `exit`, `agent_task`, `human_gate`,
-  `conditional`, `parallel`, `fan_in`, `tool`, or `subflow`.
+  `switch`, `parallel`, `fan_in`, `tool`, or `subflow`.
 - `title` is the node label.
 - `description`, `config`, `context`, `runtime`, `contracts`, `manager`,
   `retry`, `execution`, `ui`, and `extensions` keep the `FlowNode` field names
   and shapes. `config` holds the kind's settings without `kind` (the `type`
   sets it) and without the field the body carries.
-- `routes` lists the node's outgoing transitions in order. Each route has `to`
-  and optional `label`, `condition`, `weight`, `transition`, and `extensions`.
+- `routes` maps each decision the node can produce to its transition (see
+  Decisions and Routes). `exit` and `parallel` nodes have no routes.
 - `role` names a role file for an `agent_task` node (see Roles).
 
 The body depends on the kind:
@@ -137,6 +169,92 @@ The body depends on the kind:
 
 `index.md` and `log.md` are OKF-reserved and ignored. Any other file or
 directory, hidden ones included, is an error.
+
+## Decisions and Routes
+
+A node that completes produces exactly one decision, and `routes` declares
+every decision it may produce. `routes` is a YAML map, never a list:
+
+```yaml
+routes:
+  ready:
+    to: validate
+    description: The review is complete and no blocking issue remains under this node's stated acceptance criteria.
+  fix:
+    to: implement
+    description: The completed review found concrete defects requiring another implementation pass; record actionable findings.
+```
+
+- Each key is a decision ID matching `[a-z][a-z0-9_]*`; duplicate keys are a
+  parse error.
+- Each entry has `to`, an existing node id, and a nonempty `description`.
+  Optional `label` is display text and optional `extensions` is presentation
+  metadata; neither affects routing. Several decisions may target one node.
+- There are no conditions, weights, fallback or default routes. The runtime
+  looks the decision up in the map; a decision missing from the map fails the
+  run with `no_matching_route`.
+
+Where each decision comes from depends on the kind:
+
+| Kind | Decision |
+|---|---|
+| `start` | Built-in `next`, its only route. |
+| `agent_task` | The agent's decision envelope. |
+| `tool` | The exit-code map or the JSON decision field (see Tool Decisions). |
+| `switch` | A context value compared with declared cases (see Switches). |
+| `human_gate` | The person's choice; the routes are the choices. |
+| `parallel` | None; the fork enters its join (see Parallel Branches). |
+| `fan_in` | Built-in `next`, its only route. |
+| `subflow` | The child's result, mapped through `config.results` (see Subflows). |
+| `exit` | None; it ends the run with its declared result. |
+
+### Agent Decisions
+
+An `agent_task` sets `contracts.response: decision_envelope`. The agent
+answers with one JSON object:
+
+```json
+{"decision": "ready", "context_updates": {"context.review.summary": "..."}, "notes": "..."}
+```
+
+Only `decision` is required. `context_updates` follows the node's
+`contracts.writes_context`, and `notes` carries the evidence for the decision.
+Any other key, a missing or undeclared decision, or malformed JSON is a
+contract error; the runtime asks the agent to repair it within the bounded
+repair attempts, then fails the node. Plain text never counts as a decision.
+
+The runtime appends the response contract and the node's decisions, each with
+its target and description, to the prompt. Write the prompt around the
+decision IDs, for example "choose `fix` when the review found blocking
+defects", and keep its acceptance criteria and context contract.
+
+A negative judgment such as `fix`, `rejected` or `gaps` is a completed
+execution with an ordinary decision. Give every agent an honest inability
+decision, conventionally `blocked` to a failure exit, and distinguish it from
+a completed review that found defects. A bounded step with work genuinely left
+may choose `unfinished` back to itself.
+
+### Execution Errors
+
+Provider and transport errors, spawn failures, timeouts and exhausted response
+repair are execution errors, never decisions: no route handles them. Retryable
+errors retry under the node's retry settings; otherwise the node fails and the
+run fails with its evidence. Long-running work stays inside the invocation:
+the agent waits for and polls the commands it starts instead of answering
+early.
+
+## Exits
+
+An exit has no routes and declares the run's result in `config.result`:
+`name` uses the decision ID syntax and `outcome` is `success` or `failure`. A
+flow may have several exits; exits sharing a name must agree on outcome.
+Reaching an exit completes the run with that outcome, so a completed run with
+outcome `failure` is not a success. Every non-exit node must have a path to an
+exit, and a node without a route to follow never ends the run successfully.
+
+The bundled flows expose two results: `completed` (`success`) from their done
+exit and `blocked` (`failure`) from `failed.md`. Context values never override
+the reached exit's result.
 
 ## Roles
 
@@ -269,14 +387,17 @@ title: Prepare Workspace
 config:
   env_map:
     SPARK_RUN_ID: internal.run_id
+  exit_codes:
+    '0': done
   output_map:
     context.workspace.path: path
 contracts:
   writes_context:
   - context.workspace.path
 routes:
-- to: implement
-  condition: outcome=success
+  done:
+    to: implement
+    description: The workspace is ready at the recorded path.
 ---
 
 ```sh
@@ -289,6 +410,128 @@ printf '{"path":"%s"}' "$worktree"
 ```
 ````
 
+## Tool Decisions
+
+A tool node declares exactly one decision adapter in `config`:
+
+- `exit_codes` maps exit codes (decimal integer keys) to declared decisions,
+  as in `prepare_workspace.md` above. Every declared decision must be selected
+  by some code. An unmapped exit code or signal is an execution error with
+  the exit code and stderr as evidence.
+- `decision_field` names a top-level field of the single JSON object the
+  command prints on stdout; its string value is the decision. The command
+  must exit 0: any nonzero exit, missing field, malformed output or undeclared
+  value is an execution error.
+
+A validation step that reports both results as decisions uses the JSON mode,
+so only its wrapper's own failures are errors:
+
+````markdown
+---
+type: tool
+title: Validate
+config:
+  decision_field: decision
+  env_map:
+    SPARK_VALIDATION_COMMAND: context.task.validation_command
+    SPARK_WORKSPACE_PATH: context.workspace.path
+  output_map:
+    context.validation.command_exit_code: command_exit_code
+contracts:
+  writes_context:
+  - context.validation.command_exit_code
+routes:
+  passed:
+    to: finalize_commit
+    description: The configured repository validation command returned zero and its evidence was captured.
+  rejected:
+    to: diagnose_validation
+    description: That command returned nonzero; diagnose the captured output before further implementation.
+---
+
+```sh
+set -eu
+cd "$SPARK_WORKSPACE_PATH"
+status=0
+sh -ec "$SPARK_VALIDATION_COMMAND" >/dev/null 2>&1 || status=$?
+if [ "$status" -eq 0 ]; then decision=passed; else decision=rejected; fi
+printf '{"decision":"%s","command_exit_code":%d}\n' "$decision" "$status"
+```
+````
+
+Document the exit codes a script expects. Do not map every nonzero status to
+a domain decision when that would hide setup errors: a `rejected` decision
+should mean only that the check did not pass.
+
+## Switches
+
+A `switch` node routes on context data without running a command or an
+agent. It reads `config.on` once, compares it with `config.cases` by exact
+equality, and selects `config.otherwise` for any other present scalar:
+
+```yaml
+type: switch
+title: Check Conflicts
+config:
+  cases:
+    '0': clean
+  on: context.integration.conflict_count
+  otherwise: conflicts
+contracts:
+  reads_context:
+  - context.integration.conflict_count
+routes:
+  clean:
+    to: finish_merge
+    description: Integration preparation completed and the staged merge has zero unresolved conflicts.
+  conflicts:
+    to: resolve_conflicts
+    description: Integration preparation completed and the staged merge contains unresolved conflicts.
+```
+
+- Case keys are JSON scalars: `'0'` is the number 0, `'true'` the boolean
+  true, and `'"ready"'` the string ready (the string "0" is `'"0"'`). There is
+  no truthiness or type coercion; null, arrays, objects and duplicate values
+  (such as `0` and `0.0`) are rejected.
+- `otherwise` is required. A missing key or a non-scalar value is an
+  execution error, never `otherwise`.
+- Each case and `otherwise` names a declared decision, and every declared
+  decision is used by one of them.
+- `on` must be listed in `contracts.reads_context`, and some reachable
+  predecessor must write it (`writes_context` or an `output_map` destination).
+- A switch writes no context. Computations belong in a tool.
+
+## Human Gates
+
+A `human_gate` node's routes are its choices: each `label` is the displayed
+text and the key is the answer's value. The body is the question.
+
+```markdown
+---
+type: human_gate
+title: Human Review
+routes:
+  approve:
+    to: ship
+    description: The proposal is approved for shipping.
+    label: Approve
+  request_fixes:
+    to: revise
+    description: The proposal needs revision; record the reviewer's feedback.
+    label: Request Fixes
+  stop:
+    to: failed
+    description: Stop this workflow without approving the proposal.
+    label: Stop Run
+---
+
+Review the proposed change. Approve it, request fixes, or stop the run.
+```
+
+The gate waits until a person picks a declared choice; an answer that names
+none is rejected and the gate keeps waiting. A timeout never approves. Route a
+stop choice to a failure exit; external cancellation still aborts the run.
+
 ## Run Result Summaries
 
 An exit node may opt in to producing the run's result:
@@ -298,13 +541,16 @@ An exit node may opt in to producing the run's result:
 type: exit
 title: Done
 config:
+  result:
+    name: completed
+    outcome: success
   result_summary: true
 ---
 ```
 
-When the run reaches an opted-in exit — or fails, in which case any opted-in
-exit counts — the runtime executes one summarizer agent whose working
-directory is the run's artifact root. It reads the recorded transcripts
+When the run reaches an opted-in exit — or fails, in which case the first
+opted-in exit by node id counts — the runtime executes one summarizer agent
+whose working directory is the run's artifact root. It reads the recorded transcripts
 (`events.jsonl`, `checkpoint.json`, `logs/<node>/…`) directly and its markdown
 response becomes the run result shown in the Runs view. The exit node's body,
 when present, overrides the default instructions. A summarizer failure never
@@ -338,15 +584,34 @@ failed; a listed child key that is absent clears the parent key. Every
 `parent_key` must be listed in the subflow node's `contracts.writes_context`.
 `context.stack.child.*` reports the child's status as before.
 
+`config.results` maps each terminal result name the child can reach to a
+local decision, and `routes` declares exactly those decisions. Every child
+result must be mapped and every local decision used; several results may map
+to one decision. Validation checks the mapping against the resolved child.
+
 ```yaml
 config:
   flow_ref: workers/child
+  results:
+    completed: child_completed
+    blocked: child_blocked
   output_map:
     context.task.summary: context.implementation.summary
 contracts:
   writes_context:
   - context.implementation.summary
+routes:
+  child_completed:
+    to: review
+    description: The child reached completed; review its artifacts.
+  child_blocked:
+    to: review
+    description: The child reached blocked; audit its evidence before continuing.
 ```
+
+A child that reaches a failure exit has still completed, with its named
+result. A child that fails with an execution, routing or contract error fails
+the parent with the child's reason; it never maps to a result.
 
 `implement.md`:
 
@@ -357,69 +622,99 @@ title: Implement
 role: author
 runtime:
   workdir_from: context.workspace.path
+contracts:
+  response: decision_envelope
 routes:
-- to: evaluate
+  ready_for_review:
+    to: evaluate
+    description: The implementation pass is complete and ready for independent review.
+  unfinished:
+    to: implement
+    description: Required implementation work remains and can be continued in the same session.
+  blocked:
+    to: failed
+    description: The task cannot be completed without unavailable input or authority; record the blocker in notes.
 ---
 
-Implement the task in the current working directory.
+Implement the task in the current working directory. Choose `ready_for_review`
+once the pass is committed. Respond with ONLY a JSON decision envelope.
 ```
 
-## Conditions
+## Parallel Branches
 
-Route conditions use the runtime expression subset, such as:
+A `parallel` node forks into the branch entry nodes in `config.branches` and
+names its paired `fan_in` in `config.join`. It has no routes.
 
 ```yaml
-condition: outcome=success
-condition: outcome=fail && preferred_label=Rewrite
+type: parallel
+title: Review Design
+config:
+  branches:
+  - codebase_check
+  - critic
+  - naive_reader
+  join: fan_in
+  max_parallel: 3
+  tolerate_branch_execution_errors: true
 ```
+
+- Each branch runs from its entry node under the same decision, error, retry
+  and visit rules as the root. A branch ends when one of its routes reaches
+  the paired join; the join itself runs once in the parent after every branch
+  settles, and routes on with `next`.
+- A branch may also end at a failure exit. Success exits inside a branch,
+  routes that bypass the join, overlapping branch interiors and nested forks
+  are rejected.
+- A branch that reaches a failure exit stops the fork: running siblings are
+  canceled, the join does not run, and the run completes with that exit's
+  result.
+- Any branch execution error fails the run by default. With
+  `tolerate_branch_execution_errors: true`, provider, transport, spawn,
+  timeout and exhausted-repair errors are recorded and the join still runs.
+  Routing errors, `visit_limit_reached` and failure exits are never tolerated.
+
+Branch contexts are never merged into the parent. Successors of the join read
+`parallel.results`: one entry per declared branch, in declaration order, with
+`id` (the branch entry node), `index`, `status` (`completed`, `error`,
+`terminal_result` or `canceled`), that branch's own `context`, and an `error`
+record for errors. Branches may therefore write the same key without
+overwriting each other. A node that synthesizes branch work reads each
+completed entry's `context` and reports missing or failed branches instead of
+counting them as covered.
 
 ## Loops and Visit Limits
 
 A visit is one entry into a node through routing. Every node may be visited
 32 times per run; `runtime.max_visits` sets its own limit. Counts cover the
 whole run: crash recovery, retries and continues keep them. A child run counts
-its own nodes, and each parallel branch execution counts its nodes from zero.
+its own nodes, and each fork invocation counts its branch nodes from zero.
 
-Routing never selects a route whose target has used all its visits; it moves
-on to the node's next eligible route, retry target or fallback. An agent's
-route list marks such a route `(unavailable: visit limit reached)`. When no
-other route remains, the node fails with
-`visit_limit_reached: <target> used all <N> visits; no other route from <node>`,
-whatever its outcome. This gives two loop patterns without counter nodes:
+The runtime selects the decision's route, then checks its target's visits. A
+target that has used all its visits fails the run with
+`visit_limit_reached`, naming the node, decision, target, count and limit; the
+runtime never picks a different route instead. Agents still see every
+decision, with exhausted targets marked as ending the run, so a visit limit
+never changes what an honest decision is.
 
-- **Fail at the limit**: the loop has no alternative route. Validation fails
-  into a diagnosis node limited to three visits; the fourth failure fails the
-  run.
+A loop limited to three diagnosis passes fails on the fourth rejection:
 
-  ```yaml
-  # validate.md
-  routes:
-  - to: diagnose_validation
-    label: Fix
-    condition: outcome=fail
-  - to: finalize
-    condition: outcome=success
-  # diagnose_validation.md
-  runtime:
-    max_visits: 3
-  ```
+```yaml
+# validate.md
+routes:
+  passed:
+    to: finalize_commit
+    description: ...
+  rejected:
+    to: diagnose_validation
+    description: ...
+# diagnose_validation.md
+runtime:
+  max_visits: 3
+```
 
-- **Continue at the limit**: the loop has another route. A review that allows
-  one re-review sends its author once more, then takes the other route.
-
-  ```yaml
-  # review.md
-  routes:
-  - to: revise
-    label: Revise
-  - to: done
-    label: Accept
-  # revise.md
-  runtime:
-    max_visits: 1
-  ```
-
-  Once `revise` is used, a `Revise` answer falls through to `Accept`.
+To continue at a limit rather than fail, make the choice an explicit decision
+in the prompt, for example a reviewer that chooses between `rereview` and
+`done`, and size `max_visits` so the honest decisions fit.
 
 ### Author and Isolated Reviewers
 
@@ -428,27 +723,27 @@ isolated roles and a visit limit into a review loop:
 
 - `draft` and `resolve` use the `author` role and share `session: designer`,
   so the author keeps everything it learned while drafting.
-- A `parallel` node, `review`, fans out to reviewers that use the isolated
-  `adversarial-reviewer` role. Each reviews through one lens and reads only
-  the document's path, never the request or the author's reasoning: the
-  document has to stand on its own. Each reviewer writes its complete
-  findings to `context.review.lens_findings`; its branch's context, and so
-  that key, lands in `parallel.results`. A response itself reaches later
+- A `parallel` node, `review`, forks into reviewer branches that use the
+  isolated `adversarial-reviewer` role. Each reviews through one lens and reads
+  only the document's path, never the request or the author's reasoning: the
+  document has to stand on its own. Each reviewer chooses `done` to the join
+  and writes its complete findings to `context.review.lens_findings`, which
+  lands in its own `parallel.results` entry. A response itself reaches later
   nodes only as `last_response`, cut to 200 characters.
-- `review` also routes to `fan_in` with `weight: 1`. After the fan-out,
-  routing takes a `parallel` node's own edges like any node's, and the
-  heaviest edge sends it to the join instead of rerunning a reviewer.
+- `review` tolerates branch execution errors, so a reviewer whose provider
+  fails is recorded rather than failing the run.
 - `synthesize`, after the `fan_in`, merges the reviewers' findings from
-  `parallel.results` into one list without judging them again.
+  `parallel.results` into one list without judging them again, and reports a
+  branch that did not complete as a Blocker under its lens.
 - `resolve` fixes each finding, contests it with checkable evidence, or asks
-  the owner, then answers `Re-review` (back to `review`) or `Done`.
-  `review` sets `max_visits: 2`, so once the re-review is used, `Re-review`
-  shows as unavailable and routing takes `Done`.
+  the owner, then chooses `rereview` (back to `review`) or `done`. `review`
+  sets `max_visits: 3`; a `rereview` past that fails the run with
+  `visit_limit_reached`.
 
 The approach is adapted from the elephant/goldfish model
 ([google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model),
 Apache-2.0): an author who holds the context, reviewers who see only the
-document, findings settled by fix, contest or escalation, and a single
+document, findings settled by fix, contest or escalation, and a bounded
 re-review.
 
 ## Validation
@@ -460,7 +755,15 @@ spark flow validate --dir crates/spark-assets/assets/flows/examples/simple-linea
 ```
 
 Validation assembles the directory into a `FlowDefinition`, applies semantic
-rules, and then verifies the runtime graph derived from the typed model.
+rules, and then verifies the runtime graph derived from the typed model. It
+checks decision IDs and descriptions, route targets, each kind's decision
+domain, exit results, tool, switch and subflow mappings, fork structure,
+reachability from start and a path from every node to an exit. Removed
+settings — `condition` and `weight` on routes, `conditional` nodes,
+`runtime.error_policy`, `allow_partial`, `auto_status`, `goal_gate`,
+`retry_target`, `fallback_retry_target`, `join_policy`, `join_k`,
+`join_quorum` and human gate `config.decisions` — are rejected, not ignored,
+and `context.workflow_outcome` has no effect on how a run ends.
 A file inside `<project>/.spark/definitions` resolves roles through that
 project's definitions, then the bundled library. `spark flow list|describe|get|validate`
 take `--project <path>` to include a project's flows.

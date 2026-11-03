@@ -1,4 +1,0 @@
----
-type: exit
-title: Done
----

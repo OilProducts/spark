@@ -458,15 +458,19 @@ fn worker_run_node_process_accepts_json_line_request() {
         "stage_index": 0,
         "attempt": 0,
         "flow": {
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "G",
             "nodes": {
                 "start": {
                     "kind": "start",
-                    "config": {"kind": "start"}
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
                 }
-            },
-            "edges": []
+            }
         },
         "node_id": "start",
         "prompt": "",
@@ -513,7 +517,8 @@ fn worker_run_node_process_accepts_json_line_request() {
     );
     let frame = frames.last().expect("terminal result");
     assert_eq!(frame["type"], json!("result"));
-    assert_eq!(frame["outcome"]["status"], json!("success"));
+    assert_eq!(frame["outcome"]["status"], json!("completed"));
+    assert_eq!(frame["outcome"]["decision"], json!("next"));
 }
 
 #[test]
@@ -524,11 +529,13 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
         "stage_index": 0,
         "attempt": 0,
         "flow": {
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "G",
             "nodes": {
                 "task": {
                     "kind": "agent_task",
+                    "contracts": {"response": "decision_envelope"},
+                    "routes": {"done": {"to": "task", "description": "The work is complete."}},
                     "config": {
                         "kind": "agent_task",
                         "prompt": "Write a worker note"
@@ -538,8 +545,7 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
                         "llm_model": "gpt-boundary"
                     }
                 }
-            },
-            "edges": []
+            }
         },
         "node_id": "task",
         "prompt": "Write a worker note",
@@ -591,7 +597,7 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     );
     let frame = frames.last().expect("terminal result");
     assert_eq!(frame["type"], json!("result"));
-    assert_eq!(frame["outcome"]["status"], json!("fail"));
+    assert_eq!(frame["outcome"]["status"], json!("error"));
     let reason = frame["outcome"]["failure_reason"]
         .as_str()
         .expect("failure reason");
@@ -662,17 +668,18 @@ fn assert_worker_stops_stalled_agent(provider: &str, cancel: bool) {
         "stage_index": 0,
         "attempt": 0,
         "flow": {
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "G",
             "nodes": {
                 "task": {
                     "kind": "agent_task",
+                    "contracts": {"response": "decision_envelope"},
+                    "routes": {"done": {"to": "task", "description": "The work is complete."}},
                     "runtime": runtime,
                     "config": {"kind": "agent_task", "prompt": prompt},
                     "execution": {"llm_provider": provider, "llm_model": "test-model"}
                 }
-            },
-            "edges": []
+            }
         },
         "node_id": "task",
         "prompt": prompt,
@@ -730,7 +737,7 @@ fn assert_worker_stops_stalled_agent(provider: &str, cancel: bool) {
     let frame: Value =
         serde_json::from_str(stdout.lines().last().expect("result frame")).expect("worker frame");
     assert_eq!(frame["type"], json!("result"), "{stdout}");
-    assert_eq!(frame["outcome"]["status"], json!("fail"), "{stdout}");
+    assert_eq!(frame["outcome"]["status"], json!("error"), "{stdout}");
     let reason = frame["outcome"]["failure_reason"]
         .as_str()
         .unwrap_or_default();
@@ -919,16 +926,17 @@ fn worker_agent_environment(
         "stage_index": 0,
         "attempt": 0,
         "flow": {
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "G",
             "nodes": {
                 "task": {
                     "kind": "agent_task",
+                    "contracts": {"response": "decision_envelope"},
+                    "routes": {"done": {"to": "task", "description": "The work is complete."}},
                     "config": {"kind": "agent_task", "prompt": "Work"},
                     "execution": {"llm_provider": provider, "llm_model": "test-model"}
                 }
-            },
-            "edges": []
+            }
         },
         "node_id": "task",
         "prompt": "Work",

@@ -1,21 +1,17 @@
 ---
 type: human_gate
 title: approval
-runtime:
-  error_policy: continue
 execution:
   reasoning_effort: xhigh
 routes:
-- to: exit
-  label: Cancel
-  condition: preferred_label=Cancel
-  extensions:
-    loop_restart: false
-- to: parallel_work
-  label: Proceed
-  condition: preferred_label=Proceed
-  extensions:
-    loop_restart: false
+  cancel:
+    to: failed
+    description: Decline further work and end without approval.
+    label: Cancel
+  proceed:
+    to: parallel_work
+    description: Approve running the declared parallel review branches.
+    label: Proceed
 ---
 
-Approve moving to parallel review
+Approve moving to parallel review, or cancel and end without approval.

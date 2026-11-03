@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use attractor_core::{
-    ContextMap, FailureKind, FlowDefinition, Outcome, OutcomeStatus, RawRuntimeEvent,
-};
+use attractor_core::{ContextMap, FailureKind, FlowDefinition, Outcome, RawRuntimeEvent};
 use attractor_runtime::{
     ChildInterventionRequest, ChildInterventionResult, ChildRunRequest, ChildRunResult,
     HumanAnswer, HumanQuestion,
@@ -124,88 +122,18 @@ pub struct ChildInterventionResultFrame {
     pub result: ChildInterventionResult,
 }
 
+/// A worker's node result. The frame is the core `Outcome` itself, so the
+/// host reads exactly what the worker's node produced.
 pub fn outcome_to_payload(outcome: &Outcome) -> Value {
-    let mut payload = json!({
-        "status": outcome.status.as_str(),
-        "preferred_label": outcome.preferred_label,
-        "suggested_next_ids": outcome.suggested_next_ids,
-        "context_updates": outcome.context_updates,
-        "failure_reason": outcome.failure_reason,
-        "notes": outcome.notes,
-        "retryable": outcome.retryable,
-        "raw_response_text": outcome.raw_response_text,
-    });
-    if let Some(failure_kind) = outcome.failure_kind {
-        payload["failure_kind"] = json!(failure_kind.as_str());
-    }
-    payload
+    serde_json::to_value(outcome).unwrap_or_else(|_| json!({}))
 }
 
 pub fn outcome_from_payload(payload: &Value) -> Outcome {
-    let Some(object) = payload.as_object() else {
-        return Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: "worker returned invalid outcome".to_string(),
-            retryable: Some(false),
-            failure_kind: Some(FailureKind::Runtime),
-            ..Outcome::new(OutcomeStatus::Fail)
-        };
-    };
-    let status = object
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("fail")
-        .parse::<OutcomeStatus>()
-        .unwrap_or(OutcomeStatus::Fail);
-    let context_updates = object
-        .get("context_updates")
-        .and_then(Value::as_object)
-        .map(|items| {
-            items
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    Outcome {
-        status,
-        preferred_label: string_field(object, "preferred_label"),
-        suggested_next_ids: object
-            .get("suggested_next_ids")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        context_updates,
-        failure_reason: string_field(object, "failure_reason"),
-        notes: string_field(object, "notes"),
-        retryable: object.get("retryable").and_then(Value::as_bool),
-        failure_kind: object
-            .get("failure_kind")
-            .and_then(Value::as_str)
-            .and_then(parse_failure_kind),
-        raw_response_text: string_field(object, "raw_response_text"),
-    }
-}
-
-fn string_field(object: &serde_json::Map<String, Value>, key: &str) -> String {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn parse_failure_kind(value: &str) -> Option<FailureKind> {
-    match value {
-        "business" => Some(FailureKind::Business),
-        "contract" => Some(FailureKind::Contract),
-        "runtime" => Some(FailureKind::Runtime),
-        _ => None,
-    }
+    serde_json::from_value(payload.clone()).unwrap_or_else(|error| {
+        Outcome::error(
+            FailureKind::Runtime,
+            format!("worker returned invalid outcome: {error}"),
+            Some(false),
+        )
+    })
 }

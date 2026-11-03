@@ -5,14 +5,17 @@ config:
   env_map:
     SPARK_RUNS_ROOT: internal.runs_dir
     SPARK_TARGET_RUN_ID: context.request.run_id
+  exit_codes:
+    '0': done
   output_map:
     context.retro.run_dir: run_dir
 contracts:
   writes_context:
   - context.retro.run_dir
 routes:
-- to: diagnose
-  condition: outcome=success
+  done:
+    to: diagnose
+    description: The bounded work required by this node’s prompt is complete, including its required outputs; this does not assert that the whole workflow objective is achieved.
 ---
 
 ```sh

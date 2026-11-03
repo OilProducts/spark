@@ -5,7 +5,7 @@ runtime: {}
 execution:
   reasoning_effort: xhigh
 routes:
-- to: prepare_workspace
-  extensions:
-    loop_restart: false
+  next:
+    to: prepare_workspace
+    description: Enter the first workflow step.
 ---

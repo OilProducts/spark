@@ -403,8 +403,8 @@ const installCanvasWorkspaceFetchMock = () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'request', label: null, condition: null, weight: null, loop_restart: false },
-                { from: 'request', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'request', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+                { from: 'request', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -428,8 +428,8 @@ const installCanvasWorkspaceFetchMock = () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'plan', label: null, condition: null, weight: null, loop_restart: false },
-              { from: 'plan', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'plan', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+              { from: 'plan', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2007,7 +2007,7 @@ describe('App shell behavior', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2168,8 +2168,8 @@ describe('App shell behavior', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'review', label: null, condition: null, weight: null, loop_restart: false },
-                { from: 'review', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'review', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+                { from: 'review', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -2366,7 +2366,7 @@ describe('App shell behavior', () => {
               { id: 'done', label: 'Done', shape: 'Msquare' },
             ],
             edges: [
-              { from: 'start', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+              { from: 'start', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
             ],
           },
           diagnostics: [],
@@ -2625,8 +2625,8 @@ describe('App shell behavior', () => {
                 },
               ],
               edges: [
-                { from: 'start', to: 'plan', label: null, condition: null, weight: null, loop_restart: false },
-                { from: 'plan', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'plan', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+                { from: 'plan', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],
@@ -2718,8 +2718,8 @@ describe('App shell behavior', () => {
                 { id: 'done', label: 'Done', shape: 'Msquare' },
               ],
               edges: [
-                { from: 'start', to: 'plan', label: null, condition: null, weight: null, loop_restart: false },
-                { from: 'plan', to: 'done', label: null, condition: null, weight: null, loop_restart: false },
+                { from: 'start', to: 'plan', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
+                { from: 'plan', to: 'done', kind: 'route', decision: 'next', description: 'Continue.', label: '' },
               ],
             },
             diagnostics: [],

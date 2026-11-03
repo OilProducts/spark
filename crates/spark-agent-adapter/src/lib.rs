@@ -90,11 +90,12 @@ pub use session::{
     ToolCallSignature, LOOP_DETECTION_WARNING,
 };
 pub use status_envelope::{
-    build_contract_repair_prompt, build_status_envelope_context_updates_contract_text,
-    build_status_envelope_prompt_appendix, coerce_structured_text_outcome,
-    contract_failure_outcome, extract_structured_outcome_payload, status_envelope_allowed_keys,
-    status_envelope_json_schema, validate_write_contract_violation, ModeledOutcomeParseResult,
-    PlainTextParseResult, StructuredContractViolation, StructuredTextOutcome,
+    build_contract_repair_prompt, build_decision_envelope_context_updates_contract_text,
+    build_decision_envelope_prompt_appendix, coerce_structured_text_outcome,
+    contract_failure_outcome, decision_envelope_allowed_keys, decision_envelope_json_schema,
+    declared_decisions, extract_decision_envelope, validate_write_contract_violation,
+    DeclaredDecision, ModeledOutcomeParseResult, PlainTextParseResult, StructuredContractViolation,
+    StructuredTextOutcome,
 };
 pub use subagents::{
     create_child_session, ChildSessionOptions, SubAgentError, SubAgentHandle, SubAgentLimitError,

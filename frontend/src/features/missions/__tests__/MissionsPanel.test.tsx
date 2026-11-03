@@ -137,7 +137,7 @@ it('shows a draft with its objective in the rail, Start and Edit, and the reply 
 })
 
 it('reads the thread as quiet event lines, ends with the pending question, and replies post messages', async () => {
-    const question = { flow_name: 'work/review.yaml', options: [{ key: 'S', label: 'Ship it', value: 'Ship it' }, { key: 'H', label: 'Hold', value: 'Hold' }], prompt: 'Ship the build?', question_id: 'q-1', root_run_id: 'run-build', run_id: 'run-build' }
+    const question = { flow_name: 'work/review.yaml', options: [{ key: 'S', label: 'Ship it', value: 'ship' }, { key: 'H', label: 'Hold', value: 'hold' }], prompt: 'Ship the build?', question_id: 'q-1', root_run_id: 'run-build', run_id: 'run-build' }
     task = mission({ status: 'needs_you', conversation_id: 'task-1', started_at: 't', fields: { ...fields, description: 'Ship search' }, question,
         runs: [{ run_id: 'run-build', flow_name: 'work/build.yaml', summary: 'Build', launched_at: 't', status: 'waiting' }] })
     snapshot = conversation([

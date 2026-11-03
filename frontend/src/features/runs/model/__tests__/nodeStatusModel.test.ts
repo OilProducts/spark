@@ -66,15 +66,15 @@ describe('buildRunNodeStatuses', () => {
         expect(alreadyFailed.verify).toBe('failed')
     })
 
-    it('marks failed checkpoint outcomes failed even though they sit in completed_nodes', () => {
+    it('marks errored checkpoint nodes failed even though they sit in completed_nodes', () => {
         const statuses = buildRunNodeStatuses({
             completedNodes: ['load', 'transform'],
-            nodeOutcomes: { load: 'success', transform: 'fail' },
-            currentNodeId: 'transform',
+            nodeOutcomes: { load: 'completed', transform: 'error' },
+            currentNodeId: 'done',
             liveNodeStatuses: {},
             gateNodeId: null,
             isRunActive: false,
-            runStatus: 'failed',
+            runStatus: 'completed',
         })
         expect(statuses.load).toBe('success')
         expect(statuses.transform).toBe('failed')

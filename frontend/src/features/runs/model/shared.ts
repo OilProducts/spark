@@ -229,6 +229,7 @@ export const TIMELINE_TYPE_LABELS: Record<string, string> = {
     StageStarted: 'Stage started',
     StageCompleted: 'Stage completed',
     StageFailed: 'Stage failed',
+    StageTransition: 'Transition',
     StageRetrying: 'Stage retrying',
     CheckpointSaved: 'Checkpoint',
     ChildRunStarted: 'Child run started',
@@ -312,10 +313,20 @@ export const STATUS_LABELS: Record<string, string> = {
     canceled: 'Canceled',
 }
 
+// A completed run that reached a failure exit is not a success: it reads as
+// the exit's declared result name, in a warning tone.
+const isCompletedFailure = (run: Pick<RunRecord, 'status' | 'outcome'>) => run.status === 'completed' && run.outcome === 'failure'
+
+const humanizeResultName = (name: string) => name.replace(/[_-]+/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase())
+
 export const formatRunStatusLabel = (run: Pick<RunRecord, 'status' | 'outcome' | 'outcome_reason_code'>) =>
-    run.status === 'completed' && run.outcome_reason_code === 'blocked'
-        ? 'Blocked'
+    isCompletedFailure(run)
+        ? humanizeResultName(run.outcome_reason_code?.trim() || 'failed outcome')
         : STATUS_LABELS[run.status] || run.status
+
+export const runRecordTone = (run: Pick<RunRecord, 'status' | 'outcome'>): StatusTone => (
+    isCompletedFailure(run) ? 'warning' : runStatusTone(run.status)
+)
 
 export const canCancelRun = (status: string) => status === 'running' || status === 'waiting'
 

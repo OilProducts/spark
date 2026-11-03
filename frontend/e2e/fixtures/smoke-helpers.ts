@@ -5,8 +5,7 @@ import { expect, type Page } from '@playwright/test'
 
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const screenshotDir = path.resolve(testDir, '..', '..', 'artifacts', 'ui-smoke')
-const repoRoot = path.resolve(testDir, '..', '..', '..')
-const smokeFixtureDir = path.join(repoRoot, 'crates', 'test-fixtures', 'flows', 'flows')
+const smokeFixtureDir = path.join(testDir, 'flows')
 /** The smoke flow as the JSON FlowDefinition the editor saves. */
 export const smokeFixtureFlow: Record<string, unknown> = JSON.parse(readFileSync(path.join(smokeFixtureDir, 'editor-smoke-base.json'), 'utf-8'))
 /** The same flow's files as saved: `editor-smoke-base/<file>`. */

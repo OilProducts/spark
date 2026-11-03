@@ -37,6 +37,9 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, extra: Par
   startedAt: null,
   endedAt: null,
   outcome,
+  decision: null,
+  failureKind: null,
+  tolerable: null,
   reason: null,
   status: null,
   next: null,
@@ -82,18 +85,27 @@ const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false
 }
 
 describe('RunStatusItem', () => {
-  it('shows a completed run result, its source, what did not pass, and its outputs', () => {
-    const review = visit('review', 1, 'did_not_pass', {
+  it('shows a completed run result, its source, the errors it continued past, and its outputs', () => {
+    const review = visit('review', 1, 'error', {
       reason: 'Missing a test.',
-      status: { outcome: 'fail', context_updates: { 'context.review.required_changes': 'Add a test.', 'internal.retry': 1 } },
+      failureKind: 'runtime',
+      tolerable: true,
+      status: { status: 'error', failure_kind: 'runtime', tolerable: true, context_updates: { 'context.review.required_changes': 'Add a test.', 'internal.retry': 1 } },
     })
-    const { onSelectVisit, onViewArtifact } = renderStatus(run(), [review, visit('commit', 2, 'succeeded')])
+    const { onSelectVisit, onViewArtifact } = renderStatus(
+      run({ outcome: 'success', outcome_reason_code: 'completed', outcome_reason_message: 'commit chose done' }),
+      [review, visit('commit', 2, 'completed', { decision: 'done' })],
+    )
 
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
     expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
+    expect(screen.getByTestId('run-status-item')).toHaveTextContent('Completed · 14m')
+    // A success exit's evidence is not a warning.
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('commit chose done (completed)')
+    expect(screen.getByTestId('run-status-outcome-reason')).not.toHaveClass('text-warning')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
-    expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Didn’t pass\s*1$/)
-    expect(didNotPass).toHaveTextContent('Review: Missing a test. · wrote review.required_changes')
+    expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
+    expect(didNotPass).toHaveTextContent('Review (runtime error, tolerable): Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
 
@@ -107,11 +119,20 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-status-facts')).not.toHaveAttribute('open')
   })
 
+  it('does not read a completed run that reached a failure exit as a success', () => {
+    renderStatus(run({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked: no tests' }), [])
+    const item = screen.getByTestId('run-status-item')
+    expect(item).toHaveTextContent('Blocked · 14m')
+    expect(item).not.toHaveTextContent('Completed ·')
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('review chose blocked: no tests (blocked)')
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveClass('text-warning')
+  })
+
   it('shows a failed run failure, its kind, and the visit it stopped in', () => {
     const stopped = visit('implement', 2, 'failed')
     const { onSelectVisit } = renderStatus(
       run({ status: 'failed', last_error: 'codergen backend failed: codex app-server exited unexpectedly' }),
-      [visit('start', 1, 'succeeded'), stopped],
+      [visit('start', 1, 'completed'), stopped],
     )
 
     expect(screen.getByTestId('run-status-failure')).toHaveTextContent('codex app-server exited unexpectedly')
@@ -156,8 +177,8 @@ describe('RunStatusItem', () => {
 describe('RunContextItem', () => {
   it('shows a key history across visits, including a cleared value, and counts system keys', () => {
     const visits = [
-      visit('review', 1, 'did_not_pass', { status: { context_updates: { 'context.review.findings': 'missing test' } } }),
-      visit('evaluate', 2, 'succeeded', { status: { context_updates: { 'context.review.findings': null, '_attractor.x': 1 } } }),
+      visit('review', 1, 'error', { status: { context_updates: { 'context.review.findings': 'missing test' } } }),
+      visit('evaluate', 2, 'completed', { status: { context_updates: { 'context.review.findings': null, '_attractor.x': 1 } } }),
     ]
     const overview = buildRunContextOverview({ visits, launchContext: { 'context.task.id': 'CR-1' }, finalContext: {} })
     render(
@@ -193,8 +214,8 @@ describe('RunContextItem', () => {
   it('reads long multiline and structured values in full, including history, from the keyboard', () => {
     const findings = 'Blocking: '.padEnd(500, 'x') + '\nSecond finding line.'
     const visits = [
-      visit('review', 1, 'did_not_pass', { status: { context_updates: { 'context.review.summary': findings } } }),
-      visit('review', 2, 'succeeded', { status: { context_updates: { 'context.review.summary': 'Approved.' } } }),
+      visit('review', 1, 'error', { status: { context_updates: { 'context.review.summary': findings } } }),
+      visit('review', 2, 'completed', { status: { context_updates: { 'context.review.summary': 'Approved.' } } }),
     ]
     const plan = { steps: ['a', 'b'] }
     const finalContext = { 'context.review.summary': 'Approved.', 'context.task.plan': plan }
@@ -287,7 +308,7 @@ function SelectingVisitsCard(props: Omit<ComponentProps<typeof RunVisitsCard>, '
 
 describe('RunVisitsCard', () => {
   it('opens on the status item, opens a written key in the Context item, and links a visit to its files', () => {
-    const review = visit('review', 1, 'succeeded', { status: { context_updates: { 'context.review.findings': 'x' } } })
+    const review = visit('review', 1, 'completed', { status: { context_updates: { 'context.review.findings': 'x' } } })
     const onViewArtifact = vi.fn()
     render(
       <SelectingVisitsCard
@@ -338,12 +359,12 @@ describe('RunVisitsCard', () => {
   })
 
   it('marks a sent-back visit generically from its next node, numbers repeated visits, and switches visits from the control', () => {
-    const evaluate1 = visit('evaluate', 2, 'did_not_pass', {
-      number: 1, count: 2, reason: 'Missing a test.', next: { key: 'implement-3', loopBack: true },
-      status: { outcome: 'fail', context_updates: { 'context.review.approved': null, 'context.review.notes': 'Add one.' } },
+    const evaluate1 = visit('evaluate', 2, 'completed', {
+      number: 1, count: 2, reason: 'Missing a test.', next: { key: 'implement-3', loopBack: true }, decision: 'revise',
+      status: { status: 'completed', decision: 'revise', context_updates: { 'context.review.approved': null, 'context.review.notes': 'Add one.' } },
     })
-    const implement2 = visit('implement', 3, 'succeeded', { number: 2, count: 2, next: { key: 'evaluate-4', loopBack: false } })
-    const evaluate2 = visit('evaluate', 4, 'succeeded', { number: 2, count: 2, startedAt: '2026-09-29T10:00:00Z', endedAt: '2026-09-29T10:07:43Z' })
+    const implement2 = visit('implement', 3, 'completed', { number: 2, count: 2, next: { key: 'evaluate-4', loopBack: false } })
+    const evaluate2 = visit('evaluate', 4, 'completed', { number: 2, count: 2, startedAt: '2026-09-29T10:00:00Z', endedAt: '2026-09-29T10:07:43Z' })
     const onToggleGraph = vi.fn()
     render(
       <SelectingVisitsCard
@@ -382,7 +403,7 @@ describe('RunVisitsCard', () => {
     const rows = screen.getAllByTestId('run-visit-row')
     expect(rows.map((row) => within(row).getByTestId('run-visit-row-count').textContent)).toEqual(['1', '2', '2'])
     // Only the visit that was sent back carries a mark, in the warning tone, with a second line.
-    expect(rows[0].querySelector('[data-mark]')).toHaveAttribute('data-mark', 'did_not_pass')
+    expect(rows[0].querySelector('[data-mark]')).toHaveAttribute('data-mark', 'loop_back')
     expect(rows[0].querySelector('[data-mark]')).toHaveClass('text-warning')
     expect(within(rows[0]).getByTestId('run-visit-row-sent-back')).toHaveTextContent('Sent back to Implement')
     expect(rows[1].querySelector('[data-mark]')).toBeNull()
@@ -391,17 +412,19 @@ describe('RunVisitsCard', () => {
 
     fireEvent.click(rows[0])
     expect(rows[0]).toHaveAttribute('aria-selected', 'true')
-    // Returned: the outcome pill, where it went, the reason, and the keys it touched.
+    // Returned: the node status pill, the decision apart from it, where it went, the reason, and the keys it touched.
     const returned = screen.getByTestId('run-visit-returned')
-    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent("Didn't pass")
-    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Completed')
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'success')
+    expect(within(returned).getByTestId('run-visit-decision')).toHaveTextContent('Decision revise')
+    expect(within(returned).queryByTestId('run-visit-error-kind')).toBeNull()
     expect(returned).toHaveTextContent('Sent back to')
     expect(screen.getByTestId('run-visit-next')).toHaveTextContent('Implement 2')
     expect(screen.getByTestId('run-visit-reason')).toHaveTextContent('Missing a test.')
     const [cleared, written] = screen.getAllByTestId('run-visit-write')
     expect(cleared).toHaveTextContent(/^review\.approvedcleared$/)
     expect(written).toHaveTextContent(/^review\.notesAdd one\./)
-    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent("Visit ended · Didn't pass")
+    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent('Visit ended · Completed')
 
     // The link opens the visit it went to, whose own return is an ordinary "Next".
     fireEvent.click(screen.getByTestId('run-visit-next'))
@@ -415,8 +438,8 @@ describe('RunVisitsCard', () => {
     fireEvent.click(within(picker).getByRole('button', { name: 'Visit 2 of 2' }))
     expect(rows[2]).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('run-visit-view')).toHaveTextContent('Visit 2 of 2 · 7m 43s')
-    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Succeeded')
-    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent('Visit ended · Succeeded · 7m 43s')
+    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Completed')
+    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent('Visit ended · Completed · 7m 43s')
   })
 
   it('folds a visit transcript into command groups and hides thinking until asked', () => {
@@ -486,7 +509,7 @@ describe('RunVisitsCard', () => {
   })
 
   it('clears a search that hides a key opened from a visit', () => {
-    const review = visit('review', 1, 'succeeded', { status: { context_updates: { 'context.review.findings': 'x' } } })
+    const review = visit('review', 1, 'completed', { status: { context_updates: { 'context.review.findings': 'x' } } })
     const overview = buildRunContextOverview({
       visits: [review],
       launchContext: { 'context.request.objective': 'Finish the Runs page' },
@@ -548,6 +571,69 @@ describe('RunVisitsCard', () => {
   })
 })
 
+describe('RunVisitsCard returned evidence', () => {
+  const openOnly = (visits: RunVisit[]) => {
+    render(
+      <SelectingVisitsCard
+        visits={visits}
+        flowNodes={{}}
+        segments={[]}
+        prompts={[]}
+        journal={[]}
+        now={0}
+        isNarrowViewport={false}
+        isLive={false}
+        transcriptError={null}
+        timelineError={null}
+        onOpenRun={vi.fn()}
+        statusRow={{ label: 'Result' }}
+        contextKeyCount={0}
+        renderStatus={() => null}
+        renderContext={() => null}
+        artifactEntries={[]}
+        onViewArtifact={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getAllByTestId('run-visit-row')[0])
+    return screen.getByTestId('run-visit-returned')
+  }
+
+  it('shows an error status with its kind and tolerance and no decision', () => {
+    const returned = openOnly([visit('validate', 1, 'error', {
+      failureKind: 'contract', tolerable: false, reason: 'response named no declared decision',
+      status: { status: 'error', decision: null, failure_kind: 'contract', tolerable: false },
+    })])
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Error')
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
+    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent('contract error, not tolerable')
+    expect(within(returned).queryByTestId('run-visit-decision')).toBeNull()
+    expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
+  })
+
+  it('lists each fan-out branch with failed, terminal-result and canceled evidence', () => {
+    const results = [
+      { id: 'lint', index: 0, status: 'completed', started: true, context: {}, route_trace: [], decisions: [], notes: '' },
+      { id: 'typecheck', index: 1, status: 'error', started: true, context: {}, route_trace: [], decisions: [], notes: '', error: { node: 'tsc', kind: 'runtime', tolerable: false, reason: 'tsc exited 2', attempts: 2 } },
+      { id: 'review', index: 2, status: 'terminal_result', started: true, context: {}, route_trace: [], decisions: [], notes: '', terminal: { exit_id: 'stop', result: { name: 'blocked', outcome: 'failure' }, branch: 'review', branch_index: 2, node: 'judge', decision: 'block', notes: '' } },
+      { id: 'docs', index: 3, status: 'canceled', started: false, context: {}, route_trace: [], decisions: [], notes: '' },
+    ]
+    const returned = openOnly([visit('fan_out', 1, 'error', {
+      kind: 'parallel', failureKind: 'runtime', tolerable: false,
+      status: { status: 'error', failure_kind: 'runtime', tolerable: false, context_updates: { 'parallel.results': results } },
+    })])
+    const branches = within(returned).getAllByTestId('run-visit-branch')
+    expect(branches.map((branch) => branch.getAttribute('data-status'))).toEqual(['completed', 'error', 'terminal_result', 'canceled'])
+    expect(branches[0]).toHaveTextContent(/^lintCompleted$/)
+    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('at tsc · runtime error, not tolerable · 2 attempts')
+    expect(within(branches[1]).getByTestId('run-visit-branch-reason')).toHaveTextContent('tsc exited 2')
+    expect(branches[2]).toHaveTextContent('Reached an exit')
+    expect(within(branches[2]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('result blocked · failure · from judge')
+    expect(branches[3]).toHaveTextContent(/^docsCanceled$/)
+    // parallel.results is runtime bookkeeping, so it is counted, not listed, among the writes.
+    expect(within(returned).getByTestId('run-visit-system-writes')).toHaveTextContent('1 system key written')
+  })
+})
+
 describe('RunVisitsCard steering', () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -580,7 +666,7 @@ describe('RunVisitsCard steering', () => {
     renderVisits([
       visit('implement', 1, 'running'),
       visit('check', 2, 'running', { kind: 'tool' }),
-      visit('plan', 0, 'succeeded'),
+      visit('plan', 0, 'completed'),
     ])
     openVisit(0)
     expect(screen.getByTestId('run-visit-steer-input')).toBeVisible()
@@ -650,7 +736,7 @@ describe('RunVisitsCard steering', () => {
     openVisit(0)
     fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Stop.' } })
     fireEvent.click(screen.getByTestId('run-visit-steer-send'))
-    const end = () => view.rerender(visitsCard([visit('implement', 1, 'succeeded')]))
+    const end = () => view.rerender(visitsCard([visit('implement', 1, 'completed')]))
     const reply = () => respond(new Response(JSON.stringify({
       pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status, delivery_mode: null,
       reason: status === 'rejected' ? 'no_active_agent_node' : null, message: `Steer ${status}.`, target_node_id: 'implement',

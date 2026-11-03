@@ -121,6 +121,7 @@ export function parseDiagnosticEntry(value: unknown, endpoint: string): Diagnost
                 ? record.node
                 : undefined,
         edge,
+        decision: typeof record.decision === 'string' ? record.decision : undefined,
         fix: typeof record.fix === 'string' ? record.fix : undefined,
     }
 }

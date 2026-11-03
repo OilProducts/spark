@@ -1549,6 +1549,9 @@ impl AttractorApiService {
             Ok(resolved) => resolved,
             Err(error) => return flow_save_definition_error_response(error),
         };
+        if let Err(error) = attractor_dsl::validate_flow_children(&roots, Some(&req.name), &flow) {
+            return flow_save_definition_error_response(error.into());
+        }
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
             &json!(resolved),
@@ -2772,6 +2775,29 @@ impl AttractorApiService {
         if answer.is_empty() {
             return validation_error_response("selected_value is required.");
         }
+        // A gate's choices are its declared decisions: an answer naming none
+        // of them is rejected and the gate keeps waiting.
+        if question.get("origin").and_then(Value::as_str) != Some("agent_clarification") {
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let declared = options.iter().any(|option| {
+                ["value", "label"]
+                    .iter()
+                    .any(|key| option.get(*key).and_then(Value::as_str) == Some(answer))
+                    || option
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .is_some_and(|key| !key.is_empty() && key.eq_ignore_ascii_case(answer))
+            });
+            if !options.is_empty() && !declared {
+                return validation_error_response(format!(
+                    "{answer:?} is not one of this gate's choices."
+                ));
+            }
+        }
         let note = Some(request.note.trim().to_string()).filter(|note| !note.is_empty());
         let mut event = attractor_runtime::human_gate_answered_event(
             pipeline_id,
@@ -2948,6 +2974,15 @@ pub fn preview_with_config(
                 json!({"detail": "A preview takes flow, or flow_name to preview a saved flow."}),
             )
         }
+    };
+    // Subflows check against their effective children, as at save and launch.
+    let flow = match (flow, config.roots.as_ref()) {
+        (Ok(flow), Some(roots)) => {
+            attractor_dsl::validate_flow_children(roots, req.flow_name.as_deref(), &flow)
+                .map(|_| flow)
+                .map_err(FlowSourceError::from)
+        }
+        (flow, _) => flow,
     };
     match flow {
         Ok(flow) => PreviewRouteResponse::json(
@@ -3586,23 +3621,7 @@ fn flow_preview_payload(flow: &FlowDefinition, child_previews: Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            json!({
-                "source": edge.from,
-                "target": edge.to,
-                "from": edge.from,
-                "to": edge.to,
-                "label": edge.label,
-                "condition": edge.condition,
-                "weight": edge.weight,
-                "transition": edge.transition,
-                "extensions": edge.extensions,
-            })
-        })
-        .collect::<Vec<_>>();
+    let edges = preview_edges(flow);
     json!({
         "status": if diagnostics.is_empty() { "ok" } else { "validation_error" },
         "flow": flow.to_canonical_json_value(),
@@ -3622,6 +3641,25 @@ fn flow_preview_payload(flow: &FlowDefinition, child_previews: Value) -> Value {
         "errors": diagnostic_payloads,
         "child_previews": child_previews,
     })
+}
+
+/// Graph-view edges derived from the route maps and fork structure.
+fn preview_edges(flow: &FlowDefinition) -> Vec<Value> {
+    flow.edges()
+        .into_iter()
+        .map(|edge| {
+            json!({
+                "source": edge.from,
+                "target": edge.to,
+                "from": edge.from,
+                "to": edge.to,
+                "kind": edge.kind,
+                "decision": edge.decision,
+                "description": edge.description,
+                "label": edge.label,
+            })
+        })
+        .collect()
 }
 
 fn child_preview_map(
@@ -3682,23 +3720,7 @@ fn flow_preview_graph_payload(flow: &FlowDefinition) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    let edges = flow
-        .edges
-        .iter()
-        .map(|edge| {
-            json!({
-                "source": edge.from,
-                "target": edge.to,
-                "from": edge.from,
-                "to": edge.to,
-                "label": edge.label,
-                "condition": edge.condition,
-                "weight": edge.weight,
-                "transition": edge.transition,
-                "extensions": edge.extensions,
-            })
-        })
-        .collect::<Vec<_>>();
+    let edges = preview_edges(flow);
     json!({
         "id": flow.id,
         "title": flow.title,
@@ -3724,6 +3746,7 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
                 "node": diagnostic.node_id,
                 "node_id": diagnostic.node_id,
                 "edge": diagnostic.edge,
+                "decision": diagnostic.decision,
             })
         })
         .collect()

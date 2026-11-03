@@ -320,3 +320,25 @@ export function launchContextToFormValues(
     }
     return values
 }
+
+// A `key -> decision` map (switch cases, tool exit codes, subflow results)
+// as editable text: one `key = decision` per line. Keys are kept as written,
+// so switch case keys keep their JSON scalar type (`0` vs `"0"`).
+export function formatDecisionMap(map: unknown): string {
+    return Object.entries(asRecord(map) ?? {})
+        .map(([key, decision]) => `${key} = ${String(decision)}`)
+        .join('\n')
+}
+
+// Decisions never contain `=`, so the last `=` separates key from decision.
+export function parseDecisionMap(text: string): Record<string, string> {
+    const map: Record<string, string> = {}
+    text.split('\n').forEach((line) => {
+        const separator = line.lastIndexOf('=')
+        if (separator < 0) return
+        const key = line.slice(0, separator).trim()
+        const decision = line.slice(separator + 1).trim()
+        if (key && decision) map[key] = decision
+    })
+    return map
+}

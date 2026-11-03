@@ -50,6 +50,12 @@ const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) 
 )
 
 describe('RunHeaderBar', () => {
+    it('names a completed run that reached a failure exit by its result, in a warning tone', () => {
+        renderHeader(makeRun({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked' }))
+        expect(screen.getByTestId('run-header-status')).toHaveTextContent('Blocked')
+        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+    })
+
     it('shows the run title under its flow, a status pill, and one line of facts', () => {
         renderHeader(makeRun({ title: 'Tighten the review loop' }))
 

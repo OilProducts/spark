@@ -4,20 +4,16 @@ use attractor_core::{
     apply_launch_context, attr_i64, attr_text, dot_value_to_json, normalize_context_updates,
     resolve_context_write_contract, validate_context_updates_against_contract_with_exemptions,
     AttractorContext, CheckpointState, ContextMap, DotAttribute, DotGraph, FailureKind,
-    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome, OutcomeStatus,
+    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome,
 };
 use serde_json::{json, Value};
 
 use crate::error::Result;
 use crate::events::utc_timestamp;
 
+/// Each executed node's last invocation status and decision, by node ID.
 pub const NODE_OUTCOMES_KEY: &str = "_attractor.node_outcomes";
-pub const OUTCOME_KEY: &str = "outcome";
-pub const PREFERRED_LABEL_KEY: &str = "preferred_label";
 pub const CURRENT_NODE_KEY: &str = "current_node";
-pub const WORKFLOW_OUTCOME_KEY: &str = "context.workflow_outcome";
-pub const WORKFLOW_OUTCOME_REASON_CODE_KEY: &str = "context.workflow_outcome_reason_code";
-pub const WORKFLOW_OUTCOME_REASON_MESSAGE_KEY: &str = "context.workflow_outcome_reason_message";
 pub const DEFAULT_MAX_RETRIES_KEY: &str = "default_max_retries";
 pub const RUNTIME_RETRY_NODE_ID_KEY: &str = "_attractor.runtime.retry.node_id";
 pub const RUNTIME_RETRY_ATTEMPT_KEY: &str = "_attractor.runtime.retry.attempt";
@@ -124,15 +120,7 @@ pub fn apply_outcome_context_updates(
         exemptions.exact_keys,
         exemptions.prefixes,
     ) {
-        let failure = Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: violation.format_reason(Some(node_id)),
-            retryable: Some(false),
-            failure_kind: Some(FailureKind::Contract),
-            raw_response_text: outcome.raw_response_text.clone(),
-            notes: outcome.notes.clone(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        };
+        let failure = contract_failure(node_id, outcome, &violation);
         apply_runtime_outcome_fields(node_id, context, &failure)?;
         return Ok(failure);
     }
@@ -145,6 +133,24 @@ pub fn apply_outcome_context_updates(
     context.apply_updates(&normalized_outcome.context_updates)?;
     apply_runtime_outcome_fields(node_id, context, &normalized_outcome)?;
     Ok(normalized_outcome)
+}
+
+/// A context write outside the node's contract: a nonretryable contract
+/// error that keeps the response as evidence and applies no update.
+fn contract_failure(
+    node_id: &str,
+    outcome: &Outcome,
+    violation: &attractor_core::ContextWriteContractViolation,
+) -> Outcome {
+    Outcome {
+        raw_response_text: outcome.raw_response_text.clone(),
+        notes: outcome.notes.clone(),
+        ..Outcome::error(
+            FailureKind::Contract,
+            violation.format_reason(Some(node_id)),
+            Some(false),
+        )
+    }
 }
 
 pub fn apply_outcome_context_updates_for_node(
@@ -163,15 +169,7 @@ pub fn apply_outcome_context_updates_for_node(
         exemptions.exact_keys,
         exemptions.prefixes,
     ) {
-        let failure = Outcome {
-            status: OutcomeStatus::Fail,
-            failure_reason: violation.format_reason(Some(node_id)),
-            retryable: Some(false),
-            failure_kind: Some(FailureKind::Contract),
-            raw_response_text: outcome.raw_response_text.clone(),
-            notes: outcome.notes.clone(),
-            ..Outcome::new(OutcomeStatus::Fail)
-        };
+        let failure = contract_failure(node_id, outcome, &violation);
         apply_runtime_outcome_fields(node_id, context, &failure)?;
         return Ok(failure);
     }
@@ -271,12 +269,10 @@ fn context_update_contract_exemptions_for_node(node: &FlowNode) -> ContextUpdate
             exact_keys: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS,
             prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
         },
-        NodeKind::Start | NodeKind::Exit | NodeKind::Conditional => {
-            ContextUpdateContractExemptions {
-                exact_keys: &[],
-                prefixes: &[],
-            }
-        }
+        NodeKind::Start | NodeKind::Exit | NodeKind::Switch => ContextUpdateContractExemptions {
+            exact_keys: &[],
+            prefixes: &[],
+        },
     }
 }
 
@@ -288,7 +284,7 @@ fn resolved_builtin_handler_type(node_attrs: &BTreeMap<String, DotAttribute>) ->
                 "exit" => "exit",
                 "codergen" => "codergen",
                 "wait.human" => "wait.human",
-                "conditional" => "conditional",
+                "switch" => "switch",
                 "parallel" => "parallel",
                 "parallel.fan_in" => "parallel.fan_in",
                 "tool" => "tool",
@@ -312,7 +308,7 @@ pub fn known_builtin_handler_type(handler_type: &str) -> bool {
             | "exit"
             | "codergen"
             | "wait.human"
-            | "conditional"
+            | "switch"
             | "parallel"
             | "parallel.fan_in"
             | "tool"
@@ -326,7 +322,7 @@ pub fn handler_type_for_shape(shape: &str) -> Option<&'static str> {
         "Msquare" => Some("exit"),
         "box" => Some("codergen"),
         "hexagon" => Some("wait.human"),
-        "diamond" => Some("conditional"),
+        "diamond" => Some("switch"),
         "component" => Some("parallel"),
         "tripleoctagon" => Some("parallel.fan_in"),
         "parallelogram" => Some("tool"),
@@ -339,29 +335,7 @@ pub fn seed_builtin_context(context: &mut AttractorContext, current_node: &str) 
     if !matches!(context.get(NODE_OUTCOMES_KEY), Some(Value::Object(_))) {
         context.set(NODE_OUTCOMES_KEY, json!({}))?;
     }
-    if context.get(OUTCOME_KEY).is_none() {
-        context.set(OUTCOME_KEY, json!(""))?;
-    }
-    if context.get(PREFERRED_LABEL_KEY).is_none() {
-        context.set(PREFERRED_LABEL_KEY, json!(""))?;
-    }
-    for key in [
-        WORKFLOW_OUTCOME_KEY,
-        WORKFLOW_OUTCOME_REASON_CODE_KEY,
-        WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
-    ] {
-        if context.get(key).is_none() {
-            context.set(key, json!(""))?;
-        }
-    }
     context.set(CURRENT_NODE_KEY, json!(current_node))?;
-    Ok(())
-}
-
-pub fn reset_workflow_outcome_context(context: &mut AttractorContext) -> Result<()> {
-    context.set(WORKFLOW_OUTCOME_KEY, json!(""))?;
-    context.set(WORKFLOW_OUTCOME_REASON_CODE_KEY, json!(""))?;
-    context.set(WORKFLOW_OUTCOME_REASON_MESSAGE_KEY, json!(""))?;
     Ok(())
 }
 
@@ -392,9 +366,7 @@ fn apply_runtime_outcome_fields(
     context: &mut AttractorContext,
     outcome: &Outcome,
 ) -> Result<()> {
-    context.set(OUTCOME_KEY, json!(outcome.status.as_str()))?;
-    context.set(PREFERRED_LABEL_KEY, json!(outcome.preferred_label.clone()))?;
-    remember_node_outcome(context, node_id, outcome.status.as_str())?;
+    remember_node_outcome(context, node_id, outcome)?;
     remember_last_node_updates(context, node_id, outcome)?;
     Ok(())
 }
@@ -425,14 +397,17 @@ fn remember_last_node_updates(
 fn remember_node_outcome(
     context: &mut AttractorContext,
     node_id: &str,
-    status: &str,
+    outcome: &Outcome,
 ) -> Result<()> {
     let mut outcomes = context
         .get(NODE_OUTCOMES_KEY)
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    outcomes.insert(node_id.to_string(), Value::String(status.to_string()));
+    outcomes.insert(
+        node_id.to_string(),
+        json!({"status": outcome.status.as_str(), "decision": outcome.decision}),
+    );
     context.set(NODE_OUTCOMES_KEY, Value::Object(outcomes))?;
     Ok(())
 }

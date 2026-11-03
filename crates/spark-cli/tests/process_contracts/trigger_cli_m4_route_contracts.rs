@@ -373,11 +373,20 @@ fn write_flow(settings: &SparkSettings, name: &str) {
     crate::write_flow_json(
         &settings.bundled_dir().join("flows").join(name),
         json!({
-            "schema_version": "1",
+            "schema_version": "2",
             "id": "trigger-flow",
             "title": "Trigger Flow",
-            "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-            "edges": [{"from": "start", "to": "done"}],
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
+            },
         }),
     );
 }

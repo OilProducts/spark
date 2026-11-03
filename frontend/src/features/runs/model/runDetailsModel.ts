@@ -263,8 +263,9 @@ const buildContextExportPayload = (runId: string, contextEntries: ContextExportE
     2,
 )
 
-// Per-node outcome map the runtime persists into the checkpoint context; the
-// graph needs it because failed nodes also appear in completed_nodes.
+// Per-node status ("completed" or "error") from the `{status, decision}` map the
+// runtime persists into the checkpoint context; the graph needs it because
+// errored nodes also appear in completed_nodes.
 export const nodeOutcomesFromCheckpoint = (
     checkpointData: CheckpointResponse | null,
 ): Record<string, string> => {
@@ -275,8 +276,9 @@ export const nodeOutcomesFromCheckpoint = (
     }
     const result: Record<string, string> = {}
     for (const [nodeId, outcome] of Object.entries(outcomes)) {
-        if (typeof outcome === 'string') {
-            result[nodeId] = outcome
+        const status = asRecord(outcome)?.status
+        if (typeof status === 'string') {
+            result[nodeId] = status
         }
     }
     return result

@@ -137,10 +137,10 @@ async fn run_request_executes_codergen_through_injected_rust_llm_client() {
     let request = &requests[0];
     assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
     assert_eq!(request.model, "gpt-review-boundary");
-    assert_eq!(
-        request.messages,
-        vec![Message::user("Write review route note")]
-    );
+    assert_eq!(request.messages.len(), 1);
+    let prompt = request.messages[0].text();
+    assert!(prompt.starts_with("Write review route note\n\nStructured response contract:"));
+    assert!(prompt.contains("- \"done\": goes to \"done\". The step is complete."));
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(request.metadata["spark.runtime.source"], json!("codergen"));
     assert_eq!(
@@ -345,29 +345,56 @@ fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "review",
         "title": "Review",
-        "nodes": {"start": {"kind": "start"}, "done": {"kind": "exit"}},
-        "edges": [{"from": "start", "to": "done"}]
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "done", "description": "Enter the first workflow step."}
+                }
+            },
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
 fn codergen_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "review-rust-boundary",
         "title": "Review Rust Boundary",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {"kind": "agent_task", "prompt": "Write review route note"}
+                "config": {"kind": "agent_task", "prompt": "Write review route note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "task"}, {"from": "task", "to": "done"}]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 
@@ -413,7 +440,7 @@ impl ProviderAdapter for RecordingAdapter {
         Ok(Response {
             model: request.model.clone(),
             provider: request.provider.clone().unwrap_or_default(),
-            message: Message::assistant("review route adapter response"),
+            message: Message::assistant(r#"{"decision": "done"}"#),
             finish_reason: FinishReason::Stop,
             usage: Usage {
                 input_tokens: 2,

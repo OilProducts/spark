@@ -392,7 +392,7 @@ describe('Graph and settings behavior', () => {
 
     const state = useStore.getState()
     const flow = buildFlow([], [], state.flowMetadata)
-    expect(flow.schema_version).toBe('1.0')
+    expect(flow.schema_version).toBe('2')
     expect(flow.defaults).toMatchObject({ max_retries: 3 })
     expect(JSON.stringify(flow)).not.toContain('legacy default prompt')
     expect(JSON.stringify(flow)).not.toContain('cluster_legacy')

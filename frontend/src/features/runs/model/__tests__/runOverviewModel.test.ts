@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRunContextOverview,
   classifyRunFailure,
-  didNotPassVisits,
+  errorVisits,
   runTitle,
   formatRunDate,
   formatCompactCount,
@@ -24,8 +24,11 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: R
   startedAt: null,
   endedAt: null,
   outcome,
+  decision: null,
+  failureKind: null,
+  tolerable: null,
   reason: null,
-  status: updates ? { outcome: 'success', context_updates: updates } : null,
+  status: updates ? { status: 'completed', decision: 'done', context_updates: updates } : null,
   next: null,
   childRun: null,
   parentKey: null,
@@ -33,9 +36,9 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: R
 
 describe('buildRunContextOverview', () => {
   it('keeps each key history across visits, including a clear, grouped by namespace', () => {
-    const review1 = visit('review', 1, 'did_not_pass', { 'context.review.findings': 'missing test' })
-    const evaluate1 = visit('evaluate', 2, 'succeeded', { 'context.review.findings': null, 'context.review.passed': false })
-    const review2 = visit('review', 3, 'succeeded', { 'context.review.findings': 'still missing test', '_attractor.runtime.x': 1 })
+    const review1 = visit('review', 1, 'error', { 'context.review.findings': 'missing test' })
+    const evaluate1 = visit('evaluate', 2, 'completed', { 'context.review.findings': null, 'context.review.passed': false })
+    const review2 = visit('review', 3, 'completed', { 'context.review.findings': 'still missing test', '_attractor.runtime.x': 1 })
     const overview = buildRunContextOverview({
       visits: [review1, evaluate1, review2],
       launchContext: { 'context.task.artifact_path': 'changes/CR-1/request.md' },
@@ -68,7 +71,7 @@ describe('buildRunContextOverview', () => {
 
   it('shows a key the final context no longer has as cleared', () => {
     const overview = buildRunContextOverview({
-      visits: [visit('review', 1, 'succeeded', { 'context.review.findings': 'x' }), visit('evaluate', 2, 'succeeded', { 'context.review.findings': null })],
+      visits: [visit('review', 1, 'completed', { 'context.review.findings': 'x' }), visit('evaluate', 2, 'completed', { 'context.review.findings': null })],
       launchContext: null,
       finalContext: {},
     })
@@ -76,9 +79,9 @@ describe('buildRunContextOverview', () => {
   })
 
   it('follows the latest visit write over an older snapshot: set, clear, set', () => {
-    const review1 = visit('review', 1, 'did_not_pass', { 'context.review.findings': 'missing test' })
-    const evaluate = visit('evaluate', 2, 'succeeded', { 'context.review.findings': null })
-    const review2 = visit('review', 3, 'did_not_pass', { 'context.review.findings': 'still missing' })
+    const review1 = visit('review', 1, 'error', { 'context.review.findings': 'missing test' })
+    const evaluate = visit('evaluate', 2, 'completed', { 'context.review.findings': null })
+    const review2 = visit('review', 3, 'error', { 'context.review.findings': 'still missing' })
     // The snapshot was taken after the first review; later writes arrive live.
     const stale = { 'context.review.findings': 'missing test', 'context.lint.status': 'clean' }
     const value = (visits: RunVisit[]) => buildRunContextOverview({ visits, launchContext: null, finalContext: stale })
@@ -87,21 +90,21 @@ describe('buildRunContextOverview', () => {
     expect(value([review1, evaluate]).history.at(-1)?.visit).toBe(evaluate)
     expect(value([review1, evaluate, review2]).value).toBe('still missing')
     // A key no visit wrote keeps its snapshot value; a parallel branch's write defers to it too.
-    const branch = { ...visit('lint', 4, 'succeeded', { 'context.lint.status': 'dirty' }), parentKey: 'fanout' }
+    const branch = { ...visit('lint', 4, 'completed', { 'context.lint.status': 'dirty' }), parentKey: 'fanout' }
     const overview = buildRunContextOverview({ visits: [review1, branch], launchContext: null, finalContext: stale })
     expect(overview.namespaces.find((namespace) => namespace.name === 'lint')!.keys[0].value).toBe('clean')
   })
 })
 
-describe('didNotPassVisits', () => {
-  it('lists every visit that did not pass, in run order', () => {
+describe('errorVisits', () => {
+  it('lists every visit that ended in an error the run continued past, in run order', () => {
     const visits = [
-      visit('review', 1, 'did_not_pass'),
-      visit('evaluate', 2, 'succeeded'),
-      visit('review', 3, 'did_not_pass'),
+      visit('review', 1, 'error'),
+      visit('evaluate', 2, 'completed'),
+      visit('review', 3, 'error'),
       visit('commit', 4, 'failed'),
     ]
-    expect(didNotPassVisits(visits).map((entry) => entry.key)).toEqual(['review-1', 'review-3'])
+    expect(errorVisits(visits).map((entry) => entry.key)).toEqual(['review-1', 'review-3'])
   })
 })
 

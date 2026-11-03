@@ -68,6 +68,27 @@ describe('RunList', () => {
         expect(screen.queryByTestId('runs-refresh-button')).not.toBeInTheDocument()
     })
 
+    it('tones a completed run that reached a failure exit as a warning, not a success', () => {
+        render(
+            <RunList
+                error={null}
+                onSelectRun={vi.fn()}
+                runs={[
+                    makeRun({ run_id: 'blocked', status: 'completed', outcome: 'failure', outcome_reason_code: 'blocked', title: 'Blocked run' }),
+                    makeRun({ run_id: 'shipped', status: 'completed', outcome: 'success', outcome_reason_code: 'completed', title: 'Shipped run' }),
+                ]}
+                selectedRunId={null}
+                status="ready"
+                summaryLabel="2 total runs"
+            />,
+        )
+        const tones = screen.getAllByTestId('run-history-row').map((row) => [
+            row.getAttribute('data-run-id'),
+            row.querySelector('[data-slot="status-dot"]')?.getAttribute('data-tone'),
+        ])
+        expect(tones).toEqual(expect.arrayContaining([['blocked', 'warning'], ['shipped', 'success']]))
+    })
+
     it('titles runs, folds child runs under their parent, and filters on search', () => {
         const parent = makeRun({ run_id: 'parent', status: 'completed', title: 'Tighten the review loop', flow_name: 'software-development/implement-change.yaml' })
         const child = makeRun({

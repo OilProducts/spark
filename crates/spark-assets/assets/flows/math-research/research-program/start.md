@@ -2,5 +2,7 @@
 type: start
 title: Start
 routes:
-- to: prepare
+  next:
+    to: prepare
+    description: Enter the first workflow step.
 ---

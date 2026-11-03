@@ -37,7 +37,7 @@ it('reads the start, run results, run questions and replies from user turns', ()
     expect(parseTurn('Objective:\nFix it.\n\nAgreed fix: persist it.\n\nBegin work on this mission.', true)).toEqual([{ kind: 'start' }])
     expect(parseTurn('User: Go.', true)).toEqual([{ kind: 'reply', text: 'Go.' }])
     expect(parseTurn('Objective:\nFix it.')).toEqual([{ kind: 'text', text: 'Objective:\nFix it.' }])
-    const question = { flow_name: 'Question Child (test)', options: [{ key: 'B', label: 'Blue', value: 'Blue' }, 'Green'], prompt: 'Which color?', question_id: 'q', root_run_id: 'run-root', run_id: 'child' }
+    const question = { flow_name: 'Question Child (test)', options: [{ key: 'B', label: 'Blue', value: 'blue' }, 'Green'], prompt: 'Which color?', question_id: 'q', root_run_id: 'run-root', run_id: 'child' }
     expect(parseTurn([
         'Run run-a (testing/question-parent.yaml, "Test \\"quoted\\" handling") ended completed.',
         'Run run-b (work/build.yaml, "Build") ended failed: boom\n\nstill the error.',

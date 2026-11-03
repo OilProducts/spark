@@ -12,14 +12,16 @@ use std::path::Path;
 use std::sync::RwLock;
 
 use attractor_core::{
-    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
-    FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, ManagerLoopConfig, NodeConfig,
+    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic,
+    FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute, ManagerLoopConfig, NodeConfig,
     NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig, UiConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::flow_sources::{validate_flow_definition, FlowManifest, FlowRoots, FlowSourceError};
+use crate::flow_sources::{
+    validate_flow_children, validate_flow_definition, FlowManifest, FlowRoots, FlowSourceError,
+};
 
 pub const FLOW_FILE: &str = "flow.md";
 /// OKF-reserved names the loader ignores.
@@ -30,6 +32,7 @@ pub const RESERVED_FILES: [&str; 2] = ["index.md", "log.md"];
 static FLOW_DIR_LOCK: RwLock<()> = RwLock::new(());
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FlowFile {
     #[serde(rename = "type")]
     file_type: String,
@@ -40,7 +43,8 @@ struct FlowFile {
     description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_lock: Option<FlowExecutionLock>,
-    #[serde(default = "default_schema_version")]
+    /// Required; a missing version reads as empty and fails validation.
+    #[serde(default)]
     schema_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     inputs: Vec<FlowInput>,
@@ -53,6 +57,7 @@ struct FlowFile {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NodeFile {
     #[serde(rename = "type")]
     kind: NodeKind,
@@ -80,24 +85,9 @@ struct NodeFile {
     ui: Option<UiConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     extensions: BTreeMap<String, Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    routes: Vec<Route>,
-}
-
-/// A `FlowEdge` without `from`; fields at their default are omitted.
-#[derive(Debug, Serialize, Deserialize)]
-struct Route {
-    to: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    label: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    condition: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    weight: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    transition: Option<String>,
+    /// The node's decisions: `<decision>: {to, description, label?}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    extensions: BTreeMap<String, Value>,
+    routes: BTreeMap<String, FlowRoute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +138,17 @@ pub struct Role {
 /// Loads a flow directory in its authored form (roles unresolved), validated
 /// and normalized.
 pub fn read_flow_dir(dir: &Path) -> Result<FlowDefinition, FlowSourceError> {
-    assemble_flow_files(&read_flow_dir_texts(dir)?)
+    assemble_flow_files(&read_flow_dir_texts(dir)?).map_err(|error| in_flow_dir(dir, error))
+}
+
+/// Names the flow directory an assembly error came from, so a rejected
+/// project override says which copy to fix.
+pub(crate) fn in_flow_dir(dir: &Path, error: FlowSourceError) -> FlowSourceError {
+    if error.status_code() == 404 {
+        return error;
+    }
+    let detail = format!("Flow directory {}: {}", dir.display(), error.detail());
+    error.with_detail(detail)
 }
 
 /// The `flow.md` and node files of a flow directory (file name -> text), read
@@ -221,8 +221,7 @@ pub fn assemble_flow_files(
             continue;
         }
         let node_id = name.strip_suffix(".md").unwrap_or(name).to_string();
-        let (node, edges) = parse_node_file(&node_id, text)?;
-        flow.edges.extend(edges);
+        let node = parse_node_file(&node_id, text)?;
         flow.nodes.insert(node_id, node);
     }
     let flow = flow.normalize();
@@ -249,13 +248,7 @@ pub fn render_flow_files(
                 format!("Node id '{node_id}' is reserved in flow directories; rename the node."),
             ));
         }
-        let edges = flow
-            .edges
-            .iter()
-            .filter(|edge| edge.from == *node_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        files.insert(file_name, render_node_file(node, edges)?);
+        files.insert(file_name, render_node_file(node)?);
     }
     Ok(files)
 }
@@ -341,7 +334,10 @@ pub struct LoadedFlow {
 pub fn load_flow(roots: &FlowRoots, flow_name: &str) -> Result<LoadedFlow, FlowSourceError> {
     let resolved = roots.resolve_flow(flow_name)?;
     let texts = read_flow_dir_texts(&resolved.path)?;
-    let authored = assemble_flow_files(&texts)?;
+    let authored =
+        assemble_flow_files(&texts).map_err(|error| in_flow_dir(&resolved.path, error))?;
+    validate_flow_children(roots, Some(&resolved.name), &authored)
+        .map_err(|error| in_flow_dir(&resolved.path, error.into()))?;
     let mut files = texts
         .iter()
         .map(|(file, text)| {
@@ -402,6 +398,7 @@ pub(crate) fn resolve_flow_roles_with(
                     message: format!("node '{node_id}': {message}"),
                     node_id: Some(node_id.clone()),
                     edge: None,
+                    decision: None,
                 });
                 continue;
             }
@@ -414,6 +411,7 @@ pub(crate) fn resolve_flow_roles_with(
                 ),
                 node_id: Some(node_id.clone()),
                 edge: None,
+                decision: None,
             });
             continue;
         }
@@ -498,15 +496,14 @@ fn rerender_file(name: &str, text: &str) -> Result<String, FlowSourceError> {
         return render_flow_file(&parse_flow_file(text)?);
     }
     let node_id = name.strip_suffix(".md").unwrap_or(name);
-    let (node, edges) = parse_node_file(node_id, text)?;
-    render_node_file(&node, edges)
+    render_node_file(&parse_node_file(node_id, text)?)
 }
 
 fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
     let (frontmatter, body) =
         split_frontmatter(text).map_err(|error| file_error(FLOW_FILE, error))?;
     let file: FlowFile =
-        serde_yaml::from_str(frontmatter).map_err(|error| file_error(FLOW_FILE, error))?;
+        parse_frontmatter(frontmatter).map_err(|error| file_error(FLOW_FILE, error))?;
     if file.file_type != "Flow" {
         return Err(file_error(FLOW_FILE, "must declare type: Flow"));
     }
@@ -519,7 +516,6 @@ fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
         inputs: file.inputs,
         defaults: file.defaults,
         nodes: BTreeMap::new(),
-        edges: Vec::new(),
         metadata: file.metadata,
         extensions: file.extensions,
         execution_lock: file.execution_lock,
@@ -542,15 +538,12 @@ fn render_flow_file(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
     render_file(FLOW_FILE, &file, flow.goal.trim())
 }
 
-fn parse_node_file(
-    node_id: &str,
-    text: &str,
-) -> Result<(FlowNode, Vec<FlowEdge>), FlowSourceError> {
+fn parse_node_file(node_id: &str, text: &str) -> Result<FlowNode, FlowSourceError> {
     let file_name = format!("{node_id}.md");
     let (frontmatter, body) =
         split_frontmatter(text).map_err(|error| file_error(&file_name, error))?;
     let file: NodeFile =
-        serde_yaml::from_str(frontmatter).map_err(|error| file_error(&file_name, error))?;
+        parse_frontmatter(frontmatter).map_err(|error| file_error(&file_name, error))?;
     let body = body.trim();
     let mut config = file.config;
     let kind_value = serde_json::to_value(&file.kind).unwrap_or(Value::Null);
@@ -586,20 +579,7 @@ fn parse_node_file(
     config.insert("kind".to_string(), kind_value);
     let config: NodeConfig = serde_json::from_value(Value::Object(config))
         .map_err(|error| file_error(&file_name, format!("invalid config: {error}")))?;
-    let edges = file
-        .routes
-        .into_iter()
-        .map(|route| FlowEdge {
-            from: node_id.to_string(),
-            to: route.to,
-            label: route.label,
-            condition: route.condition,
-            weight: route.weight,
-            transition: route.transition,
-            extensions: route.extensions,
-        })
-        .collect();
-    let node = FlowNode {
+    Ok(FlowNode {
         kind: file.kind,
         label: file.title,
         description: file.description,
@@ -613,18 +593,18 @@ fn parse_node_file(
         execution: file.execution,
         ui: file.ui,
         extensions: file.extensions,
-    };
-    Ok((node, edges))
+        routes: file.routes,
+    })
 }
 
-fn render_node_file(node: &FlowNode, mut edges: Vec<FlowEdge>) -> Result<String, FlowSourceError> {
-    // Same order as FlowDefinition::normalize, so file order is canonical.
-    edges.sort_by(|left, right| {
-        left.weight
-            .cmp(&right.weight)
-            .then_with(|| left.to.cmp(&right.to))
-            .then_with(|| left.label.cmp(&right.label))
-    });
+/// Parses YAML frontmatter, rejecting duplicate mapping keys (such as a
+/// decision declared twice) before any map insertion can drop one.
+fn parse_frontmatter<T: serde::de::DeserializeOwned>(frontmatter: &str) -> Result<T, String> {
+    serde_yaml::from_str::<serde_yaml::Value>(frontmatter).map_err(|error| error.to_string())?;
+    serde_yaml::from_str(frontmatter).map_err(|error| error.to_string())
+}
+
+fn render_node_file(node: &FlowNode) -> Result<String, FlowSourceError> {
     let mut config = match serde_json::to_value(&node.config) {
         Ok(Value::Object(config)) => config,
         _ => serde_json::Map::new(),
@@ -652,17 +632,7 @@ fn render_node_file(node: &FlowNode, mut edges: Vec<FlowEdge>) -> Result<String,
         execution: node.execution.clone(),
         ui: node.ui.clone(),
         extensions: node.extensions.clone(),
-        routes: edges
-            .into_iter()
-            .map(|edge| Route {
-                to: edge.to,
-                label: edge.label,
-                condition: edge.condition,
-                weight: edge.weight,
-                transition: edge.transition,
-                extensions: edge.extensions,
-            })
-            .collect(),
+        routes: node.routes.clone(),
     };
     render_file("node", &file, &body)
 }
@@ -756,12 +726,4 @@ fn read_error(path: &Path, error: std::io::Error) -> FlowSourceError {
 
 fn write_error(path: &Path, error: std::io::Error) -> FlowSourceError {
     FlowSourceError::new(500, format!("Unable to write {}: {error}", path.display()))
-}
-
-fn default_schema_version() -> String {
-    "1".to_string()
-}
-
-fn is_zero(value: &i64) -> bool {
-    *value == 0
 }

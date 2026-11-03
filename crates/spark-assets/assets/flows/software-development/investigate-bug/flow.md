@@ -3,7 +3,7 @@ type: Flow
 id: investigate_bug
 title: Investigate Bug
 description: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and adversarially verify the plan. The run ends with the verified diagnosis and plan.
-schema_version: '1'
+schema_version: '2'
 inputs:
 - key: context.request.objective
   label: Bug Report

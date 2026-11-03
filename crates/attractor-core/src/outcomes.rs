@@ -4,25 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextMap;
 use crate::error::{AttractorCoreError, Result};
+use crate::flow_definition::ExitResult;
 
+/// How one node invocation ended. A completed invocation carries the
+/// decision its node declared; an execution error never carries one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
-    Success,
-    Retry,
-    Fail,
-    PartialSuccess,
-    Skipped,
+    Completed,
+    Error,
 }
 
 impl OutcomeStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Success => "success",
-            Self::Retry => "retry",
-            Self::Fail => "fail",
-            Self::PartialSuccess => "partial_success",
-            Self::Skipped => "skipped",
+            Self::Completed => "completed",
+            Self::Error => "error",
         }
     }
 }
@@ -38,45 +35,67 @@ impl FromStr for OutcomeStatus {
 
     fn from_str(value: &str) -> Result<Self> {
         match value.trim() {
-            "success" => Ok(Self::Success),
-            "retry" => Ok(Self::Retry),
-            "fail" => Ok(Self::Fail),
-            "partial_success" => Ok(Self::PartialSuccess),
-            "skipped" => Ok(Self::Skipped),
+            "completed" => Ok(Self::Completed),
+            "error" => Ok(Self::Error),
             other => Err(AttractorCoreError::InvalidIdentifier {
                 kind: "outcome status",
                 value: other.to_string(),
-                reason: "expected success, retry, fail, partial_success, or skipped".to_string(),
+                reason: "expected completed or error".to_string(),
             }),
         }
     }
 }
 
+/// An execution error's class. `Runtime` (transport, provider, spawn,
+/// timeout and other infrastructure failures) and `Contract` (a response or
+/// context write that broke its contract after repair) are tolerable inside
+/// a fork that opts in; `Routing` (no matching route, an undeclared
+/// decision, an exhausted visit limit) never is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
-    Business,
     Contract,
     Runtime,
+    Routing,
 }
 
 impl FailureKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Business => "business",
             Self::Contract => "contract",
             Self::Runtime => "runtime",
+            Self::Routing => "routing",
         }
     }
+
+    /// Whether a fork declaring `tolerate_branch_execution_errors` may keep
+    /// a branch ending with this error.
+    pub fn is_tolerable(self) -> bool {
+        !matches!(self, Self::Routing)
+    }
+}
+
+/// A failure exit reached inside a parallel branch: the owning run ends
+/// with this exit's declared result instead of entering the join.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchTerminal {
+    pub exit_id: String,
+    pub result: ExitResult,
+    pub branch: String,
+    pub branch_index: usize,
+    /// The node and decision whose route reached the exit.
+    pub node: String,
+    pub decision: String,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outcome {
     pub status: OutcomeStatus,
+    /// The declared decision of a completed invocation; empty for an error.
     #[serde(default)]
-    pub preferred_label: String,
-    #[serde(default)]
-    pub suggested_next_ids: Vec<String>,
+    pub decision: String,
     #[serde(default)]
     pub context_updates: ContextMap,
     #[serde(default)]
@@ -89,59 +108,51 @@ pub struct Outcome {
     pub failure_kind: Option<FailureKind>,
     #[serde(default)]
     pub raw_response_text: String,
+    /// Set by a fork whose branch reached a failure exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<BranchTerminal>,
 }
 
 impl Outcome {
     pub fn new(status: OutcomeStatus) -> Self {
         Self {
             status,
-            preferred_label: String::new(),
-            suggested_next_ids: Vec::new(),
+            decision: String::new(),
             context_updates: ContextMap::new(),
             failure_reason: String::new(),
             notes: String::new(),
             retryable: None,
             failure_kind: None,
             raw_response_text: String::new(),
+            terminal: None,
         }
     }
 
-    pub fn from_contract_parts(
-        status: impl AsRef<str>,
-        preferred_label: impl Into<String>,
-        suggested_next_ids: impl IntoIterator<Item = impl Into<String>>,
-        context_updates: ContextMap,
-    ) -> Result<Self> {
-        Ok(Self {
-            status: OutcomeStatus::from_str(status.as_ref())?,
-            preferred_label: preferred_label.into(),
-            suggested_next_ids: suggested_next_ids.into_iter().map(Into::into).collect(),
-            context_updates,
-            ..Self::new(OutcomeStatus::Success)
-        })
-    }
-
-    pub fn to_payload(&self) -> OutcomePayload {
-        OutcomePayload {
-            status: self.status,
-            preferred_label: self.preferred_label.clone(),
-            suggested_next_ids: self.suggested_next_ids.clone(),
-            context_updates: self.context_updates.clone(),
-            notes: self.notes.clone(),
-            failure_reason: self.failure_reason.clone(),
-            failure_kind: self.failure_kind,
+    /// A completed invocation choosing `decision`.
+    pub fn completed(decision: impl Into<String>) -> Self {
+        Self {
+            decision: decision.into(),
+            ..Self::new(OutcomeStatus::Completed)
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OutcomePayload {
-    pub status: OutcomeStatus,
-    pub preferred_label: String,
-    pub suggested_next_ids: Vec<String>,
-    pub context_updates: ContextMap,
-    pub notes: String,
-    pub failure_reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure_kind: Option<FailureKind>,
+    /// An execution error of `kind`.
+    pub fn error(kind: FailureKind, reason: impl Into<String>, retryable: Option<bool>) -> Self {
+        Self {
+            failure_reason: reason.into(),
+            retryable,
+            failure_kind: Some(kind),
+            ..Self::new(OutcomeStatus::Error)
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.status == OutcomeStatus::Error
+    }
+
+    /// The error kind, defaulting an unclassified error to `Runtime`.
+    pub fn error_kind(&self) -> Option<FailureKind> {
+        self.is_error()
+            .then(|| self.failure_kind.unwrap_or(FailureKind::Runtime))
+    }
 }

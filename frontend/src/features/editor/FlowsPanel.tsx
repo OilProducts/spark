@@ -92,7 +92,7 @@ function useFlowCatalogPanel() {
         const flowId = sanitizeFlowId(fileName);
         // A minimal FlowDefinition; empty defaults drop out of the JSON.
         const flow = {
-            schema_version: '1.0',
+            schema_version: '2',
             id: flowId,
             title: fileName,
             description: '',
@@ -104,10 +104,14 @@ function useFlowCatalogPanel() {
                 reasoning_effort: uiDefaults.reasoning_effort || undefined,
             },
             nodes: {
-                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
-                end: { kind: 'exit', label: 'End', config: { kind: 'exit' } },
+                start: {
+                    kind: 'start',
+                    label: 'Start',
+                    config: { kind: 'start' },
+                    routes: { next: { to: 'end', description: 'Enter the first workflow step.' } },
+                },
+                end: { kind: 'exit', label: 'End', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
-            edges: [{ from: 'start', to: 'end' }],
         }
 
         const saved = await saveFlowContent(fileName, { flow })

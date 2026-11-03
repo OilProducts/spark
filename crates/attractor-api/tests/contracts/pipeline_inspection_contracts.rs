@@ -398,10 +398,27 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
         })
     );
 
+    // An answer naming no declared choice is rejected and keeps the gate waiting.
+    let invalid = handle_attractor_request(
+        "POST",
+        "/attractor/pipelines/run-journal/questions/question-1/answer",
+        &json!({"selected_value": "yes"}).to_string(),
+        settings.clone(),
+    );
+    assert_eq!(
+        invalid.body,
+        json!({"status": "validation_error", "error": "\"yes\" is not one of this gate's choices."})
+    );
+    assert_eq!(
+        service.list_pipeline_questions("run-journal").body["questions"][0]["question_id"],
+        "question-1"
+    );
+
     let answer = handle_attractor_request(
         "POST",
         "/attractor/pipelines/run-journal/questions/question-1/answer",
-        &json!({"selected_value": "yes", "note": " Ship it after the freeze lifts. "}).to_string(),
+        &json!({"selected_value": "approve", "note": " Ship it after the freeze lifts. "})
+            .to_string(),
         settings.clone(),
     );
     assert_eq!(answer.status_code, 200);
@@ -420,7 +437,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     assert!(answered_bundle.raw_events.iter().any(|event| {
         event.event_type == "InterviewCompleted"
             && event.payload.get("question_id") == Some(&json!("question-1"))
-            && event.payload.get("answer") == Some(&json!("yes"))
+            && event.payload.get("answer") == Some(&json!("approve"))
             && event.payload.get("note") == Some(&json!("Ship it after the freeze lifts."))
             && event.payload.get("outcome_provenance") == Some(&json!("accepted"))
     }));
@@ -442,7 +459,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     let wrong_run_answer = handle_attractor_request(
         "POST",
         "/attractor/pipelines/run-other/questions/question-1/answer",
-        &json!({"selected_value": "yes"}).to_string(),
+        &json!({"selected_value": "approve"}).to_string(),
         settings.clone(),
     );
     assert_eq!(wrong_run_answer.status_code, 404);
@@ -652,25 +669,32 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
 
 fn simple_flow() -> Value {
     json!({
-        "schema_version": "1",
+        "schema_version": "2",
         "id": "api_inspect",
         "title": "API Inspect",
         "nodes": {
-            "start": {"kind": "start"},
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {
+                    "next": {"to": "task", "description": "Enter the first workflow step."}
+                }
+            },
             "task": {
                 "kind": "agent_task",
                 "label": "Task",
-                "config": {
-                    "kind": "agent_task",
-                    "prompt": "Write an inspection note"
-                }
+                "config": {"kind": "agent_task", "prompt": "Write an inspection note"},
+                "contracts": {"response": "decision_envelope"},
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
             },
-            "done": {"kind": "exit"}
-        },
-        "edges": [
-            {"from": "start", "to": "task"},
-            {"from": "task", "to": "done"}
-        ]
+            "done": {
+                "kind": "exit",
+                "config": {
+                    "kind": "exit",
+                    "result": {"name": "completed", "outcome": "success"}
+                }
+            }
+        }
     })
 }
 

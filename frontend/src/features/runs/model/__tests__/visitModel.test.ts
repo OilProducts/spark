@@ -4,6 +4,8 @@ import type { NodeExecutionResponse, RunTranscriptSegment } from '@/lib/api/attr
 import type { TimelineEventEntry } from '../shared'
 import {
   buildRunVisits,
+  formatVisitErrorKind,
+  parallelBranchResults,
   visitContextWrites,
   visitFlowNodesFromSnapshot,
   visitMark,
@@ -38,13 +40,14 @@ const event = (type: string, payload: Record<string, unknown>, sourceScope: 'roo
 
 const started = (node: string, index: number) => event('StageStarted', { node_id: node, index })
 const completed = (node: string, index: number, extra: Record<string, unknown> = {}) => (
-  event('StageCompleted', { node_id: node, index, outcome: 'success', ...extra })
+  event('StageCompleted', { node_id: node, index, outcome: 'completed', decision: 'done', ...extra })
 )
 const failed = (node: string, index: number, error = 'stage_failed') => (
   event('StageFailed', { node_id: node, index, error, will_retry: false })
 )
-const stage = (node: string, index: number, end: 'ok' | 'fail' = 'ok') => (
-  [started(node, index), end === 'ok' ? completed(node, index) : failed(node, index)]
+// A stage completes with a decision ('done' unless named) or ends in error.
+const stage = (node: string, index: number, end: string = 'done') => (
+  [started(node, index), end === 'error' ? failed(node, index) : completed(node, index, { decision: end })]
 )
 
 const execution = (node: string, index: number, status: Record<string, unknown> | null): NodeExecutionResponse => ({
@@ -82,23 +85,24 @@ const build = (overrides: Partial<VisitModelInput>): RunVisit[] => buildRunVisit
 })
 
 const summarize = (visits: RunVisit[]) => visits.map((visit) => (
-  `${visit.label} ${visit.number}/${visit.count} ${visit.outcome}${visit.next?.loopBack ? ' ↩' : ''}`
+  `${visit.label} ${visit.number}/${visit.count} ${visit.outcome}${visit.decision ? ` ${visit.decision}` : ''}${visit.next?.loopBack ? ' ↩' : ''}`
 ))
 
 describe('buildRunVisits', () => {
   it('follows a review loop where Evaluate ran four times and two rejections routed back to Implement', () => {
-    // Modelled on run-18d93c056079b9c0 (implement-change).
+    // A rejection is a completed visit whose decision routes back; a tolerated error is an error.
     const journal = [
       ...stage('start', 0),
-      ...stage('implement', 1), ...stage('evaluate', 2, 'fail'),
-      ...stage('implement', 3), ...stage('evaluate', 4),
-      ...stage('validate', 5, 'fail'), ...stage('diagnose', 6),
-      ...stage('implement', 7), ...stage('evaluate', 8, 'fail'),
-      ...stage('implement', 9), ...stage('evaluate', 10),
+      ...stage('implement', 1), ...stage('evaluate', 2, 'revise'),
+      ...stage('implement', 3), ...stage('evaluate', 4, 'approve'),
+      ...stage('validate', 5, 'error'), ...stage('diagnose', 6),
+      ...stage('implement', 7), ...stage('evaluate', 8, 'revise'),
+      ...stage('implement', 9), ...stage('evaluate', 10, 'approve'),
       ...stage('validate', 11), ...stage('done', 12),
     ]
     const rejection = {
-      outcome: 'fail',
+      status: 'completed',
+      decision: 'revise',
       failure_reason: '',
       notes: '',
       context_updates: {
@@ -108,25 +112,26 @@ describe('buildRunVisits', () => {
         last_response: '{}',
       },
     }
-    const visits = build({ journal, executions: [execution('evaluate', 2, rejection)] })
+    const toleratedError = { status: 'error', decision: null, failure_kind: 'runtime', tolerable: true, failure_reason: 'tool command failed with code 1' }
+    const visits = build({ journal, executions: [execution('evaluate', 2, rejection), execution('validate', 5, toleratedError)] })
 
     expect(summarize(visits)).toEqual([
-      'Start 1/1 succeeded',
-      'Implement 1/4 succeeded',
-      'Evaluate 1/4 did_not_pass ↩',
-      'Implement 2/4 succeeded',
-      'Evaluate 2/4 succeeded',
-      'Validate 1/2 did_not_pass',
-      'Diagnose 1/1 succeeded ↩',
-      'Implement 3/4 succeeded',
-      'Evaluate 3/4 did_not_pass ↩',
-      'Implement 4/4 succeeded',
-      'Evaluate 4/4 succeeded',
-      'Validate 2/2 succeeded',
-      'Done 1/1 succeeded',
+      'Start 1/1 completed done',
+      'Implement 1/4 completed done',
+      'Evaluate 1/4 completed revise ↩',
+      'Implement 2/4 completed done',
+      'Evaluate 2/4 completed approve',
+      'Validate 1/2 error',
+      'Diagnose 1/1 completed done ↩',
+      'Implement 3/4 completed done',
+      'Evaluate 3/4 completed revise ↩',
+      'Implement 4/4 completed done',
+      'Evaluate 4/4 completed approve',
+      'Validate 2/2 completed done',
+      'Done 1/1 completed done',
     ])
     const firstEvaluate = visits[2]
-    expect(visitMark(firstEvaluate)).toBe('did_not_pass')
+    expect(visitMark(firstEvaluate)).toBe('loop_back')
     expect(firstEvaluate.next).toEqual({ key: visits[3].key, loopBack: true })
     expect(firstEvaluate.startedAt).not.toBeNull()
     expect(firstEvaluate.endedAt).not.toBeNull()
@@ -137,10 +142,14 @@ describe('buildRunVisits', () => {
       ],
       systemCount: 2,
     })
-    expect(visits[5].reason).toBeNull()
+    // The error's kind and tolerance stay separate from the status and the (absent) decision.
+    expect(visits[5]).toMatchObject({ outcome: 'error', decision: null, failureKind: 'runtime', tolerable: true, reason: 'tool command failed with code 1' })
+    expect(visitMark(visits[5])).toBe('error')
+    expect(formatVisitErrorKind(visits[5])).toBe('runtime error, tolerable')
+    expect(formatVisitErrorKind(visits[4])).toBeNull()
   })
 
-  it('marks a loop-back on a succeeded visit when the run returns to an earlier node without failing', () => {
+  it('marks a loop-back on a completed visit when the run returns to an earlier node without failing', () => {
     // Modelled on resolution-program: Review routes back to Resolve on success.
     const journal = [
       ...stage('diagnose', 0), ...stage('evaluate', 1),
@@ -149,11 +158,11 @@ describe('buildRunVisits', () => {
     const visits = build({ journal })
 
     expect(summarize(visits)).toEqual([
-      'Diagnose 1/2 succeeded',
-      'Evaluate 1/2 succeeded ↩',
-      'Diagnose 2/2 succeeded',
-      'Evaluate 2/2 succeeded',
-      'Done 1/1 succeeded',
+      'Diagnose 1/2 completed done',
+      'Evaluate 1/2 completed done ↩',
+      'Diagnose 2/2 completed done',
+      'Evaluate 2/2 completed done',
+      'Done 1/1 completed done',
     ])
     expect(visits[1].next?.loopBack).toBe(true)
     expect(visits[3].next?.loopBack).toBe(false)
@@ -162,7 +171,7 @@ describe('buildRunVisits', () => {
   it('marks an unfinished visit interrupted once the run has ended, and the last failure as the run failure', () => {
     const journal = [...stage('start', 0), started('evaluate', 1)]
     expect(summarize(build({ journal, runStatus: 'canceled' }))).toEqual([
-      'Start 1/1 succeeded',
+      'Start 1/1 completed done',
       'Evaluate 1/1 interrupted',
     ])
     expect(summarize(build({ journal, runStatus: 'running' }))[1]).toBe('Evaluate 1/1 running')
@@ -175,9 +184,10 @@ describe('buildRunVisits', () => {
     const failedRun = build({
       journal: [...stage('start', 0), started('validate', 1), failed('validate', 1, 'tool command failed with code 1')],
       runStatus: 'failed',
-      executions: [execution('validate', 1, { outcome: 'fail', failure_reason: 'tool command failed with code 1', notes: '' })],
+      executions: [execution('validate', 1, { status: 'error', failure_kind: 'runtime', tolerable: false, failure_reason: 'tool command failed with code 1', notes: '' })],
     })
     expect(failedRun[1].outcome).toBe('failed')
+    expect(failedRun[1].failureKind).toBe('runtime')
     expect(failedRun[1].reason).toBe('tool command failed with code 1')
   })
 
@@ -200,7 +210,7 @@ describe('buildRunVisits', () => {
       journal,
       childRuns: [{
         run_id: 'child-1',
-        executions: [{ run_id: 'child-1', node_id: 'report', stage_index: 3, attempt: 0, status: { outcome: 'success', notes: 'Implemented the change.' } }],
+        executions: [{ run_id: 'child-1', node_id: 'report', stage_index: 3, attempt: 0, status: { status: 'completed', decision: 'done', notes: 'Implemented the change.' } }],
       }],
     })
     expect(visits).toHaveLength(1)
@@ -219,11 +229,11 @@ describe('buildRunVisits', () => {
     const visits = build({
       journal: [...stage('start', 0)],
       executions: [
-        execution('start', 0, { outcome: 'success' }),
+        execution('start', 0, { status: 'completed', decision: 'next' }),
         // The post-run result summary: stage 0, never in the journal, not a flow node.
-        execution('result_summary', 0, { outcome: 'success', notes: 'Summary.' }),
+        execution('result_summary', 0, { status: 'completed', decision: 'done', notes: 'Summary.' }),
         // An exit node that ran without stage events is still a visit.
-        execution('done', 1, { outcome: 'success' }),
+        execution('done', 1, { status: 'completed', decision: 'done' }),
       ],
     })
     expect(visits.map((visit) => visit.label)).toEqual(['Start', 'Done'])
@@ -241,10 +251,10 @@ describe('buildRunVisits', () => {
     ]
     const visits = build({ journal })
     expect(visits.map((visit) => [visit.label, visit.parentKey === null ? 0 : 1, visit.outcome])).toEqual([
-      ['Fan out', 0, 'succeeded'],
-      ['Lint', 1, 'succeeded'],
-      ['Typecheck', 1, 'did_not_pass'],
-      ['Done', 0, 'succeeded'],
+      ['Fan out', 0, 'completed'],
+      ['Lint', 1, 'completed'],
+      ['Typecheck', 1, 'error'],
+      ['Done', 0, 'completed'],
     ])
     expect(visits[1].parentKey).toBe(visits[0].key)
     expect(visits[0].next?.key).toBe(visits[3].key)
@@ -258,39 +268,39 @@ describe('buildRunVisits', () => {
       started('fan_out', 0),
       event('ParallelBranchStarted', { node_id: 'fan_out', branch: 'first', index: 0 }),
       branchNode('ParallelBranchNodeStarted', 'first'),
-      branchNode('ParallelBranchNodeCompleted', 'first', { outcome: 'success' }),
+      branchNode('ParallelBranchNodeCompleted', 'first', { outcome: 'completed' }),
       branchNode('ParallelBranchNodeStarted', 'second'),
     ]
     const running = build({ journal, runStatus: 'running' })
     // Only the node the branch is on now is running, so only it can be steered.
     expect(running.map((visit) => [visit.label, visit.parentKey === running[0].key, visit.outcome])).toEqual([
       ['Fan out', false, 'running'],
-      ['First', true, 'succeeded'],
+      ['First', true, 'completed'],
       ['Second', true, 'running'],
     ])
 
     const done = build({
       journal: [
         ...journal,
-        branchNode('ParallelBranchNodeCompleted', 'second', { outcome: 'fail' }),
+        branchNode('ParallelBranchNodeCompleted', 'second', { outcome: 'error' }),
         event('ParallelBranchCompleted', { node_id: 'fan_out', branch: 'first', index: 0, success: false }),
         completed('fan_out', 0),
       ],
       runStatus: 'completed',
     })
-    expect(done.map((visit) => visit.outcome)).toEqual(['succeeded', 'succeeded', 'did_not_pass'])
+    expect(done.map((visit) => visit.outcome)).toEqual(['completed', 'completed', 'error'])
   })
 
   it('adds a visit as live data arrives and then completes it', () => {
-    const journal = [...stage('start', 0), ...stage('evaluate', 1, 'fail')]
+    const journal = [...stage('start', 0), ...stage('evaluate', 1, 'error')]
     const before = build({ journal, runStatus: 'running' })
-    expect(summarize(before)).toEqual(['Start 1/1 succeeded', 'Evaluate 1/1 did_not_pass'])
+    expect(summarize(before)).toEqual(['Start 1/1 completed done', 'Evaluate 1/1 error'])
 
     const withStart = [...journal, started('evaluate', 2)]
     const running = build({ journal: withStart, runStatus: 'running' })
     expect(summarize(running)).toEqual([
-      'Start 1/1 succeeded',
-      'Evaluate 1/2 did_not_pass ↩',
+      'Start 1/1 completed done',
+      'Evaluate 1/2 error ↩',
       'Evaluate 2/2 running',
     ])
     expect(running[2].endedAt).toBeNull()
@@ -298,16 +308,37 @@ describe('buildRunVisits', () => {
     const finished = build({
       journal: [...withStart, completed('evaluate', 2)],
       runStatus: 'running',
-      executions: [execution('evaluate', 2, { outcome: 'success', notes: 'Approved.', context_updates: { 'context.review.summary': null } })],
+      executions: [execution('evaluate', 2, { status: 'completed', decision: 'approve', notes: 'Approved.', context_updates: { 'context.review.summary': null } })],
     })
-    expect(summarize(finished)[2]).toBe('Evaluate 2/2 succeeded')
+    // The execution's status.json decision wins over the journal's.
+    expect(summarize(finished)[2]).toBe('Evaluate 2/2 completed approve')
     expect(finished[2].reason).toBe('Approved.')
     expect(visitContextWrites(finished[2]).writes).toEqual([['context.review.summary', null]])
   })
 
+  it('reads each declared branch result, with failed, canceled and terminal-result evidence', () => {
+    const results = [
+      { id: 'lint', index: 0, status: 'completed', started: true, context: {}, route_trace: ['lint'], decisions: [{ node: 'lint', decision: 'done', target: 'end' }], notes: 'clean' },
+      { id: 'typecheck', index: 1, status: 'error', started: true, context: {}, route_trace: ['typecheck'], decisions: [], notes: '', error: { node: 'typecheck', kind: 'runtime', tolerable: false, reason: 'tsc exited 2', attempts: 3 } },
+      { id: 'review', index: 2, status: 'terminal_result', started: true, context: {}, route_trace: ['review'], decisions: [], notes: '', terminal: { exit_id: 'stop', result: { name: 'blocked', outcome: 'failure' }, branch: 'review', branch_index: 2, node: 'review', decision: 'block', notes: '' } },
+      { id: 'docs', index: 3, status: 'canceled', started: false, context: {}, route_trace: [], decisions: [], notes: '' },
+    ]
+    const [fanOut] = build({
+      journal: stage('fan_out', 0),
+      executions: [execution('fan_out', 0, { status: 'error', failure_kind: 'runtime', tolerable: false, context_updates: { 'parallel.results': results } })],
+    })
+    expect(parallelBranchResults(fanOut)).toEqual([
+      { id: 'lint', index: 0, status: 'completed', decisions: [{ node: 'lint', decision: 'done', target: 'end' }], notes: 'clean', error: null, terminal: null },
+      { id: 'typecheck', index: 1, status: 'error', decisions: [], notes: null, error: { node: 'typecheck', kind: 'runtime', tolerable: false, reason: 'tsc exited 2', attempts: 3 }, terminal: null },
+      { id: 'review', index: 2, status: 'terminal_result', decisions: [], notes: null, error: null, terminal: { exitId: 'stop', name: 'blocked', outcome: 'failure', node: 'review' } },
+      { id: 'docs', index: 3, status: 'canceled', decisions: [], notes: null, error: null, terminal: null },
+    ])
+    expect(parallelBranchResults({ status: { context_updates: {} } })).toEqual([])
+  })
+
   it('keeps visits known only from the executions list', () => {
-    const visits = build({ executions: [execution('done', 7, { outcome: 'success' })] })
-    expect(summarize(visits)).toEqual(['Done 1/1 succeeded'])
+    const visits = build({ executions: [execution('done', 7, { status: 'completed', decision: 'done' })] })
+    expect(summarize(visits)).toEqual(['Done 1/1 completed done'])
     expect(visits[0].startedAt).toBeNull()
   })
 })
@@ -325,9 +356,9 @@ describe('visit transcript', () => {
     const [visit] = build({ journal: stage('evaluate', 2) })
     const entries = visitTranscriptEntries(visit, [
       segment({ id: 'a', order: 1 }),
-      segment({ id: 'b', order: 2, content: '{"outcome":"fail","context_updates":{}}' }),
-      segment({ id: 'c', order: 3, kind: 'plan', content: '```json\n{"outcome":"success"}\n```' }),
-      segment({ id: 'd', order: 4, kind: 'user_message', role: 'user', content: '{"outcome":"retry"}' }),
+      segment({ id: 'b', order: 2, content: '{"decision":"revise","context_updates":{}}' }),
+      segment({ id: 'c', order: 3, kind: 'plan', content: '```json\n{"decision":"done"}\n```' }),
+      segment({ id: 'd', order: 4, kind: 'user_message', role: 'user', content: '{"decision":"done"}' }),
       segment({ id: 'other-visit', stage_index: 4 }),
     ])
     expect(entries.map((entry) => entry.id)).toEqual(['a'])
