@@ -237,6 +237,74 @@ fn blocked_selection(
     }
 }
 
+pub const NO_MATCHING_ROUTE: &str = "no_matching_route";
+
+/// Why a non-exit node whose result selected no route fails its run. A
+/// visit-limit selection keeps its reason; a failed result keeps its own
+/// reason with the unmatched-route details appended.
+pub fn unmatched_route_reason(
+    flow: &FlowDefinition,
+    node_id: &str,
+    outcome: &Outcome,
+    prior_status: Option<OutcomeStatus>,
+    prior_preferred_label: &str,
+    selection: &NextNodeSelection,
+) -> Result<String> {
+    if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+        return Ok(selection.reason.clone());
+    }
+    let result = |outcome: &Outcome| {
+        format!(
+            "status {:?} label {:?}",
+            outcome.status.as_str(),
+            outcome.preferred_label
+        )
+    };
+    let mut details = format!(
+        "{NO_MATCHING_ROUTE}: node {node_id:?} result {}",
+        result(outcome)
+    );
+    let effective = routing_outcome_for_node_with_prior(
+        flow,
+        node_id,
+        outcome,
+        prior_status,
+        prior_preferred_label,
+    );
+    if (effective.status, effective.preferred_label.as_str())
+        != (outcome.status, outcome.preferred_label.as_str())
+    {
+        details.push_str(&format!("; effective result {}", result(&effective)));
+    }
+    let routes = outgoing_routing_edges(flow, node_id)?
+        .iter()
+        .map(|edge| {
+            format!(
+                "-> {:?} condition {:?} label {:?} weight {}",
+                edge.target.as_str(),
+                edge.condition_text(),
+                edge.label,
+                edge.weight
+            )
+        })
+        .collect::<Vec<_>>();
+    details.push_str(&format!("; routes [{}]", routes.join(", ")));
+    Ok(if outcome.status == OutcomeStatus::Fail {
+        format!("{}; {details}", stage_failure_reason(outcome))
+    } else {
+        details
+    })
+}
+
+pub fn stage_failure_reason(outcome: &Outcome) -> String {
+    let reason = outcome.failure_reason.trim();
+    if reason.is_empty() {
+        "stage_failed".to_string()
+    } else {
+        reason.to_string()
+    }
+}
+
 pub fn is_conditional_node(flow: &FlowDefinition, node_id: &str) -> bool {
     crate::flow_runtime::is_conditional_node(flow, node_id)
 }

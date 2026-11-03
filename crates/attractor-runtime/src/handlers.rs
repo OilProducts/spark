@@ -40,8 +40,8 @@ use crate::executor::{
 };
 use crate::paths::RunRootPaths;
 use crate::routing::{
-    mark_unavailable_routes, outgoing_routing_edges, select_next_node_with_prior,
-    VISIT_LIMIT_REACHED,
+    is_exit_node, mark_unavailable_routes, outgoing_routing_edges, select_next_node_with_prior,
+    stage_failure_reason, unmatched_route_reason, VISIT_LIMIT_REACHED,
 };
 
 pub const HANDLER_START: &str = "start";
@@ -2132,6 +2132,13 @@ impl RuntimeHandlerRunner {
                     })?;
                     in_flight -= 1;
 
+                    // A branch without a route fails the parallel node even
+                    // after its policies stopped accepting results.
+                    if let Err(error) = &completion.result {
+                        if error.unmatched_route {
+                            return Err(error.clone());
+                        }
+                    }
                     if accepting_results {
                         let payload = completion.result?;
                         let success = branch_succeeded(&payload);
@@ -2266,6 +2273,8 @@ impl RuntimeHandlerRunner {
             ))?;
             let raw_outcome = match self.execute_request(request) {
                 Ok(outcome) => outcome,
+                // A nested branch without a route fails this one's owner too.
+                Err(error) if error.unmatched_route => return Err(error),
                 Err(error) => handler_error_outcome(error),
             };
             emit_node_event(parallel_branch_node_completed_event(
@@ -2309,40 +2318,43 @@ impl RuntimeHandlerRunner {
                 &visits,
             )
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            let Some(next_node) = selection.selected_node else {
-                if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+            let Some(next_node) = selection.selected_node.clone() else {
+                if is_exit_node(&runtime.flow, &current_node) {
                     return Ok(branch_payload(
                         start_node,
-                        "failed",
-                        None,
+                        "completed",
+                        Some("success"),
                         &current_node,
                         &completed_nodes,
                         &context,
                         &node_outcomes,
-                        &selection.reason,
+                        "",
                     ));
                 }
-                if outcome.status == OutcomeStatus::Fail {
-                    return Ok(branch_payload(
-                        start_node,
-                        "failed",
-                        None,
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &node_outcomes,
-                        &stage_failure_reason(&outcome),
-                    ));
+                let reason = unmatched_route_reason(
+                    &runtime.flow,
+                    &current_node,
+                    &outcome,
+                    prior_status,
+                    &prior_preferred_label,
+                    &selection,
+                )
+                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+                // A visit limit keeps its legacy failed branch, which the join
+                // and error policies weigh. Any unmatched result, failed or
+                // not, fails the owning run whatever its policies.
+                if !selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+                    return Err(RuntimeNodeError::unmatched_route(reason));
                 }
                 return Ok(branch_payload(
                     start_node,
-                    "completed",
-                    Some("success"),
+                    "failed",
+                    None,
                     &current_node,
                     &completed_nodes,
                     &context,
                     &node_outcomes,
-                    "",
+                    &reason,
                 ));
             };
             current_node = next_node;
@@ -2456,6 +2468,7 @@ impl NodeExecutor for RuntimeHandlerRunner {
             self.execute_request(request)
         })) {
             Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(error)) if error.unmatched_route => Err(error),
             Ok(Err(error)) => Ok(handler_error_outcome(error)),
             Err(payload) => Ok(Outcome {
                 status: OutcomeStatus::Fail,
@@ -3151,15 +3164,6 @@ fn branch_failed(payload: &Value) -> bool {
     let outcome = object_string(payload, "outcome");
     status.eq_ignore_ascii_case("failed")
         || (status.eq_ignore_ascii_case("completed") && outcome.eq_ignore_ascii_case("failure"))
-}
-
-fn stage_failure_reason(outcome: &Outcome) -> String {
-    let reason = outcome.failure_reason.trim();
-    if reason.is_empty() {
-        "stage_failed".to_string()
-    } else {
-        reason.to_string()
-    }
 }
 
 fn normalize_parallel_results(raw: &Value) -> Vec<Value> {

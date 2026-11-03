@@ -32,7 +32,8 @@ use crate::retry::{
 use crate::routing::{
     first_target_with_visits_left, is_conditional_node, is_exit_node, mark_unavailable_routes,
     max_visits, outgoing_routing_edges, resolve_start_node, select_exhausted_route_with_prior,
-    select_next_node_with_prior, NextNodeSelection, VISIT_LIMIT_REACHED,
+    select_next_node_with_prior, stage_failure_reason, unmatched_route_reason, NextNodeSelection,
+    VISIT_LIMIT_REACHED,
 };
 use crate::store::{CreateRunRequest, RunStore};
 use crate::terminal::{
@@ -131,6 +132,10 @@ pub struct RuntimeNodeError {
     pub retryable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<FailureKind>,
+    /// A parallel branch selected no route: the owning run fails, without
+    /// retrying the node or following its routes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unmatched_route: bool,
 }
 
 impl RuntimeNodeError {
@@ -139,6 +144,7 @@ impl RuntimeNodeError {
             message: message.into(),
             retryable: Some(true),
             failure_kind: Some(FailureKind::Runtime),
+            unmatched_route: false,
         }
     }
 
@@ -147,6 +153,14 @@ impl RuntimeNodeError {
             message: message.into(),
             retryable: Some(false),
             failure_kind: Some(FailureKind::Runtime),
+            unmatched_route: false,
+        }
+    }
+
+    pub fn unmatched_route(message: impl Into<String>) -> Self {
+        Self {
+            unmatched_route: true,
+            ..Self::terminal(message)
         }
     }
 }
@@ -345,46 +359,59 @@ where
                 // Only a completion of this visit routes onward; an earlier
                 // visit's completion leaves this one pending. A prepared retry
                 // names this exact invocation and still needs execution/recovery.
-                if context.get(COMPLETED_VISIT_KEY)
-                    == Some(&completed_visit(&current_node, &visit_counts))
-                    && !crate::retry::retry_authorizes_checkpoint(
+                let completed = context
+                    .get(COMPLETED_VISIT_KEY)
+                    .and_then(|value| serde_json::from_value::<CompletedVisit>(value.clone()).ok())
+                    .filter(|completed| {
+                        completed.node == current_node
+                            && Some(completed.visit) == visit_counts.get(&current_node).copied()
+                    });
+                if let Some(completed) = completed.filter(|_| {
+                    !crate::retry::retry_authorizes_checkpoint(
                         &checkpoint.context,
                         &run_id,
                         &current_node,
                         completed_nodes.len() as u64,
                     )
-                {
-                    let resume_outcome = resume_outcome_for_node(&current_node, &context);
+                }) {
+                    // Route the stored result exactly as the uninterrupted
+                    // visit would have, without executing the node again.
                     let selection = select_route_after_outcome(
                         &flow,
                         &current_node,
-                        &resume_outcome,
+                        &completed.outcome,
                         &context,
-                        None,
-                        "",
+                        completed.prior_status,
+                        &completed.prior_preferred_label,
                         &visit_counts,
                     )?;
                     let Some(next_node) = selection.selected_node.clone() else {
-                        if selection.reason.starts_with(VISIT_LIMIT_REACHED) {
-                            return finalize_failed(
-                                &store,
-                                &paths,
-                                &run_id,
-                                &mut record,
-                                &mut self.node_executor,
-                                &flow,
-                                &current_node,
-                                &completed_nodes,
-                                &context,
-                                &retry_counts,
-                                &visit_counts,
-                                &node_outcomes,
-                                &route_trace,
-                                selection.reason,
-                                0,
-                            );
-                        }
-                        return terminal_checkpoint_result(&checkpoint, &flow);
+                        let reason = unmatched_route_reason(
+                            &flow,
+                            &current_node,
+                            &completed.outcome,
+                            completed.prior_status,
+                            &completed.prior_preferred_label,
+                            &selection,
+                        )?;
+                        return finalize_failed_unless_canceled(
+                            true,
+                            &store,
+                            &paths,
+                            &run_id,
+                            &mut record,
+                            &mut self.node_executor,
+                            &flow,
+                            &current_node,
+                            &completed_nodes,
+                            &context,
+                            &retry_counts,
+                            &visit_counts,
+                            &node_outcomes,
+                            &route_trace,
+                            reason,
+                            0,
+                        );
                     };
                     current_node = next_node;
                     record_visit(&mut visit_counts, &current_node);
@@ -632,6 +659,7 @@ where
                     completed_nodes.len() as u64,
                     0,
                     &Outcome::new(OutcomeStatus::Success),
+                    false,
                     &mut status_transitions,
                     &mut artifact_node_ids,
                 )?;
@@ -746,16 +774,22 @@ where
             // A response is written before the checkpoint advances. On
             // recovery, consume that durable accepted response instead of
             // invoking the node a second time in this crash window.
-            let raw_outcome = if resumed {
-                durable_outcome(&store, &paths, &current_node, node, stage_index, attempt)
+            // The durable status keeps whether a branch selected no route, so
+            // recovery fails the run exactly as the original execution did.
+            let durable = if resumed {
+                durable_status(&store, &paths, &current_node, node, stage_index, attempt)
             } else {
                 None
-            }
-            .unwrap_or_else(|| {
+            };
+            let mut unmatched_branch = durable.as_ref().is_some_and(|(_, unmatched)| *unmatched);
+            let raw_outcome = durable.map(|(outcome, _)| outcome).unwrap_or_else(|| {
                 match catch_unwind(AssertUnwindSafe(|| {
                     self.node_executor.execute(execution_request)
                 })) {
-                    Ok(result) => result.unwrap_or_else(outcome_from_node_error),
+                    Ok(result) => result.unwrap_or_else(|error| {
+                        unmatched_branch = error.unmatched_route;
+                        outcome_from_node_error(error)
+                    }),
                     Err(payload) => outcome_from_node_error(RuntimeNodeError::runtime(
                         panic_payload_message(payload),
                     )),
@@ -803,6 +837,7 @@ where
                 stage_index,
                 attempt,
                 &outcome,
+                unmatched_branch,
                 &mut status_transitions,
                 &mut artifact_node_ids,
             )?;
@@ -810,7 +845,7 @@ where
             let policy = retry_policy_for_outcome(&flow, &current_node, &outcome);
             let max_retries = policy.max_attempts.saturating_sub(1);
             let retries_so_far = retry_counts.get(&current_node).copied().unwrap_or(0);
-            if should_retry_attempt(&outcome, retries_so_far, &policy) {
+            if !unmatched_branch && should_retry_attempt(&outcome, retries_so_far, &policy) {
                 let next_attempt = retries_so_far.saturating_add(1);
                 retry_counts.insert(current_node.clone(), next_attempt);
                 set_runtime_retry_context(
@@ -856,9 +891,10 @@ where
                 continue;
             }
 
-            // An exhausted runtime failure stops the run before partial
-            // acceptance, completion, or any outcome=fail route.
-            if is_runtime_failure(&outcome) {
+            // An exhausted runtime failure, or a branch without a route,
+            // stops the run before partial acceptance, completion, or any
+            // outcome=fail route.
+            if is_runtime_failure(&outcome) || unmatched_branch {
                 clear_runtime_retry_context(&mut context)?;
                 let reason = stage_failure_reason(&outcome);
                 store.append_event(
@@ -872,7 +908,8 @@ where
                         None,
                     ),
                 )?;
-                return finalize_failed(
+                return finalize_failed_unless_canceled(
+                    unmatched_branch,
                     &store,
                     &paths,
                     &run_id,
@@ -913,6 +950,7 @@ where
                     stage_index,
                     attempt,
                     &outcome,
+                    false,
                     &mut status_transitions,
                     &mut artifact_node_ids,
                 )?;
@@ -953,7 +991,17 @@ where
             completed_nodes.push(current_node.clone());
             context.set(
                 COMPLETED_VISIT_KEY,
-                completed_visit(&current_node, &visit_counts),
+                json!(CompletedVisit {
+                    node: current_node.clone(),
+                    visit: visit_counts.get(&current_node).copied().unwrap_or(0),
+                    outcome: Outcome {
+                        context_updates: ContextMap::new(),
+                        raw_response_text: String::new(),
+                        ..outcome.clone()
+                    },
+                    prior_status,
+                    prior_preferred_label: prior_preferred_label.clone(),
+                }),
             )?;
             refresh_record_usage(&store, &paths, &mut record);
             // Fold usage into the record on disk without clobbering it: the
@@ -1006,44 +1054,19 @@ where
                 &prior_preferred_label,
                 &visit_counts,
             )?;
-            let Some(next_node) = selection.selected_node else {
-                // An exhausted target with no other route fails whatever the outcome.
-                let visit_limited = selection.reason.starts_with(VISIT_LIMIT_REACHED);
-                if outcome.status == OutcomeStatus::Fail || visit_limited {
-                    let reason = if visit_limited {
-                        selection.reason
-                    } else {
-                        stage_failure_reason(&outcome)
-                    };
-                    save_checkpoint_event(
-                        &store,
-                        &paths,
-                        &run_id,
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &retry_counts,
-                        &visit_counts,
-                    )?;
-                    return finalize_failed(
-                        &store,
-                        &paths,
-                        &run_id,
-                        &mut record,
-                        &mut self.node_executor,
-                        &flow,
-                        &current_node,
-                        &completed_nodes,
-                        &context,
-                        &retry_counts,
-                        &visit_counts,
-                        &node_outcomes,
-                        &route_trace,
-                        reason,
-                        artifact_node_ids.len(),
-                    );
-                }
-                return finalize_completed(
+            let Some(next_node) = selection.selected_node.clone() else {
+                // Only an exit ends a run successfully; a non-exit node
+                // without a route fails it, whatever its outcome.
+                let reason = unmatched_route_reason(
+                    &flow,
+                    &current_node,
+                    &outcome,
+                    prior_status,
+                    &prior_preferred_label,
+                    &selection,
+                )?;
+                return finalize_failed_unless_canceled(
+                    true,
                     &store,
                     &paths,
                     &run_id,
@@ -1057,9 +1080,7 @@ where
                     &visit_counts,
                     &node_outcomes,
                     &route_trace,
-                    "success",
-                    None,
-                    None,
+                    reason,
                     artifact_node_ids.len(),
                 );
             };
@@ -1325,76 +1346,6 @@ fn context_value_has_text(value: &serde_json::Value) -> bool {
     }
 }
 
-fn resume_outcome_for_node(node_id: &str, context: &AttractorContext) -> Outcome {
-    let status = context
-        .get(crate::context::NODE_OUTCOMES_KEY)
-        .and_then(|value| value.as_object())
-        .and_then(|outcomes| outcomes.get(node_id))
-        .and_then(|value| value.as_str())
-        .and_then(|value| value.trim().parse::<OutcomeStatus>().ok())
-        .or_else(|| {
-            context
-                .get(OUTCOME_KEY)
-                .and_then(|value| value.as_str())
-                .and_then(|value| value.trim().parse::<OutcomeStatus>().ok())
-        })
-        .unwrap_or(OutcomeStatus::Success);
-    Outcome {
-        status,
-        preferred_label: context
-            .get(PREFERRED_LABEL_KEY)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        ..Outcome::new(status)
-    }
-}
-
-fn terminal_checkpoint_result(
-    checkpoint: &CheckpointState,
-    flow: &FlowDefinition,
-) -> Result<PipelineExecutionResult> {
-    let completed_nodes = checkpoint
-        .completed_nodes
-        .iter()
-        .filter(|node_id| flow.nodes.contains_key(node_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let outcome = checkpoint
-        .context
-        .get(OUTCOME_KEY)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let status = if outcome.as_deref() == Some("fail") {
-        "failed"
-    } else {
-        "completed"
-    };
-    Ok(PipelineExecutionResult {
-        status: status.to_string(),
-        current_node: checkpoint.current_node.clone(),
-        completed_nodes,
-        context: checkpoint.context.clone(),
-        node_outcomes: BTreeMap::new(),
-        route_trace: vec![checkpoint.current_node.clone()],
-        failure_reason: if status == "failed" {
-            checkpoint
-                .context
-                .get("failure_reason")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            String::new()
-        },
-        outcome,
-        outcome_reason_code: None,
-        outcome_reason_message: None,
-    })
-}
-
 fn ensure_run_record_defaults(record: &mut RunRecord) -> String {
     if record.run_id.trim().is_empty() {
         record.run_id = format!(
@@ -1468,6 +1419,7 @@ fn write_stage_artifacts(
     stage_index: u64,
     attempt: u64,
     outcome: &Outcome,
+    unmatched_route: bool,
     status_transitions: &mut BTreeMap<String, Vec<String>>,
     artifact_node_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
@@ -1488,6 +1440,9 @@ fn write_stage_artifacts(
     }
     if let Some(retryable) = outcome.retryable {
         status["retryable"] = json!(retryable);
+    }
+    if unmatched_route {
+        status["unmatched_route"] = json!(true);
     }
     store.write_node_artifacts(
         paths,
@@ -1522,6 +1477,18 @@ pub fn durable_outcome(
     stage_index: u64,
     attempt: u64,
 ) -> Option<Outcome> {
+    durable_status(store, paths, node_id, node, stage_index, attempt).map(|(outcome, _)| outcome)
+}
+
+/// The durable outcome and whether it records a branch without a route.
+fn durable_status(
+    store: &RunStore,
+    paths: &crate::paths::RunRootPaths,
+    node_id: &str,
+    node: &attractor_core::FlowNode,
+    stage_index: u64,
+    attempt: u64,
+) -> Option<(Outcome, bool)> {
     let root = store
         .node_execution_root(paths, node_id, stage_index, attempt)
         .ok()?;
@@ -1538,6 +1505,8 @@ pub fn durable_outcome(
         retryable: Option<bool>,
         #[serde(default)]
         failure_kind: Option<attractor_core::FailureKind>,
+        #[serde(default)]
+        unmatched_route: bool,
     }
     let status: DurableStatus =
         serde_json::from_str(&std::fs::read_to_string(root.join("status.json")).ok()?).ok()?;
@@ -1553,7 +1522,7 @@ pub fn durable_outcome(
         raw_response_text: std::fs::read_to_string(root.join("response.md")).ok()?,
     };
     crate::context::outcome_satisfies_context_contract_for_node(node_id, node, &outcome)
-        .then_some(outcome)
+        .then_some((outcome, status.unmatched_route))
 }
 
 fn select_route_after_outcome(
@@ -1649,8 +1618,15 @@ fn select_route_after_outcome(
 /// can tell a completed checkpointed visit from a pending one.
 const COMPLETED_VISIT_KEY: &str = "_attractor.runtime.completed_visit";
 
-fn completed_visit(node_id: &str, visits: &BTreeMap<String, u64>) -> serde_json::Value {
-    json!({"node": node_id, "visit": visits.get(node_id).copied().unwrap_or(0)})
+/// A finished visit and what routing it needs: its result and the result a
+/// conditional node inherits.
+#[derive(Serialize, Deserialize)]
+struct CompletedVisit {
+    node: String,
+    visit: u64,
+    outcome: Outcome,
+    prior_status: Option<OutcomeStatus>,
+    prior_preferred_label: String,
 }
 
 /// Counts one routing entry into `node_id`.
@@ -1887,6 +1863,47 @@ fn finalize_failed<E: NodeExecutor>(
     failure_reason: String,
     artifact_count: usize,
 ) -> Result<PipelineExecutionResult> {
+    finalize_failed_unless_canceled(
+        false,
+        store,
+        paths,
+        run_id,
+        record,
+        node_executor,
+        flow,
+        current_node,
+        completed_nodes,
+        context,
+        retry_counts,
+        visit_counts,
+        node_outcomes,
+        route_trace,
+        failure_reason,
+        artifact_count,
+    )
+}
+
+/// `finalize_failed`, except that with `honor_cancel` a cancellation
+/// persisted while the node ran wins, as it does over completion.
+#[allow(clippy::too_many_arguments)]
+fn finalize_failed_unless_canceled<E: NodeExecutor>(
+    honor_cancel: bool,
+    store: &RunStore,
+    paths: &crate::paths::RunRootPaths,
+    run_id: &str,
+    record: &mut RunRecord,
+    node_executor: &mut E,
+    flow: &FlowDefinition,
+    current_node: &str,
+    completed_nodes: &[String],
+    context: &AttractorContext,
+    retry_counts: &BTreeMap<String, u64>,
+    visit_counts: &BTreeMap<String, u64>,
+    node_outcomes: &BTreeMap<String, Outcome>,
+    route_trace: &[String],
+    failure_reason: String,
+    artifact_count: usize,
+) -> Result<PipelineExecutionResult> {
     let checkpoint = save_checkpoint_event(
         store,
         paths,
@@ -1897,6 +1914,30 @@ fn finalize_failed<E: NodeExecutor>(
         retry_counts,
         visit_counts,
     )?;
+    // Hold the record lock from the check through the failed write, so a
+    // cancel accepted in between cannot be overwritten.
+    let lock = crate::records::lock_run_record(paths)?;
+    if honor_cancel
+        && store
+            .read_run_record(paths)?
+            .is_some_and(|record| record.status == "cancel_requested")
+    {
+        drop(lock);
+        return finalize_canceled(
+            store,
+            paths,
+            run_id,
+            record,
+            current_node,
+            completed_nodes,
+            context,
+            retry_counts,
+            visit_counts,
+            node_outcomes,
+            route_trace,
+            "aborted_by_user",
+        );
+    }
     record.status = "failed".to_string();
     record.outcome = None;
     record.outcome_reason_code = None;
@@ -1905,6 +1946,7 @@ fn finalize_failed<E: NodeExecutor>(
     record.last_error = failure_reason.clone();
     refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
+    drop(lock);
     store.append_event(
         paths,
         runtime_status_event(
@@ -2044,13 +2086,4 @@ fn finalize_canceled(
         outcome_reason_code: None,
         outcome_reason_message: None,
     })
-}
-
-fn stage_failure_reason(outcome: &Outcome) -> String {
-    let reason = outcome.failure_reason.trim();
-    if reason.is_empty() {
-        "stage_failed".to_string()
-    } else {
-        reason.to_string()
-    }
 }
