@@ -600,3 +600,28 @@ fn transcript_cursor_never_consumes_an_in_flight_append() {
     assert!(records.is_empty());
     assert_eq!(past, len);
 }
+
+#[test]
+fn sync_flushes_existing_logs_without_changing_them_and_skips_missing_ones() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repository = ActivityRepository::new(temp.path());
+    repository.sync().expect("sync with no logs");
+    assert!(!repository.events_path().exists());
+    assert!(!repository.transcript_path().exists());
+
+    let event = repository
+        .append_event(json!({"type": "turn_completed"}), "now")
+        .expect("event");
+    repository
+        .append_transcript(&turn_record(1, event.sequence))
+        .expect("transcript");
+    let events = std::fs::read(repository.events_path()).unwrap();
+    let transcript = std::fs::read(repository.transcript_path()).unwrap();
+
+    repository.sync().expect("sync existing logs");
+    assert_eq!(std::fs::read(repository.events_path()).unwrap(), events);
+    assert_eq!(
+        std::fs::read(repository.transcript_path()).unwrap(),
+        transcript
+    );
+}

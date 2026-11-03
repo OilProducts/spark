@@ -188,7 +188,9 @@ impl ActivityRepository {
     /// before publishing state that refers to the appended records.
     pub fn sync(&self) -> Result<()> {
         for path in [self.events_path(), self.transcript_path()] {
-            match fs::File::open(&path) {
+            // Windows `sync_all` (FlushFileBuffers) needs write access; no
+            // create or truncate, so a missing log stays missing.
+            match fs::OpenOptions::new().write(true).open(&path) {
                 Ok(file) => file
                     .sync_all()
                     .map_err(|error| activity_io("sync", &path, error))?,
