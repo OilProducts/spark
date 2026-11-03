@@ -196,3 +196,44 @@ it('drops a run journal entry repeated because the server subscribes before read
     window.removeEventListener('spark:run-journal-entry', onEntry)
     expect(received).toEqual([{ sequence: 1 }, { sequence: 2 }, { sequence: 3 }])
 })
+
+it('a project\'s HTTP thread list loaded before the feed\'s snapshot never starts the feed\'s cursor', async () => {
+    const { applySummarySnapshotToCache } = await import('@/features/projects/model/projectsHomeState')
+    const { parseConversationSummarySnapshotResponse } = await import('@/lib/workspaceClient')
+    render(<WorkspaceLiveEventsController />)
+    // Another project already has a conversation at a revision below the filtered watermark.
+    useStore.getState().commitHomeConversationCache((current) => applySummarySnapshotToCache(
+        current,
+        parseConversationSummarySnapshotResponse(summarySnapshot([summary('a', '/a', 40)], { project_path: '/a', watermark: '100' })),
+        'http',
+        '/a',
+    ))
+    expect(useStore.getState().homeConversationCache.summaryCursor ?? null).toBeNull()
+    // The feed fails before its snapshot; the reconnect still asks for one.
+    const source = await reconnect()
+    expect(params(source).has('conversations_generation')).toBe(false)
+    expect(params(source).has('conversations_revision')).toBe(false)
+    emit(snapshotEnvelope([summary('a', '/a', 40), summary('b', '/b', 50)], '100'))
+    expect(listed('/b')).toEqual([['b', 'Chat b', '50']])
+    expect(useStore.getState().homeConversationCache.summaryCursor).toEqual({ generation: TEST_GENERATION, watermark: '100' })
+})
+
+it('after a summary reset, a snapshot from a new store generation replaces every old row and tombstone', () => {
+    seedConversation('open', '/p', 2)
+    render(<WorkspaceLiveEventsController />)
+    emit(snapshotEnvelope([summary('a', '/p', 100, 'OLD'), summary('gone', '/q', 90)], '100'))
+    emit(changesEnvelope([tombstoneRow('conversation', 'dead', 'dead', '101')]))
+    emit(liveEnvelope('conversations.reset', reset('101')))
+    expect(useStore.getState().homeConversationCache.summaryCursor ?? null).toBeNull()
+    // The new store reuses id `a` and `dead` at low revisions; `gone` is not in it.
+    emit(liveEnvelope('conversations.snapshot', summarySnapshot(
+        [summary('a', '/p', 1, 'NEW'), summary('dead', '/p', 1, 'Reborn')],
+        { watermark: '1', generation: 'generation-new' },
+    )))
+    expect(listed('/p')).toEqual(expect.arrayContaining([['a', 'NEW', '1'], ['dead', 'Reborn', '1']]))
+    expect(listed('/p')).toHaveLength(2)
+    expect(listed('/q')).toEqual([])
+    expect(useStore.getState().homeConversationCache.summaryCursor).toEqual({ generation: 'generation-new', watermark: '1' })
+    // An open transcript is not part of the summary scope and stays.
+    expect(useStore.getState().homeConversationCache.conversationsById.open).toBeDefined()
+})

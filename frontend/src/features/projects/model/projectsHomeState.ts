@@ -99,6 +99,8 @@ export type ProjectConversationCacheState = {
     summaryTombstones?: Record<string, string>
     /** The all-projects summary feed's catch-up cursor. */
     summaryCursor?: { generation: string; watermark: string } | null
+    /** The store generation the summary rows belong to; kept when a reset clears the cursor. */
+    summaryGeneration?: string | null
     /** Conversations that were deleted or are gone after a reset. */
     unavailableConversationIds?: Record<string, true>
     // Last applied live update's stream_sequence, by turn id.
@@ -671,14 +673,13 @@ export function applySummarySnapshotToCache(
     projectPath: string | null = snapshot.project_path,
 ): ProjectConversationCacheState {
     const inScope = (path: string) => projectPath === null || path === projectPath
-    const cursor = current.summaryCursor
-    // Revisions from another store generation say nothing about this one.
-    const base = cursor && cursor.generation !== snapshot.generation
-        ? {
-            ...current,
-            summaryTombstones: {},
-            summariesByProjectPath: Object.fromEntries(Object.entries(current.summariesByProjectPath).filter(([path]) => !inScope(path))),
-        }
+    const generation = current.summaryGeneration ?? current.summaryCursor?.generation ?? null
+    // Revisions from another store generation say nothing about this one: every summary row,
+    // tombstone and the cursor of the old generation go; open transcripts stay.
+    const changedGeneration = generation !== null && generation !== snapshot.generation
+    const cursor = changedGeneration ? null : current.summaryCursor
+    const base = changedGeneration
+        ? { ...current, summaryTombstones: {}, summariesByProjectPath: {}, summaryCursor: null }
         : current
     const merged = mergeSummaryRows(base, snapshot.rows, projectPath ?? undefined)
     const listed = new Set(snapshot.rows.map((row) => row.id))
@@ -693,12 +694,18 @@ export function applySummarySnapshotToCache(
     if (projectPath !== null) {
         lists[projectPath] ??= []
     }
-    const keepsCursor = source === 'http' && cursor && cursor.generation === snapshot.generation
-        && compareRevisions(cursor.watermark, snapshot.watermark) <= 0
+    // The cursor follows the all-projects feed: a project's snapshot covers no other project's
+    // rows, so it never starts the cursor, and an HTTP snapshot only lowers it.
+    const snapshotCursor = { generation: snapshot.generation, watermark: snapshot.watermark }
+    const lowered = cursor && compareRevisions(cursor.watermark, snapshot.watermark) <= 0 ? cursor : snapshotCursor
+    const summaryCursor = source === 'live' && projectPath === null
+        ? snapshotCursor
+        : cursor ? lowered : projectPath === null ? snapshotCursor : null
     return {
         ...merged,
         summariesByProjectPath: lists,
-        summaryCursor: keepsCursor ? cursor : { generation: snapshot.generation, watermark: snapshot.watermark },
+        summaryGeneration: snapshot.generation,
+        summaryCursor,
     }
 }
 
@@ -707,6 +714,7 @@ export function applySummaryBatchToCache(current: ProjectConversationCacheState,
     const advances = !cursor || cursor.generation !== batch.generation || compareRevisions(batch.watermark, cursor.watermark) > 0
     return {
         ...mergeSummaryRows(current, batch.rows),
+        summaryGeneration: batch.generation,
         summaryCursor: advances ? { generation: batch.generation, watermark: batch.watermark } : cursor,
     }
 }

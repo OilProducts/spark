@@ -672,12 +672,43 @@ describe('summary snapshots', () => {
   it('initializes an empty list and lists across projects', () => {
     const empty = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([], '/a', '4'), 'http')
     expect(empty.summariesByProjectPath).toEqual({ '/a': [] })
-    expect(empty.summaryCursor).toEqual({ generation: 'generation-test', watermark: '4' })
+    // One project's snapshot says nothing of other projects: it never starts the all-projects cursor.
+    expect(empty.summaryCursor ?? null).toBeNull()
+    const everywhere = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([], null, '4'), 'http')
+    expect(everywhere.summaryCursor).toEqual({ generation: 'generation-test', watermark: '4' })
 
     const all = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([summary('a1', '/a', 1), summary('b1', '/b', 2), summary('a2', '/a', 3)], null, '5'), 'live')
     expect(ids(all, '/a')).toEqual(['a2', 'a1'])
     expect(ids(all, '/b')).toEqual(['b1'])
     expect(all.summariesByProjectPath['/a'][0]).toMatchObject({ revision: '3', title: 'a2' })
+  })
+
+  it('a reset keeps the generation, so a new store\'s snapshot replaces reused ids, absent rows and tombstones', () => {
+    let cache = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([
+      summary('a', '/a', 100, { title: 'OLD' }),
+      summary('gone', '/b', 90),
+    ], null, '100', 'generation-old'), 'live')
+    cache = applySummaryBatchToCache(cache, parseConversationBatchResponse(conversationBatch(
+      [tombstoneRow('conversation', 'dead', 'dead', '101')],
+      { from_revision: '100', watermark: '101', generation: 'generation-old' },
+    )))
+    cache = open(buildSnapshot({ conversation_id: 'open', project_path: '/a', revision: 2 }), cache)
+    // Exactly what a summary reset does.
+    cache = { ...cache, summaryCursor: null }
+    for (const projectPath of ['/a', null]) {
+      const replaced = applySummarySnapshotToCache(cache, snapshot([
+        summary('a', '/a', 1, { title: 'NEW' }),
+        summary('dead', '/a', 1, { title: 'Reborn' }),
+      ], projectPath, '1', 'generation-new'), projectPath === null ? 'live' : 'http')
+      expect(replaced.summariesByProjectPath['/a'].map((item) => [item.conversation_id, item.title, item.revision]))
+        .toEqual(expect.arrayContaining([['a', 'NEW', '1'], ['dead', 'Reborn', '1']]))
+      expect(replaced.summariesByProjectPath['/a']).toHaveLength(2)
+      expect(replaced.summariesByProjectPath['/b'] ?? []).toEqual([])
+      expect(replaced.summaryTombstones).toEqual({})
+      expect(replaced.summaryGeneration).toBe('generation-new')
+      expect(replaced.summaryCursor ?? null).toEqual(projectPath === null ? { generation: 'generation-new', watermark: '1' } : null)
+      expect(replaced.conversationsById.open).toBeDefined()
+    }
   })
 
   it('replaces only the snapshot\'s own project and leaves open transcripts alone', () => {
