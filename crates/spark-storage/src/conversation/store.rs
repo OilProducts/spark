@@ -186,14 +186,17 @@ impl ConversationStore {
             }
         }
         roots.sort();
+        // Directories of the same id can exist in several projects (an
+        // abandoned publication has no SQL owner); lock each id once.
+        let mut ids: Vec<&String> = roots.iter().map(|(id, _)| id).collect();
+        ids.dedup();
         let slots: Vec<_> = {
             let mut conversations = self
                 .conversations
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            roots
-                .iter()
-                .map(|(id, _)| conversations.entry(id.clone()).or_default().clone())
+            ids.into_iter()
+                .map(|id| conversations.entry(id.clone()).or_default().clone())
                 .collect()
         };
         // Sorted by conversation id, per the lock order.

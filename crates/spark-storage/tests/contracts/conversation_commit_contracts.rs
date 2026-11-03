@@ -1104,3 +1104,115 @@ fn open_store_checkpoints_writes_periodically() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+const SHARED_ID_CHILD_ENV: &str = "SPARK_SHARED_CONVERSATION_ID_CHILD";
+
+/// Two registered projects can hold conversation directories of the same
+/// id (an abandoned publication has no SQL owner). Collection and reopening
+/// must finish, so the work runs in a child process bounded by a deadline.
+#[test]
+fn collection_finishes_when_projects_share_a_conversation_directory_name() {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "conversation_commit_contracts::shared_conversation_id_collection_child",
+            "--nocapture",
+        ])
+        .env(SHARED_ID_CHILD_ENV, "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("child test");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("collection did not finish: {:?}", child.wait_with_output());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn shared_conversation_id_collection_child() {
+    if std::env::var_os(SHARED_ID_CHILD_ENV).is_none() {
+        return;
+    }
+    let (live_project, other_project) = ("/projects/shared-a", "/projects/shared-b");
+    let (temp, repo) = setup(live_project);
+    let id = "conversation-shared";
+    let big = |fill: &str| fill.repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
+    let mut tool = segment("segment-tool", "turn-assistant", ORDER_UNASSIGNED);
+    tool.kind = "tool_call".to_string();
+    tool.tool_call = Some(json!({"id": "call-live", "output": big("a")}));
+    let commit = repo
+        .commit_conversation(
+            id,
+            live_project,
+            0,
+            vec![
+                ConversationMutation::TurnUpserted {
+                    turn: assistant_turn("turn-assistant", "streaming"),
+                },
+                ConversationMutation::SegmentUpserted { segment: tool },
+            ],
+        )
+        .unwrap();
+    let mut event = serde_json::from_value(json!({
+        "kind": "tool_call_completed",
+        "tool_call": {"id": "call-replay", "output": big("b")},
+    }))
+    .unwrap();
+    let traced = repo
+        .append_provider_event(id, live_project, "turn-assistant", &mut event)
+        .unwrap();
+    let live_root = conversation_dir(&temp, live_project, id);
+    let live_blob = live_root.join(
+        commit
+            .record
+            .transcript
+            .find_segment("segment-tool")
+            .unwrap()
+            .tool_call
+            .as_ref()
+            .unwrap()["output_artifact"]
+            .as_str()
+            .unwrap(),
+    );
+    let replay_blob = live_root.join(
+        traced.event["tool_call"]["output_artifact"]
+            .as_str()
+            .unwrap(),
+    );
+    // Abandoned blobs under the same id: one beside the live conversation,
+    // one in another registered project's directory of that id.
+    let abandoned_here = live_root.join("tool-output/segment-gone.0.txt");
+    fs::write(&abandoned_here, big("c")).unwrap();
+    let other_root = conversation_dir(&temp, other_project, id);
+    fs::create_dir_all(other_root.join("tool-output")).unwrap();
+    let abandoned_there = other_root.join("tool-output/segment-gone.1.txt");
+    fs::write(&abandoned_there, big("d")).unwrap();
+
+    assert_eq!(repo.store().collect_tool_output_garbage().unwrap(), 2);
+    assert!(!abandoned_here.exists() && !abandoned_there.exists());
+    fs::write(&abandoned_there, big("d")).unwrap();
+    drop(repo);
+    let repo = ConversationRepository::new(
+        ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
+    );
+    assert!(!abandoned_there.exists());
+    assert_eq!(fs::read_to_string(&live_blob).unwrap(), big("a"));
+    assert_eq!(fs::read_to_string(&replay_blob).unwrap(), big("b"));
+    assert_eq!(
+        repo.unapplied_provider_events(id, live_project, "turn-assistant")
+            .unwrap()
+            .len(),
+        1
+    );
+}
