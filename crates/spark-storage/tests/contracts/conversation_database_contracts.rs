@@ -746,3 +746,389 @@ fn passive_checkpoint_reports_incomplete_results_and_retries() {
     let wal = database.path().with_extension("sqlite3-wal");
     assert_eq!(std::fs::metadata(wal).unwrap().len(), 0);
 }
+
+const MEASURE_PHASE_ENV: &str = "SPARK_MEASURE_PHASE";
+const MEASURE_ID: &str = "conversation-measure";
+const MEASURE_PROJECT: &str = "/projects/measure";
+
+/// Manual growth/latency measurement; no thresholds. Run with
+/// `cargo test --release --all-features -p spark-storage --test contracts -- --ignored --exact
+/// conversation_database_contracts::measure_conversation_growth_and_acceptance --nocapture`.
+/// `SPARK_MEASURE_TURNS` (default `100,10000,100000`), `SPARK_MEASURE_SYNC`
+/// (default `NORMAL,FULL`) and `SPARK_MEASURE_REPS` (default 200) select the
+/// workload. Each configuration seeds a fresh home in one process and
+/// measures it in another, so memory readings exclude seeding.
+#[test]
+#[ignore = "manual measurement"]
+fn measure_conversation_growth_and_acceptance() {
+    let env = |name: &str| std::env::var(name).ok();
+    if let Some(phase) = env(MEASURE_PHASE_ENV) {
+        let home = std::path::PathBuf::from(env("SPARK_MEASURE_HOME").expect("home"));
+        let turns: usize = env("SPARK_MEASURE_TURNS").expect("turns").parse().unwrap();
+        if phase == "seed" {
+            seed_measured_conversation(&home, turns);
+        } else {
+            let reps = env("SPARK_MEASURE_REPS").map_or(200, |reps| reps.parse().unwrap());
+            let sync = env("SPARK_MEASURE_SYNC").expect("sync");
+            println!("MEASURE {}", measure_storage(&home, turns, &sync, reps));
+        }
+        return;
+    }
+    let list = |name: &str, default: &str| -> Vec<String> {
+        env(name)
+            .unwrap_or_else(|| default.to_string())
+            .split(',')
+            .map(str::to_string)
+            .collect()
+    };
+    for turns in list("SPARK_MEASURE_TURNS", "100,10000,100000") {
+        for sync in list("SPARK_MEASURE_SYNC", "NORMAL,FULL") {
+            let temp = tempfile::tempdir().expect("tempdir");
+            for phase in ["seed", "measure"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "conversation_database_contracts::measure_conversation_growth_and_acceptance",
+                        "--nocapture",
+                    ])
+                    .env(MEASURE_PHASE_ENV, phase)
+                    .env("SPARK_MEASURE_HOME", temp.path().join("spark-home"))
+                    .env("SPARK_MEASURE_TURNS", &turns)
+                    .env("SPARK_MEASURE_SYNC", &sync)
+                    .output()
+                    .expect("measurement child");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(output.status.success(), "{stdout}\n{output:?}");
+                for line in stdout.lines().filter(|line| line.starts_with("MEASURE ")) {
+                    println!("{line}");
+                }
+            }
+        }
+    }
+}
+
+/// Resident set size of this process in KiB, from `ps`.
+fn rss_kib() -> u64 {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+/// p50/p95/p99 of `samples`, in microseconds.
+fn percentiles(samples: &mut [std::time::Duration]) -> serde_json::Value {
+    samples.sort();
+    let at = |q: f64| {
+        let index = ((q * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
+        samples[index].as_micros() as u64
+    };
+    json!({"p50_us": at(0.50), "p95_us": at(0.95), "p99_us": at(0.99), "n": samples.len()})
+}
+
+fn payload_bytes(rows: &[spark_storage::conversation::EntityRow]) -> usize {
+    rows.iter()
+        .map(|row| {
+            row.payload
+                .as_ref()
+                .map_or(0, |payload| payload.to_string().len())
+        })
+        .sum()
+}
+
+const MEASURE_TEXT: &str = "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum \
+    dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit \
+    amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet";
+
+fn measure_turn(
+    id: String,
+    role: &str,
+    status: &str,
+) -> spark_storage::conversation::TranscriptTurn {
+    spark_storage::conversation::TranscriptTurn {
+        id,
+        role: role.to_string(),
+        kind: Some("message".to_string()),
+        content: MEASURE_TEXT.to_string(),
+        status: status.to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        ..Default::default()
+    }
+}
+
+fn measure_segment(turn_id: &str) -> spark_storage::conversation::TranscriptSegment {
+    serde_json::from_value(json!({
+        "id": format!("segment-{turn_id}"), "turn_id": turn_id, "order": 0,
+        "kind": "assistant_message", "role": "assistant", "status": "complete",
+        "timestamp": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+        "content": MEASURE_TEXT,
+    }))
+    .unwrap()
+}
+
+/// One commit creates the conversation; its `turns` of history (alternating
+/// user and assistant turns, each answer with one segment) are SQL rows
+/// written in a single transaction rather than repeated commits.
+fn seed_measured_conversation(home: &std::path::Path, turns: usize) {
+    use spark_storage::conversation::ConversationMutation;
+    use spark_storage::{ConversationRepository, ConversationStore};
+    let store = ConversationStore::open(home).unwrap();
+    ConversationRepository::new(store.clone())
+        .commit_conversation(
+            MEASURE_ID,
+            MEASURE_PROJECT,
+            0,
+            vec![ConversationMutation::TurnUpserted {
+                turn: measure_turn("turn-h0".into(), "user", "complete"),
+            }],
+        )
+        .unwrap();
+    store
+        .database()
+        .write(|tx| {
+            for index in 1..turns {
+                let turn_id = format!("turn-h{index}");
+                let role = if index % 2 == 1 { "assistant" } else { "user" };
+                tx.put_turn(&TurnRow {
+                    conversation_id: MEASURE_ID.into(),
+                    id: turn_id.clone(),
+                    position: index as i64,
+                    status: "complete".into(),
+                    updated_at: "2026-01-01T00:00:00Z".into(),
+                    payload: serde_json::to_value(measure_turn(turn_id.clone(), role, "complete"))
+                        .unwrap(),
+                })?;
+                if role == "assistant" {
+                    tx.put_segment(&SegmentRow {
+                        conversation_id: MEASURE_ID.into(),
+                        id: format!("segment-{turn_id}"),
+                        turn_id: turn_id.clone(),
+                        order: 0,
+                        status: "complete".into(),
+                        updated_at: "2026-01-01T00:00:00Z".into(),
+                        payload: serde_json::to_value(measure_segment(&turn_id)).unwrap(),
+                    })?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Measure one seeded home: cold open, cold first acceptance, warm
+/// acceptance, the SQL transaction alone, page reads and checkpoints.
+fn measure_storage(
+    home: &std::path::Path,
+    turns: usize,
+    sync: &str,
+    reps: usize,
+) -> serde_json::Value {
+    use spark_storage::conversation::ConversationMutation;
+    use spark_storage::{ConversationRepository, ConversationStore};
+    use std::time::Instant;
+    let (id, project) = (MEASURE_ID, MEASURE_PROJECT);
+    let database_bytes = std::fs::metadata(home.join(CONVERSATION_DATABASE_FILE_NAME))
+        .unwrap()
+        .len();
+
+    // Cold open: the store, then the bounded newest page a browser opens.
+    let rss_before_open = rss_kib();
+    let started = Instant::now();
+    let store = ConversationStore::open(home).unwrap();
+    let store_open_us = started.elapsed().as_micros() as u64;
+    store.database().set_synchronous(sync).unwrap();
+    assert_eq!(
+        store.database().pragma("synchronous").unwrap(),
+        if sync == "FULL" { "2" } else { "1" }
+    );
+    let repo = ConversationRepository::new(store.clone());
+    let read_page = || {
+        let started = Instant::now();
+        let PageRead::Page(page) = store
+            .database()
+            .read(|read| read.page(id, 50, None))
+            .unwrap()
+        else {
+            panic!("page");
+        };
+        (started.elapsed(), page)
+    };
+    let (cold_page, page) = read_page();
+    let page_rows = page.rows.len() + 1;
+    let page_payload_bytes = payload_bytes(&page.rows);
+    let page_json_bytes = serde_json::to_vec(&page.rows).unwrap().len();
+    drop(page);
+    let rss_after_open = rss_kib();
+
+    // Acceptance: a user turn and its pending answer. The answer settles in
+    // a second, unmeasured commit, as a finished provider turn would.
+    let mut position = 0;
+    let mut accept = |base: i64, measured_status: &str, settle: bool| {
+        position += 1;
+        let assistant = format!("turn-a{position}");
+        let started = Instant::now();
+        let commit = repo
+            .commit_conversation(
+                id,
+                project,
+                base,
+                vec![
+                    ConversationMutation::TurnUpserted {
+                        turn: measure_turn(format!("turn-u{position}"), "user", "complete"),
+                    },
+                    ConversationMutation::TurnUpserted {
+                        turn: measure_turn(assistant.clone(), "assistant", measured_status),
+                    },
+                ],
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+        let mut revision = commit.revision;
+        if settle {
+            revision = repo
+                .commit_conversation(
+                    id,
+                    project,
+                    commit.revision,
+                    vec![
+                        ConversationMutation::TurnUpserted {
+                            turn: measure_turn(assistant.clone(), "assistant", "complete"),
+                        },
+                        ConversationMutation::SegmentUpserted {
+                            segment: measure_segment(&assistant),
+                        },
+                    ],
+                )
+                .unwrap()
+                .revision;
+        }
+        (elapsed, commit, revision)
+    };
+    let base = store.database().read(|read| Ok(read.watermark())).unwrap();
+    // Cold first acceptance loads the whole conversation into memory.
+    let (cold_accept, _, mut base) = accept(base, "pending", true);
+    let rss_after_cold_load = rss_kib();
+
+    let mut warm = Vec::with_capacity(reps);
+    let (mut accepted_rows, mut accepted_payload, mut accepted_json) = (0, 0, 0);
+    for _ in 0..reps {
+        let (elapsed, commit, next) = accept(base, "pending", true);
+        base = next;
+        warm.push(elapsed);
+        accepted_rows = accepted_rows.max(commit.changes.rows.len());
+        accepted_payload = accepted_payload.max(payload_bytes(&commit.changes.rows));
+        accepted_json = accepted_json.max(serde_json::to_vec(&commit.changes).unwrap().len());
+    }
+
+    // WAL frames one acceptance writes: after a complete checkpoint the next
+    // commit restarts the WAL, so the frame count is that commit's pages.
+    let page_size: u64 = store
+        .database()
+        .pragma("page_size")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut frames = Vec::new();
+    for _ in 0..20 {
+        store.database().passive_checkpoint_frames().unwrap();
+        let (_, _, next) = accept(base, "complete", false);
+        base = next;
+        frames.push(store.database().passive_checkpoint_frames().unwrap().1);
+    }
+    frames.sort();
+    let acceptance_wal_frames = frames[frames.len() / 2] as u64;
+
+    // The SQL transaction alone, with the rows an acceptance writes.
+    let mut transactions = Vec::with_capacity(reps);
+    for index in 0..reps {
+        let started = Instant::now();
+        store
+            .database()
+            .write(|tx| {
+                for (offset, role) in [(0, "user"), (1, "assistant")] {
+                    let turn_id = format!("turn-tx{index}-{role}");
+                    tx.put_turn(&TurnRow {
+                        conversation_id: id.into(),
+                        id: turn_id.clone(),
+                        position: (turns + 1_000_000 + 2 * index + offset) as i64,
+                        status: "complete".into(),
+                        updated_at: "2026-01-01T00:00:00Z".into(),
+                        payload: serde_json::to_value(measure_turn(turn_id, role, "complete"))
+                            .unwrap(),
+                    })?;
+                }
+                tx.changed_rows(id)
+            })
+            .unwrap();
+        transactions.push(started.elapsed());
+    }
+
+    // Checkpoints of exactly one acceptance's frames: the cleanup FULL
+    // barrier, then the periodic passive checkpoint.
+    let wal = home.join(format!("{CONVERSATION_DATABASE_FILE_NAME}-wal"));
+    let wal_bytes = std::fs::metadata(&wal).map_or(0, |meta| meta.len());
+    store.database().passive_checkpoint_frames().unwrap();
+    let (_, _, base) = accept(base, "complete", false);
+    let started = Instant::now();
+    store.database().after_checkpoint(|_| Ok(())).unwrap();
+    let full_barrier_us = started.elapsed().as_micros() as u64;
+    accept(base, "complete", false);
+    let started = Instant::now();
+    store.database().checkpoint_if_written().unwrap();
+    let passive_us = started.elapsed().as_micros() as u64;
+    let (warm_page, _) = read_page();
+    let rss_end = rss_kib();
+
+    // Rows and bytes the cold load read, counted last so this extra full
+    // read does not inflate the memory readings above.
+    let loaded = store
+        .database()
+        .read(|read| read.conversation(id))
+        .unwrap()
+        .unwrap();
+    let cold_load_rows = 1 + turns + turns / 2;
+    let cold_load_bytes: usize = loaded
+        .turns
+        .iter()
+        .filter(|(turn_id, ..)| turn_id.starts_with("turn-h"))
+        .map(|(.., payload)| payload.to_string().len())
+        .chain(
+            loaded
+                .segments
+                .iter()
+                .filter(|segment| segment["turn_id"].as_str().unwrap().starts_with("turn-h"))
+                .map(|payload| payload.to_string().len()),
+        )
+        .sum::<usize>();
+    json!({
+        "turns": turns,
+        "synchronous": sync,
+        "repetitions": reps,
+        "database_bytes": database_bytes,
+        "cold_store_open_us": store_open_us,
+        "cold_page_us": cold_page.as_micros() as u64,
+        "warm_page_us": warm_page.as_micros() as u64,
+        "page_rows": page_rows,
+        "page_payload_bytes": page_payload_bytes,
+        "page_json_bytes": page_json_bytes,
+        "cold_first_acceptance_us": cold_accept.as_micros() as u64,
+        "cold_load_rows_read": cold_load_rows,
+        "cold_load_payload_bytes_read": cold_load_bytes,
+        "warm_acceptance": percentiles(&mut warm),
+        "acceptance_rows_written": accepted_rows,
+        "acceptance_payload_bytes_written": accepted_payload,
+        "acceptance_response_json_bytes": accepted_json,
+        "acceptance_wal_frames": acceptance_wal_frames,
+        "acceptance_wal_bytes": acceptance_wal_frames * (page_size + 24),
+        "sql_transaction": percentiles(&mut transactions),
+        "wal_file_bytes": wal_bytes,
+        "full_barrier_after_one_acceptance_us": full_barrier_us,
+        "passive_checkpoint_after_one_acceptance_us": passive_us,
+        "rss_kib": {"before_open": rss_before_open, "after_open_and_page": rss_after_open,
+            "after_cold_load": rss_after_cold_load, "end": rss_end},
+    })
+}

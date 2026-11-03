@@ -555,30 +555,82 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     );
 }
 
+/// Every file under `root`, with its bytes.
+fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push((path.clone(), fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The tombstone commit is durable under NORMAL, but no checkpoint barrier
+/// that is busy, incomplete, without a WAL, or failing removes a byte of the
+/// project; restart finishes the cleanup, and another project's live rows
+/// still reference existing bytes.
 #[test]
 fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
+    use spark_storage::conversation::CheckpointFault;
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let path = "/projects/deferred";
     let (store, deleted) = seeded_project(&home, path);
+    let survivor = "/projects/survivor";
+    seeded_project_in(&store, &home, survivor);
+    let repo = ConversationRepository::new(store.clone());
+    let kept = repo
+        .create_attachment("chat-a-finished", survivor, "kept.txt", b"kept bytes")
+        .unwrap();
+    repo.commit_conversation(
+        "chat-a-finished",
+        survivor,
+        0,
+        vec![user("turn-kept", &[&kept.id])],
+    )
+    .unwrap();
     let project_root = home.join("workspace/projects").join(&deleted.project_id);
-    // The checkpoint barrier reports busy: the commit is durable in SQL, but
-    // no file may be removed yet.
-    store.database().defer_next_checkpoints(1);
+    // Everything so far is checkpointed; the deletion commits under NORMAL.
+    store.database().after_checkpoint(|_| Ok(())).unwrap();
+    let before = tree(&project_root);
+    assert!(before
+        .iter()
+        .any(|(file, _)| file.ends_with("provider-trace.jsonl")));
+
+    let faults = [
+        CheckpointFault::Busy,
+        CheckpointFault::Incomplete,
+        CheckpointFault::NoWal,
+        CheckpointFault::Error,
+    ];
+    store.database().fail_next_checkpoints(faults);
     let error = store.delete_project(&deleted, &|_| {}).unwrap_err();
     assert!(
         matches!(error, StorageError::CleanupDeferred { .. }),
         "{error}"
     );
-    assert!(project_root
-        .join("conversations/chat-a/attachments")
-        .exists());
+    for fault in &faults[1..] {
+        let error = store.finish_project_deletion(path).unwrap_err();
+        assert!(
+            matches!(error, StorageError::CleanupDeferred { .. }),
+            "{fault:?}: {error}"
+        );
+        assert_eq!(tree(&project_root), before, "{fault:?}");
+    }
+    assert_eq!(tree(&project_root), before);
     assert_eq!(
         store.pending_project_deletion(path).unwrap(),
         Some(deleted.clone())
     );
     // Nothing new is admitted while cleanup is pending.
-    let repo = ConversationRepository::new(store.clone());
     assert!(repo
         .commit_conversation("chat-c", path, 0, vec![assistant("turn-c", "complete")])
         .is_err());
@@ -588,6 +640,15 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
     let store = ConversationStore::open(&home).unwrap();
     assert!(!project_root.exists());
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+    let stored = store
+        .database()
+        .read(|read| read.conversation("chat-a-finished"))
+        .unwrap()
+        .expect("survivor");
+    assert_eq!(stored.attachments.len(), 1);
+    for (_, blob_path, _, _) in &stored.attachments {
+        assert_eq!(fs::read(home.join(blob_path)).unwrap(), b"kept bytes");
+    }
 }
 
 #[cfg(unix)]
@@ -727,7 +788,9 @@ fn uploads_after_or_during_project_deletion_recreate_nothing() {
     let pending = "/projects/pending-upload";
     let (store, deleted) = seeded_project(&home, pending);
     let pending_root = home.join("workspace/projects").join(&deleted.project_id);
-    store.database().defer_next_checkpoints(1);
+    store
+        .database()
+        .fail_next_checkpoints([spark_storage::conversation::CheckpointFault::Busy]);
     assert!(store.delete_project(&deleted, &|_| {}).is_err());
     let repo = ConversationRepository::new(store.clone());
     for conversation in ["chat-a", "chat-new"] {

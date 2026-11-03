@@ -1842,3 +1842,272 @@ async fn retry_route_resends_only_a_failed_turn() {
     .await;
     assert_eq!(rejected.0, StatusCode::CONFLICT, "{}", rejected.1);
 }
+
+const MEASURE_PHASE_ENV: &str = "SPARK_HTTP_MEASURE_PHASE";
+const MEASURE_ID: &str = "conversation-http-measure";
+const MEASURE_PROJECT: &str = "/projects/http-measure";
+const MEASURE_TEXT: &str = "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum \
+    dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit \
+    amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet";
+
+/// Manual end-to-end acceptance measurement through the HTTP turn route;
+/// no thresholds. Run with
+/// `cargo test --release --all-features -p spark-http --test contracts -- --ignored --exact
+/// workspace_conversation_turn_route_contracts::measure_http_acceptance --nocapture`.
+/// `SPARK_MEASURE_TURNS` (default `100,10000,100000`), `SPARK_MEASURE_SYNC`
+/// (default `NORMAL,FULL`) and `SPARK_MEASURE_REPS` (default 50) select the
+/// workload; each configuration seeds and measures in separate processes.
+#[test]
+#[ignore = "manual measurement"]
+fn measure_http_acceptance() {
+    let env = |name: &str| std::env::var(name).ok();
+    if let Some(phase) = env(MEASURE_PHASE_ENV) {
+        let root = PathBuf::from(env("SPARK_MEASURE_ROOT").expect("root"));
+        let turns: usize = env("SPARK_MEASURE_TURNS").expect("turns").parse().unwrap();
+        if phase == "seed" {
+            seed_http_measurement(&settings(&root), turns);
+        } else {
+            let reps = env("SPARK_MEASURE_REPS").map_or(50, |reps| reps.parse().unwrap());
+            let sync = env("SPARK_MEASURE_SYNC").expect("sync");
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = runtime.block_on(measure_http(&root, turns, &sync, reps));
+            println!("MEASURE {result}");
+        }
+        return;
+    }
+    let list = |name: &str, default: &str| -> Vec<String> {
+        env(name)
+            .unwrap_or_else(|| default.to_string())
+            .split(',')
+            .map(str::to_string)
+            .collect()
+    };
+    for turns in list("SPARK_MEASURE_TURNS", "100,10000,100000") {
+        for sync in list("SPARK_MEASURE_SYNC", "NORMAL,FULL") {
+            let temp = tempfile::tempdir().expect("tempdir");
+            for phase in ["seed", "measure"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "workspace_conversation_turn_route_contracts::measure_http_acceptance",
+                        "--nocapture",
+                    ])
+                    .env(MEASURE_PHASE_ENV, phase)
+                    .env("SPARK_MEASURE_ROOT", temp.path())
+                    .env("SPARK_MEASURE_TURNS", &turns)
+                    .env("SPARK_MEASURE_SYNC", &sync)
+                    .output()
+                    .expect("measurement child");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(output.status.success(), "{stdout}\n{output:?}");
+                for line in stdout.lines().filter(|line| line.starts_with("MEASURE ")) {
+                    println!("{line}");
+                }
+            }
+        }
+    }
+}
+
+fn measure_message(id: String, role: &str) -> spark_storage::conversation::TranscriptTurn {
+    spark_storage::conversation::TranscriptTurn {
+        id,
+        role: role.to_string(),
+        kind: Some("message".to_string()),
+        content: MEASURE_TEXT.to_string(),
+        status: "complete".to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        ..Default::default()
+    }
+}
+
+/// One commit creates the conversation; its history is SQL rows written in
+/// a single transaction: alternating user and assistant turns, each answer
+/// with one segment.
+fn seed_http_measurement(settings: &SparkSettings, turns: usize) {
+    use spark_storage::conversation::{ConversationMutation, SegmentRow, TurnRow};
+    let store = crate::shared_store(&settings.data_dir);
+    spark_storage::ConversationRepository::new(store.clone())
+        .commit_conversation(
+            MEASURE_ID,
+            MEASURE_PROJECT,
+            0,
+            vec![ConversationMutation::TurnUpserted {
+                turn: measure_message("turn-h0".into(), "user"),
+            }],
+        )
+        .unwrap();
+    store
+        .database()
+        .write(|tx| {
+            for index in 1..turns {
+                let turn_id = format!("turn-h{index}");
+                let role = if index % 2 == 1 { "assistant" } else { "user" };
+                tx.put_turn(&TurnRow {
+                    conversation_id: MEASURE_ID.into(),
+                    id: turn_id.clone(),
+                    position: index as i64,
+                    status: "complete".into(),
+                    updated_at: "2026-01-01T00:00:00Z".into(),
+                    payload: serde_json::to_value(measure_message(turn_id.clone(), role)).unwrap(),
+                })?;
+                if role == "assistant" {
+                    tx.put_segment(&SegmentRow {
+                        conversation_id: MEASURE_ID.into(),
+                        id: format!("segment-{turn_id}"),
+                        turn_id: turn_id.clone(),
+                        order: 0,
+                        status: "complete".into(),
+                        updated_at: "2026-01-01T00:00:00Z".into(),
+                        payload: json!({
+                            "id": format!("segment-{turn_id}"), "turn_id": turn_id, "order": 0,
+                            "kind": "assistant_message", "role": "assistant",
+                            "status": "complete", "timestamp": "2026-01-01T00:00:00Z",
+                            "updated_at": "2026-01-01T00:00:00Z", "content": MEASURE_TEXT,
+                        }),
+                    })?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Answers every turn at once and keeps no requests, so memory readings
+/// are the app's own.
+struct InstantAnswerBackend;
+
+impl AgentTurnBackend for InstantAnswerBackend {
+    fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        let mut output = AgentTurnOutput {
+            final_assistant_text: Some("Answer.".to_string()),
+            ..AgentTurnOutput::default()
+        };
+        add_final_answer_event(&mut output, "measure-turn");
+        Ok(output)
+    }
+}
+
+fn measure_rss_kib() -> u64 {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+/// Cold app build and newest page, cold first acceptance (which loads the
+/// conversation), then warm acceptance latency through the route. Each
+/// answer finishes before the next send; the time from acceptance to the
+/// stored assistant turn's completion (the background history build and
+/// answer) is reported separately, at 1 ms polling resolution.
+async fn measure_http(root: &Path, turns: usize, sync: &str, reps: usize) -> Value {
+    use std::time::Instant;
+    let settings = settings(root);
+    let rss_before_open = measure_rss_kib();
+    let started = Instant::now();
+    let app = crate::store_app(settings.clone(), Arc::new(InstantAnswerBackend));
+    let app_build_us = started.elapsed().as_micros() as u64;
+    let store = crate::shared_store(&settings.data_dir);
+    store.database().set_synchronous(sync).unwrap();
+    let page_uri = format!(
+        "/workspace/api/conversations/{MEASURE_ID}?project_path={}&limit=50",
+        crate::encode_query(MEASURE_PROJECT)
+    );
+    let get_page = || async {
+        let started = Instant::now();
+        let (status, body, _) = request_text(app.clone(), "GET", &page_uri, "", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (started.elapsed(), body.len())
+    };
+    let (cold_page, page_bytes) = get_page().await;
+    let rss_after_open = measure_rss_kib();
+
+    let uri = format!("/workspace/api/conversations/{MEASURE_ID}/turns");
+    let mut sent = 0;
+    let mut send = || {
+        sent += 1;
+        let (app, uri, store) = (app.clone(), uri.clone(), store.clone());
+        async move {
+            let body = json!({
+                "project_path": MEASURE_PROJECT,
+                "message": format!("Question {sent}"),
+                "provider": "codex",
+                "chat_mode": "chat",
+            });
+            let started = Instant::now();
+            let (status, body, _) = request_text(
+                app,
+                "POST",
+                &uri,
+                &body.to_string(),
+                Some("application/json"),
+            )
+            .await;
+            let elapsed = started.elapsed();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let acceptance: Value = serde_json::from_str(&body).unwrap();
+            let assistant = acceptance["assistant_turn_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            loop {
+                let row = store
+                    .database()
+                    .read(|read| read.turn_row(MEASURE_ID, &assistant))
+                    .unwrap()
+                    .unwrap();
+                if row.payload.unwrap()["status"] == "complete" {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+            let completion = started.elapsed() - elapsed;
+            let rows = acceptance["changes"]["rows"].as_array().unwrap().len();
+            (elapsed, completion, body.len(), rows)
+        }
+    };
+    let (cold_accept, cold_completion, _, _) = send().await;
+    let rss_after_cold_load = measure_rss_kib();
+    let mut warm = Vec::with_capacity(reps);
+    let mut completions = Vec::with_capacity(reps);
+    let (mut response_bytes, mut response_rows) = (0, 0);
+    for _ in 0..reps {
+        let (elapsed, completion, bytes, rows) = send().await;
+        warm.push(elapsed);
+        completions.push(completion);
+        response_bytes = response_bytes.max(bytes);
+        response_rows = response_rows.max(rows);
+    }
+    let (warm_page, _) = get_page().await;
+    warm.sort();
+    completions.sort();
+    let at = |samples: &[Duration], q: f64| {
+        let index = ((q * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
+        samples[index].as_micros() as u64
+    };
+    let percentiles = |samples: &[Duration]| json!({"p50_us": at(samples, 0.50), "p95_us": at(samples, 0.95), "p99_us": at(samples, 0.99)});
+    json!({
+        "turns": turns,
+        "synchronous": sync,
+        "repetitions": reps,
+        "cold_app_build_us": app_build_us,
+        "cold_page_us": cold_page.as_micros() as u64,
+        "warm_page_us": warm_page.as_micros() as u64,
+        "page_response_bytes": page_bytes,
+        "cold_first_acceptance_us": cold_accept.as_micros() as u64,
+        "warm_acceptance": percentiles(&warm),
+        "cold_completion_after_acceptance_us": cold_completion.as_micros() as u64,
+        "warm_completion_after_acceptance": percentiles(&completions),
+        "acceptance_response_bytes": response_bytes,
+        "acceptance_response_rows": response_rows,
+        "rss_kib": {"before_open": rss_before_open, "after_open_and_page": rss_after_open,
+            "after_cold_load": rss_after_cold_load, "end": measure_rss_kib()},
+    })
+}

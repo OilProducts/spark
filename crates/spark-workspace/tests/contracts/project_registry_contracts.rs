@@ -777,7 +777,9 @@ fn project_state_updates_never_resurrect_deleted_projects() {
     fs::create_dir_all(&pending_dir).unwrap();
     let record = register(&pending_dir);
     let pending_root = registry.project_paths(&record.project_path).unwrap().root;
-    store.database().defer_next_checkpoints(1);
+    store
+        .database()
+        .fail_next_checkpoints([spark_storage::conversation::CheckpointFault::Busy]);
     assert!(service
         .delete_project(&conversations, &record.project_path)
         .is_err());
