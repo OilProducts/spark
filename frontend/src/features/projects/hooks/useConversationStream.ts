@@ -98,13 +98,13 @@ export function useConversationStream(args: UseConversationStreamArgs) {
             }
             try {
                 if (detail.type === 'conversation.window') {
-                    afterReset = false
-                    argsRef.current.applyConversationPage(
-                        activeProjectPath,
-                        parseConversationPageResponse(detail.payload, LIVE_ENDPOINT),
-                        'window',
-                        'event-stream-window',
-                    )
+                    const page = parseConversationPageResponse(detail.payload, LIVE_ENDPOINT)
+                    // The server sends an empty window for a missing conversation too, so only a
+                    // window holding the conversation row proves it still exists after a reset.
+                    if (page.rows.some((row) => row.kind === 'conversation' && !row.deleted)) {
+                        afterReset = false
+                    }
+                    argsRef.current.applyConversationPage(activeProjectPath, page, 'window', 'event-stream-window')
                 } else if (detail.type === 'conversation.changes') {
                     const batch = parseConversationBatchResponse(detail.payload, LIVE_ENDPOINT)
                     const record = argsRef.current.getConversationRecord(activeConversationId)

@@ -1039,37 +1039,125 @@ fn catch_up_live_scopes(
     scopes: &mut LiveScopes,
 ) -> Result<Vec<LiveEnvelope>, WorkspaceError> {
     let generation = service.store().database().generation().to_string();
-    let mut envelopes = Vec::new();
-    if let Some((conversation_id, project_path, cursor)) = scopes.conversation.as_mut() {
-        if let Some(since) = *cursor {
-            let (envelope, next) = conversation_changes_envelope(
+    catch_up_scopes(
+        scopes,
+        |conversation_id, project_path, since| {
+            conversation_changes_envelope(
                 service,
                 conversation_id,
                 project_path,
                 &generation,
                 since,
-            )?;
-            if next != Some(since) {
+            )
+        },
+        |project_path, since| {
+            conversations_changes_envelope(service, project_path, &generation, since)
+        },
+    )
+}
+
+/// One scope's catch-up read: its envelope and next cursor (`None` after a reset).
+type ScopeCatchUp = Result<(LiveEnvelope, Option<i64>), WorkspaceError>;
+
+/// Read every scope's catch-up first, then advance the cursors together:
+/// a failed read leaves every cursor where it was, so a retry delivers
+/// whatever an earlier scope had read but could not send.
+fn catch_up_scopes(
+    scopes: &mut LiveScopes,
+    conversation: impl FnOnce(&str, &str, i64) -> ScopeCatchUp,
+    summaries: impl FnOnce(Option<&str>, i64) -> ScopeCatchUp,
+) -> Result<Vec<LiveEnvelope>, WorkspaceError> {
+    let mut envelopes = Vec::new();
+    let conversation_next = match &scopes.conversation {
+        Some((conversation_id, project_path, Some(since))) => {
+            let (envelope, next) = conversation(conversation_id, project_path, *since)?;
+            if next != Some(*since) {
                 envelopes.push(envelope);
             }
-            *cursor = next;
+            Some(next)
         }
+        _ => None,
+    };
+    let summaries_next = match &scopes.summaries {
+        Some((project_path, Some(since))) => {
+            let (envelope, next) = summaries(project_path.as_deref(), *since)?;
+            if next != Some(*since) {
+                envelopes.push(envelope);
+            }
+            Some(next)
+        }
+        _ => None,
+    };
+    if let (Some(next), Some((_, _, cursor))) = (conversation_next, scopes.conversation.as_mut()) {
+        *cursor = next;
     }
-    if let Some((project_path, cursor)) = scopes.summaries.as_mut() {
-        if let Some(since) = *cursor {
-            let (envelope, next) = conversations_changes_envelope(
-                service,
-                project_path.as_deref(),
-                &generation,
-                since,
-            )?;
-            if next != Some(since) {
-                envelopes.push(envelope);
-            }
-            *cursor = next;
-        }
+    if let (Some(next), Some((_, cursor))) = (summaries_next, scopes.summaries.as_mut()) {
+        *cursor = next;
     }
     Ok(envelopes)
+}
+
+#[cfg(test)]
+mod catch_up_tests {
+    use super::*;
+
+    fn envelope(event_type: &str) -> LiveEnvelope {
+        LiveEnvelope {
+            event_type: event_type.to_string(),
+            project_path: None,
+            resource: spark_workspace::LiveResource {
+                kind: "conversation".into(),
+                id: None,
+            },
+            cursor: None,
+            payload: Value::Null,
+            reason: None,
+        }
+    }
+
+    fn scopes() -> LiveScopes {
+        LiveScopes {
+            conversation: Some(("chat".into(), "/p".into(), Some(5))),
+            summaries: Some((None, Some(5))),
+        }
+    }
+
+    /// The conversation read succeeds and the summary read fails: no
+    /// cursor moves, and the retry still delivers the conversation's rows
+    /// or its reset.
+    #[test]
+    fn a_failed_scope_read_keeps_every_cursor_for_the_retry() {
+        for (event_type, next) in [
+            ("conversation.changes", Some(9)),
+            ("conversation.reset", None),
+        ] {
+            let mut scopes = scopes();
+            let failed = catch_up_scopes(
+                &mut scopes,
+                |_, _, _| Ok((envelope(event_type), next)),
+                |_, _| Err(WorkspaceError::Internal("database busy".into())),
+            );
+            assert!(failed.is_err());
+            assert_eq!(scopes.conversation.as_ref().unwrap().2, Some(5));
+            assert_eq!(scopes.summaries.as_ref().unwrap().1, Some(5));
+            let retried = catch_up_scopes(
+                &mut scopes,
+                |_, _, since| {
+                    assert_eq!(since, 5);
+                    Ok((envelope(event_type), next))
+                },
+                |_, since| Ok((envelope("conversations.changes"), Some(since))),
+            )
+            .unwrap();
+            let types: Vec<&str> = retried
+                .iter()
+                .map(|envelope| envelope.event_type.as_str())
+                .collect();
+            assert_eq!(types, [event_type]);
+            assert_eq!(scopes.conversation.as_ref().unwrap().2, next);
+            assert_eq!(scopes.summaries.as_ref().unwrap().1, Some(5));
+        }
+    }
 }
 
 async fn workspace_live_events(
