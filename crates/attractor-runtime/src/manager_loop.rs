@@ -35,6 +35,7 @@ const CHILD_KEYS: &[&str] = &[
     "context.stack.child.completed_nodes",
     "context.stack.child.route_trace",
     "context.stack.child.failure_reason",
+    "context.stack.child.failure_kind",
     "context.stack.child.retry_count",
     "context.stack.child.retry_counts",
     "context.stack.child.artifact_count",
@@ -889,6 +890,7 @@ fn pipeline_result_to_child_result(result: PipelineExecutionResult) -> ChildRunR
         completed_nodes: result.completed_nodes,
         route_trace: result.route_trace,
         failure_reason: result.failure_reason,
+        failure_kind: result.failure_kind,
         context: result.context,
         ..ChildRunResult::default()
     }
@@ -998,6 +1000,7 @@ fn child_result_from_meta(meta: crate::store::RunMeta) -> Option<ChildRunResult>
         completed_nodes,
         route_trace,
         failure_reason: record.last_error,
+        failure_kind: record.failure_kind,
         retry_count,
         retry_counts,
         artifact_count,
@@ -1081,6 +1084,11 @@ fn apply_child_run_result(
         context,
         "context.stack.child.failure_reason",
         json!(child_result.failure_reason.clone()),
+    );
+    set_context(
+        context,
+        "context.stack.child.failure_kind",
+        json!(child_result.failure_kind),
     );
     set_context(
         context,
@@ -1333,8 +1341,14 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
             "context.stack.child.failure_reason",
         ))
         .unwrap_or_else(|| "Child failed".to_string());
+        // The child's own error class carries over: a child routing or
+        // visit-budget failure stays fatal inside a tolerant fork.
+        let kind = context
+            .get("context.stack.child.failure_kind")
+            .and_then(|value| serde_json::from_value::<FailureKind>(value.clone()).ok())
+            .unwrap_or(FailureKind::Runtime);
         return Some(Outcome::error(
-            FailureKind::Runtime,
+            kind,
             format!("child {child_run_id} failed: {failure_reason}"),
             Some(false),
         ));

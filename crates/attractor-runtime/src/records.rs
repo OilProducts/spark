@@ -47,6 +47,7 @@ const RUN_RECORD_FIELDS: &[&str] = &[
     "effective_flow_hash",
     "cleanup_error",
     "last_error",
+    "failure_kind",
     "token_usage",
     "token_usage_breakdown",
     "estimated_model_cost",

@@ -2001,3 +2001,174 @@ fn a_tool_timeout_stops_its_descendants() {
     std::thread::sleep(std::time::Duration::from_secs(9).saturating_sub(started.elapsed()));
     assert!(!effect.exists(), "a timed-out descendant wrote its effect");
 }
+
+/// A child whose `work` agent loops onto itself past its single visit
+/// (a real routing failure), or returns `work_error` as its result.
+fn write_looping_child(root: &Path) {
+    let flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("work")}},
+        "work": {"kind": "agent_task", "contracts": {"response": "decision_envelope"},
+            "runtime": {"max_visits": 1},
+            "routes": {"again": route("work"), "done": route("done")}},
+        "done": exit("completed", "success"),
+    }));
+    attractor_dsl::write_flow_dir(&root.join("flows/child"), &flow).unwrap();
+}
+
+/// A tolerant fork whose first branch runs the child as a subflow.
+fn subflow_fork_flow(autostart: bool) -> FlowDefinition {
+    parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["sub", "b"],
+            "join": "join", "tolerate_branch_execution_errors": true}},
+        "sub": {"kind": "subflow",
+            "manager": {"child_autostart": autostart, "poll_interval": "0s"},
+            "config": {"kind": "subflow", "flow_ref": "child", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": route("join")}},
+        "b": agent(json!({"done": route("join")})),
+        "join": {"kind": "fan_in", "routes": {"next": route("synth")}},
+        "synth": agent(json!({"done": route("done")})),
+        "done": exit("completed", "success"),
+    }))
+}
+
+fn child_answers(work: Outcome) -> (RuntimeHandlerRunner, Arc<Mutex<Vec<String>>>) {
+    scripted_runner(
+        script(&[
+            ("work", vec![work]),
+            ("b", vec![completed("done")]),
+            ("synth", vec![completed("done")]),
+        ]),
+        false,
+    )
+}
+
+fn run_parent(
+    temp: &Path,
+    flow: FlowDefinition,
+    runner: RuntimeHandlerRunner,
+    context: ContextMap,
+) -> PipelineExecutionResult {
+    let mut runtime_context = ContextMap::from([(
+        "internal.bundled_root".to_string(),
+        json!(temp.to_string_lossy()),
+    )]);
+    runtime_context.extend(context);
+    PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: RunStore::for_runs_dir(temp.join("runs")),
+            record: RunRecord::new("run-parent", temp.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context,
+            max_steps: None,
+            start: Default::default(),
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_child_routing_failure_stays_fatal_inside_a_tolerant_fork() {
+    let temp = tempfile::tempdir().unwrap();
+    write_looping_child(temp.path());
+    let (runner, calls) = child_answers(completed("again"));
+    let result = run_parent(
+        temp.path(),
+        subflow_fork_flow(true),
+        runner,
+        ContextMap::new(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_kind, Some(FailureKind::Routing));
+    assert!(
+        result.failure_reason.contains("visit_limit_reached"),
+        "{}",
+        result.failure_reason
+    );
+    assert!(
+        result.failure_reason.contains("child "),
+        "{}",
+        result.failure_reason
+    );
+    assert!(!result.route_trace.contains(&"join".to_string()));
+    assert_eq!(count(&calls, "synth"), 0);
+
+    // The child's durable record carries the classification.
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let child = store
+        .list_run_records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.parent_run_id.as_deref() == Some("run-parent"))
+        .expect("child run");
+    assert_eq!(child.status, "failed");
+    assert_eq!(child.failure_kind, Some(FailureKind::Routing));
+}
+
+#[test]
+fn a_recovered_parent_keeps_its_failed_childs_routing_class() {
+    let temp = tempfile::tempdir().unwrap();
+    write_looping_child(temp.path());
+    // The child failed on its own run before the parent observes it.
+    let child_flow = attractor_dsl::read_flow_dir(&temp.path().join("flows/child")).unwrap();
+    let (runner, _) = child_answers(completed("again"));
+    let child = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: RunStore::for_runs_dir(temp.path().join("runs")),
+            record: RunRecord::new("child-1", temp.path().to_string_lossy()),
+            flow: child_flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .unwrap();
+    assert_eq!(child.status, "failed");
+    // The parent re-observes that linked child from its durable record.
+    let (runner, calls) = child_answers(completed("done"));
+    let result = run_parent(
+        temp.path(),
+        subflow_fork_flow(false),
+        runner,
+        ContextMap::from([("context.stack.child.run_id".to_string(), json!("child-1"))]),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_kind, Some(FailureKind::Routing));
+    assert!(
+        result
+            .failure_reason
+            .contains("child child-1 failed: visit_limit_reached"),
+        "{}",
+        result.failure_reason
+    );
+    assert!(!result.route_trace.contains(&"join".to_string()));
+    assert_eq!(count(&calls, "synth"), 0);
+}
+
+#[test]
+fn a_child_execution_error_stays_tolerated_inside_a_tolerant_fork() {
+    let temp = tempfile::tempdir().unwrap();
+    write_looping_child(temp.path());
+    let (runner, calls) = child_answers(Outcome::error(
+        FailureKind::Runtime,
+        "provider down",
+        Some(false),
+    ));
+    let result = run_parent(
+        temp.path(),
+        subflow_fork_flow(true),
+        runner,
+        ContextMap::new(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(count(&calls, "synth"), 1);
+    let results = result.context["parallel.results"].as_array().unwrap();
+    assert_eq!(results[0]["status"], json!("error"));
+    assert_eq!(results[0]["error"]["kind"], json!("runtime"));
+    assert!(results[0]["error"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("provider down"));
+}

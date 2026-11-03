@@ -195,6 +195,10 @@ pub struct RunRecord {
     pub cleanup_error: Option<String>,
     #[serde(default)]
     pub last_error: String,
+    /// A failed run's error class, so an enclosing subflow propagates a
+    /// routing failure as fatal without reading `last_error` text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<crate::outcomes::FailureKind>,
     #[serde(default)]
     pub token_usage: Option<u64>,
     #[serde(default)]

@@ -525,6 +525,9 @@ pub struct ChildRunResult {
     pub route_trace: Vec<String>,
     #[serde(default)]
     pub failure_reason: String,
+    /// A failed child's error class, from its run record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FailureKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u64>,
     #[serde(default)]

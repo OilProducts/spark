@@ -156,6 +156,9 @@ pub struct PipelineExecutionResult {
     pub route_trace: Vec<String>,
     #[serde(default)]
     pub failure_reason: String,
+    /// The failed run's error class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FailureKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,6 +503,7 @@ where
                     &node_outcomes,
                     &route_trace,
                     reason,
+                    FailureKind::Routing,
                     artifact_node_ids.len(),
                 );
             }
@@ -743,6 +747,7 @@ where
                     &node_outcomes,
                     &route_trace,
                     reason,
+                    outcome.error_kind().unwrap_or(FailureKind::Runtime),
                     artifact_node_ids.len(),
                 );
             }
@@ -930,6 +935,7 @@ where
                     node_outcomes,
                     route_trace,
                     reason,
+                    FailureKind::Routing,
                     artifact_count,
                 )
                 .map(Advance::Finished);
@@ -1552,6 +1558,7 @@ fn finalize_completed<E: NodeExecutor>(
     record.outcome_reason_message = outcome_reason_message.clone();
     record.ended_at = Some(crate::events::utc_timestamp());
     record.last_error.clear();
+    record.failure_kind = None;
     refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
     drop(lock);
@@ -1592,6 +1599,7 @@ fn finalize_completed<E: NodeExecutor>(
         node_outcomes: node_outcomes.clone(),
         route_trace: route_trace.to_vec(),
         failure_reason: String::new(),
+        failure_kind: None,
         outcome: record.outcome.clone(),
         outcome_reason_code,
         outcome_reason_message,
@@ -1614,6 +1622,7 @@ fn finalize_failed<E: NodeExecutor>(
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
     failure_reason: String,
+    failure_kind: FailureKind,
     artifact_count: usize,
 ) -> Result<PipelineExecutionResult> {
     finalize_failed_unless_canceled(
@@ -1632,6 +1641,7 @@ fn finalize_failed<E: NodeExecutor>(
         node_outcomes,
         route_trace,
         failure_reason,
+        failure_kind,
         artifact_count,
     )
 }
@@ -1655,6 +1665,7 @@ fn finalize_failed_unless_canceled<E: NodeExecutor>(
     node_outcomes: &BTreeMap<String, Outcome>,
     route_trace: &[String],
     failure_reason: String,
+    failure_kind: FailureKind,
     artifact_count: usize,
 ) -> Result<PipelineExecutionResult> {
     let checkpoint = save_checkpoint_event(
@@ -1697,6 +1708,7 @@ fn finalize_failed_unless_canceled<E: NodeExecutor>(
     record.outcome_reason_message = None;
     record.ended_at = Some(crate::events::utc_timestamp());
     record.last_error = failure_reason.clone();
+    record.failure_kind = Some(failure_kind);
     refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
     drop(lock);
@@ -1729,6 +1741,7 @@ fn finalize_failed_unless_canceled<E: NodeExecutor>(
         node_outcomes: node_outcomes.clone(),
         route_trace: route_trace.to_vec(),
         failure_reason,
+        failure_kind: Some(failure_kind),
         outcome: None,
         outcome_reason_code: None,
         outcome_reason_message: None,
@@ -1774,6 +1787,7 @@ fn finalize_paused(
         node_outcomes: node_outcomes.clone(),
         route_trace: route_trace.to_vec(),
         failure_reason: String::new(),
+        failure_kind: None,
         outcome: None,
         outcome_reason_code: None,
         outcome_reason_message: None,
@@ -1835,6 +1849,7 @@ fn finalize_canceled(
         node_outcomes: node_outcomes.clone(),
         route_trace: route_trace.to_vec(),
         failure_reason: last_error.to_string(),
+        failure_kind: None,
         outcome: None,
         outcome_reason_code: None,
         outcome_reason_message: None,
