@@ -91,6 +91,7 @@ struct NodeFile {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RoleFile {
     #[serde(rename = "type")]
     file_type: String,

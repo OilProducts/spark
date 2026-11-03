@@ -187,6 +187,20 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
 }
 
 #[test]
+fn role_files_reject_unknown_and_misplaced_fields() {
+    assert!(attractor_dsl::parse_role("reviewer", ROLE).is_ok());
+    for (frontmatter, field) in [
+        ("type: Role\nexecuton: {}\n", "executon"),
+        ("type: Role\nexecution: {llm_modle: fast}\n", "llm_modle"),
+        ("type: Role\nretry_target: done\n", "retry_target"),
+    ] {
+        let error = attractor_dsl::parse_role("reviewer", &format!("---\n{frontmatter}---\n"))
+            .expect_err(frontmatter);
+        assert!(error.contains(field), "{frontmatter}: {error}");
+    }
+}
+
+#[test]
 fn roles_prepend_their_persona_and_merge_execution_under_the_node() {
     let temp = tempfile::tempdir().expect("tempdir");
     let roles_dir = temp.path().join("roles");

@@ -1,7 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "definitions": {
     "ExecutionConfig": {
+      "additionalProperties": false,
       "properties": {
         "llm_model": {
           "type": [
@@ -54,6 +56,30 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ExitOutcome": {
+      "enum": [
+        "success",
+        "failure"
+      ],
+      "type": "string"
+    },
+    "ExitResult": {
+      "additionalProperties": false,
+      "description": "An exit's declared terminal result.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/definitions/ExitOutcome"
+        }
+      },
+      "required": [
+        "name",
+        "outcome"
+      ],
       "type": "object"
     },
     "FlowDefaults": {
@@ -124,45 +150,8 @@
       },
       "type": "object"
     },
-    "FlowEdge": {
-      "properties": {
-        "condition": {
-          "default": "",
-          "type": "string"
-        },
-        "extensions": {
-          "additionalProperties": true,
-          "type": "object"
-        },
-        "from": {
-          "type": "string"
-        },
-        "label": {
-          "default": "",
-          "type": "string"
-        },
-        "to": {
-          "type": "string"
-        },
-        "transition": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "weight": {
-          "default": 0,
-          "format": "int64",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "from",
-        "to"
-      ],
-      "type": "object"
-    },
     "FlowExecutionLock": {
+      "additionalProperties": false,
       "description": "A flow's execution lock (`execution_lock` in `flow.md`). Scope `project` resolves identity from the repository containing the working directory, so linked git worktrees share one lock; `conflict_policy` is `queue`.",
       "properties": {
         "conflict_policy": {
@@ -183,6 +172,7 @@
       "type": "object"
     },
     "FlowInput": {
+      "additionalProperties": false,
       "properties": {
         "default": true,
         "description": {
@@ -211,6 +201,7 @@
       "type": "object"
     },
     "FlowNode": {
+      "additionalProperties": false,
       "properties": {
         "config": {
           "anyOf": [
@@ -288,6 +279,13 @@
             "null"
           ]
         },
+        "routes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/FlowRoute"
+          },
+          "description": "The node's complete decision vocabulary: each decision ID and the one route it selects. Edges are derived from this map.",
+          "type": "object"
+        },
         "runtime": {
           "anyOf": [
             {
@@ -314,22 +312,33 @@
       ],
       "type": "object"
     },
-    "HumanDecision": {
+    "FlowRoute": {
+      "additionalProperties": false,
+      "description": "One declared decision: its target and what choosing it means. `label` is display text only; it has no routing authority.",
       "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "description": "Presentation metadata, such as canvas layout hints.",
+          "type": "object"
+        },
         "label": {
           "type": "string"
         },
-        "value": {
+        "to": {
           "type": "string"
         }
       },
       "required": [
-        "label",
-        "value"
+        "to"
       ],
       "type": "object"
     },
     "ManagerLoopConfig": {
+      "additionalProperties": false,
       "properties": {
         "actions": {
           "items": {
@@ -387,6 +396,7 @@
     "NodeConfig": {
       "oneOf": [
         {
+          "additionalProperties": false,
           "properties": {
             "kind": {
               "enum": [
@@ -401,6 +411,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "kind": {
               "enum": [
@@ -408,8 +419,11 @@
               ],
               "type": "string"
             },
+            "result": {
+              "$ref": "#/definitions/ExitResult"
+            },
             "result_summary": {
-              "description": "When true, reaching this exit produces the run result by pointing a summarizer agent at the run's recorded transcripts and artifacts. Failed runs use any opted-in exit.",
+              "description": "When true, reaching this exit produces the run result by pointing a summarizer agent at the run's recorded transcripts and artifacts. Failed runs use the first opted-in exit by node ID.",
               "type": "boolean"
             },
             "result_summary_prompt": {
@@ -420,11 +434,13 @@
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "result"
           ],
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "kind": {
               "enum": [
@@ -443,13 +459,8 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
-            "decisions": {
-              "items": {
-                "$ref": "#/definitions/HumanDecision"
-              },
-              "type": "array"
-            },
             "kind": {
               "enum": [
                 "human_gate"
@@ -467,41 +478,47 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
+          "description": "Selects a declared decision by comparing one context value with JSON scalar case keys (`\"0\"` is number 0, `'\"0\"'` is string \"0\").",
           "properties": {
+            "cases": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
             "kind": {
               "enum": [
-                "conditional"
+                "switch"
               ],
+              "type": "string"
+            },
+            "on": {
+              "type": "string"
+            },
+            "otherwise": {
               "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "on",
+            "otherwise"
           ],
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
-            "join_k": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
+            "branches": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
-            "join_policy": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "join_quorum": {
-              "format": "double",
-              "type": [
-                "number",
-                "null"
-              ]
+            "join": {
+              "type": "string"
             },
             "kind": {
               "enum": [
@@ -516,14 +533,21 @@
                 "integer",
                 "null"
               ]
+            },
+            "tolerate_branch_execution_errors": {
+              "description": "Keep a branch that ended with a tolerable execution error and still enter the join; fatal conditions always fail the owner.",
+              "type": "boolean"
             }
           },
           "required": [
+            "branches",
+            "join",
             "kind"
           ],
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "kind": {
               "enum": [
@@ -538,15 +562,30 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "command": {
               "default": "",
               "type": "string"
             },
+            "decision_field": {
+              "description": "JSON adapter: the named top-level field of the tool's single JSON stdout object is the decision.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "env_map": {
               "additionalProperties": {
                 "type": "string"
               },
+              "type": "object"
+            },
+            "exit_codes": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Exit-code adapter: each listed code (a decimal integer key) selects a declared decision.",
               "type": "object"
             },
             "kind": {
@@ -568,6 +607,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "flow_ref": {
               "type": "string"
@@ -590,6 +630,14 @@
               },
               "description": "Child context keys copied into the parent (`child_key: parent_key`) when the child run ends; an absent child key clears the parent key.",
               "type": "object"
+            },
+            "results": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "description": "Child terminal result name -> local decision.",
+              "type": "object"
             }
           },
           "required": [
@@ -601,6 +649,7 @@
       ]
     },
     "NodeContracts": {
+      "additionalProperties": false,
       "properties": {
         "reads_context": {
           "items": {
@@ -643,7 +692,7 @@
         "exit",
         "agent_task",
         "human_gate",
-        "conditional",
+        "switch",
         "parallel",
         "fan_in",
         "tool",
@@ -654,35 +703,14 @@
     "NodeRuntimeConfig": {
       "additionalProperties": false,
       "properties": {
-        "allow_partial": {
-          "type": "boolean"
-        },
-        "auto_status": {
-          "type": "boolean"
-        },
         "class": {
           "type": [
             "string",
             "null"
           ]
         },
-        "error_policy": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fallback_retry_target": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goal_gate": {
-          "type": "boolean"
-        },
         "max_visits": {
-          "description": "Maximum number of times routing may enter this node within one run. Routing never selects a node that used all its visits; with no other route the source node fails with `visit_limit_reached`. Absent means the engine default.",
+          "description": "Maximum number of times a transition may enter this node within one run (or one branch invocation). A decision selecting an exhausted target fails with `visit_limit_reached`. Absent means the engine default.",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
@@ -697,12 +725,6 @@
             }
           ],
           "description": "Behavior when this node was started but not checkpointed before a restart."
-        },
-        "retry_target": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "session": {
           "description": "Named session (`session: <name>`) this agent_task node continues. Nodes sharing a name continue one provider session; absent means a fresh session.",
@@ -736,6 +758,7 @@
       "type": "string"
     },
     "RetryConfig": {
+      "additionalProperties": false,
       "properties": {
         "max_retries": {
           "format": "uint64",
@@ -755,6 +778,7 @@
       "type": "object"
     },
     "UiConfig": {
+      "additionalProperties": false,
       "properties": {
         "x": {
           "format": "double",
@@ -781,12 +805,6 @@
     "description": {
       "default": "",
       "type": "string"
-    },
-    "edges": {
-      "items": {
-        "$ref": "#/definitions/FlowEdge"
-      },
-      "type": "array"
     },
     "execution_lock": {
       "anyOf": [
@@ -828,7 +846,6 @@
       "type": "object"
     },
     "schema_version": {
-      "default": "1",
       "type": "string"
     },
     "title": {
@@ -837,7 +854,8 @@
     }
   },
   "required": [
-    "id"
+    "id",
+    "schema_version"
   ],
   "title": "FlowDefinition",
   "type": "object"

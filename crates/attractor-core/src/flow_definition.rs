@@ -48,6 +48,7 @@ pub struct FlowDefinition {
 /// resolves identity from the repository containing the working directory,
 /// so linked git worktrees share one lock; `conflict_policy` is `queue`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FlowExecutionLock {
     pub scope: String,
     pub key: String,
@@ -60,6 +61,7 @@ fn default_conflict_policy() -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FlowInput {
     pub key: String,
     #[serde(default)]
@@ -373,6 +375,7 @@ impl RecoveryPolicy {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeContracts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads_context: Vec<String>,
@@ -387,6 +390,7 @@ pub struct NodeContracts {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManagerLoopConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_interval: Option<String>,
@@ -407,6 +411,7 @@ pub struct ManagerLoopConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RetryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
@@ -415,6 +420,7 @@ pub struct RetryConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
@@ -436,6 +442,7 @@ pub struct ExecutionConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UiConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<f64>,

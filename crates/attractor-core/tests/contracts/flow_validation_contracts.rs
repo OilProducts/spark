@@ -110,6 +110,52 @@ fn version_and_legacy_fields_are_rejected_not_dropped() {
 }
 
 #[test]
+fn typed_sections_reject_unknown_and_misplaced_fields_and_open_maps_stay_open() {
+    let parse_error = |value: Value| {
+        FlowDefinition::from_json_str(&value.to_string())
+            .expect_err("unknown field")
+            .detail
+    };
+    // The misspelled field and the legacy routing fields of a real authoring slip.
+    let mut value = review_loop();
+    value["nodes"]["start"]["contracts"] =
+        json!({"writes_contex": ["context.required"], "retry_target": "done"});
+    assert!(parse_error(value).contains("unknown field `"));
+    let mut value = review_loop();
+    value["nodes"]["start"]["contracts"] = json!({"writes_contex": ["context.required"]});
+    assert!(parse_error(value).contains("unknown field `writes_contex`"));
+
+    for section in ["contracts", "manager", "retry", "execution", "ui"] {
+        for field in ["retry_target", "goal_gate", "preferred_label", "typo"] {
+            let mut value = review_loop();
+            value["nodes"]["work"][section] = json!({field: true});
+            let detail = parse_error(value);
+            assert!(
+                detail.contains(&format!("unknown field `{field}`")),
+                "{section}.{field}: {detail}"
+            );
+        }
+    }
+    let mut value = review_loop();
+    value["inputs"] = json!([{"key": "context.request", "goal_gate": true}]);
+    assert!(parse_error(value).contains("unknown field `goal_gate`"));
+    let mut value = review_loop();
+    value["execution_lock"] = json!({"scope": "project", "key": "main", "retry_target": "done"});
+    assert!(parse_error(value).contains("unknown field `retry_target`"));
+
+    let mut open = review_loop();
+    open["metadata"] = json!({"owner": {"team": "any"}});
+    open["extensions"] = json!({"vendor.flag": true});
+    open["defaults"] = json!({"extensions": {"vendor.flag": true}});
+    open["nodes"]["work"]["context"] = json!({"context.any": {"shape": 1}});
+    open["nodes"]["work"]["extensions"] = json!({"vendor.flag": true});
+    open["nodes"]["work"]["routes"]["unfinished"]["extensions"] = json!({"vendor.flag": true});
+    let parsed = FlowDefinition::from_json_str(&open.to_string()).expect("open maps");
+    assert_eq!(parsed.metadata["owner"], json!({"team": "any"}));
+    assert_eq!(parsed.diagnostics(), Vec::new());
+}
+
+#[test]
 fn routes_need_valid_ids_descriptions_and_existing_targets() {
     let mut value = review_loop();
     value["nodes"]["review"]["routes"] = json!({
