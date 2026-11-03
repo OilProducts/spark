@@ -1341,6 +1341,12 @@ impl FlowDefinition {
                 fork_error(format!("join '{join}' is also paired with fork '{other}'"));
             }
             for branch in branches {
+                if self
+                    .exit_result(branch)
+                    .is_some_and(|result| result.outcome == ExitOutcome::Success)
+                {
+                    fork_error(format!("branch entry '{branch}' is a success exit"));
+                }
                 let interior = self.branch_interior(branch, join);
                 for node_id in &interior {
                     if *node_id == fork_id.as_str() {

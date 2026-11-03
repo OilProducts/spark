@@ -524,3 +524,21 @@ fn switch_duplicate_cases_compare_exact_numbers() {
         );
     }
 }
+
+#[test]
+fn a_success_exit_is_never_a_branch_entry() {
+    let found = rules(flow(json!({
+        "start": start("fork"),
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["done"], "join": "join"}},
+        "join": {"kind": "fan_in", "routes": {"next": route("done")}},
+        "done": exit("completed", "success"),
+    })));
+    assert!(
+        has(
+            &found,
+            "fork_structure",
+            "branch entry 'done' is a success exit"
+        ),
+        "{found:?}"
+    );
+}

@@ -1701,3 +1701,135 @@ fn a_tool_interrupted_by_its_fork_is_canceled_not_failed() {
         json!("tool command stopped by cancellation")
     );
 }
+
+#[test]
+fn an_unvalidated_success_exit_branch_cannot_end_the_owner_successfully() {
+    // Built without validation, which rejects it, to exercise the runtime boundary.
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "contract",
+        "nodes": {
+            "start": {"kind": "start", "routes": {"next": route("fork")}},
+            "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["done"], "join": "join"}},
+            "join": {"kind": "fan_in", "routes": {"next": route("done")}},
+            "done": exit("completed", "success"),
+        }
+    }))
+    .unwrap();
+    assert!(flow.validate().is_err());
+    let (runner, _calls) = scripted_runner(script(&[]), false);
+    let run = execute(flow, runner, None);
+    assert_eq!(run.result.status, "failed");
+    assert!(
+        run.record()
+            .last_error
+            .contains("success exit done before its join"),
+        "{}",
+        run.record().last_error
+    );
+    assert!(!run.result.route_trace.contains(&"join".to_string()));
+}
+
+fn child_result(status: &str, result: Option<&str>) -> attractor_runtime::ChildRunResult {
+    serde_json::from_value(json!({
+        "run_id": "child-1",
+        "status": status,
+        "outcome": result.map(|_| "success"),
+        "outcome_reason_code": result,
+        "failure_reason": if status == "failed" { "child crashed" } else { "" },
+    }))
+    .unwrap()
+}
+
+/// A subflow watching a linked child that is still running for `running`
+/// polls, then ends with `last`.
+fn run_bounded_manager(
+    manager: Value,
+    running: usize,
+    last: attractor_runtime::ChildRunResult,
+) -> (Run, usize) {
+    let flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("manager")}},
+        "manager": {"kind": "subflow", "manager": manager,
+            "config": {"kind": "subflow", "flow_ref": "child",
+                "results": {"completed": "child_completed", "blocked": "child_blocked"}},
+            "routes": {"child_completed": route("done"), "child_blocked": route("failed")}},
+        "done": exit("completed", "success"),
+        "failed": exit("blocked", "failure"),
+    }));
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = polls.clone();
+    let runner = RuntimeHandlerRunner::new().with_child_status_resolver(move |child_id| {
+        assert_eq!(child_id, "child-1");
+        let poll = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(if poll < running {
+            child_result("running", None)
+        } else {
+            last.clone()
+        })
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let result = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-contract", temp.path().to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::from([(
+                "context.stack.child.run_id".to_string(),
+                json!("child-1"),
+            )]),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .unwrap();
+    let polls = polls.load(std::sync::atomic::Ordering::SeqCst);
+    (
+        Run {
+            result,
+            store,
+            _temp: temp,
+            workdir: PathBuf::new(),
+        },
+        polls,
+    )
+}
+
+#[test]
+fn a_subflow_keeps_waiting_on_the_same_child_after_its_observation_bounds() {
+    for manager in [
+        json!({"child_autostart": false, "max_cycles": 1, "poll_interval": "0s", "actions": ["observe", "wait"]}),
+        json!({"child_autostart": false, "poll_interval": "0s", "actions": ["observe", "wait"],
+            "stop_condition": "context.stack.child.status=running"}),
+    ] {
+        // The child finishes well after the bound ended observation.
+        let (run, polls) = run_bounded_manager(
+            manager.clone(),
+            4,
+            child_result("completed", Some("completed")),
+        );
+        assert_eq!(run.result.status, "completed", "{manager}");
+        assert_eq!(run.result.current_node, "done", "{manager}");
+        assert!(polls >= 5, "{manager}: {polls}");
+
+        let (run, _) = run_bounded_manager(
+            manager.clone(),
+            4,
+            child_result("completed", Some("blocked")),
+        );
+        assert_eq!(
+            run.record().outcome_reason_code.as_deref(),
+            Some("blocked"),
+            "{manager}"
+        );
+
+        // A child failure after the bound fails the parent with its identity.
+        let (run, _) = run_bounded_manager(manager.clone(), 4, child_result("failed", None));
+        assert_eq!(run.result.status, "failed", "{manager}");
+        assert_eq!(
+            run.record().last_error,
+            "child child-1 failed: child crashed"
+        );
+    }
+}

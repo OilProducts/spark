@@ -2155,6 +2155,22 @@ impl RuntimeHandlerRunner {
                 return record!("completed", json!({}));
             }
             if is_exit_node(flow, &current) {
+                // Validation forbids success exits in branches; a branch can
+                // never end its owner successfully before the join.
+                if flow
+                    .exit_result(&current)
+                    .is_some_and(|result| result.outcome == attractor_core::ExitOutcome::Success)
+                {
+                    return record!(
+                        "error",
+                        error_value(
+                            &current,
+                            FailureKind::Routing,
+                            &format!("branch reached success exit {current} before its join"),
+                            0
+                        )
+                    );
+                }
                 let Some(result) = flow.exit_result(&current).cloned() else {
                     return record!(
                         "error",

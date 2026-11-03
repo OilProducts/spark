@@ -104,8 +104,10 @@ pub(crate) fn execute_manager_loop(
                 ));
             }
         }
+        // The child's status is refreshed every cycle; the bounds only end
+        // telemetry and steering.
+        ingest_child_telemetry(runner, &runtime, &mut context);
         if observing && actions.contains("observe") {
-            ingest_child_telemetry(runner, &runtime, &mut context);
             append_manager_artifact(
                 runtime.logs_root.as_deref(),
                 &runtime.node_id,
@@ -173,10 +175,11 @@ pub(crate) fn execute_manager_loop(
             observing = false;
         }
 
-        if actions.contains("wait") || !observing {
-            if !poll_interval.is_zero() {
-                std::thread::sleep(poll_interval);
-            }
+        if !observing {
+            // Past the bounds the loop only waits; never spin.
+            std::thread::sleep(poll_interval.max(Duration::from_millis(50)));
+        } else if actions.contains("wait") && !poll_interval.is_zero() {
+            std::thread::sleep(poll_interval);
         }
     }
     unreachable!("the manager loop returns once the child ends")
