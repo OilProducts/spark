@@ -397,6 +397,54 @@ describe('a long chat', () => {
         expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 
+    it('discards a pre-reset older page even when the reloaded window repeats its cursor', async () => {
+        const olderPage = held()
+        respondToPage = (url) => (url.searchParams.get('before') === 'cursor-1' && pageRequests.length === 2
+            ? olderPage.response
+            : json(url.searchParams.get('before') ? pageOf([0, 1], null, 9) : pageOf([2, 3], 'cursor-1')))
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1']))
+
+        emitLive('conversation.reset', resetPayload)
+        // The reload completes with the same window, so the same older cursor comes back.
+        await screen.findByText('Message 3')
+        expect(record()).toMatchObject({ resetting: false, olderCursor: 'cursor-1' })
+
+        olderPage.release(json(pageOf([0, 1], null, 9)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+        expect(record()?.olderCursor).toBe('cursor-1')
+        // A request issued for the reloaded window still loads.
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await screen.findByText('Message 0')
+    })
+
+    it('discards a recovery window that lands after a later reset completed', async () => {
+        const recovery = held()
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                return json({ code: 'window_reset', reason: 'order_changed', generation: 'generation-test', watermark: '12' }, 409)
+            }
+            if (pageRequests.length === 3) return recovery.response
+            // The later reset's reload reads the same window again, older cursor included.
+            return json(pageOf([2, 3], 'cursor-1', pageRequests.length > 3 ? 12 : 10))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
+
+        emitLive('conversation.reset', { ...resetPayload, generation: 'generation-test' })
+        await waitFor(() => expect(record()).toMatchObject({ resetting: false, olderCursor: 'cursor-1', watermark: '12' }))
+        expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest', 'newest'])
+
+        recovery.release(json(pageOf([7, 8], 'cursor-7', 11)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 8')).not.toBeInTheDocument()
+        expect(screen.getByText('Message 3')).toBeInTheDocument()
+        expect(record()).toMatchObject({ olderCursor: 'cursor-1', watermark: '12' })
+    })
+
     it('applies live changes the server files under its own spelling of the project path', async () => {
         respondToPage = () => json(pageOf([2, 3], null))
         await openHomeChat()

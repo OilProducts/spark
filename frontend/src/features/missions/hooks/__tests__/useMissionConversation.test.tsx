@@ -103,3 +103,28 @@ it('drops an older page whose window a reload replaced while it was in flight', 
     await screen.findByRole('button', { name: 'Load older messages' })
     expect(screen.queryByText('Message 1')).toBeNull()
 })
+
+it('drops an older page whose window a reload replaced with the same cursor', async () => {
+    let releaseOlder!: () => void
+    let olderRequests = 0
+    fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('before=cursor-older')) {
+            if (++olderRequests === 1) await new Promise<void>((resolve) => { releaseOlder = resolve })
+            return json(200, page(0, 10, 3, null))
+        }
+        if (url.includes('/changes?')) {
+            return json(409, { code: 'window_reset', reason: 'order_changed', generation: 'generation-test', watermark: '3' })
+        }
+        return json(200, page(10, 60, 3, 'cursor-older'))
+    })
+    render(<Log />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
+    act(() => {
+        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { conversationId: 'mission-1' } }))
+    })
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => !String(url).includes('before=') && !String(url).includes('/changes?'))).toHaveLength(2))
+    await waitFor(() => expect(screen.getByText('Message 59')).toBeInTheDocument())
+    act(() => releaseOlder())
+    await screen.findByRole('button', { name: 'Load older messages' })
+    expect(screen.queryByText('Message 1')).toBeNull()
+})

@@ -47,6 +47,11 @@ type ConversationWindowState = {
     watermark: string | null
     /** A live reset is pending: live batches are ignored until the next window. */
     resetting: boolean
+    /**
+     * Names this loaded window: every window and reset takes a new one, so a request issued for
+     * it is stale once it changes, even if a reloaded window repeats the same older cursor.
+     */
+    windowEpoch: number
     olderCursor: string | null
     /** The oldest loaded page's first turn position; older turns that a delta brings stay hidden. */
     windowStart: string | null
@@ -258,12 +263,15 @@ function compareOptionalDecimals(left: string | undefined, right: string | undef
 const turnKey = (conversationId: string, id: string) => conversationRowKey({ kind: 'turn', conversation_id: conversationId, id })
 const segmentKey = (conversationId: string, id: string) => conversationRowKey({ kind: 'segment', conversation_id: conversationId, id })
 
+let lastWindowEpoch = 0
+
 function emptyWindow(generation: string, projectPath: string | null): ConversationWindowState {
     return {
         generation,
         projectPath,
         watermark: null,
         resetting: false,
+        windowEpoch: ++lastWindowEpoch,
         olderCursor: null,
         windowStart: null,
         pinnedTurnIds: [],
@@ -274,8 +282,8 @@ function emptyWindow(generation: string, projectPath: string | null): Conversati
 }
 
 function windowOf(record: NormalizedConversationRecord): ConversationWindowState {
-    const { generation, projectPath, watermark, resetting, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById } = record
-    return { generation, projectPath, watermark, resetting, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById }
+    const { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById } = record
+    return { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById }
 }
 
 /** A deleted conversation keeps only its tombstone: every child it had is invalid. */
@@ -466,6 +474,7 @@ export function applyConversationPage(
         projectPath: projectPath ?? record?.projectPath ?? null,
         watermark: keepsWatermark ? record.watermark : page.watermark,
         resetting: false,
+        windowEpoch: ++lastWindowEpoch,
         olderCursor: page.older_cursor,
         windowStart: pageStart(page),
         pinnedTurnIds: page.pinned_turn_ids,

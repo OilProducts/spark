@@ -395,11 +395,12 @@ export function useProjectsHomeController() {
         if (!activeProjectPath || !record || !cursor) return
         const conversationId = record.conversation_id
         setOlderMessages({ conversationId, loading: true, error: null })
-        // The cursor names its window (generation and opening revision): a newer window, a reset
-        // (which clears it) or a generation change replaces it, and the response is then stale.
+        // A newer window, a reset or a generation change replaces the window this request was
+        // issued for, and its response is then stale for good, even if the cursor comes back.
+        const { windowEpoch } = record
         const isCurrentWindow = () => {
             const current = getConversationRecord(conversationId)
-            return current?.olderCursor === cursor && !current.resetting
+            return current?.windowEpoch === windowEpoch && current.olderCursor === cursor && !current.resetting
         }
         try {
             try {
