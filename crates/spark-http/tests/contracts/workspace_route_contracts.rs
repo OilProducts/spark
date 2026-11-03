@@ -251,7 +251,9 @@ async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
     let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .project_paths(&project_path)
         .unwrap();
-    store.database().defer_next_checkpoints(1);
+    store
+        .database()
+        .fail_next_checkpoints([spark_storage::conversation::CheckpointFault::Busy]);
     let remove = format!(
         "/workspace/api/projects?project_path={}",
         crate::encode_query(&project_path)

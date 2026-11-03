@@ -33,10 +33,10 @@ pub(crate) use tool_output::{
 pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
 pub use commit::ConversationCommit;
 pub use database::{
-    ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, CheckpointedView,
-    ConversationDatabase, ConversationRow, EntityKind, EntityRow, PageCursor, PageRead,
-    ProjectDeletionMarker, ReadTransaction, ResetReason, SegmentRow, StoredConversation, TurnPage,
-    TurnRow, WriteTransaction, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
+    ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, CheckpointFault,
+    CheckpointedView, ConversationDatabase, ConversationRow, EntityKind, EntityRow, PageCursor,
+    PageRead, ProjectDeletionMarker, ReadTransaction, ResetReason, SegmentRow, StoredConversation,
+    TurnPage, TurnRow, WriteTransaction, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
     CONVERSATION_DATABASE_FILE_NAME, CONVERSATION_DATABASE_SCHEMA_VERSION,
 };
 pub use identity::{

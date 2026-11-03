@@ -7,8 +7,9 @@
 //! selects the replacement rows a client at cursor `R` needs to reach watermark
 //! `H`. [`super::ConversationStore`] owns the one connection per Spark home.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -255,9 +256,25 @@ pub struct ConversationDatabase {
     path: PathBuf,
     generation: String,
     connection: Mutex<Connection>,
-    deferred_checkpoints: AtomicUsize,
+    /// Fault injection: results the next cleanup checkpoints report instead
+    /// of running.
+    injected_checkpoints: Mutex<VecDeque<CheckpointFault>>,
     /// Set by each committed write; cleared by a complete passive checkpoint.
     written_since_checkpoint: AtomicBool,
+}
+
+/// A cleanup checkpoint result to inject in place of the real one.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointFault {
+    /// Another connection blocked it (`busy=1`).
+    Busy,
+    /// It returned without copying every WAL frame.
+    Incomplete,
+    /// It reported no WAL (`log=-1`).
+    NoWal,
+    /// The checkpoint statement itself failed.
+    Error,
 }
 
 /// Every live row of one conversation, for loading it into memory.
@@ -495,7 +512,7 @@ impl ConversationDatabase {
             path,
             generation,
             connection: Mutex::new(connection),
-            deferred_checkpoints: AtomicUsize::new(0),
+            injected_checkpoints: Mutex::new(VecDeque::new()),
             written_since_checkpoint: AtomicBool::new(false),
         })
     }
@@ -510,29 +527,62 @@ impl ConversationDatabase {
         cleanup: impl FnOnce(&CheckpointedView<'_>) -> Result<T>,
     ) -> Result<T> {
         let connection = self.lock();
-        let deferred = self
-            .deferred_checkpoints
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                count.checked_sub(1)
-            })
-            .is_ok();
-        if deferred {
-            return Err(StorageError::CleanupDeferred {
-                reason: "conversation database checkpoint incomplete (busy=1)".to_string(),
-            });
-        }
-        checkpoint(&connection, "FULL").map_err(|error| StorageError::CleanupDeferred {
-            reason: error.to_string(),
-        })?;
+        let injected = self
+            .injected_checkpoints
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .pop_front();
+        let result = match injected {
+            None => query_checkpoint(&connection, "FULL"),
+            Some(CheckpointFault::Busy) => Ok((1, 4, 2)),
+            Some(CheckpointFault::Incomplete) => Ok((0, 4, 2)),
+            Some(CheckpointFault::NoWal) => Ok((0, -1, -1)),
+            Some(CheckpointFault::Error) => Err(StorageError::ConversationDatabase(
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                    Some("injected checkpoint failure".to_string()),
+                ),
+            )),
+        };
+        result
+            .and_then(|result| require_complete("FULL", result))
+            .map_err(|error| StorageError::CleanupDeferred {
+                reason: error.to_string(),
+            })?;
         cleanup(&CheckpointedView {
             connection: &connection,
         })
     }
 
-    /// Fault injection: report the next `count` cleanup checkpoints as busy.
+    /// Fault injection: the next cleanup checkpoints report `faults`, in
+    /// order, instead of running.
     #[doc(hidden)]
-    pub fn defer_next_checkpoints(&self, count: usize) {
-        self.deferred_checkpoints.store(count, Ordering::SeqCst);
+    pub fn fail_next_checkpoints(&self, faults: impl IntoIterator<Item = CheckpointFault>) {
+        self.injected_checkpoints
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .extend(faults);
+    }
+
+    /// Measurement only: switch this connection's `synchronous` setting
+    /// (`NORMAL` or `FULL`) to compare durability costs on one workload.
+    #[doc(hidden)]
+    pub fn set_synchronous(&self, mode: &str) -> Result<()> {
+        if !matches!(mode, "NORMAL" | "FULL") {
+            return Err(StorageError::InvalidConversationState {
+                path: self.path.clone(),
+                reason: format!("unsupported synchronous mode {mode}"),
+            });
+        }
+        self.lock().pragma_update(None, "synchronous", mode)?;
+        Ok(())
+    }
+
+    /// Measurement only: run a passive checkpoint and return its raw
+    /// `(busy, wal frames, checkpointed frames)` result.
+    #[doc(hidden)]
+    pub fn passive_checkpoint_frames(&self) -> Result<(i64, i64, i64)> {
+        query_checkpoint(&self.lock(), "PASSIVE")
     }
 
     /// Statements that change only cleanup bookkeeping, outside revisions.
@@ -666,10 +716,19 @@ impl ConversationDatabase {
 /// Run a checkpoint and require it to be complete: not busy, with every WAL
 /// frame checkpointed.
 fn checkpoint(connection: &Connection, mode: &str) -> Result<()> {
-    let (busy, log, checkpointed): (i64, i64, i64) =
+    require_complete(mode, query_checkpoint(connection, mode)?)
+}
+
+/// The raw `(busy, log, checkpointed)` row of one checkpoint.
+fn query_checkpoint(connection: &Connection, mode: &str) -> Result<(i64, i64, i64)> {
+    Ok(
         connection.query_row(&format!("PRAGMA main.wal_checkpoint({mode})"), [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
+        })?,
+    )
+}
+
+fn require_complete(mode: &str, (busy, log, checkpointed): (i64, i64, i64)) -> Result<()> {
     if busy != 0 || log < 0 || log != checkpointed {
         return Err(StorageError::CheckpointIncomplete {
             reason: format!(

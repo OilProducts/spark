@@ -881,7 +881,7 @@ fn read_snapshot_derives_plan_segment_artifact_id_from_plan_record() {
 #[test]
 fn failed_transactions_roll_back_rows_and_memory() {
     let project_path = "/projects/rollback";
-    let (_temp, repo) = setup(project_path);
+    let (temp, repo) = setup(project_path);
     let first = repo
         .commit_conversation(
             "conversation-rollback",
@@ -926,7 +926,40 @@ fn failed_transactions_roll_back_rows_and_memory() {
         .unwrap()
         .unwrap();
     assert_eq!(snapshot, before_snapshot);
-    let _ = first;
+
+    // Retrying the valid part, even twice, commits the turn once.
+    let second = vec![ConversationMutation::TurnUpserted {
+        turn: user_turn("turn-second", "Second"),
+    }];
+    let retried = repo
+        .commit_conversation(
+            "conversation-rollback",
+            project_path,
+            first.revision,
+            second.clone(),
+        )
+        .unwrap();
+    repo.commit_conversation(
+        "conversation-rollback",
+        project_path,
+        retried.revision,
+        second,
+    )
+    .unwrap();
+    // The cache that survived the rollback matches what SQL reloads.
+    let cached = self::snapshot(&repo, "conversation-rollback");
+    drop(repo);
+    let repo = ConversationRepository::new(
+        ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
+    );
+    assert_eq!(self::snapshot(&repo, "conversation-rollback"), cached);
+    let turns: Vec<_> = cached["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|turn| turn["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(turns, vec!["turn-user", "turn-second"]);
 }
 
 /// Externalized output is read from its blob; inline output has no blob;
@@ -1079,7 +1112,9 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
     assert_eq!(before.len(), 5, "{before:?}");
 
     // A busy barrier removes nothing.
-    repo.store().database().defer_next_checkpoints(1);
+    repo.store()
+        .database()
+        .fail_next_checkpoints([spark_storage::conversation::CheckpointFault::Busy]);
     assert!(matches!(
         repo.store().collect_tool_output_garbage(),
         Err(StorageError::CleanupDeferred { .. })
@@ -1238,4 +1273,471 @@ fn shared_conversation_id_collection_child() {
             .len(),
         1
     );
+}
+
+/// A tool-call segment carrying `output` (externalized when large).
+fn tool_segment(id: &str, output: &str) -> ConversationMutation {
+    let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
+    segment.kind = "tool_call".to_string();
+    segment.tool_call = Some(json!({"id": id, "output": output}));
+    ConversationMutation::SegmentUpserted { segment }
+}
+
+fn big_output(fill: &str) -> String {
+    fill.repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2)
+}
+
+/// Every blob a live row of `conversation` references exists.
+fn assert_live_references_exist(
+    store: &ConversationStore,
+    conversation: &str,
+    root: &std::path::Path,
+) {
+    let stored = store
+        .database()
+        .read(|read| read.conversation(conversation))
+        .unwrap()
+        .expect("live conversation");
+    for segment in &stored.segments {
+        if let Some(artifact) = segment
+            .pointer("/tool_call/output_artifact")
+            .and_then(Value::as_str)
+        {
+            assert!(root.join(artifact).is_file(), "missing {artifact}");
+        }
+    }
+    for (id, blob_path, ..) in &stored.attachments {
+        assert!(store.home_dir().join(blob_path).is_file(), "missing {id}");
+    }
+}
+
+/// Seed checkpointed row A referencing blob A, replace it with B under
+/// NORMAL, and no checkpoint barrier that is busy, incomplete, without a WAL
+/// or failing unlinks A; once one succeeds A goes, and after reopening the
+/// surviving row still references existing bytes.
+#[test]
+fn replaced_output_bytes_survive_every_failed_checkpoint_barrier() {
+    use spark_storage::conversation::CheckpointFault;
+    let project_path = "/projects/barrier-blobs";
+    let (temp, repo) = setup(project_path);
+    let conversation = "conversation-barrier";
+    let root = conversation_dir(&temp, project_path, conversation);
+    let output = |commit: &spark_storage::conversation::ConversationCommit| {
+        root.join(
+            changed(commit, EntityKind::Segment, "segment-tool")
+                .payload
+                .as_ref()
+                .unwrap()["tool_call"]["output_artifact"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    let a = repo
+        .commit_conversation(
+            conversation,
+            project_path,
+            0,
+            vec![
+                ConversationMutation::TurnUpserted {
+                    turn: assistant_turn("turn-assistant", "streaming"),
+                },
+                tool_segment("segment-tool", &big_output("a")),
+            ],
+        )
+        .unwrap();
+    let blob_a = output(&a);
+    repo.store()
+        .database()
+        .after_checkpoint(|_| Ok(()))
+        .unwrap();
+    let b = repo
+        .commit_conversation(
+            conversation,
+            project_path,
+            a.revision,
+            vec![tool_segment("segment-tool", &big_output("b"))],
+        )
+        .unwrap();
+    let blob_b = output(&b);
+    assert_ne!(blob_a, blob_b);
+
+    for fault in [
+        CheckpointFault::Busy,
+        CheckpointFault::Incomplete,
+        CheckpointFault::NoWal,
+        CheckpointFault::Error,
+    ] {
+        repo.store().database().fail_next_checkpoints([fault]);
+        let error = repo.store().collect_tool_output_garbage().unwrap_err();
+        assert!(
+            matches!(error, StorageError::CleanupDeferred { .. }),
+            "{fault:?}: {error}"
+        );
+        assert_eq!(fs::read_to_string(&blob_a).unwrap(), big_output("a"));
+    }
+    assert_eq!(repo.store().collect_tool_output_garbage().unwrap(), 1);
+    assert!(!blob_a.exists());
+
+    drop(repo);
+    let repo = ConversationRepository::new(
+        ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
+    );
+    assert_live_references_exist(repo.store(), conversation, &root);
+    assert_eq!(
+        repo.read_segment_tool_output(conversation, Some(project_path), "segment-tool")
+            .unwrap(),
+        Some(big_output("b"))
+    );
+}
+
+/// Trace pruning: a projection whose transaction fails moves no cursor; a
+/// failed barrier prunes nothing; restart replays nothing settled; pruning
+/// keeps an older active turn's unapplied records; per-turn cursors and
+/// runtime sessions of different providers stay independent; and the
+/// allocator stays above every pruned or truncated sequence across restarts.
+#[test]
+fn trace_pruning_waits_for_the_barrier_and_keeps_an_older_active_turn() {
+    use spark_storage::conversation::{CheckpointFault, RuntimeSession};
+    let project_path = "/projects/trace-barrier";
+    let (temp, repo) = setup(project_path);
+    let home = temp.path().join("spark-home");
+    let conversation = "conversation-trace";
+    let trace = conversation_dir(&temp, project_path, conversation)
+        .join(spark_storage::conversation::PROVIDER_TRACE_FILE_NAME);
+    let turn = |id: &str, status: &str| ConversationMutation::TurnUpserted {
+        turn: assistant_turn(id, status),
+    };
+    let append = |repo: &ConversationRepository, turn_id: &str| {
+        let mut event = serde_json::from_value(
+            json!({"kind": "content_delta", "channel": "assistant", "message": "x"}),
+        )
+        .unwrap();
+        repo.append_provider_event(conversation, project_path, turn_id, &mut event)
+            .unwrap()
+            .sequence
+    };
+    let project = |repo: &ConversationRepository, turn_id: &str, mutations| {
+        repo.commit_conversation_projecting(conversation, project_path, 0, mutations, Some(turn_id))
+    };
+    let unapplied = |repo: &ConversationRepository, turn_id: &str| -> Vec<u64> {
+        repo.unapplied_provider_events(conversation, project_path, turn_id)
+            .unwrap()
+            .iter()
+            .map(|record| record.sequence)
+            .collect()
+    };
+    let applied = |repo: &ConversationRepository| -> Vec<(String, u64)> {
+        repo.store()
+            .database()
+            .read(|read| read.conversation(conversation))
+            .unwrap()
+            .unwrap()
+            .turns
+            .into_iter()
+            .map(|(id, _, applied, _)| (id, applied))
+            .collect()
+    };
+    let traced = || -> Vec<u64> {
+        fs::read_to_string(&trace)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["sequence"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect()
+    };
+
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        0,
+        vec![turn("turn-old", "streaming"), turn("turn-new", "streaming")],
+    )
+    .unwrap();
+    assert_eq!(append(&repo, "turn-old"), 1);
+    project(&repo, "turn-old", vec![turn("turn-old", "streaming")]).unwrap();
+    assert_eq!(append(&repo, "turn-old"), 2);
+    assert_eq!(append(&repo, "turn-new"), 3);
+    assert_eq!(append(&repo, "turn-new"), 4);
+    let session = |provider: &str| RuntimeSession {
+        schema_version: spark_storage::conversation::RUNTIME_SESSION_SCHEMA_VERSION,
+        provider: provider.to_string(),
+        thread_id: Some(format!("{provider}-thread")),
+        established_at: "2026-01-01T00:00:00Z".to_string(),
+        last_turn_id: None,
+        resume_failed: false,
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    for provider in ["codex_app_server", "claude_code"] {
+        repo.write_runtime_session(conversation, project_path, &session(provider))
+            .unwrap();
+    }
+
+    // A projection whose transaction fails leaves both cursors where they were.
+    project(
+        &repo,
+        "turn-new",
+        vec![
+            turn("turn-new", "complete"),
+            ConversationMutation::WorkflowEventAppended {
+                event: json!("not an object"),
+            },
+        ],
+    )
+    .expect_err("constraint violation");
+    assert_eq!(unapplied(&repo, "turn-new"), vec![3, 4]);
+    let expected = vec![("turn-old".to_string(), 1), ("turn-new".to_string(), 0)];
+    assert_eq!(applied(&repo), expected);
+
+    // Settling turn-new commits, but no failed barrier truncates the trace.
+    for fault in [
+        CheckpointFault::Busy,
+        CheckpointFault::Incomplete,
+        CheckpointFault::NoWal,
+        CheckpointFault::Error,
+    ] {
+        repo.store().database().fail_next_checkpoints([fault]);
+        project(&repo, "turn-new", vec![turn("turn-new", "complete")]).unwrap();
+        assert_eq!(traced(), vec![1, 2, 3, 4], "{fault:?}");
+    }
+    let expected = vec![("turn-old".to_string(), 1), ("turn-new".to_string(), 4)];
+    assert_eq!(applied(&repo), expected);
+
+    // Restart: the settled turn's leftover records are ignored, not replayed.
+    let revision = snapshot(&repo, conversation)["revision"].clone();
+    drop(repo);
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    assert_eq!(snapshot(&repo, conversation)["revision"], revision);
+    assert_eq!(unapplied(&repo, "turn-new"), Vec::<u64>::new());
+    assert_eq!(unapplied(&repo, "turn-old"), vec![2]);
+    assert_eq!(
+        repo.read_runtime_session(conversation, Some(project_path))
+            .unwrap(),
+        Some(session("claude_code"))
+    );
+
+    // A barrier that succeeds prunes everything except turn-old's record
+    // above its cursor.
+    project(&repo, "turn-new", vec![turn("turn-new", "complete")]).unwrap();
+    assert_eq!(traced(), vec![2]);
+    assert_eq!(applied(&repo), expected);
+    drop(repo);
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    assert_eq!(unapplied(&repo, "turn-old"), vec![2]);
+    // The allocator stays above the pruned records 3 and 4.
+    assert_eq!(append(&repo, "turn-old"), 5);
+    project(&repo, "turn-old", vec![turn("turn-old", "complete")]).unwrap();
+    assert_eq!(fs::read(&trace).unwrap(), Vec::<u8>::new(), "settled trace");
+    drop(repo);
+    // And above the truncated record 5 after another restart.
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    assert_eq!(append(&repo, "turn-old"), 6);
+}
+
+/// Collection running beside commits that keep replacing an output never
+/// removes bytes a live row references.
+#[test]
+fn references_survive_collection_running_beside_commits() {
+    let project_path = "/projects/concurrent-collection";
+    let (temp, repo) = setup(project_path);
+    let conversation = "conversation-concurrent";
+    let root = conversation_dir(&temp, project_path, conversation);
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted {
+            turn: assistant_turn("turn-assistant", "streaming"),
+        }],
+    )
+    .unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                repo.store().collect_tool_output_garbage().unwrap();
+            }
+        });
+        for index in 0..40 {
+            repo.commit_conversation(
+                conversation,
+                project_path,
+                0,
+                vec![tool_segment(
+                    "segment-tool",
+                    &big_output(&format!("{index:02}")),
+                )],
+            )
+            .unwrap();
+            assert_live_references_exist(repo.store(), conversation, &root);
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    assert_eq!(
+        repo.read_segment_tool_output(conversation, Some(project_path), "segment-tool")
+            .unwrap(),
+        Some(big_output("39"))
+    );
+    drop(repo);
+    let store = ConversationStore::open(temp.path().join("spark-home")).unwrap();
+    assert_live_references_exist(&store, conversation, &root);
+    let remaining = fs::read_dir(root.join("tool-output")).unwrap().count();
+    assert_eq!(remaining, 1, "old versions are collected");
+}
+
+const CRASH_CHILD_ENV: &str = "SPARK_CONVERSATION_CRASH_CHILD_HOME";
+
+/// A process killed (aborted) in the middle of a SQL transaction, after
+/// publishing its blob and after appending a trace record it never
+/// projected. This is a process-crash check, not a power-loss check: the OS
+/// still writes everything the process handed it.
+#[test]
+fn a_killed_process_keeps_committed_state_and_abandons_the_rest() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("spark-home");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "conversation_commit_contracts::process_kill_child",
+            "--nocapture",
+        ])
+        .env(CRASH_CHILD_ENV, &home)
+        .output()
+        .expect("child test");
+    assert!(!output.status.success(), "the child aborts: {output:?}");
+    let project_path = "/projects/killed";
+    let conversation = "conversation-killed";
+    let root = conversation_dir(&temp, project_path, conversation);
+    let abandoned_blob = root.join("tool-output/segment-abandoned.0.txt");
+    assert!(
+        abandoned_blob.is_file(),
+        "the child reached its crash point"
+    );
+
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    // Startup collects the unreferenced blob behind the barrier.
+    assert!(!abandoned_blob.exists());
+    let stored = repo
+        .store()
+        .database()
+        .read(|read| read.conversation(conversation))
+        .unwrap()
+        .unwrap();
+    let turns: Vec<_> = stored.turns.iter().map(|(id, ..)| id.as_str()).collect();
+    assert_eq!(turns, vec!["turn-user", "turn-assistant"]);
+    assert!(stored.segments.is_empty());
+    // The aborted transaction's revision was never allocated.
+    let watermark = repo
+        .store()
+        .database()
+        .read(|read| Ok(read.watermark()))
+        .unwrap();
+    assert_eq!(watermark, 2);
+    assert_eq!(stored.turns[1].2, 1, "applied cursor");
+    let unapplied: Vec<_> = repo
+        .unapplied_provider_events(conversation, project_path, "turn-assistant")
+        .unwrap()
+        .iter()
+        .map(|record| record.sequence)
+        .collect();
+    assert_eq!(unapplied, vec![2]);
+    let mut event = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "after"}),
+    )
+    .unwrap();
+    let next = repo
+        .append_provider_event(conversation, project_path, "turn-assistant", &mut event)
+        .unwrap();
+    assert_eq!(next.sequence, 3);
+    let commit = repo
+        .commit_conversation(
+            conversation,
+            project_path,
+            watermark,
+            vec![ConversationMutation::TurnUpserted {
+                turn: assistant_turn("turn-assistant", "complete"),
+            }],
+        )
+        .unwrap();
+    assert_eq!(commit.revision, 3);
+}
+
+#[test]
+fn process_kill_child() {
+    let Some(home) = std::env::var_os(CRASH_CHILD_ENV) else {
+        return;
+    };
+    let project_path = "/projects/killed";
+    let conversation = "conversation-killed";
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        0,
+        vec![
+            ConversationMutation::TurnUpserted {
+                turn: user_turn("turn-user", "Hello"),
+            },
+            ConversationMutation::TurnUpserted {
+                turn: assistant_turn("turn-assistant", "streaming"),
+            },
+        ],
+    )
+    .unwrap();
+    let append = || {
+        let mut event = serde_json::from_value(
+            json!({"kind": "content_delta", "channel": "assistant", "message": "x"}),
+        )
+        .unwrap();
+        repo.append_provider_event(conversation, project_path, "turn-assistant", &mut event)
+            .unwrap()
+    };
+    append();
+    repo.commit_conversation_projecting(
+        conversation,
+        project_path,
+        1,
+        vec![ConversationMutation::TurnUpserted {
+            turn: assistant_turn("turn-assistant", "streaming"),
+        }],
+        Some("turn-assistant"),
+    )
+    .unwrap();
+    // Appended, never projected.
+    append();
+    // A publication: durable blob first, then a transaction that never commits.
+    let root = ProjectRegistry::new(&home)
+        .project_paths(project_path)
+        .unwrap()
+        .conversations_dir
+        .join(conversation);
+    let blob = root.join("tool-output/segment-abandoned.0.txt");
+    fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    fs::write(&blob, big_output("z")).unwrap();
+    let store = repo.store();
+    let _ = store.database().write(|tx| -> spark_storage::Result<()> {
+        let mut abandoned = assistant_turn("turn-abandoned", "streaming");
+        abandoned.content = "never committed".to_string();
+        tx.put_turn(&spark_storage::conversation::TurnRow {
+            conversation_id: conversation.to_string(),
+            id: "turn-abandoned".to_string(),
+            position: 2,
+            status: "streaming".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            payload: serde_json::to_value(&abandoned).unwrap(),
+        })?;
+        tx.put_blob_reference(
+            conversation,
+            "tool_output",
+            "segment-abandoned",
+            &blob
+                .strip_prefix(store.home_dir())
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )?;
+        std::process::abort()
+    });
 }
