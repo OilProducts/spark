@@ -248,6 +248,7 @@ fn autostart_child_pipeline(
                 {
                     child_result = resume_existing_child(
                         runner.clone(),
+                        runtime,
                         store.expect("store exists when bundle exists"),
                         bundle,
                     )
@@ -351,7 +352,8 @@ fn autostart_child_pipeline(
                         || (value.status == "failed"
                             && bundle.record.as_ref().is_some_and(restart_marked_record))
                 }) {
-                    result = resume_existing_child(runner.clone(), store.clone(), bundle).ok();
+                    result =
+                        resume_existing_child(runner.clone(), runtime, store.clone(), bundle).ok();
                 }
                 if let Some(result) = result {
                     apply_child_run_result(context, &result, runtime);
@@ -601,8 +603,58 @@ fn bundle_restart_marked(runtime: &HandlerRuntime, run_id: &str) -> bool {
         .is_some_and(|record| restart_marked_record(&record))
 }
 
+/// The child executor's controls, read from the child's own run record, so
+/// a cancel request against the child stops it at its next boundary.
+fn child_control(
+    store: &RunStore,
+    child_run_id: &str,
+) -> impl FnMut() -> Option<crate::executor::ExecutionControlAction> + Send + 'static {
+    let (store, child_run_id) = (store.clone(), child_run_id.to_string());
+    move || {
+        let paths = store.find_run_root(&child_run_id).ok().flatten()?;
+        crate::controls::disk_execution_control(paths)()
+    }
+}
+
+/// Runs a child invocation. If the owning fork cancels this branch while
+/// the child runs, the child's cancellation is requested through the run
+/// controls and the child settles before this returns; the invocation is
+/// then marked interrupted, so the branch records cancellation, not an error.
+fn watch_owner_cancel<T>(
+    runtime: &HandlerRuntime,
+    store: &RunStore,
+    child_run_id: &str,
+    run: impl FnOnce() -> T,
+) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some(cancel) = runtime.cancel.clone() else {
+        return run();
+    };
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::SeqCst) {
+                // The child's record may not exist yet; retry until accepted.
+                if cancel.load(Ordering::SeqCst)
+                    && crate::controls::RuntimeControls::new(store.clone())
+                        .request_cancel(child_run_id)
+                        .is_ok()
+                {
+                    runtime.interrupted.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let result = run();
+        done.store(true, Ordering::SeqCst);
+        result
+    })
+}
+
 fn resume_existing_child(
     runner: RuntimeHandlerRunner,
+    runtime: &HandlerRuntime,
     store: RunStore,
     bundle: crate::store::RunBundle,
 ) -> std::result::Result<ChildRunResult, String> {
@@ -704,8 +756,9 @@ fn resume_existing_child(
             .write_run_record(&bundle.paths, &record)
             .map_err(|error| error.to_string())?;
     }
-    let result = PipelineExecutor::new(runner)
-        .execute(ExecuteRunRequest {
+    let control = child_control(&store, &child_id);
+    let result = watch_owner_cancel(runtime, &store, &child_id, || {
+        PipelineExecutor::with_control(runner, control).execute(ExecuteRunRequest {
             store: store.clone(),
             record,
             flow,
@@ -718,8 +771,9 @@ fn resume_existing_child(
                 checkpoint,
             },
         })
-        .map(pipeline_result_to_child_result)
-        .map_err(|e| e.to_string())?;
+    })
+    .map(pipeline_result_to_child_result)
+    .map_err(|e| e.to_string())?;
     Ok(store
         .read_run_meta(&child_id)
         .ok()
@@ -853,9 +907,10 @@ fn launch_default_child_run(
     let store_for_result = store.clone();
     let child_run_id = request.child_run_id.clone();
     let child_definition_json = request.child_flow.to_canonical_json_string();
-    let mut executor = PipelineExecutor::new(runner);
-    let result = executor
-        .execute(ExecuteRunRequest {
+    let control = child_control(&store, &child_run_id);
+    let watch_store = store.clone();
+    let result = watch_owner_cancel(runtime, &watch_store, &child_run_id, || {
+        PipelineExecutor::with_control(runner, control).execute(ExecuteRunRequest {
             store,
             record,
             flow: request.child_flow,
@@ -869,8 +924,9 @@ fn launch_default_child_run(
                 flow_files: Some(child_flow_files),
             },
         })
-        .map(pipeline_result_to_child_result)
-        .map_err(|error| error.to_string())?;
+    })
+    .map(pipeline_result_to_child_result)
+    .map_err(|error| error.to_string())?;
     Ok(store_for_result
         .read_run_meta(&child_run_id)
         .ok()

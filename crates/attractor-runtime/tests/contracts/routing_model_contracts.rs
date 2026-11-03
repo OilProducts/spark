@@ -2174,3 +2174,184 @@ fn a_child_execution_error_stays_tolerated_inside_a_tolerant_fork() {
         .unwrap()
         .contains("provider down"));
 }
+
+/// A child flow that waits on an unanswered human gate.
+fn write_gate_child(root: &Path) {
+    let flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("gate")}},
+        "gate": {"kind": "human_gate", "config": {"kind": "human_gate", "prompt": "Approve?"},
+            "routes": {"approve": route("done")}},
+        "done": exit("completed", "success"),
+    }));
+    attractor_dsl::write_flow_dir(&root.join("flows/gated"), &flow).unwrap();
+}
+
+/// Branch `sub` runs the gated child by default launch; branch `b` answers
+/// with `b_answer` once that child waits on its gate.
+fn gated_child_fork(tolerate: bool) -> FlowDefinition {
+    parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["sub", "b"],
+            "join": "join", "tolerate_branch_execution_errors": tolerate}},
+        "sub": {"kind": "subflow", "manager": {"poll_interval": "0s"},
+            "config": {"kind": "subflow", "flow_ref": "gated", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": route("join")}},
+        "b": agent(json!({"done": route("join"), "blocked": route("failed")})),
+        "join": {"kind": "fan_in", "routes": {"next": route("synth")}},
+        "synth": agent(json!({"done": route("done")})),
+        "done": exit("completed", "success"),
+        "failed": exit("blocked", "failure"),
+    }))
+}
+
+fn gated_runner(
+    runs: PathBuf,
+    b_answer: Outcome,
+    exit_after_wait: bool,
+) -> (RuntimeHandlerRunner, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let seen = calls.clone();
+    let mut runner = RuntimeHandlerRunner::new().with_blocking_human_gates();
+    runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
+        seen.lock().unwrap().push(runtime.node_id.clone());
+        if runtime.node_id == "b" {
+            // Wait until the child run sits on its unanswered gate.
+            let store = RunStore::for_runs_dir(runs.clone());
+            while !store
+                .list_run_records()
+                .unwrap_or_default()
+                .iter()
+                .any(|record| {
+                    record.parent_node_id.as_deref() == Some("sub") && record.status == "waiting"
+                })
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if exit_after_wait {
+                std::process::exit(7);
+            }
+            return Ok(b_answer.clone());
+        }
+        Ok(completed("done"))
+    });
+    (runner, calls)
+}
+
+fn gated_child_record(runs: &Path) -> RunRecord {
+    RunStore::for_runs_dir(runs.to_path_buf())
+        .list_run_records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.parent_node_id.as_deref() == Some("sub"))
+        .expect("child run")
+}
+
+#[test]
+fn a_blocked_sibling_cancels_a_waiting_child_and_settles_it() {
+    let temp = tempfile::tempdir().unwrap();
+    write_gate_child(temp.path());
+    let runs = temp.path().join("runs");
+    let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
+    let result = run_parent(
+        temp.path(),
+        gated_child_fork(false),
+        runner,
+        ContextMap::new(),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.outcome.as_deref(), Some("failure"));
+    assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
+    assert!(!result.route_trace.contains(&"join".to_string()));
+    assert_eq!(count(&calls, "synth"), 0);
+    assert_eq!(gated_child_record(&runs).status, "canceled");
+}
+
+#[test]
+fn a_fatal_sibling_cancels_a_waiting_child_and_fails_the_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    write_gate_child(temp.path());
+    let runs = temp.path().join("runs");
+    let fatal = Outcome::error(FailureKind::Routing, "child result unmapped", Some(false));
+    let (runner, calls) = gated_runner(runs.clone(), fatal, false);
+    let result = run_parent(
+        temp.path(),
+        gated_child_fork(true),
+        runner,
+        ContextMap::new(),
+    );
+    assert_eq!(result.status, "failed");
+    assert_eq!(result.failure_kind, Some(FailureKind::Routing));
+    assert!(
+        result.failure_reason.contains("child result unmapped"),
+        "{}",
+        result.failure_reason
+    );
+    assert!(!result.route_trace.contains(&"join".to_string()));
+    assert_eq!(count(&calls, "synth"), 0);
+    assert_eq!(gated_child_record(&runs).status, "canceled");
+}
+
+const GATED_CHILD_ENV: &str = "SPARK_GATED_CHILD_INTERRUPT_DIR";
+
+#[test]
+fn a_recovered_fork_cancels_its_waiting_child_when_a_sibling_blocks() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = std::env::var(GATED_CHILD_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| temp.path().to_path_buf());
+    let runs = dir.join("runs");
+    if std::env::var(GATED_CHILD_ENV).is_ok() {
+        // The process dies while the child waits on its gate.
+        let (runner, _) = gated_runner(runs, completed("blocked"), true);
+        run_parent(&dir, gated_child_fork(false), runner, ContextMap::new());
+        panic!("the parent should have been interrupted");
+    }
+    write_gate_child(&dir);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "routing_model_contracts::a_recovered_fork_cancels_its_waiting_child_when_a_sibling_blocks",
+            "--nocapture",
+        ])
+        .env(GATED_CHILD_ENV, &dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert_eq!(gated_child_record(&runs).status, "waiting");
+
+    let store = RunStore::for_runs_dir(runs.clone());
+    let bundle = store.read_run_bundle("run-parent").unwrap().unwrap();
+    let checkpoint = bundle.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "fork");
+    let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
+    let result = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store,
+            record: bundle.record.unwrap(),
+            flow: gated_child_fork(false),
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: ExecutionStart::Resume {
+                paths: bundle.paths,
+                checkpoint,
+            },
+        })
+        .unwrap();
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
+    assert!(!result.route_trace.contains(&"join".to_string()));
+    assert_eq!(count(&calls, "synth"), 0);
+    // The recovered invocation adopted the existing child and settled it.
+    let children = RunStore::for_runs_dir(runs)
+        .list_run_records()
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.parent_node_id.as_deref() == Some("sub"))
+        .collect::<Vec<_>>();
+    assert_eq!(children.len(), 1, "{children:?}");
+    assert_eq!(children[0].status, "canceled");
+}
