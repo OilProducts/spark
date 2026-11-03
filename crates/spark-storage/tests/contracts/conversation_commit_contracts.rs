@@ -953,3 +953,154 @@ fn segment_tool_output_distinguishes_inline_present_and_missing_bytes() {
         Err(StorageError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
     ));
 }
+
+/// Recovery collects tool-output blobs nothing needs, only behind the
+/// cleanup barrier: an output version a commit replaced, a tombstoned
+/// segment's output, and a publication whose transaction failed. Live bytes
+/// and bytes a retained provider trace still needs for replay stay; a
+/// deferred barrier keeps everything until the next startup retries.
+#[test]
+fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
+    let project_path = "/projects/tool-output-garbage";
+    let (temp, repo) = setup(project_path);
+    let conversation = "conversation-garbage";
+    let root = conversation_dir(&temp, project_path, conversation);
+    let tool = |id: &str, output: &str| {
+        let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
+        segment.kind = "tool_call".to_string();
+        segment.tool_call = Some(json!({"id": id, "output": output}));
+        ConversationMutation::SegmentUpserted { segment }
+    };
+    let blobs = || -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(root.join("tool-output"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let big = |fill: &str| fill.repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
+
+    let first = repo
+        .commit_conversation(
+            conversation,
+            project_path,
+            0,
+            vec![
+                ConversationMutation::TurnUpserted {
+                    turn: assistant_turn("turn-assistant", "streaming"),
+                },
+                tool("segment-replaced", &big("a")),
+                tool("segment-removed", &big("b")),
+            ],
+        )
+        .unwrap();
+    let replaced = blobs();
+    assert_eq!(replaced.len(), 2);
+    // A new version replaces the first; the other segment is tombstoned.
+    let second = repo
+        .commit_conversation(
+            conversation,
+            project_path,
+            first.revision,
+            vec![
+                tool("segment-replaced", &big("c")),
+                ConversationMutation::SegmentTombstoned {
+                    turn_id: "turn-assistant".to_string(),
+                    segment_id: "segment-removed".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+    // A publication whose transaction fails leaves its blob unreferenced.
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        second.revision,
+        vec![
+            tool("segment-abandoned", &big("d")),
+            ConversationMutation::WorkflowEventAppended {
+                event: json!("not an object"),
+            },
+        ],
+    )
+    .expect_err("constraint violation");
+    // A provider event recorded but not yet projected needs its blob for replay.
+    let mut event = serde_json::from_value(json!({
+        "kind": "tool_call_completed",
+        "tool_call": {"id": "call-replay", "output": big("e")},
+    }))
+    .unwrap();
+    let traced = repo
+        .append_provider_event(conversation, project_path, "turn-assistant", &mut event)
+        .unwrap();
+    let replay_blob = traced.event["tool_call"]["output_artifact"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("tool-output/")
+        .to_string();
+    let live_blob = second
+        .record
+        .transcript
+        .find_segment("segment-replaced")
+        .and_then(|segment| segment.tool_call.as_ref())
+        .and_then(|tool_call| tool_call["output_artifact"].as_str())
+        .unwrap()
+        .trim_start_matches("tool-output/")
+        .to_string();
+    let before = blobs();
+    assert_eq!(before.len(), 5, "{before:?}");
+
+    // A busy barrier removes nothing.
+    repo.store().database().defer_next_checkpoints(1);
+    assert!(matches!(
+        repo.store().collect_tool_output_garbage(),
+        Err(StorageError::CleanupDeferred { .. })
+    ));
+    assert_eq!(blobs(), before);
+
+    // The next startup collects exactly the garbage.
+    drop(repo);
+    let repo = ConversationRepository::new(
+        ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
+    );
+    let mut kept = vec![live_blob, replay_blob];
+    kept.sort();
+    assert_eq!(blobs(), kept);
+    assert_eq!(
+        repo.read_segment_tool_output(conversation, Some(project_path), "segment-replaced")
+            .unwrap(),
+        Some(big("c"))
+    );
+    assert_eq!(
+        repo.unapplied_provider_events(conversation, project_path, "turn-assistant")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(repo.store().collect_tool_output_garbage().unwrap(), 0);
+}
+
+/// An open store checkpoints written transactions in the background.
+#[test]
+fn open_store_checkpoints_writes_periodically() {
+    let project_path = "/projects/periodic-checkpoint";
+    let (_temp, repo) = setup(project_path);
+    repo.commit_conversation(
+        "conversation-periodic",
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted {
+            turn: user_turn("turn-user", "Hello"),
+        }],
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while repo.store().database().checkpoint_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no passive checkpoint"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

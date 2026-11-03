@@ -33,6 +33,8 @@ pub(crate) const ALL_COLLECTIONS: [super::ArtifactCollection; 4] = [
     super::ArtifactCollection::ProposedPlans,
 ];
 const LEGACY_HANDLE_INDEX: &str = "workspace/conversation-handles.json";
+/// How often a passive checkpoint runs when writes occurred.
+const PASSIVE_CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The one conversation store of a running Spark app.
 pub struct ConversationStore {
@@ -140,7 +142,105 @@ impl ConversationStore {
                 );
             }
         }
-        Ok(Arc::new(store))
+        // A deferred collection keeps every file; the next startup retries it.
+        if let Err(error) = store.collect_tool_output_garbage() {
+            eprintln!("Deferred tool output cleanup: {error}");
+        }
+        let store = Arc::new(store);
+        let weak = Arc::downgrade(&store);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(PASSIVE_CHECKPOINT_INTERVAL);
+            let Some(store) = weak.upgrade() else {
+                return;
+            };
+            // Still pending after a failure, so the next tick retries it.
+            if let Err(error) = store.database.checkpoint_if_written() {
+                eprintln!("Conversation database checkpoint failed: {error}");
+            }
+        });
+        Ok(store)
+    }
+
+    /// Recovery collection of tool-output blobs nothing needs: no live row
+    /// references them (an old version a commit replaced, a tombstoned
+    /// segment's output, or an abandoned publication), and no retained trace
+    /// record does, so replay can still project them. Holds every
+    /// conversation's lock, so no commit or trace append can start
+    /// referencing a candidate, and removes candidates only behind the
+    /// cleanup barrier after rechecking their references. Returns the number
+    /// of removed files.
+    #[doc(hidden)]
+    pub fn collect_tool_output_garbage(&self) -> Result<usize> {
+        // ponytail: scans every conversation directory once per startup;
+        // record candidates in a table if that grows slow.
+        let mut roots = Vec::new();
+        for project in self.registry.list_project_records()? {
+            let dir = self
+                .registry
+                .project_paths(&project.project_path)?
+                .conversations_dir;
+            for entry in read_dir_or_empty(&dir)? {
+                if let Some(id) = entry.file_name().and_then(|name| name.to_str()) {
+                    roots.push((id.to_string(), entry.clone()));
+                }
+            }
+        }
+        roots.sort();
+        let slots: Vec<_> = {
+            let mut conversations = self
+                .conversations
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            roots
+                .iter()
+                .map(|(id, _)| conversations.entry(id.clone()).or_default().clone())
+                .collect()
+        };
+        // Sorted by conversation id, per the lock order.
+        let _locks: Vec<_> = slots
+            .iter()
+            .map(|slot| slot.lock().unwrap_or_else(|poison| poison.into_inner()))
+            .collect();
+        let mut candidates = Vec::new();
+        for (_, root) in &roots {
+            // An unreadable trace may still need any of its blobs.
+            let Ok(trace) = read_trace(root) else {
+                continue;
+            };
+            let replay_needed: HashSet<String> = trace
+                .iter()
+                .filter_map(|record| record.event.pointer("/tool_call/output_artifact"))
+                .filter_map(|artifact| artifact.as_str())
+                .map(|artifact| self.home_relative(&root.join(artifact)))
+                .collect();
+            for file in read_dir_or_empty(&root.join(super::tool_output::TOOL_OUTPUT_DIR_NAME))? {
+                let path = self.home_relative(&file);
+                if !replay_needed.contains(&path)
+                    && !self.database.read(|read| read.has_live_reference(&path))?
+                {
+                    candidates.push((file, path));
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        self.database.after_checkpoint(|view| {
+            let mut removed = 0;
+            for (file, path) in &candidates {
+                if view.has_live_reference_under(path)? {
+                    continue;
+                }
+                match fs::remove_file(file) {
+                    Ok(()) => removed += 1,
+                    Err(source) if source.kind() == ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(StorageError::io("delete tool output", file, source))
+                    }
+                }
+            }
+            Ok(removed)
+        })
     }
 
     pub fn home_dir(&self) -> &Path {
@@ -420,7 +520,9 @@ impl ConversationStore {
 
 impl Drop for ConversationStore {
     fn drop(&mut self) {
-        self.database.checkpoint_on_shutdown();
+        if let Err(error) = self.database.checkpoint_on_shutdown() {
+            eprintln!("Conversation database shutdown checkpoint failed: {error}");
+        }
     }
 }
 
@@ -429,6 +531,21 @@ pub(crate) fn remove_dir_if_exists(path: &Path, action: &'static str) -> Result<
         Ok(()) => Ok(()),
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
         Err(source) => Err(StorageError::io(action, path, source)),
+    }
+}
+
+/// The entries of `dir`, or none when it does not exist.
+pub(crate) fn read_dir_or_empty(dir: &Path) -> Result<Vec<PathBuf>> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|source| StorageError::io("read directory", dir, source))
+            })
+            .collect(),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(source) => Err(StorageError::io("read directory", dir, source)),
     }
 }
 

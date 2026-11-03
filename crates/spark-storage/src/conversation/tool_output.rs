@@ -16,7 +16,7 @@ use super::records::TranscriptSegment;
 /// Largest tool output stored inline in the durable transcript. Larger outputs
 /// are externalized and the inline value becomes a preview of this size.
 pub const TOOL_OUTPUT_INLINE_LIMIT_BYTES: usize = 8 * 1024;
-const TOOL_OUTPUT_DIR_NAME: &str = "tool-output";
+pub(crate) const TOOL_OUTPUT_DIR_NAME: &str = "tool-output";
 
 /// Externalize an oversized tool output from `segment` into a new blob.
 ///

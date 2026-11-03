@@ -8,7 +8,7 @@
 //! `H`. [`super::ConversationStore`] owns the one connection per Spark home.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -242,6 +242,8 @@ pub struct ConversationDatabase {
     generation: String,
     connection: Mutex<Connection>,
     deferred_checkpoints: AtomicUsize,
+    /// Set by each committed write; cleared by a complete passive checkpoint.
+    written_since_checkpoint: AtomicBool,
 }
 
 /// Every live row of one conversation, for loading it into memory.
@@ -471,6 +473,7 @@ impl ConversationDatabase {
             generation,
             connection: Mutex::new(connection),
             deferred_checkpoints: AtomicUsize::new(0),
+            written_since_checkpoint: AtomicBool::new(false),
         })
     }
 
@@ -490,21 +493,14 @@ impl ConversationDatabase {
                 count.checked_sub(1)
             })
             .is_ok();
-        let (busy, log, checkpointed): (i64, i64, i64) = if deferred {
-            (1, -1, -1)
-        } else {
-            connection.query_row("PRAGMA main.wal_checkpoint(FULL)", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-        };
-        if busy != 0 || log < 0 || log != checkpointed {
+        if deferred {
             return Err(StorageError::CleanupDeferred {
-                reason: format!(
-                    "conversation database checkpoint incomplete (busy={busy}, log={log}, \
-                     checkpointed={checkpointed})"
-                ),
+                reason: "conversation database checkpoint incomplete (busy=1)".to_string(),
             });
         }
+        checkpoint(&connection, "FULL").map_err(|error| StorageError::CleanupDeferred {
+            reason: error.to_string(),
+        })?;
         cleanup(&CheckpointedView {
             connection: &connection,
         })
@@ -531,11 +527,28 @@ impl ConversationDatabase {
         Ok(())
     }
 
-    /// Best-effort truncating checkpoint once writers have stopped.
-    pub(crate) fn checkpoint_on_shutdown(&self) {
-        let _ = self
-            .lock()
-            .query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    /// The periodic passive checkpoint: `Ok(false)` when nothing was written
+    /// since the last complete one. A failed or incomplete checkpoint keeps
+    /// the pending flag, so the next call retries it.
+    pub fn checkpoint_if_written(&self) -> Result<bool> {
+        let connection = self.lock();
+        if !self.written_since_checkpoint.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        checkpoint(&connection, "PASSIVE")?;
+        self.written_since_checkpoint.store(false, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    /// Whether a write awaits the periodic passive checkpoint.
+    #[doc(hidden)]
+    pub fn checkpoint_pending(&self) -> bool {
+        self.written_since_checkpoint.load(Ordering::SeqCst)
+    }
+
+    /// Truncating checkpoint once writers have stopped.
+    pub fn checkpoint_on_shutdown(&self) -> Result<()> {
+        checkpoint(&self.lock(), "TRUNCATE")
     }
 
     pub fn path(&self) -> &Path {
@@ -565,6 +578,7 @@ impl ConversationDatabase {
         let write = WriteTransaction { tx, revision };
         let value = apply(&write)?;
         write.tx.commit()?;
+        self.written_since_checkpoint.store(true, Ordering::SeqCst);
         Ok((revision, value))
     }
 
@@ -624,6 +638,24 @@ impl ConversationDatabase {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Run a checkpoint and require it to be complete: not busy, with every WAL
+/// frame checkpointed.
+fn checkpoint(connection: &Connection, mode: &str) -> Result<()> {
+    let (busy, log, checkpointed): (i64, i64, i64) =
+        connection.query_row(&format!("PRAGMA main.wal_checkpoint({mode})"), [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || log < 0 || log != checkpointed {
+        return Err(StorageError::CheckpointIncomplete {
+            reason: format!(
+                "conversation database {mode} checkpoint incomplete (busy={busy}, log={log}, \
+                 checkpointed={checkpointed})"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn configure(connection: &Connection, path: &Path) -> Result<()> {
@@ -851,7 +883,14 @@ impl WriteTransaction<'_> {
         self.tombstone("turns", "turn_id = ?3", conversation_id, &[turn_id])
     }
 
+    /// Tombstone a segment and the tool-output references it owns.
     pub fn delete_segment(&self, conversation_id: &str, segment_id: &str) -> Result<bool> {
+        self.tombstone(
+            "blob_references",
+            "owner_kind = 'tool_output' AND owner_id = ?3",
+            conversation_id,
+            &[segment_id],
+        )?;
         self.tombstone(
             "segments",
             "segment_id = ?3",
@@ -1000,6 +1039,15 @@ impl WriteTransaction<'_> {
 }
 
 impl ReadTransaction<'_> {
+    /// Whether any live row references exactly `blob_path`.
+    pub fn has_live_reference(&self, blob_path: &str) -> Result<bool> {
+        Ok(self.tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blob_references WHERE blob_path = ?1 AND deleted = 0)",
+            [blob_path],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Highest committed revision visible to this snapshot.
     pub fn watermark(&self) -> i64 {
         self.watermark

@@ -112,19 +112,32 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
 
 /// Builds the app on a conversation store its caller already opened (and so
 /// already holds the home lock), for callers that also use that store
-/// directly, such as tests.
+/// directly, such as tests. The store must belong to the settings' Spark
+/// home; a mismatch is refused before any startup or recovery work.
 pub fn build_app_with_conversation_store(
     settings: SparkSettings,
     conversation_store: Arc<spark_storage::ConversationStore>,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
-) -> Router {
-    build_app_on_store(
+) -> Result<Router, spark_storage::StorageError> {
+    let normalized =
+        |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if normalized(&settings.data_dir) != normalized(conversation_store.home_dir()) {
+        return Err(spark_storage::StorageError::InvalidConversationState {
+            path: settings.data_dir.clone(),
+            reason: format!(
+                "The conversation store belongs to Spark home {}, not {}.",
+                conversation_store.home_dir().display(),
+                settings.data_dir.display()
+            ),
+        });
+    }
+    Ok(build_app_on_store(
         settings,
         conversation_store,
         attractor_api::default_runtime_handler_runner_factory(),
         agent_turn_backend,
     )
-    .0
+    .0)
 }
 
 fn build_app_with_live_hub(

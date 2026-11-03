@@ -419,20 +419,10 @@ pub fn turn_attachment_ids(attachments: Option<&Value>) -> Vec<String> {
 }
 
 fn read_dir_or_empty(dir: &Path) -> Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(StorageError::io("read attachments directory", dir, source)),
-    };
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry =
-            entry.map_err(|source| StorageError::io("read attachments directory", dir, source))?;
-        if entry.path().is_dir() {
-            paths.push(entry.path());
-        }
-    }
-    Ok(paths)
+    Ok(super::store::read_dir_or_empty(dir)?
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect())
 }
 
 /// The client's base name with path components and control characters

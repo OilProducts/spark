@@ -76,6 +76,7 @@ fn store_app(
 ) -> axum::Router {
     let store = shared_store(&settings.data_dir);
     spark_http::build_app_with_conversation_store(settings, store, backend)
+        .expect("app on the home's store")
 }
 
 #[allow(dead_code)]

@@ -269,7 +269,6 @@ default_model = "local-model"
 }
 
 #[test]
-#[ignore = "legacy state.json fixtures are unsupported after the conversation hard cutover"]
 fn project_service_lists_conversation_summaries_for_python_created_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -285,14 +284,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             },
         )
         .expect("register");
-    let conversations_dir = settings
-        .projects_dir
-        .join(&project.project_id)
-        .join("conversations");
-    write_state(
-        &conversations_dir,
-        "conversation-a",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 2,
             "conversation_id": "conversation-a",
@@ -327,10 +321,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "segments": []
         }),
     );
-    write_state(
-        &conversations_dir,
-        "conversation-b",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 3,
             "conversation_id": "conversation-b",
@@ -351,10 +344,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "segments": []
         }),
     );
-    write_state(
-        &conversations_dir,
-        "conversation-invalid",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 1,
             "conversation_id": "conversation-invalid",
@@ -364,6 +356,11 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "turns": []
         }),
     );
+    // The SQL store cannot hold an unreadable record; the conversation a
+    // listing must skip is a deleted one.
+    spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+        .delete_conversation("conversation-invalid", &project.project_path)
+        .expect("delete conversation");
 
     let summaries = service
         .list_project_conversations(
@@ -372,6 +369,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
         )
         .expect("conversations");
 
+    // Registration starts the project's coordinator, pinned first.
+    let (coordinator, summaries) = summaries.split_first().expect("coordinator");
+    assert!(coordinator.conversation_id.ends_with("-coordinator"));
     assert_eq!(
         summaries
             .iter()
@@ -392,16 +392,6 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     assert!(summaries
         .iter()
         .all(|summary| summary.project_path == project.project_path));
-}
-
-fn write_state(conversations_dir: &Path, conversation_id: &str, payload: serde_json::Value) {
-    let state_path = conversations_dir.join(conversation_id).join("state.json");
-    fs::create_dir_all(state_path.parent().expect("state parent")).expect("state parent");
-    fs::write(
-        state_path,
-        serde_json::to_string_pretty(&payload).expect("json"),
-    )
-    .expect("state");
 }
 
 fn settings(root: &Path) -> SparkSettings {

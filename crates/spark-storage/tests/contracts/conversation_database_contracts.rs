@@ -663,3 +663,42 @@ fn catch_up_byte_cap_counts_whole_rows_including_identities_and_tombstones() {
         .unwrap();
     assert_eq!(catch_up("big"), CatchUp::Reset(ResetReason::CatchupLimit));
 }
+
+/// The periodic passive checkpoint runs only after writes, reports an
+/// incomplete result, and stays pending so the next attempt retries it.
+#[test]
+fn passive_checkpoint_reports_incomplete_results_and_retries() {
+    let (_temp, database) = open();
+    assert!(!database.checkpoint_if_written().unwrap());
+    database
+        .write(|write| write.put_conversation(&conversation("c1", "/p", "t1")))
+        .unwrap();
+    assert!(database.checkpoint_pending());
+
+    // A reader pinned to an older snapshot blocks checkpointing newer frames.
+    let reader = rusqlite::Connection::open(database.path()).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT count(*) FROM conversations", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    database
+        .write(|write| write.put_conversation(&conversation("c2", "/p", "t2")))
+        .unwrap();
+    assert!(matches!(
+        database.checkpoint_if_written(),
+        Err(StorageError::CheckpointIncomplete { .. })
+    ));
+    assert!(database.checkpoint_pending());
+
+    reader.execute_batch("COMMIT").unwrap();
+    assert!(database.checkpoint_if_written().unwrap());
+    assert!(!database.checkpoint_pending());
+    assert!(!database.checkpoint_if_written().unwrap());
+
+    // The shutdown checkpoint empties the log once writers stop.
+    database.checkpoint_on_shutdown().unwrap();
+    let wal = database.path().with_extension("sqlite3-wal");
+    assert_eq!(std::fs::metadata(wal).unwrap().len(), 0);
+}

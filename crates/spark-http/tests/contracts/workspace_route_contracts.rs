@@ -186,6 +186,36 @@ async fn stale_project_reads(app: &axum::Router, project_path: &str) {
     }
 }
 
+/// A store opened for one Spark home never serves settings for another;
+/// the refusal comes before any startup work in either home.
+#[tokio::test]
+async fn app_on_a_store_refuses_settings_for_another_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ours = settings(&temp.path().join("ours"));
+    let theirs = settings(&temp.path().join("theirs"));
+    let store = spark_storage::ConversationStore::open(&theirs.data_dir).expect("store");
+    let backend = spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&ours);
+    let Err(error) =
+        spark_http::build_app_with_conversation_store(ours.clone(), store.clone(), backend.clone())
+    else {
+        panic!("mismatched homes were accepted");
+    };
+    assert!(
+        error.to_string().contains("belongs to Spark home"),
+        "{error}"
+    );
+    assert!(!ours.data_dir.exists());
+    let no_projects = spark_storage::ProjectRegistry::new(&theirs.data_dir)
+        .list_project_records()
+        .expect("projects");
+    assert!(no_projects.is_empty());
+
+    // Another spelling of the store's own home is the same home.
+    let mut same = theirs.clone();
+    same.data_dir = theirs.data_dir.join(".");
+    assert!(spark_http::build_app_with_conversation_store(same, store, backend).is_ok());
+}
+
 /// While a deletion's cleanup is pending, stale reads neither register nor
 /// recreate anything, and the finished cleanup leaves no project behind.
 #[tokio::test]
@@ -200,7 +230,8 @@ async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
         settings.clone(),
         store.clone(),
         spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings),
-    );
+    )
+    .expect("app on the home's store");
     let registered = request_json(
         app.clone(),
         "POST",
@@ -441,13 +472,12 @@ async fn workspace_public_extractor_errors_return_json_envelopes() {
 }
 
 #[tokio::test]
-#[ignore = "legacy state.json fixture is unsupported after the conversation hard cutover"]
 async fn project_conversations_route_returns_summary_shape_for_existing_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_dir = temp.path().join("project-a");
     fs::create_dir_all(&project_dir).expect("project dir");
-    let app = build_app(settings.clone()).expect("app");
+    let app = crate::store_app_default(settings.clone());
 
     let register = request_json(
         app.clone(),
@@ -457,12 +487,9 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     )
     .await;
     assert_eq!(register.0, StatusCode::OK);
-    let project_id = register.1["project_id"].as_str().expect("project id");
-    let conversations_dir = settings.projects_dir.join(project_id).join("conversations");
-    write_state(
-        &conversations_dir,
-        "conversation-a",
-        json!({
+    crate::seed_conversation(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 2,
             "conversation_id": "conversation-a",
@@ -496,11 +523,14 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     .await;
 
     assert_eq!(listed.0, StatusCode::OK);
-    assert_eq!(listed.1[0]["conversation_id"], "conversation-a");
-    assert_eq!(listed.1[0]["conversation_handle"], "amber-anchor");
-    assert_eq!(listed.1[0]["title"], "Design thread");
-    assert_eq!(listed.1[0]["last_message_preview"], "Design thread preview");
-    assert!(listed.1[0].get("turns").is_none());
+    // Registration starts the project's coordinator, pinned first.
+    assert_eq!(listed.1.as_array().expect("summaries").len(), 2);
+    assert_eq!(listed.1[0]["standing_role"]["name"], "coordinator");
+    assert_eq!(listed.1[1]["conversation_id"], "conversation-a");
+    assert_eq!(listed.1[1]["conversation_handle"], "amber-anchor");
+    assert_eq!(listed.1[1]["title"], "Design thread");
+    assert_eq!(listed.1[1]["last_message_preview"], "Design thread preview");
+    assert!(listed.1[1].get("turns").is_none());
 }
 
 #[tokio::test]
@@ -1008,16 +1038,6 @@ async fn execute_request(app: axum::Router, request: Request<Body>) -> (StatusCo
         .expect("body");
     let value = serde_json::from_slice::<Value>(&bytes).expect("json");
     (status, value, content_type)
-}
-
-fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) {
-    let state_path = conversations_dir.join(conversation_id).join("state.json");
-    fs::create_dir_all(state_path.parent().expect("state parent")).expect("state parent");
-    fs::write(
-        state_path,
-        serde_json::to_string_pretty(&payload).expect("json"),
-    )
-    .expect("state");
 }
 
 fn settings(root: &Path) -> SparkSettings {

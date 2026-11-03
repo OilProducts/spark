@@ -444,7 +444,8 @@ impl ConversationRepository {
 
 impl ConversationRepository {
     /// Test fixtures: store a complete record's rows exactly as given
-    /// (revision, timestamps, handle), replacing any loaded state.
+    /// (revision, timestamps, handle), replacing any loaded state. A missing
+    /// handle or title is derived as a commit would.
     #[doc(hidden)]
     pub fn seed_record(&self, record: &ConversationRecord) -> Result<()> {
         let store = self.store().clone();
@@ -457,6 +458,10 @@ impl ConversationRepository {
         if record.meta.conversation_handle.is_empty() {
             record.meta.conversation_handle =
                 crate::workspace_conversations::free_handle(&store, &conversation_id, None)?;
+        }
+        // Every committed row carries a title; derive a missing one the same way.
+        if record.meta.title.trim().is_empty() {
+            record.meta.title = derive_title(&record);
         }
         for collection in super::store::ALL_COLLECTIONS {
             for artifact in record.artifacts.collection_mut(collection) {
@@ -472,6 +477,7 @@ impl ConversationRepository {
         loaded.next_position = record.transcript.turns.len() as i64;
         loaded.record = record;
         let row = summary_row(&conversation_id, &loaded.record)?;
+        let root = store.conversation_root(&loaded.record.meta.project_path, &conversation_id)?;
         store.with_conversation(&conversation_id, |slot| {
             let record = &loaded.record;
             store.database().write(|tx| {
@@ -496,6 +502,14 @@ impl ConversationRepository {
                         updated_at: record.meta.updated_at.clone(),
                         payload: to_object(segment)?,
                     })?;
+                    if let Some(output) = tool_output_artifact(segment) {
+                        tx.put_blob_reference(
+                            &conversation_id,
+                            "tool_output",
+                            &segment.id,
+                            &store.home_relative(&root.join(output)),
+                        )?;
+                    }
                 }
                 for collection in super::store::ALL_COLLECTIONS {
                     for artifact in record.artifacts.collection(collection) {

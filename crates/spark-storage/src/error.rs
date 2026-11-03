@@ -104,6 +104,11 @@ pub enum StorageError {
     /// the cleanup is retried later.
     #[error("Cleanup deferred: {reason}")]
     CleanupDeferred { reason: String },
+
+    /// A WAL checkpoint failed or did not checkpoint every frame; it is
+    /// retried later and never affects an acknowledged transaction.
+    #[error("Checkpoint incomplete: {reason}")]
+    CheckpointIncomplete { reason: String },
 }
 
 impl StorageError {
