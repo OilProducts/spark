@@ -29,6 +29,31 @@ describe('Editor save state behavior', () => {
     vi.unstubAllGlobals()
   })
 
+  it('refuses to save a node that declares one decision twice, without a request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const duplicated = {
+      flow: {
+        schema_version: '2',
+        id: 'demo',
+        nodes: {
+          review: {
+            kind: 'agent_task',
+            routes: {
+              ready: { to: 'done', description: 'Ready.' },
+              'ready (duplicate 2)': { to: 'fix', description: 'Also ready.' },
+            },
+          },
+        },
+      },
+    }
+    expect(await saveFlowContent('demo', duplicated)).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const state = useStore.getState()
+    expect(state.saveErrorKind).toBe('validation_error')
+    expect(state.saveErrorMessage).toContain('review.ready')
+  })
+
   it('classifies parse and validation errors with actionable remediation', async () => {
     vi.stubGlobal(
       'fetch',

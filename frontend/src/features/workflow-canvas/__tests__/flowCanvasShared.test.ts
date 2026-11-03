@@ -9,6 +9,7 @@ import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
     buildCanonicalFlowModelFromEditorState,
     buildFlowDefinitionFromCanonicalFlowModel,
+    duplicateDecisionsInFlow,
     type CanonicalEditorStateInput,
 } from '@/lib/canonicalFlowModel'
 import type { EdgeRoute } from '@/lib/edgeRouting'
@@ -963,6 +964,41 @@ describe('schema-2 routes and fork structure', () => {
         })
         // A drawn edge gets a free decision ID and an empty description for validation to flag.
         expect(resaved.nodes.done.routes).toEqual({ next: { to: 'failed', description: '' } })
+    })
+
+    it('keeps decision IDs that name object properties, such as constructor', () => {
+        const hydrated = hydrate(reviewFlow)
+        const renamed = hydrated.edges.map((edge) => (
+            edge.source === 'review' && edge.data?.decision === 'waive'
+                ? { ...edge, data: { ...edge.data, decision: 'constructor' } }
+                : edge.source === 'review' && edge.data?.decision === 'reject'
+                    ? { ...edge, data: { ...edge.data, decision: 'hasOwnProperty'.toLowerCase() } }
+                    : edge
+        ))
+        const saved = buildFlow('routes', hydrated.nodes, renamed, hydrated.flowMetadata, hydrated.flow)
+        expect(Object.keys(saved.nodes.review.routes).sort()).toEqual(['approve', 'constructor', 'hasownproperty'])
+        expect(saved.nodes.review.routes.constructor).toEqual({ ...reviewFlow.nodes.review.routes.waive })
+        const rehydrated = hydrate(saved)
+        expect(rehydrated.edges.filter((edge) => edge.source === 'review').map((edge) => edge.data?.decision).sort())
+            .toEqual(['approve', 'constructor', 'hasownproperty'])
+    })
+
+    it('never renames a duplicated explicit decision; preview reports it and save refuses it', () => {
+        const hydrated = hydrate(reviewFlow)
+        const duplicated = hydrated.edges.map((edge) => (
+            edge.source === 'review' && edge.data?.decision === 'waive'
+                ? { ...edge, data: { ...edge.data, decision: 'approve' } }
+                : edge
+        ))
+        const saved = buildFlow('routes', hydrated.nodes, duplicated, hydrated.flowMetadata, hydrated.flow)
+        const keys = Object.keys(saved.nodes.review.routes).sort()
+        expect(keys).toContain('approve')
+        expect(keys).not.toContain('next')
+        // The second declaration keeps a key that can never validate.
+        expect(keys).toContain('approve (duplicate 2)')
+        expect(duplicateDecisionsInFlow(saved)).toEqual(['review.approve'])
+        expect(duplicateDecisionsInFlow(buildFlow('routes', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)))
+            .toEqual([])
     })
 
     it('round-trips switch configuration and case keys with their JSON scalar types', () => {

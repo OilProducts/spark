@@ -614,6 +614,22 @@ function nodeConfigFromAttrs(
     return compactObject({ ...base, kind })
 }
 
+const DUPLICATE_DECISION_MARKER = ' (duplicate '
+
+function duplicateDecisionKey(decision: string, count: number): string {
+    return `${decision}${DUPLICATE_DECISION_MARKER}${count})`
+}
+
+/** Decision IDs a flow declares more than once on one node, as "node.decision". */
+export function duplicateDecisionsInFlow(flow: unknown): string[] {
+    const nodes = asRecord(asRecord(flow)?.nodes) ?? {}
+    return Object.entries(nodes).flatMap(([nodeId, node]) => (
+        Object.keys(asRecord(asRecord(node)?.routes) ?? {})
+            .filter((key) => key.includes(DUPLICATE_DECISION_MARKER))
+            .map((key) => `${nodeId}.${key.slice(0, key.indexOf(DUPLICATE_DECISION_MARKER))}`)
+    ))
+}
+
 // Edges leaving a node, serialized back into that node's own `routes` map
 // (or, for a fork, its branches and join). A drawn edge without a decision ID
 // gets a free `next`-style ID; validation then asks for its description.
@@ -628,25 +644,38 @@ function nodeRoutingFromEdges(kind: string, edges: CanonicalFlowEdge[]) {
             },
         }
     }
-    const routes: Record<string, Record<string, unknown>> = {}
+    // A Map, so decision IDs such as `constructor` are never confused with
+    // inherited object properties.
+    const routes = new Map<string, Record<string, unknown>>()
     const taken = new Set(edges.map((edge) => readStringAttr(edge.attrs, 'decision')).filter(Boolean))
+    const seen = new Map<string, number>()
     edges.forEach((edge) => {
         let decision = readStringAttr(edge.attrs, 'decision')
-        if (!decision || routes[decision]) {
+        if (decision && routes.has(decision)) {
+            // Two edges declaring one decision are an authoring error: keep
+            // both under an ID that can never validate, so preview reports
+            // it and save refuses it, instead of renaming either.
+            const count = (seen.get(decision) ?? 1) + 1
+            seen.set(decision, count)
+            decision = duplicateDecisionKey(decision, count)
+        } else if (!decision) {
             let suffix = 1
             do {
                 decision = suffix === 1 ? 'next' : `next_${suffix}`
                 suffix += 1
-            } while (taken.has(decision) || routes[decision])
+            } while (taken.has(decision) || routes.has(decision))
         }
-        routes[decision] = compactObject({
+        routes.set(decision, compactObject({
             to: edge.target,
             description: readStringAttr(edge.attrs, 'description'),
             label: readStringAttr(edge.attrs, 'label') || undefined,
             extensions: extensionAttrs(edge.attrs, EDGE_EXTENSION_CORE_KEYS),
-        })
+        }))
     })
-    return { routes: Object.keys(routes).length > 0 ? routes : undefined, fork: { branches: [], join: undefined } }
+    return {
+        routes: routes.size > 0 ? Object.fromEntries(routes) : undefined,
+        fork: { branches: [], join: undefined },
+    }
 }
 
 function extensionAttrs(attrs: CanonicalAttrMap, coreKeys: Set<string>): CanonicalAttrMap {

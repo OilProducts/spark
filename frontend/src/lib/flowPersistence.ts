@@ -1,6 +1,7 @@
 import { useStore, type SaveErrorKind } from '@/store'
 import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
+import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
 
 interface SaveFlowErrorDetail {
     status?: string
@@ -83,6 +84,14 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
         return true
     }
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
+    const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
+    if (duplicates.length > 0) {
+        markSaveFailure(
+            `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
+            'validation_error',
+        )
+        return false
+    }
     lastSaveRequest = { name, content, projectPath }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,

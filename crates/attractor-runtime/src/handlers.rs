@@ -2898,7 +2898,11 @@ fn run_shell_command(
     stdin_text: Option<String>,
     mut stop: Option<&mut dyn FnMut() -> bool>,
 ) -> std::io::Result<ShellOutput> {
-    let mut child = Command::new("sh")
+    let mut command_line = Command::new("sh");
+    // Its own process group, so a timeout or cancellation stops every
+    // descendant, not just the shell.
+    spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
+    let mut child = command_line
         .arg("-c")
         .arg(command)
         .current_dir(cwd)
@@ -2942,6 +2946,10 @@ fn run_shell_command(
         let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
         let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
         if timed_out || interrupted {
+            spark_agent_adapter::local_environment::terminate_process_group(
+                child.id(),
+                Some(&mut child),
+            );
             let _ = child.kill();
             break (child.wait()?, timed_out, interrupted);
         }

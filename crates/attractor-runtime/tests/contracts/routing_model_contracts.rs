@@ -1914,3 +1914,90 @@ fn every_fork_round_keeps_its_own_branch_execution_evidence() {
         );
     }
 }
+
+/// A tool whose descendant would write `effect` after a delay.
+fn nested_effect_command(effect: &Path) -> String {
+    format!(
+        "sh -c 'sleep 8; echo effect > \"{}\"'; echo done",
+        effect.display()
+    )
+}
+
+#[test]
+fn canceling_a_branch_tool_stops_its_descendants_promptly() {
+    let temp = tempfile::tempdir().unwrap();
+    let effect = temp.path().join("effect");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let canceler = store.clone();
+    std::thread::spawn(move || {
+        let paths = loop {
+            if let Some(paths) = canceler.find_run_root("run-contract").ok().flatten() {
+                let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+                if (0..2).all(|index| branches.join(format!("{index}.progress.json")).exists()) {
+                    break paths;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut record = attractor_runtime::read_run_record(&paths).unwrap().unwrap();
+        attractor_runtime::mark_record_cancel_requested(&mut record);
+        attractor_runtime::write_run_record(&paths, &record).unwrap();
+    });
+    let control_store = store.clone();
+    let (runner, _calls) = scripted_runner(script(&[("synth", vec![completed("done")])]), false);
+    let command = nested_effect_command(&effect);
+    let started = std::time::Instant::now();
+    let result = PipelineExecutor::with_control(runner, move || {
+        let paths = control_store.find_run_root("run-contract").ok().flatten()?;
+        let record = control_store.read_run_record(&paths).ok().flatten()?;
+        (record.status == "cancel_requested")
+            .then_some(attractor_runtime::ExecutionControlAction::Cancel)
+    })
+    .execute(ExecuteRunRequest {
+        store: store.clone(),
+        record: RunRecord::new("run-contract", temp.path().to_string_lossy()),
+        flow: tool_fork_flow(&command, &command),
+        flow_definition_json: None,
+        launch_context: LaunchContext::empty(),
+        runtime_context: ContextMap::new(),
+        max_steps: None,
+        start: Default::default(),
+    })
+    .unwrap();
+    assert_eq!(result.status, "canceled");
+    // Settled well before the descendant's own 8 s sleep would end.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    std::thread::sleep(std::time::Duration::from_secs(9).saturating_sub(started.elapsed()));
+    assert!(!effect.exists(), "a canceled descendant wrote its effect");
+}
+
+#[test]
+fn a_tool_timeout_stops_its_descendants() {
+    let temp = tempfile::tempdir().unwrap();
+    let effect = temp.path().join("effect");
+    let mut flow = tool_flow(
+        json!({"command": nested_effect_command(&effect), "exit_codes": {"0": "passed", "1": "rejected"}}),
+        json!({"passed": route("after"), "rejected": route("repair")}),
+    );
+    flow.nodes.get_mut("check").unwrap().runtime = Some(attractor_core::NodeRuntimeConfig {
+        timeout: Some("300ms".to_string()),
+        ..Default::default()
+    });
+    let (runner, _calls) = scripted_runner(script(&[]), false);
+    let started = std::time::Instant::now();
+    let run = execute_in(temp, flow, runner, None);
+    assert_eq!(run.result.status, "failed");
+    assert!(run.record().last_error.contains("timed out"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    std::thread::sleep(std::time::Duration::from_secs(9).saturating_sub(started.elapsed()));
+    assert!(!effect.exists(), "a timed-out descendant wrote its effect");
+}
