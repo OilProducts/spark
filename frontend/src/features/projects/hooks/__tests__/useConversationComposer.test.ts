@@ -98,6 +98,21 @@ describe('onChatComposerSubmit', () => {
         expect(pendingMessages().map((message) => message.id)).toEqual([request.client_turn_id])
     })
 
+    it('sends from a non-secure origin, where crypto.randomUUID is missing', async () => {
+        vi.stubGlobal('crypto', { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) })
+        try {
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise(() => {}))
+            composer().onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            const request = vi.mocked(sendConversationTurnValidated).mock.calls[0][1]
+            expect(request.client_turn_id).toMatch(/^turn-[0-9a-f]{32}$/)
+            expect(pendingMessages()).toMatchObject([{ id: request.client_turn_id, content: 'Hello there', status: 'pending' }])
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
     it('keeps a failed message and the draft typed while it was sending', async () => {
         let reject!: (error: Error) => void
         vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise((_, fail) => { reject = fail }))

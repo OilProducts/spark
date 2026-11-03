@@ -139,7 +139,8 @@ export function useConversationComposer({
         const attachmentIds = sentAttachments.map((attachment) => attachment.id)
         // The server records the message under this id, so the pending entry is
         // replaced in place and a resent request cannot add a second turn.
-        const clientTurnId = `turn-${crypto.randomUUID().replace(/-/g, '')}`
+        // getRandomValues, unlike randomUUID, also works on plain-HTTP (non-secure) origins.
+        const clientTurnId = `turn-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
         const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
             const store = useStore.getState()
             store.updateHomeConversationSession(conversationId, {
