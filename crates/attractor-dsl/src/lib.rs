@@ -12,9 +12,9 @@ pub use attractor_core::{
     DotValueType, DurationLiteral, FlowDefinition, FlowDefinitionError, FlowDiagnostic,
 };
 pub use flow_files::{
-    assemble_flow_files, flow_file_list, load_flow, parse_role, read_flow_dir, read_flow_dir_texts,
-    render_flow_files, resolve_flow_roles, write_flow_dir, write_flow_files, FlowFileText,
-    LoadedFlow, Role, RoleBudget, FLOW_FILE, RESERVED_FILES,
+    assemble_flow_files, flow_file_list, in_flow_dir, load_flow, parse_role, read_flow_dir,
+    read_flow_dir_texts, render_flow_files, resolve_flow_roles, write_flow_dir, write_flow_files,
+    FlowFileText, LoadedFlow, Role, RoleBudget, FLOW_FILE, RESERVED_FILES,
 };
 pub use flow_sources::{
     flow_ref_name, normalize_flow_name, validate_flow_children, validate_flow_definition,

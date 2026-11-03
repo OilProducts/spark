@@ -707,15 +707,7 @@ impl FlowDefinition {
 
     pub fn diagnostics(&self) -> Vec<FlowDiagnostic> {
         let mut diagnostics = Vec::new();
-        if self.schema_version.trim() != FLOW_SCHEMA_VERSION {
-            diagnostics.push(diagnostic(
-                "schema_version",
-                format!(
-                    "flow schema_version must be '{FLOW_SCHEMA_VERSION}', found '{}'; copy the current bundled flow or convert this flow's routes to declared decisions",
-                    self.schema_version.trim()
-                ),
-            ));
-        }
+        diagnostics.extend(schema_version_diagnostic(&self.schema_version));
         for (node_id, thinking, budget, mode, summary) in std::iter::once((
             None,
             self.defaults.thinking.as_deref(),
@@ -1957,6 +1949,19 @@ fn json_attr(key: &str, value: Value) -> DotAttribute {
         value_type,
         line: 0,
     }
+}
+
+/// The rejection of a flow written for any schema but [`FLOW_SCHEMA_VERSION`].
+pub fn schema_version_diagnostic(version: &str) -> Option<FlowDiagnostic> {
+    let version = version.trim();
+    (version != FLOW_SCHEMA_VERSION).then(|| {
+        diagnostic(
+            "schema_version",
+            format!(
+                "flow schema_version must be '{FLOW_SCHEMA_VERSION}', found '{version}'; copy the current bundled flow or convert this flow's routes to declared decisions"
+            ),
+        )
+    })
 }
 
 fn diagnostic(rule_id: &str, message: impl Into<String>) -> FlowDiagnostic {

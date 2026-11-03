@@ -47,12 +47,12 @@ pub use context_contracts::{
 pub use error::{AttractorCoreError, Result};
 pub use flow_definition::{
     decode_case_key, dot_edge, flow_definition_schema_value, is_legacy_routing_field,
-    normalize_flow_ref, switch_decision, valid_decision_id, ExecutionConfig, ExitOutcome,
-    ExitResult, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
-    FlowEdgeKind, FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute,
-    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RecoveryPolicy,
-    RetryConfig, SwitchNumber, SwitchScalar, UiConfig, DECISION_ENVELOPE, FLOW_SCHEMA_VERSION,
-    NEXT_DECISION,
+    normalize_flow_ref, schema_version_diagnostic, switch_decision, valid_decision_id,
+    ExecutionConfig, ExitOutcome, ExitResult, FlowDefaults, FlowDefinition, FlowDefinitionError,
+    FlowDiagnostic, FlowEdge, FlowEdgeKind, FlowExecutionLock, FlowInput, FlowMetadata, FlowNode,
+    FlowRoute, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig,
+    RecoveryPolicy, RetryConfig, SwitchNumber, SwitchScalar, UiConfig, DECISION_ENVELOPE,
+    FLOW_SCHEMA_VERSION, NEXT_DECISION,
 };
 pub use graph::{
     attr_bool, attr_i64, attr_string, attr_text, dot_value_text, dot_value_to_json,

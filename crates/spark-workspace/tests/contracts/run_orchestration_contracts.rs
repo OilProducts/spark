@@ -9,6 +9,42 @@ use spark_storage::ProjectRegistry;
 use spark_workspace::{RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceError};
 
 #[test]
+fn workspace_launch_reports_an_invalid_project_copy_without_bundled_fallback() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    crate::install_named_flow(&settings, "ops/run", simple_flow());
+    let copy = spark_common::project::definitions_dir(&project_path).join("flows/ops/run");
+    fs::create_dir_all(&copy).expect("copy dir");
+    fs::write(
+        copy.join("flow.md"),
+        "---\ntype: Flow\nid: old\nschema_version: '1'\n---\n",
+    )
+    .expect("flow.md");
+    fs::write(
+        copy.join("start.md"),
+        "---\ntype: start\nroutes:\n- to: done\n  condition: outcome=success\n---\n",
+    )
+    .expect("start.md");
+    let project = project_path.to_string_lossy().into_owned();
+    let copy_text = copy.display().to_string();
+    let service = crate::conversations(settings.clone());
+
+    let launch = service
+        .launch_workspace_run(RunLaunchRequest {
+            flow_name: "ops/run".to_string(),
+            summary: "Launch the invalid copy.".to_string(),
+            project_path: Some(project.clone()),
+            ..RunLaunchRequest::default()
+        })
+        .expect_err("invalid copy");
+    let launch = launch.to_string();
+    assert!(launch.contains(&copy_text), "{launch}");
+    assert!(launch.contains("convert this flow's routes"), "{launch}");
+    assert!(!launch.contains("Unknown flow"), "{launch}");
+}
+
+#[test]
 fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

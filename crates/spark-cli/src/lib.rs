@@ -1915,7 +1915,7 @@ fn flow_source_validation_error(
 }
 
 fn flow_definition_error_payload(error: &FlowDefinitionError, status: &str) -> Map<String, Value> {
-    let diagnostics = error
+    let mut diagnostics = error
         .diagnostics
         .iter()
         .map(|diagnostic| {
@@ -1938,8 +1938,21 @@ fn flow_definition_error_payload(error: &FlowDefinitionError, status: &str) -> M
             Value::Object(payload)
         })
         .collect::<Vec<_>>();
+    // A flow that fails to load has only its detail to report.
+    if diagnostics.is_empty() {
+        diagnostics.push(json!({
+            "rule": "flow_definition",
+            "rule_id": "flow_definition",
+            "severity": "error",
+            "message": error.detail,
+            "line": 0,
+            "node": null,
+            "node_id": null,
+        }));
+    }
     Map::from_iter([
         ("status".to_string(), json!(status)),
+        ("error".to_string(), json!(error.detail)),
         ("diagnostics".to_string(), json!(diagnostics)),
         ("errors".to_string(), json!(diagnostics)),
     ])

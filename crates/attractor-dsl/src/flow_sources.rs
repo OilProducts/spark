@@ -8,7 +8,7 @@ use attractor_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::flow_files::{read_flow_dir, FLOW_FILE};
+use crate::flow_files::{has_flow_files, read_flow_dir, FLOW_FILE};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{detail}")]
@@ -153,16 +153,20 @@ impl FlowRoots {
             .map(|org| join_name(&org.join("flows"), &name)))
     }
 
-    /// The first flow directory named `flow_name`, if any root has one.
+    /// The first flow directory named `flow_name`, if any root has one. A
+    /// project copy that lost its `flow.md` still counts: loading it reports
+    /// the problem instead of resolving past it to a bundled flow.
     pub fn find_flow(&self, flow_name: &str) -> Result<Option<ResolvedFlowDir>, FlowSourceError> {
         let name = normalize_flow_name(flow_name)?;
         Ok(self.layers().find_map(|(layer, root)| {
             let path = join_name(&root.join("flows"), &name);
-            path.join(FLOW_FILE).is_file().then(|| ResolvedFlowDir {
-                layer,
-                name: name.clone(),
-                path,
-            })
+            (path.join(FLOW_FILE).is_file() || (layer == ORG_LAYER && has_flow_files(&path))).then(
+                || ResolvedFlowDir {
+                    layer,
+                    name: name.clone(),
+                    path,
+                },
+            )
         }))
     }
 

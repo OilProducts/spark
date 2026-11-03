@@ -144,7 +144,7 @@ pub fn read_flow_dir(dir: &Path) -> Result<FlowDefinition, FlowSourceError> {
 
 /// Names the flow directory an assembly error came from, so a rejected
 /// project override says which copy to fix.
-pub(crate) fn in_flow_dir(dir: &Path, error: FlowSourceError) -> FlowSourceError {
+pub fn in_flow_dir(dir: &Path, error: FlowSourceError) -> FlowSourceError {
     if error.status_code() == 404 {
         return error;
     }
@@ -159,6 +159,15 @@ pub fn read_flow_dir_texts(dir: &Path) -> Result<BTreeMap<String, String>, FlowS
         .read()
         .unwrap_or_else(|error| error.into_inner());
     if !dir.join(FLOW_FILE).is_file() {
+        if has_flow_files(dir) {
+            return Err(FlowSourceError::new(
+                422,
+                format!(
+                    "Flow directory {}: has node files but no readable {FLOW_FILE}; restore it, copy the current bundled flow, or delete this directory",
+                    dir.display()
+                ),
+            ));
+        }
         return Err(FlowSourceError::new(404, "Flow not found."));
     }
     let mut files = BTreeMap::new();
@@ -190,6 +199,16 @@ pub fn read_flow_dir_texts(dir: &Path) -> Result<BTreeMap<String, String>, FlowS
     Ok(files)
 }
 
+/// Whether `dir` holds any flow or node file, readable or not.
+pub(crate) fn has_flow_files(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.ends_with(".md") && !RESERVED_FILES.contains(&name.as_str())
+        })
+    })
+}
+
 /// One file of a flow directory, with its exact text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowFileText {
@@ -216,6 +235,7 @@ pub fn assemble_flow_files(
     let header = files
         .get(FLOW_FILE)
         .ok_or_else(|| FlowSourceError::new(404, "Flow not found."))?;
+    check_schema_version(header)?;
     let mut flow = parse_flow_file(header)?;
     for (name, text) in files {
         if name == FLOW_FILE || RESERVED_FILES.contains(&name.as_str()) {
@@ -353,7 +373,8 @@ pub fn load_flow(roots: &FlowRoots, flow_name: &str) -> Result<LoadedFlow, FlowS
             files.insert(key, spark_common::project::sha256_hex(text.as_bytes()));
             text
         })
-    })?;
+    })
+    .map_err(|error| in_flow_dir(&resolved.path, error))?;
     Ok(LoadedFlow {
         name: resolved.name,
         flow,
@@ -498,6 +519,29 @@ fn rerender_file(name: &str, text: &str) -> Result<String, FlowSourceError> {
     }
     let node_id = name.strip_suffix(".md").unwrap_or(name);
     render_node_file(&parse_node_file(node_id, text)?)
+}
+
+/// Rejects another schema's flow before parsing it strictly: its files need
+/// not parse as this schema, and the version is the reason worth reporting.
+fn check_schema_version(header: &str) -> Result<(), FlowSourceError> {
+    #[derive(Deserialize)]
+    struct Header {
+        #[serde(default)]
+        schema_version: serde_yaml::Value,
+    }
+    let (frontmatter, _) =
+        split_frontmatter(header).map_err(|error| file_error(FLOW_FILE, error))?;
+    let header: Header =
+        parse_frontmatter(frontmatter).map_err(|error| file_error(FLOW_FILE, error))?;
+    let version = match header.schema_version {
+        serde_yaml::Value::Null => String::new(),
+        serde_yaml::Value::String(version) => version,
+        other => serde_yaml::to_string(&other).unwrap_or_default(),
+    };
+    match attractor_core::schema_version_diagnostic(&version) {
+        Some(diagnostic) => Err(FlowDefinitionError::from_diagnostics(vec![diagnostic]).into()),
+        None => Ok(()),
+    }
 }
 
 fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
