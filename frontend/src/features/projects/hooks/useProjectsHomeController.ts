@@ -395,17 +395,25 @@ export function useProjectsHomeController() {
         if (!activeProjectPath || !record || !cursor) return
         const conversationId = record.conversation_id
         setOlderMessages({ conversationId, loading: true, error: null })
+        // The cursor names its window (generation and opening revision): a newer window, a reset
+        // (which clears it) or a generation change replaces it, and the response is then stale.
+        const isCurrentWindow = () => {
+            const current = getConversationRecord(conversationId)
+            return current?.olderCursor === cursor && !current.resetting
+        }
         try {
             try {
                 const page = await fetchConversationPageValidated(conversationId, activeProjectPath, cursor)
-                // A window replaced meanwhile has its own cursor; this page belongs to the old one.
-                if (getConversationRecord(conversationId)?.olderCursor === cursor) {
+                if (isCurrentWindow()) {
                     applyConversationPage(activeProjectPath, page, 'older', 'older-page')
                 }
             } catch (error) {
                 if (!(error instanceof ConversationResetError)) throw error
                 // Turns moved or the store changed under the cursor: start again from the newest window.
-                applyConversationPage(activeProjectPath, await fetchConversationPageValidated(conversationId, activeProjectPath), 'window', 'older-page-reset')
+                const page = await fetchConversationPageValidated(conversationId, activeProjectPath)
+                if (isCurrentWindow()) {
+                    applyConversationPage(activeProjectPath, page, 'window', 'older-page-reset')
+                }
             }
             setOlderMessages(null)
         } catch (error) {

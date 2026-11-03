@@ -78,3 +78,28 @@ it('reports a failed older page with Retry, which loads it', async () => {
     await waitFor(() => expect(screen.getByText('Message 1')).toBeInTheDocument())
     expect(screen.queryByRole('alert')).toBeNull()
 })
+
+it('drops an older page whose window a reload replaced while it was in flight', async () => {
+    let releaseOlder!: () => void
+    let reopened = false
+    fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes('before=cursor-older')) {
+            await new Promise<void>((resolve) => { releaseOlder = resolve })
+            return json(200, page(0, 10, 3, null))
+        }
+        if (url.includes('/changes?')) {
+            reopened = true
+            return json(409, { code: 'window_reset', reason: 'generation_changed', generation: 'generation-2', watermark: '0' })
+        }
+        return json(200, reopened ? page(20, 70, 8, 'cursor-new') : page(10, 60, 3, 'cursor-older'))
+    })
+    render(<Log />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
+    act(() => {
+        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { conversationId: 'mission-1' } }))
+    })
+    await screen.findByText('Message 69')
+    act(() => releaseOlder())
+    await screen.findByRole('button', { name: 'Load older messages' })
+    expect(screen.queryByText('Message 1')).toBeNull()
+})

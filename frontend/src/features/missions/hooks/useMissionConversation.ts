@@ -73,7 +73,8 @@ export function useMissionConversation(mission: Mission, project: string) {
         setOlder({ id: conversationId, loading: true, error: null })
         try {
             const page = await fetchConversationPageValidated(conversationId, project, cursor)
-            setLoaded(currentLoaded => currentLoaded?.id === conversationId && currentLoaded.record
+            // A window loaded meanwhile has its own cursor; this page belongs to the old one.
+            setLoaded(currentLoaded => currentLoaded?.id === conversationId && currentLoaded.record?.olderCursor === cursor
                 ? { ...currentLoaded, record: applyConversationPage(currentLoaded.record, page, 'older') ?? null }
                 : currentLoaded)
             setOlder({ id: conversationId, loading: false, error: null })

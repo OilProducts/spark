@@ -229,9 +229,19 @@ describe('a long chat', () => {
         id: `turn-${index}`, role: 'user', kind: 'message', status: 'complete', content: `Message ${index}`,
         timestamp: new Date(Date.parse('2026-09-01T00:00:00Z') + index * 1000).toISOString(),
     })
-    const pageOf = (indexes: number[], olderCursor: string | null, revision = 10) => conversationPage({
+    const pageOf = (indexes: number[], olderCursor: string | null, revision = 10, generation?: string) => conversationPage({
         ...snapshot(HOME, 'home-1'), revision, turns: indexes.map(message),
-    }, { older_cursor: olderCursor })
+    }, { older_cursor: olderCursor, generation })
+    const held = () => {
+        let release!: (response: Response) => void
+        const response = new Promise<Response>((resolve) => { release = resolve })
+        return { response, release }
+    }
+    const emitLive = (type: string, payload: unknown) => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: { type, conversationId: 'home-1', projectPath: HOME, payload } }))
+    })
+    const resetPayload = { code: 'resync_required', reason: 'generation_changed', generation: 'generation-2', watermark: '0' }
+    const record = () => useStore.getState().homeConversationCache.conversationsById['home-1']
     let pageRequests: string[]
     let respondToPage: (url: URL) => Promise<Response> | Response
 
@@ -316,6 +326,74 @@ describe('a long chat', () => {
         await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
         await waitFor(() => expect(useStore.getState().homeConversationCache.conversationsById['home-1']?.olderCursor).toBe('cursor-2'))
         expect(screen.getByRole('button', { name: 'Load older messages' })).toBeEnabled()
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('clears history at a reset and discards an older page that lands during or after it', async () => {
+        const olderPage = held()
+        const reload = held()
+        let resetDone = false
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') return olderPage.response
+            return resetDone ? reload.response : json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1']))
+
+        resetDone = true
+        emitLive('conversation.reset', resetPayload)
+        // The invalid history goes at once, before the reload answers.
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ resetting: true, olderCursor: null })
+
+        olderPage.release(json(pageOf([0, 1], null, 9)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+
+        reload.release(json(pageOf([5, 6], 'cursor-9', 20, 'generation-2')))
+        await screen.findByText('Message 6')
+        expect(screen.queryByText('Message 0')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', olderCursor: 'cursor-9', resetting: false })
+    })
+
+    it('keeps the cleared history and reports the error when the reload after a reset fails', async () => {
+        let resetDone = false
+        respondToPage = () => (resetDone ? json({ detail: 'store busy' }, 503) : json(pageOf([2, 3], 'cursor-1')))
+        await openHomeChat()
+        resetDone = true
+        emitLive('conversation.reset', resetPayload)
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'newest']))
+        expect(await screen.findByText(/store busy/)).toBeInTheDocument()
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /older messages/ })).not.toBeInTheDocument()
+        // Live changes still wait for a window; the stream's next window restores the chat.
+        emitLive('conversation.changes', conversationBatch([turnRow('home-1', message(4), '11')], { from_revision: '10' }))
+        expect(screen.queryByText('Message 4')).not.toBeInTheDocument()
+        emitLive('conversation.window', pageOf([7, 8], null, 30, 'generation-2'))
+        expect(await screen.findByText('Message 8')).toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', resetting: false })
+    })
+
+    it('drops the older-page recovery window when a newer-generation live window arrives first', async () => {
+        const recovery = held()
+        respondToPage = (url) => {
+            if (url.searchParams.get('before') === 'cursor-1') {
+                return json({ code: 'window_reset', reason: 'generation_changed', generation: 'generation-2', watermark: '0' }, 409)
+            }
+            return pageRequests.length > 2 ? recovery.response : json(pageOf([2, 3], 'cursor-1'))
+        }
+        const user = await openHomeChat()
+        await user.click(screen.getByRole('button', { name: 'Load older messages' }))
+        await waitFor(() => expect(pageRequests).toEqual(['newest', 'cursor-1', 'newest']))
+
+        emitLive('conversation.window', pageOf([7, 8], 'cursor-g2', 30, 'generation-2'))
+        await screen.findByText('Message 8')
+        // Read before the live window, in the old generation: applying it would revert the chat.
+        recovery.release(json(pageOf([2, 3], 'cursor-stale', 12)))
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Loading older messages…' })).not.toBeInTheDocument())
+        expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
+        expect(record()).toMatchObject({ generation: 'generation-2', olderCursor: 'cursor-g2', watermark: '30' })
         expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 

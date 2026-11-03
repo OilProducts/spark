@@ -646,12 +646,24 @@ export function applyConversationBatchToCache(
     )
 }
 
-/** After a live reset: stop applying live batches and forget the cursor until the next window. */
+/**
+ * After a live reset: the loaded history, stream overlay and both cursors are invalid, so only the
+ * conversation row stays, and live batches and deltas wait for the next window. Pending sends
+ * live in the composer's session state, so their identities survive.
+ */
 export function resetConversationInCache(current: ProjectConversationCacheState, conversationId: string): ProjectConversationCacheState {
     const record = current.conversationsById[conversationId]
-    return record
-        ? { ...current, conversationsById: { ...current.conversationsById, [conversationId]: { ...record, resetting: true, watermark: null } } }
-        : current
+    if (!record) {
+        return current
+    }
+    const key = conversationRowKey({ kind: 'conversation', conversation_id: conversationId, id: conversationId })
+    const conversation = record.rows[key]
+    const cleared = deriveConversationRecord(conversationId, {
+        ...emptyWindow(record.generation, record.projectPath),
+        resetting: true,
+        rows: conversation ? { [key]: conversation } : {},
+    }, record)
+    return { ...current, conversationsById: { ...current.conversationsById, [conversationId]: cleared } }
 }
 
 /** A conversation gone after a reset: its cache is discarded and it shows as unavailable. */
@@ -780,6 +792,7 @@ export function applyTransientConversationEventToCache(
     if (
         !record
         || record.deleted
+        || record.resetting
         || turnStatus === 'complete'
         || turnStatus === 'failed'
         || event.stream_sequence <= lastSequence

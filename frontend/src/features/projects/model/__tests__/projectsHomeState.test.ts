@@ -548,11 +548,27 @@ describe('the live cursor', () => {
     expect(parseConversationBatchResponse(conversationBatch([conversation(3)], { from_revision: '7', watermark: '7' }), undefined, 'mutation').rows).toHaveLength(1)
   })
 
-  it('stops applying live batches after a reset until the next window', () => {
-    let cache = resetConversationInCache(open(buildSnapshot({ revision: 3 })), ID)
-    expect(recordOf(cache)).toMatchObject({ resetting: true, watermark: null })
+  it('clears history on a reset and stops applying live batches until the next window', () => {
+    const streamingTurn = (sequence: number, content: string): ConversationStreamDeltaEventResponse => ({
+      type: 'stream_delta',
+      conversation_id: ID,
+      turn_id: 'turn-streaming',
+      stream_sequence: sequence,
+      base_revision: 3,
+      delta_kind: 'turn_delta',
+      turn: buildTurn({ id: 'turn-streaming', status: 'streaming', content }),
+    })
+    let cache = open(buildSnapshot({ revision: 3, title: 'Kept title' }), undefined, { older_cursor: 'cursor-1' })
+    cache = applyTransientConversationEventToCache(cache, streamingTurn(1, 'Partial')).cache
+    expect(recordOf(cache).orderedTurnIds).toContain('turn-streaming')
+    cache = resetConversationInCache(cache, ID)
+    // The invalid history, stream overlay and older cursor go at once; the conversation row stays.
+    expect(recordOf(cache)).toMatchObject({ resetting: true, watermark: null, olderCursor: null, windowStart: null, title: 'Kept title' })
+    expect(recordOf(cache).orderedTurnIds).toEqual([])
+    expect(recordOf(cache).streamTurnsById).toEqual({})
     cache = live(cache, [turn(buildTurn({ content: 'Ignored while resetting.' }), 4)])
-    expect(recordOf(cache).turnsById['turn-assistant']?.content).toBe('I prepared the run request for review.')
+    expect(recordOf(cache).orderedTurnIds).toEqual([])
+    expect(applyTransientConversationEventToCache(cache, streamingTurn(2, 'Partial more')).status).toBe('dropped')
     cache = open(buildSnapshot({ revision: 6 }), cache)
     expect(recordOf(cache)).toMatchObject({ resetting: false, watermark: '6' })
   })
