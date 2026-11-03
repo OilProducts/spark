@@ -99,10 +99,18 @@ impl ConversationStore {
             .write(true)
             .open(&lock_path)
             .map_err(|source| StorageError::io("open server lock", &lock_path, source))?;
-        lock.try_lock_exclusive()
-            .map_err(|_| StorageError::HomeLocked {
-                path: home_dir.clone(),
-            })?;
+        // A lock description stays held while any process shares it, such as
+        // a child forked from this process before it execs, or an app in this
+        // process that is still closing. Retry briefly before refusing.
+        // ponytail: fixed one-second window; a competing server still fails.
+        let mut attempts = 0;
+        while lock.try_lock_exclusive().is_err() {
+            attempts += 1;
+            if attempts >= 50 {
+                return Err(StorageError::HomeLocked { path: home_dir });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let database = ConversationDatabase::open(&home_dir)?;
         let markers = database.read(|read| read.project_deletions())?;
         let store = Self {

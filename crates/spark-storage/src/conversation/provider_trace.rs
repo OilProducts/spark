@@ -74,21 +74,15 @@ pub(crate) fn append_trace(conversation_root: &Path, record: &ProviderTraceRecor
     line.push(b'\n');
     fs::create_dir_all(conversation_root)
         .map_err(|source| StorageError::io("create conversation", conversation_root, source))?;
-    let mut file = OpenOptions::new()
+    // An interrupted append leaves an unterminated tail: a complete record
+    // gets its newline, anything else is dropped, so it never becomes an
+    // interior corrupt line once this record follows it.
+    crate::activity::repair_partial_tail::<ProviderTraceRecord>(&path)?;
+    OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|source| StorageError::io("open provider trace", &path, source))?;
-    // A previous partial append must not merge with this record.
-    let needs_separator = file
-        .metadata()
-        .map(|metadata| metadata.len() > 0)
-        .unwrap_or(false)
-        && !ends_with_newline(&path);
-    if needs_separator {
-        line.insert(0, b'\n');
-    }
-    file.write_all(&line)
+        .and_then(|mut file| file.write_all(&line))
         .map_err(|source| StorageError::io("append provider trace", &path, source))
 }
 
@@ -136,16 +130,4 @@ pub(crate) fn replace_trace(
         bytes.push(b'\n');
     }
     crate::write_atomic(&path, bytes)
-}
-
-fn ends_with_newline(path: &Path) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = fs::File::open(path) else {
-        return true;
-    };
-    let mut last = [0u8; 1];
-    file.seek(SeekFrom::End(-1))
-        .and_then(|_| file.read_exact(&mut last))
-        .map(|()| last[0] == b'\n')
-        .unwrap_or(true)
 }

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 
 use serde_json::json;
 use spark_common::project::build_project_id;
@@ -712,4 +713,126 @@ fn first_open_wipes_only_legacy_conversations_and_the_handle_index() {
     fs::create_dir_all(&legacy).unwrap();
     ConversationStore::open(&home).unwrap();
     assert!(legacy.exists());
+}
+
+#[test]
+fn uploads_after_or_during_project_deletion_recreate_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let registry = ProjectRegistry::new(&home);
+
+    // Pending cleanup: the upload is refused before any file is written.
+    let pending = "/projects/pending-upload";
+    let (store, deleted) = seeded_project(&home, pending);
+    let pending_root = home.join("workspace/projects").join(&deleted.project_id);
+    store.database().defer_next_checkpoints(1);
+    assert!(store.delete_project(&deleted, &|_| {}).is_err());
+    let repo = ConversationRepository::new(store.clone());
+    for conversation in ["chat-a", "chat-new"] {
+        assert!(repo
+            .create_attachment(conversation, pending, "late.txt", b"late")
+            .is_err());
+    }
+    assert!(!pending_root.join("conversations/chat-new").exists());
+    let draft_dirs = fs::read_dir(pending_root.join("conversations/chat-a/attachments"))
+        .unwrap()
+        .count();
+    assert_eq!(draft_dirs, 1, "only the seeded attachment remains");
+
+    // Finished deletion: a late upload to the deleted conversation neither
+    // re-registers the project nor recreates its directory.
+    let finished = "/projects/finished-upload";
+    let (_, deleted) = seeded_project_in(&store, &home, finished);
+    store.delete_project(&deleted, &|_| {}).unwrap();
+    let error = repo
+        .create_attachment("chat-a-finished", finished, "late.txt", b"late")
+        .unwrap_err();
+    assert!(
+        matches!(error, StorageError::ConversationCommitRejected { .. }),
+        "{error}"
+    );
+    assert!(!home
+        .join("workspace/projects")
+        .join(&deleted.project_id)
+        .exists());
+    assert_eq!(registry.read_project_record(finished).unwrap(), None);
+}
+
+/// A registered project with one conversation, in an already-open store.
+fn seeded_project_in(
+    store: &std::sync::Arc<ConversationStore>,
+    home: &std::path::Path,
+    path: &str,
+) -> (std::sync::Arc<ConversationStore>, DeletedProjectRecord) {
+    let registry = ProjectRegistry::new(home);
+    registry.register_project(path).unwrap();
+    ConversationRepository::new(store.clone())
+        .commit_conversation(
+            "chat-a-finished",
+            path,
+            0,
+            vec![assistant("turn-a", "complete")],
+        )
+        .unwrap();
+    (store.clone(), registry.deletable_project(path).unwrap())
+}
+
+#[test]
+fn an_interrupted_trace_append_is_repaired_before_the_next_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/trace-tail";
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    repo.commit_conversation("chat", path, 0, vec![assistant("turn-a", "streaming")])
+        .unwrap();
+    let mut first = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "kept"}),
+    )
+    .unwrap();
+    repo.append_provider_event("chat", path, "turn-a", &mut first)
+        .unwrap();
+    let trace = ProjectRegistry::new(&home)
+        .project_paths(path)
+        .unwrap()
+        .conversations_dir
+        .join("chat/provider-trace.jsonl");
+    // A crash mid-append leaves an unterminated, unparsable tail.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&trace)
+        .unwrap()
+        .write_all(br#"{"sequence":2,"turn_id":"#)
+        .unwrap();
+    drop(repo);
+
+    let reopen = || ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    let repo = reopen();
+    let sequences = |repo: &ConversationRepository| {
+        repo.unapplied_provider_events("chat", path, "turn-a")
+            .unwrap()
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sequences(&repo), vec![1]);
+    let mut next = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "after"}),
+    )
+    .unwrap();
+    let appended = repo
+        .append_provider_event("chat", path, "turn-a", &mut next)
+        .unwrap();
+    assert_eq!(appended.sequence, 2);
+    assert_eq!(sequences(&repo), vec![1, 2]);
+    drop(repo);
+    assert_eq!(sequences(&reopen()), vec![1, 2]);
+
+    // Corruption before the final record stays an explicit recovery error.
+    let mut bytes = b"{\"broken\n".to_vec();
+    bytes.extend(fs::read(&trace).unwrap());
+    fs::write(&trace, bytes).unwrap();
+    assert!(matches!(
+        reopen().read_snapshot("chat", Some(path)),
+        Err(StorageError::JsonlLine { line: 1, .. })
+    ));
 }

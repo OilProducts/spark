@@ -69,8 +69,9 @@ impl ConversationRepository {
         bytes: &[u8],
     ) -> Result<ConversationAttachment> {
         let store = self.store().clone();
-        let project_paths = self.project_paths(project_path)?;
-        let project_path = project_paths.project_path;
+        // Normalized without registering: nothing touches the registry or the
+        // filesystem until the project and conversation are admitted below.
+        let project_path = store.registry().project_paths(project_path)?.project_path;
         let id = format!("att-{:032x}", rand::thread_rng().gen::<u128>());
         let dir = self
             .attachments_dir(conversation_id, &project_path)?
@@ -89,7 +90,6 @@ impl ConversationRepository {
             stored_name: format!("content.{extension}"),
         };
         let blob = dir.join(&record.stored_name);
-        write_atomic(&blob, bytes)?;
         let blob_path = store.home_relative(&blob);
         let gate = store.project_gate(&project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
@@ -129,6 +129,13 @@ impl ConversationRepository {
                 }
             };
             let is_new = slot.is_none();
+            // Admitted: register a new conversation's project, then publish the
+            // blob before the transaction that references it, all under the
+            // project gate and conversation lock.
+            if is_new {
+                store.registry().ensure_project_paths(&project_path)?;
+            }
+            write_atomic(&blob, bytes)?;
             let meta = &loaded.record.meta;
             let payload =
                 serde_json::to_value(&record).map_err(|source| StorageError::JsonWrite {
