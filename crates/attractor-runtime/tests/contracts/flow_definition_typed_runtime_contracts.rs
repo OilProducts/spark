@@ -2393,12 +2393,11 @@ fn max_entries_is_rejected_by_name() {
 
 #[test]
 fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
-    // Exercise both completion callers: successful exit and failed goal gate.
-    // A dead end is a failure, not a completion.
-    for failed_goal in [false, true] {
+    // Exercise all completion callers: dead end, successful exit, and failed goal gate.
+    for (with_exit, failed_goal) in [(false, false), (true, false), (true, true)] {
         let temp = tempfile::tempdir().unwrap();
         let store = RunStore::for_runs_dir(temp.path());
-        let flow = linear_flow(FlowNode {
+        let mut flow = linear_flow(FlowNode {
             kind: NodeKind::AgentTask,
             config: Some(NodeConfig::AgentTask {
                 prompt: "blocked".into(),
@@ -2409,6 +2408,10 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
             }),
             ..FlowNode::default()
         });
+        if !with_exit {
+            flow.nodes.remove("done");
+            flow.edges.retain(|edge| edge.from != "task");
+        }
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let executor_store = store.clone();
@@ -2447,7 +2450,10 @@ fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
         assert_eq!(accepted.status, "cancel_requested");
         release_tx.send(()).unwrap();
         let result = worker.join().unwrap().unwrap();
-        assert_eq!(result.status, "canceled", "failed_goal={failed_goal}");
+        assert_eq!(
+            result.status, "canceled",
+            "with_exit={with_exit}, failed_goal={failed_goal}"
+        );
         assert_eq!(result.failure_reason, "aborted_by_user");
         let paths = store.find_run_root("cancel-final-node").unwrap().unwrap();
         let record = store.read_run_record(&paths).unwrap().unwrap();
@@ -3044,25 +3050,23 @@ fn visit_limit_takes_precedence_over_an_unmatched_result() {
     assert_durably_failed(&store, "run-visit-precedence", reason);
 }
 
-/// Recovery of a completed visit whose result matches no route fails the run
-/// from the stored visit, without executing the node again.
-#[test]
-fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("runs"));
-    let flow = || visit_loop_flow(vec![edge("done", "Done", "outcome=success")], None);
+/// Runs `flow` with `outcome_for` answering each node, pauses right after
+/// `evaluate` completes, then resumes; returns the resumed result and the
+/// nodes the resume executed.
+fn pause_after_evaluate_then_resume(
+    store: &RunStore,
+    run_id: &str,
+    workdir: &std::path::Path,
+    flow: impl Fn() -> FlowDefinition,
+    outcome_for: fn(&str) -> Outcome,
+) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
     let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let seen = calls.clone();
     let polled = calls.clone();
     let paused = PipelineExecutor::with_control(
         move |request: NodeExecutionRequest| {
             seen.lock().unwrap().push(request.node_id.clone());
-            let status = if request.node_id == "evaluate" {
-                OutcomeStatus::PartialSuccess
-            } else {
-                OutcomeStatus::Success
-            };
-            Ok(Outcome::new(status))
+            Ok(outcome_for(&request.node_id))
         },
         move || {
             polled
@@ -3074,7 +3078,7 @@ fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
     )
     .execute(ExecuteRunRequest {
         store: store.clone(),
-        record: RunRecord::new("run-unmatched-resume", temp.path().to_string_lossy()),
+        record: RunRecord::new(run_id, workdir.to_string_lossy()),
         flow: flow(),
         flow_definition_json: None,
         launch_context: LaunchContext::empty(),
@@ -3084,138 +3088,282 @@ fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
     })
     .expect("execute");
     assert_eq!(paused.status, "paused");
-    let meta = store
-        .read_run_meta("run-unmatched-resume")
-        .unwrap()
-        .unwrap();
+    let meta = store.read_run_meta(run_id).unwrap().unwrap();
     let checkpoint = meta.checkpoint.unwrap();
     assert_eq!(checkpoint.current_node, "evaluate");
 
-    let (resumed, calls) = run_visit_loop(
-        &store,
-        "run-unmatched-resume",
-        temp.path(),
-        flow(),
-        OutcomeStatus::Success,
-        None,
-        attractor_runtime::ExecutionStart::Resume {
+    let resumed_calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = resumed_calls.clone();
+    let resumed = PipelineExecutor::new(move |request: NodeExecutionRequest| {
+        seen.lock().unwrap().push(request.node_id.clone());
+        Ok(outcome_for(&request.node_id))
+    })
+    .execute(ExecuteRunRequest {
+        store: store.clone(),
+        record: RunRecord::new(run_id, workdir.to_string_lossy()),
+        flow: flow(),
+        flow_definition_json: None,
+        launch_context: LaunchContext::empty(),
+        runtime_context: ContextMap::new(),
+        max_steps: None,
+        start: attractor_runtime::ExecutionStart::Resume {
             paths: meta.paths,
             checkpoint,
         },
-    );
-    let reason =
-        "no_matching_route: node \"evaluate\" result status \"partial_success\" label \"\"; \
-                  routes [-> \"done\" condition \"outcome=success\" label \"Done\" weight 0]";
-    assert_eq!(resumed.status, "failed");
-    assert_eq!(resumed.failure_reason, reason);
-    assert!(calls.is_empty(), "{calls:?}");
-    assert_durably_failed(&store, "run-unmatched-resume", reason);
+    })
+    .expect("resume");
+    let resumed_calls = resumed_calls.lock().unwrap().clone();
+    (resumed, resumed_calls)
 }
 
-/// A parallel branch whose result matches no route fails the owning run under
-/// every legacy join and error policy, before any route from the parallel
-/// node; a sibling reaching the join does not rescue it.
+/// Recovery of a completed visit whose result matches no route fails the run
+/// from the stored visit, without executing the node again, with the same
+/// reason uninterrupted execution gives.
 #[test]
-fn unmatched_parallel_branch_fails_the_parent_under_every_policy() {
-    for join_policy in ["wait_all", "first_success", "k_of_n", "quorum"] {
-        for error_policy in ["fail_fast", "continue", "ignore"] {
-            let temp = tempfile::tempdir().expect("tempdir");
-            let store = RunStore::for_runs_dir(temp.path().join("runs"));
-            let task = |kind| FlowNode {
-                kind,
-                ..FlowNode::default()
-            };
-            let flow_edge = |from: &str, to: &str| FlowEdge {
-                from: from.to_string(),
-                to: to.to_string(),
-                ..FlowEdge::default()
-            };
-            let flow = FlowDefinition {
-                schema_version: "1".to_string(),
-                id: "unmatched-branch".to_string(),
-                nodes: [
-                    ("start", task(NodeKind::Start)),
-                    (
-                        "fan",
-                        FlowNode {
-                            kind: NodeKind::Parallel,
-                            config: Some(NodeConfig::Parallel {
-                                join_policy: Some(join_policy.to_string()),
-                                max_parallel: None,
-                                join_k: (join_policy == "k_of_n").then_some(1),
-                                join_quorum: None,
-                            }),
-                            runtime: Some(NodeRuntimeConfig {
-                                error_policy: Some(error_policy.to_string()),
-                                ..NodeRuntimeConfig::default()
-                            }),
-                            ..FlowNode::default()
-                        },
-                    ),
-                    ("good", task(NodeKind::AgentTask)),
-                    ("stray", task(NodeKind::AgentTask)),
-                    ("join", task(NodeKind::FanIn)),
-                    ("after", task(NodeKind::AgentTask)),
-                    ("done", task(NodeKind::Exit)),
-                ]
-                .into_iter()
-                .map(|(id, node)| (id.to_string(), node))
-                .collect(),
-                edges: vec![
-                    flow_edge("start", "fan"),
-                    flow_edge("fan", "good"),
-                    flow_edge("fan", "stray"),
-                    flow_edge("good", "join"),
-                    FlowEdge {
-                        condition: "outcome=success".to_string(),
-                        ..flow_edge("stray", "after")
-                    },
-                    flow_edge("join", "after"),
-                    flow_edge("after", "done"),
-                ],
-                ..FlowDefinition::default()
-            };
-            let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-            let seen = calls.clone();
-            let mut runner = RuntimeHandlerRunner::new();
-            runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
-                seen.lock().unwrap().push(runtime.node_id.clone());
-                Ok(Outcome::new(if runtime.node_id == "stray" {
+fn resume_of_an_unmatched_completed_visit_fails_without_reexecution() {
+    let routes = "routes [-> \"done\" condition \"outcome=success\" label \"Done\" weight 0]";
+    let cases: [(fn(&str) -> Outcome, String); 2] = [
+        (
+            |node| {
+                Outcome::new(if node == "evaluate" {
                     OutcomeStatus::PartialSuccess
                 } else {
                     OutcomeStatus::Success
-                }))
-            });
-            let result = PipelineExecutor::new(runner)
-                .execute(ExecuteRunRequest {
-                    store: store.clone(),
-                    record: RunRecord::new("run-unmatched-branch", temp.path().to_string_lossy()),
-                    flow,
-                    flow_definition_json: None,
-                    launch_context: LaunchContext::empty(),
-                    runtime_context: ContextMap::new(),
-                    max_steps: None,
-                    start: Default::default(),
                 })
-                .expect("execute");
-            let reason =
-                "no_matching_route: node \"stray\" result status \"partial_success\" label \"\"; \
-                          routes [-> \"after\" condition \"outcome=success\" label \"\" weight 0]";
-            let policies = format!("{join_policy}/{error_policy}");
-            assert_eq!(result.status, "failed", "{policies}");
-            assert_eq!(result.failure_reason, reason, "{policies}");
-            assert_eq!(result.current_node, "fan", "{policies}");
-            let calls = calls.lock().unwrap().clone();
-            assert!(
-                !calls.contains(&"after".to_string()),
-                "{policies}: {calls:?}"
-            );
-            assert_eq!(
-                calls.iter().filter(|node| *node == "stray").count(),
-                1,
-                "{policies}: the parallel node is not retried"
-            );
-            assert_durably_failed(&store, "run-unmatched-branch", reason);
+            },
+            format!("no_matching_route: node \"evaluate\" result status \"partial_success\" label \"\"; {routes}"),
+        ),
+        (
+            |node| {
+                if node == "evaluate" {
+                    return Outcome {
+                        failure_reason: "not good enough".to_string(),
+                        ..Outcome::new(OutcomeStatus::Fail)
+                    };
+                }
+                Outcome::new(OutcomeStatus::Success)
+            },
+            format!("not good enough; no_matching_route: node \"evaluate\" result status \"fail\" label \"\"; {routes}"),
+        ),
+    ];
+    for (outcome_for, reason) in cases {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let (resumed, calls) = pause_after_evaluate_then_resume(
+            &store,
+            "run-unmatched-resume",
+            temp.path(),
+            || visit_loop_flow(vec![edge("done", "Done", "outcome=success")], None),
+            outcome_for,
+        );
+        assert_eq!(resumed.status, "failed");
+        assert_eq!(resumed.failure_reason, reason);
+        assert!(calls.is_empty(), "{calls:?}");
+        assert_durably_failed(&store, "run-unmatched-resume", &reason);
+    }
+}
+
+/// Recovery of a completed conditional visit routes on the result it
+/// inherited, as uninterrupted execution does: an actual success inheriting
+/// partial_success with only an outcome=success route fails.
+#[test]
+fn resume_of_a_conditional_visit_routes_on_its_inherited_result() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (resumed, calls) = pause_after_evaluate_then_resume(
+        &store,
+        "run-conditional-resume",
+        temp.path(),
+        || {
+            let mut flow = visit_loop_flow(vec![edge("done", "", "outcome=success")], None);
+            flow.nodes.get_mut("evaluate").unwrap().kind = NodeKind::Conditional;
+            flow.nodes.get_mut("evaluate").unwrap().config = None;
+            flow
+        },
+        |node| {
+            if node == "implement" {
+                return Outcome {
+                    preferred_label: "Unfinished".to_string(),
+                    ..Outcome::new(OutcomeStatus::PartialSuccess)
+                };
+            }
+            Outcome::new(OutcomeStatus::Success)
+        },
+    );
+    let reason = "no_matching_route: node \"evaluate\" result status \"success\" label \"\"; \
+                  effective result status \"partial_success\" label \"Unfinished\"; \
+                  routes [-> \"done\" condition \"outcome=success\" label \"\" weight 0]";
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(resumed.failure_reason, reason);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert_durably_failed(&store, "run-conditional-resume", reason);
+}
+
+/// start -> fan -> {good -> join, stray -> after}; join -> after -> done,
+/// where `stray`'s only route has `stray_condition`.
+fn branch_policy_flow(
+    join_policy: &str,
+    error_policy: &str,
+    stray_condition: &str,
+) -> FlowDefinition {
+    let task = |kind| FlowNode {
+        kind,
+        ..FlowNode::default()
+    };
+    let flow_edge = |from: &str, to: &str| FlowEdge {
+        from: from.to_string(),
+        to: to.to_string(),
+        ..FlowEdge::default()
+    };
+    FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "unmatched-branch".to_string(),
+        nodes: [
+            ("start", task(NodeKind::Start)),
+            (
+                "fan",
+                FlowNode {
+                    kind: NodeKind::Parallel,
+                    config: Some(NodeConfig::Parallel {
+                        join_policy: Some(join_policy.to_string()),
+                        max_parallel: None,
+                        join_k: (join_policy == "k_of_n").then_some(1),
+                        join_quorum: None,
+                    }),
+                    runtime: Some(NodeRuntimeConfig {
+                        error_policy: Some(error_policy.to_string()),
+                        ..NodeRuntimeConfig::default()
+                    }),
+                    ..FlowNode::default()
+                },
+            ),
+            ("good", task(NodeKind::AgentTask)),
+            ("stray", task(NodeKind::AgentTask)),
+            ("join", task(NodeKind::FanIn)),
+            ("after", task(NodeKind::AgentTask)),
+            ("done", task(NodeKind::Exit)),
+        ]
+        .into_iter()
+        .map(|(id, node)| (id.to_string(), node))
+        .collect(),
+        edges: vec![
+            flow_edge("start", "fan"),
+            flow_edge("fan", "good"),
+            flow_edge("fan", "stray"),
+            flow_edge("good", "join"),
+            FlowEdge {
+                condition: stray_condition.to_string(),
+                ..flow_edge("stray", "after")
+            },
+            flow_edge("join", "after"),
+            flow_edge("after", "done"),
+        ],
+        ..FlowDefinition::default()
+    }
+}
+
+/// Runs `flow` with `stray` answering `stray_status` and every other agent
+/// succeeding; returns the result and the agent nodes executed.
+fn run_branch_policy_flow(
+    store: &RunStore,
+    workdir: &std::path::Path,
+    flow: FlowDefinition,
+    stray_status: OutcomeStatus,
+) -> (attractor_runtime::PipelineExecutionResult, Vec<String>) {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
+        seen.lock().unwrap().push(runtime.node_id.clone());
+        if runtime.node_id == "stray" {
+            return Ok(Outcome {
+                failure_reason: "stray failed".to_string(),
+                ..Outcome::new(stray_status)
+            });
+        }
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    let result = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-unmatched-branch", workdir.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("execute");
+    let calls = calls.lock().unwrap().clone();
+    (result, calls)
+}
+
+/// A parallel branch whose result matches no route fails the owning run under
+/// every legacy join and error policy, whatever that result, before any route
+/// from the parallel node; a sibling reaching the join does not rescue it.
+#[test]
+fn unmatched_parallel_branch_fails_the_parent_under_every_policy() {
+    for stray_status in [
+        OutcomeStatus::Success,
+        OutcomeStatus::PartialSuccess,
+        OutcomeStatus::Retry,
+        OutcomeStatus::Skipped,
+        OutcomeStatus::Fail,
+    ] {
+        let condition = if stray_status == OutcomeStatus::Success {
+            "outcome=partial_success"
+        } else {
+            "outcome=success"
+        };
+        let details = format!(
+            "no_matching_route: node \"stray\" result status \"{}\" label \"\"; \
+             routes [-> \"after\" condition \"{condition}\" label \"\" weight 0]",
+            stray_status.as_str()
+        );
+        let reason = if stray_status == OutcomeStatus::Fail {
+            format!("stray failed; {details}")
+        } else {
+            details
+        };
+        for join_policy in ["wait_all", "first_success", "k_of_n", "quorum"] {
+            for error_policy in ["fail_fast", "continue", "ignore"] {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let store = RunStore::for_runs_dir(temp.path().join("runs"));
+                let (result, calls) = run_branch_policy_flow(
+                    &store,
+                    temp.path(),
+                    branch_policy_flow(join_policy, error_policy, condition),
+                    stray_status,
+                );
+                let case = format!("{stray_status:?} {join_policy}/{error_policy}");
+                assert_eq!(result.status, "failed", "{case}");
+                assert_eq!(result.failure_reason, reason, "{case}");
+                assert_eq!(result.current_node, "fan", "{case}");
+                assert!(!calls.contains(&"after".to_string()), "{case}: {calls:?}");
+                assert_eq!(
+                    calls.iter().filter(|node| *node == "stray").count(),
+                    1,
+                    "{case}: the parallel node is not retried"
+                );
+                assert_durably_failed(&store, "run-unmatched-branch", &reason);
+            }
         }
     }
+}
+
+/// A failed branch whose failure route matches keeps the legacy behavior: it
+/// follows that route and the policies weigh the branch, not the run.
+#[test]
+fn failed_parallel_branch_with_a_matching_route_keeps_legacy_routing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let (result, calls) = run_branch_policy_flow(
+        &store,
+        temp.path(),
+        branch_policy_flow("wait_all", "continue", "outcome=fail"),
+        OutcomeStatus::Fail,
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert!(calls.contains(&"after".to_string()), "{calls:?}");
 }

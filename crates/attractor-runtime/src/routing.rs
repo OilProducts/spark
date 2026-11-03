@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use attractor_core::{
     is_exact_outcome_fail_condition, normalize_label, select_failure_route_edge_with_context,
-    AttractorContext, ContextMap, FailureKind, FlowDefinition, Outcome, OutcomeStatus, RoutingEdge,
+    AttractorContext, ContextMap, FlowDefinition, Outcome, OutcomeStatus, RoutingEdge,
     RUNTIME_UNAVAILABLE_ROUTES_KEY,
 };
 use serde::{Deserialize, Serialize};
@@ -294,15 +294,6 @@ pub fn unmatched_route_reason(
     } else {
         details
     })
-}
-
-/// A node failure carrying a branch's unmatched-route diagnostic: it fails
-/// the owning run rather than retrying or following a route.
-pub fn is_unmatched_route_failure(outcome: &Outcome) -> bool {
-    outcome.status == OutcomeStatus::Fail
-        && outcome.failure_kind == Some(FailureKind::Runtime)
-        && outcome.retryable == Some(false)
-        && outcome.failure_reason.starts_with(NO_MATCHING_ROUTE)
 }
 
 pub fn stage_failure_reason(outcome: &Outcome) -> String {

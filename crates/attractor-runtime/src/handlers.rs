@@ -40,9 +40,8 @@ use crate::executor::{
 };
 use crate::paths::RunRootPaths;
 use crate::routing::{
-    is_exit_node, is_unmatched_route_failure, mark_unavailable_routes, outgoing_routing_edges,
-    select_next_node_with_prior, stage_failure_reason, unmatched_route_reason, NO_MATCHING_ROUTE,
-    VISIT_LIMIT_REACHED,
+    is_exit_node, mark_unavailable_routes, outgoing_routing_edges, select_next_node_with_prior,
+    stage_failure_reason, unmatched_route_reason, VISIT_LIMIT_REACHED,
 };
 
 pub const HANDLER_START: &str = "start";
@@ -2136,7 +2135,7 @@ impl RuntimeHandlerRunner {
                     // A branch without a route fails the parallel node even
                     // after its policies stopped accepting results.
                     if let Err(error) = &completion.result {
-                        if error.message.starts_with(NO_MATCHING_ROUTE) {
+                        if error.unmatched_route {
                             return Err(error.clone());
                         }
                     }
@@ -2274,6 +2273,8 @@ impl RuntimeHandlerRunner {
             ))?;
             let raw_outcome = match self.execute_request(request) {
                 Ok(outcome) => outcome,
+                // A nested branch without a route fails this one's owner too.
+                Err(error) if error.unmatched_route => return Err(error),
                 Err(error) => handler_error_outcome(error),
             };
             emit_node_event(parallel_branch_node_completed_event(
@@ -2292,10 +2293,6 @@ impl RuntimeHandlerRunner {
             )
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             node_outcomes.insert(current_node.clone(), outcome.clone());
-            // A nested branch without a route fails this one's owner too.
-            if is_unmatched_route_failure(&outcome) {
-                return Err(RuntimeNodeError::terminal(outcome.failure_reason));
-            }
             // Infrastructure failures fail the branch rather than follow a verdict route.
             if crate::retry::is_runtime_failure(&outcome) {
                 return Ok(branch_payload(
@@ -2343,13 +2340,11 @@ impl RuntimeHandlerRunner {
                     &selection,
                 )
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-                // A visit limit or a failed result keeps its legacy failed
-                // branch, which the join and error policies weigh. Any other
-                // unmatched result fails the owning run whatever its policies.
-                if outcome.status != OutcomeStatus::Fail
-                    && !selection.reason.starts_with(VISIT_LIMIT_REACHED)
-                {
-                    return Err(RuntimeNodeError::terminal(reason));
+                // A visit limit keeps its legacy failed branch, which the join
+                // and error policies weigh. Any unmatched result, failed or
+                // not, fails the owning run whatever its policies.
+                if !selection.reason.starts_with(VISIT_LIMIT_REACHED) {
+                    return Err(RuntimeNodeError::unmatched_route(reason));
                 }
                 return Ok(branch_payload(
                     start_node,
@@ -2473,6 +2468,7 @@ impl NodeExecutor for RuntimeHandlerRunner {
             self.execute_request(request)
         })) {
             Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(error)) if error.unmatched_route => Err(error),
             Ok(Err(error)) => Ok(handler_error_outcome(error)),
             Err(payload) => Ok(Outcome {
                 status: OutcomeStatus::Fail,
