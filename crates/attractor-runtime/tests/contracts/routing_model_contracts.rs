@@ -13,6 +13,9 @@ use attractor_runtime::{
 };
 use serde_json::{json, Value};
 
+#[path = "cancellation_matrix_contracts.rs"]
+mod cancellation_matrix_contracts;
+
 fn route(to: &str) -> Value {
     json!({"to": to, "description": format!("Continue at {to}.")})
 }

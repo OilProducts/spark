@@ -603,7 +603,7 @@ fn linked_child_is_history(runtime: &HandlerRuntime, child_run_id: &str) -> Opti
     })
 }
 
-fn restart_marked_record(record: &RunRecord) -> bool {
+pub(crate) fn restart_marked_record(record: &RunRecord) -> bool {
     record.status == "failed"
         && record.outcome.is_none()
         && record.ended_at.is_none()

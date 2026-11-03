@@ -290,6 +290,19 @@ where
                 mut checkpoint,
             } => {
                 paths.ensure_exists()?;
+                // A resume means the previous executor is gone. Whatever it
+                // left running stops here; a rerun needs a clean slate.
+                crate::handlers::stop_orphaned_tools(&paths);
+                if store
+                    .read_run_record(&paths)?
+                    .is_some_and(|record| record.status == "cancel_requested")
+                {
+                    crate::controls::RuntimeControls::new(store.clone())
+                        .settle_orphaned_work(&paths, &run_id, "aborted_by_user")
+                        .map_err(|error| RuntimeStorageError::InvalidRuntimeGraph {
+                            reason: error.to_string(),
+                        })?;
+                }
                 if let Some(request) =
                     crate::retry::saved_retry_request(&checkpoint.context)?.filter(|r| r.preparing)
                 {

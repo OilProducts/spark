@@ -1429,8 +1429,8 @@ impl RuntimeHandlerRunner {
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
-        // Branch tools stop when their fork or the user cancels; the run
-        // record is read at most every 250 ms.
+        // Tools stop when their fork or the user cancels, at the root and in
+        // a child as in a branch; the run record is read at most every 250 ms.
         let mut last_check = Instant::now();
         let mut stop_check = || {
             if runtime.canceled_by_owner() {
@@ -1443,17 +1443,26 @@ impl RuntimeHandlerRunner {
             last_check = Instant::now();
             runtime.stop_requested()
         };
+        let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
+        let mut recorded = None;
+        let mut on_spawn = |pid: u32| {
+            recorded = runtime
+                .run_paths
+                .as_ref()
+                .and_then(|paths| record_tool_process(paths, pid));
+        };
         let spawned = run_shell_command(
             &command,
             &cwd,
             timeout,
             tool_env,
             None,
-            runtime
-                .cancel
-                .is_some()
-                .then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+            can_stop.then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+            Some(&mut on_spawn),
         );
+        if let Some(path) = recorded {
+            let _ = fs::remove_file(path);
+        }
         let command_output = match spawned {
             Ok(output) => output,
             Err(error) => {
@@ -1886,10 +1895,22 @@ impl RuntimeHandlerRunner {
                     .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             })
             .collect::<Vec<_>>();
-        let stopped = records
-            .iter()
-            .flatten()
-            .any(|record| record_stops_fork(record, tolerate));
+        // A fork stopped before this entry settles what it left behind: its
+        // children have no executor any more, and each unsettled branch keeps
+        // its saved evidence but runs nothing. A user's cancel counts too: it
+        // can land after the resume's own check of the record.
+        let stopped = run_cancel_requested(&runtime)
+            || records
+                .iter()
+                .flatten()
+                .any(|record| record_stops_fork(record, tolerate));
+        if let Some(paths) = runtime.run_paths.as_ref().filter(|_| stopped) {
+            crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
+                paths.runs_dir.clone(),
+            ))
+            .cancel_orphaned_children(&runtime.run_id, "aborted_by_user")
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+        }
         let cancel = Arc::new(AtomicBool::new(stopped));
         self.emit(
             &runtime,
@@ -1897,8 +1918,13 @@ impl RuntimeHandlerRunner {
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
 
+        let started = |index: usize| {
+            state_dir
+                .as_ref()
+                .is_some_and(|dir| branch_progress_path(dir, index).exists())
+        };
         let pending = (0..branches.len())
-            .filter(|index| records[*index].is_none() && !stopped)
+            .filter(|index| records[*index].is_none() && (!stopped || started(*index)))
             .collect::<Vec<_>>();
         let max_parallel = (max_parallel.unwrap_or(4) as usize).clamp(1, branches.len().max(1));
         let (tx, rx) = mpsc::channel::<(usize, BranchCompletion)>();
@@ -1961,18 +1987,11 @@ impl RuntimeHandlerRunner {
                 // Persist first: a terminal result or fatal error is durable
                 // before the fork cancels its siblings.
                 if let Some(dir) = state_dir.as_ref() {
-                    fs::create_dir_all(dir)
-                        .and_then(|_| {
-                            fs::write(
-                                dir.join(format!("{index}.json")),
-                                serde_json::to_vec_pretty(&record).unwrap_or_default(),
-                            )
-                        })
-                        .map_err(|error| {
-                            // Settle the siblings before failing the fork.
-                            cancel.store(true, Ordering::SeqCst);
-                            RuntimeNodeError::terminal(error.to_string())
-                        })?;
+                    write_branch_record(dir, index, &record).map_err(|error| {
+                        // Settle the siblings before failing the fork.
+                        cancel.store(true, Ordering::SeqCst);
+                        RuntimeNodeError::terminal(error.to_string())
+                    })?;
                 }
                 if record_stops_fork(&record, tolerate) {
                     cancel.store(true, Ordering::SeqCst);
@@ -2353,9 +2372,14 @@ impl RuntimeHandlerRunner {
                         })
                     );
                 }
+                // A stop ends the branch's retries, not its own error: the
+                // error stays a recorded error rather than a cancellation.
                 let retries_so_far = retries.get(&current).copied().unwrap_or(0);
                 let policy = retry_policy_for_outcome(flow, &current, &outcome);
-                if should_retry_attempt(&outcome, retries_so_far, &policy) {
+                if should_retry_attempt(&outcome, retries_so_far, &policy)
+                    && !cancel.load(Ordering::SeqCst)
+                    && !run_cancel_requested(runtime)
+                {
                     retries.insert(current.clone(), retries_so_far + 1);
                     if let Err(error) = save_progress!(None, None) {
                         return record!(
@@ -2789,15 +2813,22 @@ fn run_hook(
         "ATTRACTOR_TOOL_COMMAND".to_string(),
         tool_command.to_string(),
     );
-    run_shell_command(command, cwd, None, env, Some(payload.to_string()), None).unwrap_or_else(
-        |error| ShellOutput {
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: error.to_string(),
-            timed_out: false,
-            interrupted: false,
-        },
+    run_shell_command(
+        command,
+        cwd,
+        None,
+        env,
+        Some(payload.to_string()),
+        None,
+        None,
     )
+    .unwrap_or_else(|error| ShellOutput {
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: error.to_string(),
+        timed_out: false,
+        interrupted: false,
+    })
 }
 
 fn record_hook_failure(
@@ -2936,6 +2967,7 @@ fn run_shell_command(
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
     mut stop: Option<&mut dyn FnMut() -> bool>,
+    on_spawn: Option<&mut dyn FnMut(u32)>,
 ) -> std::io::Result<ShellOutput> {
     let mut command_line = Command::new("sh");
     // Its own process group, so a timeout or cancellation stops every
@@ -2954,6 +2986,9 @@ fn run_shell_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    if let Some(on_spawn) = on_spawn {
+        on_spawn(child.id());
+    }
 
     if let Some(stdin_text) = stdin_text {
         if let Some(mut stdin) = child.stdin.take() {
@@ -3002,6 +3037,45 @@ fn run_shell_command(
     Ok(shell_output_from_process(output, timed_out, interrupted))
 }
 
+/// A process's start time, which tells it from a later process reusing its pid.
+fn process_started_at(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let started_at = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !started_at.is_empty()).then_some(started_at)
+}
+
+/// Records a running tool's process group in its run root until it ends, so a
+/// later executor can stop what a dead one left behind. An entry that exists
+/// while no executor owns the run is therefore an orphan.
+// ponytail: without `ps` (Windows, minimal images) orphans are not recorded.
+fn record_tool_process(paths: &RunRootPaths, pid: u32) -> Option<PathBuf> {
+    let dir = paths.root.join(TOOL_PROCESSES_DIR);
+    let path = dir.join(pid.to_string());
+    fs::create_dir_all(&dir).ok()?;
+    fs::write(&path, process_started_at(pid)?).ok()?;
+    Some(path)
+}
+
+/// Stops every tool process group a dead executor of this run left running.
+// ponytail: a group whose leader exited is skipped, since its pid no longer
+// proves its identity; record group members if tools start daemons.
+pub(crate) fn stop_orphaned_tools(paths: &RunRootPaths) {
+    let Ok(entries) = fs::read_dir(paths.root.join(TOOL_PROCESSES_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let recorded = fs::read_to_string(entry.path()).ok();
+        if let Some(pid) = pid.filter(|pid| process_started_at(*pid) == recorded) {
+            spark_agent_adapter::local_environment::terminate_process_group(pid, None);
+        }
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
 fn shell_output_from_process(
     output: std::process::Output,
     timed_out: bool,
@@ -3017,6 +3091,7 @@ fn shell_output_from_process(
 }
 
 const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
+const TOOL_PROCESSES_DIR: &str = "tool-processes";
 
 enum HumanGateWaitResult {
     Answered(Choice, String),
@@ -3195,19 +3270,75 @@ fn read_branch_progress(path: &Path) -> Option<BranchProgress> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// Writes through a rename: a crash leaves the old file or the whole new one.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, bytes)?;
+    fs::rename(&temp, path)
+}
+
 fn write_branch_progress(
     path: &Path,
     progress: &BranchProgress,
 ) -> std::result::Result<(), String> {
-    let write = || -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let temp = path.with_extension("json.tmp");
-        fs::write(&temp, serde_json::to_vec(progress).unwrap_or_default())?;
-        fs::rename(&temp, path)
+    write_atomically(path, &serde_json::to_vec(progress).unwrap_or_default())
+        .map_err(|error| format!("could not save branch progress: {error}"))
+}
+
+fn write_branch_record(dir: &Path, index: usize, record: &Value) -> std::io::Result<()> {
+    write_atomically(
+        &dir.join(format!("{index}.json")),
+        &serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
+}
+
+/// Settles the branches of a run with no executor left: each branch that had
+/// started and has no record gets a canceled one from its saved progress.
+pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) {
+    let children = |dir: PathBuf| {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
     };
-    write().map_err(|error| format!("could not save branch progress: {error}"))
+    for executions in children(paths.logs_dir()).map(|node| node.join("executions")) {
+        for dir in children(executions).map(|execution| execution.join("branches")) {
+            for path in children(dir.clone()) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let Some(index) = name
+                    .strip_suffix(".progress.json")
+                    .and_then(|index| index.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                if dir.join(format!("{index}.json")).exists() {
+                    continue;
+                }
+                let Some(progress) = read_branch_progress(&path) else {
+                    continue;
+                };
+                let _ = write_branch_record(
+                    &dir,
+                    index,
+                    &json!({
+                        "id": progress.trace.first(),
+                        "index": index,
+                        "status": "canceled",
+                        "started": true,
+                        "context": progress.context,
+                        "route_trace": progress.trace,
+                        "decisions": progress.decisions,
+                        "visits": progress.visits,
+                        "canceled_at": progress.current,
+                    }),
+                );
+            }
+        }
+    }
 }
 
 /// The branch node of the fork at `fork_id` (stage/attempt) whose invocation
