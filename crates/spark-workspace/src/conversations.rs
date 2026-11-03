@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -6476,6 +6476,21 @@ fn agent_history_from_snapshot(
 ) -> WorkspaceResult<Vec<HistoryTurn>> {
     let conversation_id = snapshot["conversation_id"].as_str().unwrap_or_default();
     let project_path = snapshot_project_path(snapshot).unwrap_or_default();
+    // Index the history-bearing segments by turn once, so each turn reads its
+    // own instead of scanning every segment.
+    let mut turn_segments: HashMap<&str, Vec<&Value>> = HashMap::new();
+    for segment in snapshot["segments"].as_array().into_iter().flatten() {
+        if let Some(turn_id) = segment["turn_id"].as_str() {
+            if segment["status"] == "complete"
+                && matches!(
+                    segment["kind"].as_str(),
+                    Some("assistant_message" | "plan" | "user_message")
+                )
+            {
+                turn_segments.entry(turn_id).or_default().push(segment);
+            }
+        }
+    }
     let mut history = Vec::new();
     for turn in snapshot
         .get("turns")
@@ -6483,7 +6498,7 @@ fn agent_history_from_snapshot(
         .into_iter()
         .flatten()
     {
-        if let Some(split) = delivered_message_history(snapshot, turn, excluded_turn_ids) {
+        if let Some(split) = delivered_message_history(&turn_segments, turn, excluded_turn_ids) {
             history.extend(split);
             continue;
         }
@@ -6518,7 +6533,7 @@ fn agent_history_from_snapshot(
 /// history sees them too. A message the turn never used is left out. None
 /// when the turn took no message.
 fn delivered_message_history(
-    snapshot: &Value,
+    turn_segments: &HashMap<&str, Vec<&Value>>,
     turn: &Value,
     excluded_turn_ids: &[&str],
 ) -> Option<Vec<HistoryTurn>> {
@@ -6526,18 +6541,7 @@ fn delivered_message_history(
     if turn["role"] != "assistant" || excluded_turn_ids.contains(&turn_id) {
         return None;
     }
-    let mut segments = snapshot["segments"]
-        .as_array()?
-        .iter()
-        .filter(|segment| {
-            segment["turn_id"] == turn_id
-                && segment["status"] == "complete"
-                && matches!(
-                    segment["kind"].as_str(),
-                    Some("assistant_message" | "plan" | "user_message")
-                )
-        })
-        .collect::<Vec<_>>();
+    let mut segments = turn_segments.get(turn_id)?.clone();
     if !segments
         .iter()
         .any(|segment| segment["kind"] == "user_message")
