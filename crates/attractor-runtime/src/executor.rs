@@ -659,6 +659,7 @@ where
                     completed_nodes.len() as u64,
                     0,
                     &Outcome::new(OutcomeStatus::Success),
+                    false,
                     &mut status_transitions,
                     &mut artifact_node_ids,
                 )?;
@@ -773,15 +774,15 @@ where
             // A response is written before the checkpoint advances. On
             // recovery, consume that durable accepted response instead of
             // invoking the node a second time in this crash window.
-            let mut unmatched_branch = false;
-            // ponytail: a crash between this node's status write and the
-            // run's failure resumes from the durable plain failure.
-            let raw_outcome = if resumed {
-                durable_outcome(&store, &paths, &current_node, node, stage_index, attempt)
+            // The durable status keeps whether a branch selected no route, so
+            // recovery fails the run exactly as the original execution did.
+            let durable = if resumed {
+                durable_status(&store, &paths, &current_node, node, stage_index, attempt)
             } else {
                 None
-            }
-            .unwrap_or_else(|| {
+            };
+            let mut unmatched_branch = durable.as_ref().is_some_and(|(_, unmatched)| *unmatched);
+            let raw_outcome = durable.map(|(outcome, _)| outcome).unwrap_or_else(|| {
                 match catch_unwind(AssertUnwindSafe(|| {
                     self.node_executor.execute(execution_request)
                 })) {
@@ -836,6 +837,7 @@ where
                 stage_index,
                 attempt,
                 &outcome,
+                unmatched_branch,
                 &mut status_transitions,
                 &mut artifact_node_ids,
             )?;
@@ -843,7 +845,7 @@ where
             let policy = retry_policy_for_outcome(&flow, &current_node, &outcome);
             let max_retries = policy.max_attempts.saturating_sub(1);
             let retries_so_far = retry_counts.get(&current_node).copied().unwrap_or(0);
-            if should_retry_attempt(&outcome, retries_so_far, &policy) {
+            if !unmatched_branch && should_retry_attempt(&outcome, retries_so_far, &policy) {
                 let next_attempt = retries_so_far.saturating_add(1);
                 retry_counts.insert(current_node.clone(), next_attempt);
                 set_runtime_retry_context(
@@ -948,6 +950,7 @@ where
                     stage_index,
                     attempt,
                     &outcome,
+                    false,
                     &mut status_transitions,
                     &mut artifact_node_ids,
                 )?;
@@ -1416,6 +1419,7 @@ fn write_stage_artifacts(
     stage_index: u64,
     attempt: u64,
     outcome: &Outcome,
+    unmatched_route: bool,
     status_transitions: &mut BTreeMap<String, Vec<String>>,
     artifact_node_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
@@ -1436,6 +1440,9 @@ fn write_stage_artifacts(
     }
     if let Some(retryable) = outcome.retryable {
         status["retryable"] = json!(retryable);
+    }
+    if unmatched_route {
+        status["unmatched_route"] = json!(true);
     }
     store.write_node_artifacts(
         paths,
@@ -1470,6 +1477,18 @@ pub fn durable_outcome(
     stage_index: u64,
     attempt: u64,
 ) -> Option<Outcome> {
+    durable_status(store, paths, node_id, node, stage_index, attempt).map(|(outcome, _)| outcome)
+}
+
+/// The durable outcome and whether it records a branch without a route.
+fn durable_status(
+    store: &RunStore,
+    paths: &crate::paths::RunRootPaths,
+    node_id: &str,
+    node: &attractor_core::FlowNode,
+    stage_index: u64,
+    attempt: u64,
+) -> Option<(Outcome, bool)> {
     let root = store
         .node_execution_root(paths, node_id, stage_index, attempt)
         .ok()?;
@@ -1486,6 +1505,8 @@ pub fn durable_outcome(
         retryable: Option<bool>,
         #[serde(default)]
         failure_kind: Option<attractor_core::FailureKind>,
+        #[serde(default)]
+        unmatched_route: bool,
     }
     let status: DurableStatus =
         serde_json::from_str(&std::fs::read_to_string(root.join("status.json")).ok()?).ok()?;
@@ -1501,7 +1522,7 @@ pub fn durable_outcome(
         raw_response_text: std::fs::read_to_string(root.join("response.md")).ok()?,
     };
     crate::context::outcome_satisfies_context_contract_for_node(node_id, node, &outcome)
-        .then_some(outcome)
+        .then_some((outcome, status.unmatched_route))
 }
 
 fn select_route_after_outcome(

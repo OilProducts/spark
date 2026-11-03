@@ -3367,3 +3367,111 @@ fn failed_parallel_branch_with_a_matching_route_keeps_legacy_routing() {
     assert_eq!(result.status, "completed", "{}", result.failure_reason);
     assert!(calls.contains(&"after".to_string()), "{calls:?}");
 }
+
+/// Recovery that finds the parallel node's durable status written but the
+/// run not yet failed fails the run from that status: no branch runs again,
+/// no retry, and the parent's matching outcome=fail route is not taken.
+#[test]
+fn resume_after_an_unmatched_branch_status_write_fails_without_continuing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = || {
+        let mut flow = branch_policy_flow("wait_all", "continue", "outcome=success");
+        flow.nodes.insert(
+            "rescue".to_string(),
+            FlowNode {
+                kind: NodeKind::AgentTask,
+                ..FlowNode::default()
+            },
+        );
+        flow.edges.extend([
+            FlowEdge {
+                from: "fan".to_string(),
+                to: "rescue".to_string(),
+                condition: "outcome=fail".to_string(),
+                ..FlowEdge::default()
+            },
+            FlowEdge {
+                from: "rescue".to_string(),
+                to: "done".to_string(),
+                ..FlowEdge::default()
+            },
+        ]);
+        flow.nodes.get_mut("fan").unwrap().retry = Some(attractor_core::RetryConfig {
+            max_retries: Some(2),
+            ..Default::default()
+        });
+        flow
+    };
+    let (failed, _) =
+        run_branch_policy_flow(&store, temp.path(), flow(), OutcomeStatus::PartialSuccess);
+    let reason = "no_matching_route: node \"stray\" result status \"partial_success\" label \"\"; \
+                  routes [-> \"after\" condition \"outcome=success\" label \"\" weight 0]";
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.failure_reason, reason);
+
+    // Rewind to the crash window: fan's status is durable, the run is not
+    // failed, and the checkpoint still names fan's pending visit.
+    let meta = store
+        .read_run_meta("run-unmatched-branch")
+        .unwrap()
+        .unwrap();
+    let checkpoint = meta.checkpoint.unwrap();
+    assert_eq!(checkpoint.current_node, "fan");
+    store
+        .update_run_record("run-unmatched-branch", |record| {
+            record.status = "running".to_string();
+            record.last_error.clear();
+            record.ended_at = None;
+        })
+        .unwrap();
+    let failures_before = store
+        .read_raw_events(&meta.paths)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "PipelineFailed")
+        .count();
+
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = calls.clone();
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
+        seen.lock().unwrap().push(runtime.node_id.clone());
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
+    let resumed = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-unmatched-branch", temp.path().to_string_lossy()),
+            flow: flow(),
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: attractor_runtime::ExecutionStart::Resume {
+                paths: meta.paths.clone(),
+                checkpoint,
+            },
+        })
+        .expect("resume");
+    assert_eq!(resumed.status, "failed");
+    assert_eq!(resumed.failure_reason, reason);
+    assert_eq!(resumed.current_node, "fan");
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "{:?}",
+        calls.lock().unwrap()
+    );
+    assert_durably_failed(&store, "run-unmatched-branch", reason);
+    let failures_after = store
+        .read_raw_events(&meta.paths)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "PipelineFailed")
+        .count();
+    assert_eq!(
+        failures_after,
+        failures_before + 1,
+        "recovery records its own failure"
+    );
+}
