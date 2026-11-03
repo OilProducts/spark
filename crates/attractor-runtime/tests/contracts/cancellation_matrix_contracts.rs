@@ -15,7 +15,7 @@
 //! Separately, one small table has the affected branch fail on its own while
 //! the stop lands, which no row of the main table can do.
 //!
-//! Dropped combinations: none. Each of the 96 rows can occur:
+//! Dropped combinations: none. Each of the 144 rows can occur:
 //! - external x already finished needs work still in flight to cancel, which
 //!   `sib` provides as a bystander;
 //! - tolerant x tolerable error never stops the fork, so its "mid-execution"
@@ -23,7 +23,9 @@
 //!   runs once, rather than asserting a cancellation.
 //!
 //! Beyond the requested matrix, "subflow child" is split by what the child
-//! runs, an agent or a tool, because the two stop through different paths.
+//! runs, an agent or a tool, because the two stop through different paths, and
+//! each tool also runs detached: its shell exits while a descendant holds its
+//! output, so only the process group is left to stop.
 //!
 //! Deliberately not asserted, because the design does not decide them: a
 //! child whose own routing failure lands after its cancellation was requested
@@ -61,18 +63,31 @@ enum Fork {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Running {
     Tool,
+    /// A tool whose shell exits while a descendant runs on, holding its output.
+    DetachedTool,
     Agent,
     ChildAgent,
     ChildTool,
+    ChildDetachedTool,
 }
 
 impl Running {
     fn is_child(self) -> bool {
-        matches!(self, Self::ChildAgent | Self::ChildTool)
+        matches!(
+            self,
+            Self::ChildAgent | Self::ChildTool | Self::ChildDetachedTool
+        )
     }
 
     fn is_tool(self) -> bool {
-        matches!(self, Self::Tool | Self::ChildTool)
+        matches!(
+            self,
+            Self::Tool | Self::DetachedTool | Self::ChildTool | Self::ChildDetachedTool
+        )
+    }
+
+    fn is_detached(self) -> bool {
+        matches!(self, Self::DetachedTool | Self::ChildDetachedTool)
     }
 
     /// The branch node the affected branch stops at.
@@ -127,9 +142,11 @@ fn cases(timing: Timing) -> Vec<Case> {
     for fork in [Fork::Strict, Fork::Tolerant] {
         for running in [
             Running::Tool,
+            Running::DetachedTool,
             Running::Agent,
             Running::ChildAgent,
             Running::ChildTool,
+            Running::ChildDetachedTool,
         ] {
             for stop in [Stop::External, Stop::Blocked, Stop::Fatal, Stop::Tolerable] {
                 cases.push(Case {
@@ -245,16 +262,24 @@ impl Signals {
         RunStore::for_runs_dir(self.path("runs"))
     }
 
-    /// Whether a run of this case has a running tool on record.
-    fn tool_recorded(&self) -> bool {
-        self.store()
+    /// Whether a run of this case has a tool on record with `members` processes
+    /// in its group.
+    fn tool_recorded(&self, members: usize) -> bool {
+        let store = self.store();
+        store
             .list_run_records()
             .unwrap_or_default()
             .iter()
             .any(|record| {
-                let root = self.store().find_run_root(&record.run_id).ok().flatten();
+                let root = store.find_run_root(&record.run_id).ok().flatten();
                 root.and_then(|paths| std::fs::read_dir(paths.root.join("tool-processes")).ok())
-                    .is_some_and(|mut entries| entries.next().is_some())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|entry| {
+                        std::fs::read_to_string(entry.path())
+                            .is_ok_and(|text| text.lines().count() >= members)
+                    })
             })
     }
 
@@ -427,6 +452,26 @@ fn work_tool(signals: &Signals, next: &str) -> Value {
     )
 }
 
+/// `work_tool` with the shell gone: the shell exits at once, and a descendant
+/// holding its output announces the shell's exit and then does the holding.
+fn detached_work_tool(signals: &Signals, next: &str) -> Value {
+    let p = |name: &str| signals.path(name).display().to_string();
+    tool(
+        format!(
+            "if [ -f '{hold}' ]; then trap '' TERM; fi; echo work >> '{calls}'; echo $$ >> '{pids}'; \
+             ( while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
+             i=0; while [ ! -f '{release}' ] && [ $i -lt 1800 ]; do sleep 0.05; i=$((i+1)); done; \
+             echo work-finished >> '{calls}' ) & exit 0",
+            hold = p("hold"),
+            calls = p("calls.log"),
+            pids = p("pids"),
+            started = p("started"),
+            release = p("release"),
+        ),
+        next,
+    )
+}
+
 fn flow(case: Case, signals: &Signals) -> FlowDefinition {
     let tolerate = case.fork == Fork::Tolerant;
     let mut nodes = json!({
@@ -444,8 +489,9 @@ fn flow(case: Case, signals: &Signals) -> FlowDefinition {
     });
     nodes[case.running.node()] = match case.running {
         Running::Tool => work_tool(signals, "join"),
+        Running::DetachedTool => detached_work_tool(signals, "join"),
         Running::Agent => agent(json!({"done": route("join")})),
-        Running::ChildAgent | Running::ChildTool => json!({
+        Running::ChildAgent | Running::ChildTool | Running::ChildDetachedTool => json!({
             "kind": "subflow", "manager": {"poll_interval": "0s"},
             "config": {"kind": "subflow", "flow_ref": "child", "results": {"completed": "child_completed"}},
             "routes": {"child_completed": route("join")}}),
@@ -454,10 +500,10 @@ fn flow(case: Case, signals: &Signals) -> FlowDefinition {
 }
 
 fn write_child_flow(case: Case, signals: &Signals) {
-    let work = if case.running == Running::ChildTool {
-        work_tool(signals, "cdone")
-    } else {
-        agent(json!({"done": route("cdone")}))
+    let work = match case.running {
+        Running::ChildTool => work_tool(signals, "cdone"),
+        Running::ChildDetachedTool => detached_work_tool(signals, "cdone"),
+        _ => agent(json!({"done": route("cdone")})),
     };
     let flow = parse_flow(json!({
         "start": {"kind": "start", "routes": {"next": route("cpre")}},
@@ -512,7 +558,8 @@ fn conduct(case: Case, signals: Signals) {
         // A crash needs the tool on record: only a spawned tool is an orphan
         // a later executor can find.
         Timing::CrashThenResume if case.running.is_tool() => {
-            signals.raised("started") && signals.tool_recorded()
+            signals.raised("started")
+                && signals.tool_recorded(if case.running.is_detached() { 2 } else { 1 })
         }
         Timing::MidExecution | Timing::CrashThenResume => signals.raised("started"),
     });
@@ -1027,5 +1074,90 @@ fn an_independent_error_during_a_stop_stays_an_error() {
         assert!(affected.get("canceled_at").is_none(), "{name}: {affected}");
         assert_eq!(signals.calls("work"), 1, "{name}: retried after the stop");
         assert_eq!(signals.calls("synth"), 0, "{name}: joined after the stop");
+    }
+}
+
+/// A tool's deadline and cancellation still work once its shell has exited,
+/// and it settles even if the descendant holding its output left the group,
+/// where nothing can stop it. `set -m` gives a background job its own group
+/// where the shell supports it; elsewhere that row runs as the in-group one.
+#[test]
+fn a_tool_settles_when_a_descendant_outlives_its_shell() {
+    for (deadline, left_group) in [(true, false), (true, true), (false, true)] {
+        let case = Case {
+            fork: Fork::Strict,
+            running: Running::Tool,
+            stop: Stop::External,
+            timing: Timing::MidExecution,
+        };
+        let name = format!("deadline={deadline} left_group={left_group}");
+        let temp = tempfile::tempdir().unwrap();
+        let signals = Signals {
+            dir: temp.path().to_path_buf(),
+        };
+        let p = |name: &str| signals.path(name).display().to_string();
+        // Longer than every wait here, so a settlement that needs it to end
+        // fails the case. The test ends it by its pid.
+        let command = format!(
+            "{job_control}echo $$ >> '{group}'; \
+             ( while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
+             exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
+            job_control = if left_group { "set -m; " } else { "" },
+            group = p("pids"),
+            started = p("started"),
+            holder = p("holder"),
+            seconds = DEADLINE.as_secs() * 2,
+        );
+        let mut flow = flow(case, &signals);
+        let work = flow.nodes.get_mut("work").unwrap();
+        *work = serde_json::from_value(tool(command, "join")).unwrap();
+        if deadline {
+            work.runtime = Some(attractor_core::NodeRuntimeConfig {
+                timeout: Some("300ms".to_string()),
+                ..Default::default()
+            });
+        }
+        let conductor = signals.clone();
+        if !deadline {
+            std::thread::spawn(move || {
+                if wait_for(|| conductor.raised("started")) {
+                    request_external_cancel(&conductor);
+                }
+            });
+        }
+        let (runner, store) = (runner(case, &signals), signals.store());
+        let request = fresh_request(flow, &signals);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = bounded(&name, move || {
+                executor(runner, &store).execute(request).expect("execute")
+            });
+            if deadline {
+                assert_eq!(result.status, "failed", "{name}");
+                assert!(
+                    result.failure_reason.contains("timed out"),
+                    "{name}: {}",
+                    result.failure_reason
+                );
+                let affected = signals.branch_record(0);
+                assert_eq!(affected["status"], json!("error"), "{name}: {affected}");
+            } else {
+                assert_eq!(result.status, "canceled", "{name}");
+                assert_eq!(result.failure_reason, "aborted_by_user", "{name}");
+                let affected = signals.branch_record(0);
+                assert_eq!(affected["status"], json!("canceled"), "{name}: {affected}");
+            }
+            if !left_group {
+                assert_processes_stopped(&signals, &name);
+            }
+        }));
+        for pid in std::fs::read_to_string(signals.path("holder"))
+            .unwrap_or_default()
+            .lines()
+        {
+            let _ = Command::new("kill").args(["-9", pid]).status();
+        }
+        if let Err(payload) = outcome {
+            std::panic::resume_unwind(payload);
+        }
     }
 }
