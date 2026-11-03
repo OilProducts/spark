@@ -21,6 +21,7 @@ const DEFAULT_HOME_CONVERSATION_SESSION_STATE: HomeConversationSessionState = {
     isPinnedToBottom: true,
     scrollTop: null,
     attachments: [],
+    pendingMessages: [],
 }
 
 const EMPTY_GIT_METADATA: ProjectGitMetadata = {

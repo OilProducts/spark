@@ -1287,7 +1287,17 @@ impl WorkspaceConversationService {
                 )
             })?;
             // A resend of an accepted request answers with the current state.
-            if find_turn(&snapshot, client_turn_id).is_some() {
+            // A message delivered into a running turn has no turn of its own:
+            // the turn reports it as a segment, and until then only this
+            // process knows it was accepted.
+            if find_turn(&snapshot, client_turn_id).is_some()
+                || find_segment(&snapshot, &format!("segment-user-message-{client_turn_id}"))
+                    .is_some()
+                || delivered_client_turn_ids()
+                    .lock()
+                    .unwrap()
+                    .contains(&(conversation_id.to_string(), client_turn_id.to_string()))
+            {
                 prepare_snapshot_for_ui(&mut snapshot, conversation_id);
                 self.attach_model_settings(&mut snapshot)?;
                 return Ok((None, snapshot));
@@ -1427,6 +1437,11 @@ impl WorkspaceConversationService {
             if !delivered {
                 user_turn["status"] = json!("queued");
                 mutations.push(turn_mutation_from_value(&user_turn)?);
+            } else if let Some(client_turn_id) = request.client_turn_id.clone() {
+                delivered_client_turn_ids()
+                    .lock()
+                    .unwrap()
+                    .insert((conversation_id.to_string(), client_turn_id));
             }
             if !mutations.is_empty() {
                 commit_conversation_mutations(
@@ -4385,6 +4400,17 @@ enum TurnStart<'a> {
     Send,
     /// This queued message, as the next turn.
     Queued(&'a Value),
+}
+
+/// Client turn ids of messages delivered into a running turn, by conversation.
+/// Callers hold the conversation's turn lock.
+fn delivered_client_turn_ids() -> &'static Mutex<std::collections::BTreeSet<(String, String)>> {
+    static IDS: std::sync::OnceLock<Mutex<std::collections::BTreeSet<(String, String)>>> =
+        std::sync::OnceLock::new();
+    // ponytail: one small entry per mid-turn message for the process's
+    // lifetime. After a restart the reported segment answers; a message its
+    // turn never reported died with that turn, so a resend may start it again.
+    IDS.get_or_init(Default::default)
 }
 
 /// Held from deciding whether a message starts, joins or queues behind a

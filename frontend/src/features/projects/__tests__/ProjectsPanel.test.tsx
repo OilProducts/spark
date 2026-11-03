@@ -544,6 +544,124 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn')
   })
 
+  it('keeps a sent message on one row through unrelated updates and a delivery reported after the response', async () => {
+    const user = userEvent.setup()
+    const posts: { url: string; body: Record<string, unknown>; respond: (response: Response) => void }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/workspace/api/conversations/') && !init?.method) {
+          return new Response(JSON.stringify({ detail: 'Unknown conversation' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
+          return await new Promise<Response>((respond) => {
+            posts.push({ url, body: JSON.parse(String(init.body)), respond })
+          })
+        }
+        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }),
+    )
+    useStore.getState().registerProject('/tmp/chat-project')
+    useStore.getState().setActiveProjectPath('/tmp/chat-project')
+    renderProjectsPanel()
+
+    const conversationIdOf = (url: string) => decodeURIComponent(url.split('/workspace/api/conversations/')[1]!.split('/')[0]!)
+    const userTurn = (id: string, content: string) => ({
+      id, role: 'user', content, timestamp: '2026-03-06T21:45:00Z', status: 'complete', kind: 'message', artifact_id: null,
+    })
+    const runningTurn = {
+      id: 'turn-assistant-1', role: 'assistant', content: '', timestamp: '2026-03-06T21:45:02Z',
+      status: 'streaming', kind: 'message', artifact_id: null,
+    }
+    const state = (conversationId: string, revision: number, turns: unknown[], segments: unknown[] = []) => withSnapshotSchema({
+      conversation_id: conversationId,
+      project_path: '/tmp/chat-project',
+      title: 'Thread',
+      created_at: '2026-03-06T21:45:00Z',
+      updated_at: '2026-03-06T21:45:00Z',
+      revision_override: revision,
+      turns,
+      segments,
+      event_log: [],
+    })
+    const rowOf = (text: string) => {
+      const history = screen.getByTestId('project-ai-conversation-history-list')
+      const matches = within(history).getAllByText(text)
+      expect(matches).toHaveLength(1)
+      return matches[0]!.closest('li')
+    }
+
+    // First message: an unrelated commit arrives while its POST is outstanding.
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'First message.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    const conversationId = conversationIdOf(posts[0]!.url)
+    const firstId = String(posts[0]!.body.client_turn_id)
+    const firstRow = await waitFor(() => rowOf('First message.'))
+    act(() => dispatchConversationLivePayload({
+      type: 'conversation_snapshot',
+      conversation_id: conversationId,
+      project_path: '/tmp/chat-project',
+      state: state(conversationId, 1, []),
+    }))
+    expect(rowOf('First message.')).toBe(firstRow)
+    await act(async () => posts[0]!.respond(new Response(
+      JSON.stringify(state(conversationId, 3, [userTurn(firstId, 'First message.'), runningTurn])),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )))
+    await waitFor(() => expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn'))
+    expect(rowOf('First message.')).toBe(firstRow)
+
+    // Second message: delivered into the running turn, reported only after the POST returns.
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Second message.')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+    await waitFor(() => expect(posts).toHaveLength(2))
+    const secondId = String(posts[1]!.body.client_turn_id)
+    const secondRow = await waitFor(() => rowOf('Second message.'))
+    act(() => dispatchConversationLivePayload(asSegmentUpsertEvent({
+      conversation_id: conversationId,
+      project_path: '/tmp/chat-project',
+      title: 'Thread',
+      updated_at: '2026-03-06T21:45:03Z',
+      revision: 4,
+      event: { turn_id: 'turn-assistant-1', sequence: 1, timestamp: '2026-03-06T21:45:03Z', kind: 'content_delta', content_delta: 'Working' },
+    })))
+    expect(rowOf('Second message.')).toBe(secondRow)
+    await act(async () => posts[1]!.respond(new Response(
+      JSON.stringify(state(conversationId, 4, [userTurn(firstId, 'First message.'), runningTurn])),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )))
+    expect(rowOf('Second message.')).toBe(secondRow)
+    act(() => dispatchConversationLivePayload(asSegmentUpsertEvent({
+      conversation_id: conversationId,
+      project_path: '/tmp/chat-project',
+      title: 'Thread',
+      updated_at: '2026-03-06T21:45:04Z',
+      revision: 5,
+      event: {
+        turn_id: 'turn-assistant-1',
+        timestamp: '2026-03-06T21:45:04Z',
+        kind: 'user_message_delivered',
+        segment: {
+          id: `segment-user-message-${secondId}`, turn_id: 'turn-assistant-1', order: 2, kind: 'user_message', role: 'user',
+          status: 'complete', content: 'Second message.', timestamp: '2026-03-06T21:45:04Z', updated_at: '2026-03-06T21:45:04Z',
+          completed_at: null, artifact_id: null, error: null, tool_call: null, source: null,
+        },
+      },
+    })))
+    await waitFor(() => expect(useStore.getState().homeConversationSessionsById[conversationId]?.pendingMessages).toEqual([]))
+    expect(rowOf('Second message.')).toBe(secondRow)
+    expect(rowOf('First message.')).toBe(firstRow)
+  })
+
   it('renders the assistant reply even when the backend canonicalizes project_path', async () => {
     const user = userEvent.setup()
     const requestedProjectPath = '/tmp/project-canonicalization'

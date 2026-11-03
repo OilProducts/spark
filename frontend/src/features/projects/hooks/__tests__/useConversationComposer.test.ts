@@ -62,6 +62,7 @@ describe('onChatComposerSubmit', () => {
         ...overrides,
     })
     const draft = () => useStore.getState().homeProjectSessionsByPath[projectPath]?.chatDraft
+    const pendingMessages = () => useStore.getState().homeConversationSessionsById['conversation-1']?.pendingMessages ?? []
 
     beforeEach(() => {
         useStore.setState(useStore.getInitialState(), true)
@@ -80,7 +81,8 @@ describe('onChatComposerSubmit', () => {
 
         const request = vi.mocked(sendConversationTurnValidated).mock.calls[0][1]
         expect(request.client_turn_id).toMatch(/^turn-[0-9a-f]{32}$/)
-        expect(pending?.userEntry).toMatchObject({
+        expect(pendingMessages()).toHaveLength(1)
+        expect(pendingMessages()[0]).toMatchObject({
             id: request.client_turn_id,
             role: 'user',
             content: 'Hello there',
@@ -92,6 +94,8 @@ describe('onChatComposerSubmit', () => {
         await vi.waitFor(() => expect(applyConversationSnapshot).toHaveBeenCalled())
         expect(pending).toBeNull()
         expect(draft()).toBe('')
+        // It stays until the server's record of it arrives, which may follow the response.
+        expect(pendingMessages().map((message) => message.id)).toEqual([request.client_turn_id])
     })
 
     it('reports a failed send and puts the message text back', async () => {
@@ -101,6 +105,7 @@ describe('onChatComposerSubmit', () => {
 
         await vi.waitFor(() => expect(setPanelError).toHaveBeenCalledWith('Unable to send the project chat turn.'))
         expect(pending).toBeNull()
+        expect(pendingMessages()).toEqual([])
         expect(draft()).toBe('Hello there')
     })
 })

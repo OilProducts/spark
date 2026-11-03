@@ -70,7 +70,8 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
     }
     if (segment.kind === 'user_message') {
         return {
-            id: segment.id,
+            // The message's own id, which its pending entry used before delivery.
+            id: segment.id.replace(/^segment-user-message-/, ''),
             kind: 'message',
             role: 'user',
             content: segment.content,

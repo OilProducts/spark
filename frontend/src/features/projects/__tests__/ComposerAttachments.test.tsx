@@ -79,8 +79,10 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
         return json({ detail: 'backend unavailable' }, 503)
       }
       const ids = (body.attachment_ids as string[] | undefined) ?? []
+      // Like the server, the user turn keeps the browser's id.
+      const userTurnId = String(body.client_turn_id)
       return json(snapshot(conversationId, [{
-        id: 'turn-user-1',
+        id: userTurnId,
         role: 'user',
         content: body.message,
         timestamp: '2026-10-01T10:01:00Z',
@@ -102,7 +104,7 @@ function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve
         timestamp: '2026-10-01T10:01:01Z',
         status: 'complete',
         kind: 'message',
-        parent_turn_id: 'turn-user-1',
+        parent_turn_id: userTurnId,
       }]))
     }
     if (conversationId && !init?.method) {

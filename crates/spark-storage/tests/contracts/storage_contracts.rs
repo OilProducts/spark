@@ -318,3 +318,27 @@ fn repo_root() -> PathBuf {
         .expect("crate under workspace root")
         .to_path_buf()
 }
+
+/// The rename is synced through the parent directory: a directory that allows
+/// the rename but cannot be opened fails the write after the file is in place.
+#[cfg(unix)]
+#[test]
+fn write_atomic_syncs_the_parent_directory_after_the_rename() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path().join("locked");
+    std::fs::create_dir(&dir).expect("dir");
+    let path = dir.join("record.json");
+    spark_storage::write_atomic(&path, b"{}").expect("readable directory");
+    // Write and search permission only: create and rename work, opening does not.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).expect("chmod");
+
+    let error = spark_storage::write_atomic(&path, b"{\"v\":2}").expect_err("unsyncable directory");
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    assert!(
+        error.to_string().contains("sync parent directory"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&path).expect("renamed"), b"{\"v\":2}");
+}

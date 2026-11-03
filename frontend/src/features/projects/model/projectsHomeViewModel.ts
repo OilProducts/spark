@@ -3,7 +3,7 @@ import type {
     ConversationChatMode,
 } from '@/lib/workspaceClient'
 
-import type { PendingConversationTurnState } from './conversationState'
+import type { PendingConversationTurnState, PendingUserMessage } from './conversationState'
 import type { ProjectGitMetadata } from './presentation'
 import {
     EMPTY_PROJECT_GIT_METADATA,
@@ -25,6 +25,7 @@ type BuildProjectsHomeViewModelArgs = {
     activeConversationRecord: NormalizedConversationRecord | null
     activeProjectPath: string | null
     pendingConversationTurn: PendingConversationTurnState | null
+    pendingMessages: PendingUserMessage[]
     projectGitMetadata: Record<string, ProjectGitMetadata>
     uiDefaults: UiDefaults
 }
@@ -50,6 +51,14 @@ export type ProjectsHomeViewModel = {
     latestFlowRunRequestId: string | null
 }
 
+/**
+ * A sent message is recorded as a user turn under its id or, delivered into a
+ * running turn, as that turn's `segment-user-message-<id>` segment.
+ */
+export function isPendingMessageRecorded(record: NormalizedConversationRecord | null, messageId: string) {
+    return Boolean(record?.turnsById[messageId] || record?.segmentsById[`segment-user-message-${messageId}`])
+}
+
 function buildIdMap<T extends { id: string }>(items: T[]) {
     return new Map(items.map((item) => [item.id, item]))
 }
@@ -63,15 +72,14 @@ export function buildProjectsHomeViewModel({
     activeConversationRecord,
     activeProjectPath,
     pendingConversationTurn,
+    pendingMessages,
     projectGitMetadata,
     uiDefaults,
 }: BuildProjectsHomeViewModelArgs): ProjectsHomeViewModel {
-    const pendingUserEntry = pendingConversationTurn?.conversationId === activeConversationId
-        ? pendingConversationTurn?.userEntry
-        : undefined
+    const unrecordedMessages = pendingMessages.filter((message) => !isPendingMessageRecorded(activeConversationRecord, message.id))
     const committedHistory = getConversationTimelineEntries(activeConversationRecord)
-    const activeConversationHistory = pendingUserEntry && !activeConversationRecord?.turnsById[pendingUserEntry.id]
-        ? [...committedHistory, pendingUserEntry]
+    const activeConversationHistory = unrecordedMessages.length > 0
+        ? [...committedHistory, ...unrecordedMessages]
         : committedHistory
     const activeFlowRunRequests = getConversationFlowRunRequests(activeConversationRecord)
     const activeFlowLaunches = getConversationFlowLaunches(activeConversationRecord)

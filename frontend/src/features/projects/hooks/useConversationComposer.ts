@@ -7,7 +7,7 @@ import {
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import type { PendingConversationTurnState } from '../model/conversationState'
+import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments } from './useComposerAttachments'
 
@@ -137,18 +137,24 @@ export function useConversationComposer({
         const chatMode = parsedCommand?.chatMode ?? null
         const sentAttachments = sending.map((entry) => entry.attachment!)
         const attachmentIds = sentAttachments.map((attachment) => attachment.id)
-        // The server keeps this id for the user turn, so the pending entry is
+        // The server records the message under this id, so the pending entry is
         // replaced in place and a resent request cannot add a second turn.
         const clientTurnId = `turn-${crypto.randomUUID().replace(/-/g, '')}`
-        const userEntry = {
+        const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
+            const store = useStore.getState()
+            store.updateHomeConversationSession(conversationId, {
+                pendingMessages: update(store.homeConversationSessionsById[conversationId]?.pendingMessages ?? []),
+            })
+        }
+        updatePendingMessages((messages) => [...messages, {
             id: clientTurnId,
-            kind: 'message' as const,
-            role: 'user' as const,
+            kind: 'message',
+            role: 'user',
             content: messageToSend,
             timestamp: new Date().toISOString(),
-            status: 'pending' as const,
+            status: 'pending',
             ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
-        }
+        }])
         // The message shows in the transcript now, so the composer clears now;
         // a failed send puts the text back unless something new was typed.
         const replaceDraft = (from: string, to: string) => {
@@ -167,8 +173,9 @@ export function useConversationComposer({
         }), () => {
             // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
-        }, userEntry)
+        })
         if (!accepted) {
+            updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
             replaceDraft('', chatDraft)
         }
     }
@@ -189,13 +196,12 @@ export function useConversationComposer({
         failure: string,
         start: () => Promise<ConversationSnapshotResponse>,
         onAccepted?: () => void,
-        userEntry?: PendingConversationTurnState['userEntry'],
     ): Promise<boolean> => {
         if (!activeProjectPath) {
             return false
         }
         const afterRevision = getCurrentConversationRevision(conversationId)
-        setPendingConversationTurn({ conversationId, afterRevision, userEntry })
+        setPendingConversationTurn({ conversationId, afterRevision })
         // The activity bar follows the turn even after the chat is left.
         const { setSendingChat } = useStore.getState()
         setSendingChat(conversationId, true)

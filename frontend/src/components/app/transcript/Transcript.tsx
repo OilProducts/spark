@@ -46,7 +46,10 @@ export function useTranscriptExpansion(): TranscriptExpansionState {
     return { expandedToolCalls, expandedThinking, onToggleToolCall, onToggleThinking }
 }
 
-const entryKey = (entry: Entry) => `${entry.kind}:${entry.id}:${entry.timestamp}`
+// A user message keeps its row from pending to recorded, when its timestamp changes.
+const entryKey = (entry: Entry) => entry.kind === 'message' && entry.role === 'user'
+    ? `user:${entry.id}`
+    : `${entry.kind}:${entry.id}:${entry.timestamp}`
 
 type TranscriptTurn =
     | { kind: 'entry'; entry: Entry }
