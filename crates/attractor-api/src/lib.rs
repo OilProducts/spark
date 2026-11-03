@@ -2791,15 +2791,10 @@ impl AttractorApiService {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let declared = options.iter().any(|option| {
-                ["value", "label"]
-                    .iter()
-                    .any(|key| option.get(*key).and_then(Value::as_str) == Some(answer))
-                    || option
-                        .get("key")
-                        .and_then(Value::as_str)
-                        .is_some_and(|key| !key.is_empty() && key.eq_ignore_ascii_case(answer))
-            });
+            // Only a declared decision ID is an answer; labels and keys are display.
+            let declared = options
+                .iter()
+                .any(|option| option.get("value").and_then(Value::as_str) == Some(answer));
             if !options.is_empty() && !declared {
                 return validation_error_response(format!(
                     "{answer:?} is not one of this gate's choices."

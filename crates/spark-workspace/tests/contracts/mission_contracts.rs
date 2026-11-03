@@ -1465,7 +1465,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     let response = api.answer_pipeline_question(
         child,
         question["question_id"].as_str().unwrap(),
-        serde_json::from_value(json!({"selected_value":"Proceed"})).unwrap(),
+        serde_json::from_value(json!({"selected_value":"proceed"})).unwrap(),
     );
     assert_eq!(response.status_code, 200);
     harness.missions.deliver_run_events(child).unwrap();

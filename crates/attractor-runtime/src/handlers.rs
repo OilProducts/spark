@@ -3041,6 +3041,9 @@ fn gate_answer_in<'a>(
     })
 }
 
+/// The declared decision an answer names. Only exact decision IDs count:
+/// labels and accelerator keys are display, translated to the decision by
+/// the UI before submission, so a label can never capture another decision.
 fn select_choice(answer: &HumanAnswer, choices: &[Choice]) -> Option<Choice> {
     let mut tokens = answer
         .selected_values
@@ -3048,63 +3051,19 @@ fn select_choice(answer: &HumanAnswer, choices: &[Choice]) -> Option<Choice> {
         .filter_map(|value| trimmed_nonempty(value))
         .collect::<Vec<_>>();
     if let Some(option) = &answer.selected_option {
-        tokens.extend([
-            option.value.trim().to_string(),
-            option.label.trim().to_string(),
-            option.key.trim().to_string(),
-        ]);
+        tokens.extend(trimmed_nonempty(&option.value));
     }
-    if let Some(text) = trimmed_nonempty(&answer.text) {
-        tokens.push(text);
-    }
-    if let Some(value) = trimmed_nonempty(&answer.value) {
-        tokens.push(value);
-    }
-    tokens.retain(|value| !value.is_empty() && value != "skipped");
-
-    for token in tokens {
-        for choice in choices {
-            if choice.decision == token
-                || choice.label == token
-                || normalize_label(&choice.label) == normalize_label(&token)
-                || (!choice.key.is_empty() && choice.key.eq_ignore_ascii_case(&token))
-            {
-                return Some(choice.clone());
-            }
-        }
-    }
-    None
+    tokens.extend(trimmed_nonempty(&answer.text));
+    tokens.extend(trimmed_nonempty(&answer.value));
+    tokens
+        .iter()
+        .find_map(|token| choices.iter().find(|choice| choice.decision == *token))
+        .cloned()
 }
 
 fn trimmed_nonempty(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
-}
-
-fn normalize_label(label: &str) -> String {
-    let mut text = label.trim().to_ascii_lowercase();
-    if text.starts_with('[') {
-        if let Some(index) = text.find(']') {
-            text = text[index + 1..].trim().to_string();
-        }
-    }
-    let mut chars = text.chars();
-    let first = chars.next();
-    let second = chars.next();
-    if matches!(second, Some(')')) && first.is_some_and(|ch| ch.is_ascii_alphanumeric()) {
-        text = chars.as_str().trim().to_string();
-    }
-    let mut chars = text.chars();
-    let first = chars.next();
-    let second = chars.next();
-    let third = chars.next();
-    if first.is_some_and(|ch| ch.is_ascii_alphanumeric())
-        && matches!(second, Some(' '))
-        && matches!(third, Some('-'))
-    {
-        text = chars.as_str().trim().to_string();
-    }
-    text
 }
 
 fn parse_accelerator_key(label: &str) -> String {

@@ -366,9 +366,9 @@ curl -X POST \
 ```
 
 Use an option's `value` (the gate's decision ID) from the question payload;
-its `label` is also accepted. `selected_value` picks the route; it is not a
-feedback channel — text that matches no option is rejected and the gate keeps
-waiting.
+labels and keys are display only and are not accepted. `selected_value` picks
+the route; it is not a feedback channel — anything other than a declared
+decision ID is rejected and the gate keeps waiting.
 
 To send feedback with the selection, add an optional `note`:
 

@@ -1012,7 +1012,7 @@ fn bundled_parallel_review_cancel_ends_with_declared_failure() {
     let (mut runner, calls) = scripted_runner(answers, false);
     let interviewer =
         attractor_runtime::QueueInterviewer::new([attractor_runtime::HumanAnswer::selected(
-            "Cancel",
+            "cancel",
         )]);
     let gate_runner = RuntimeHandlerRunner::with_interviewer(interviewer);
     // Keep the scripted agents, answer the gate from the queue.
@@ -1050,8 +1050,10 @@ fn human_gates_take_only_declared_choices() {
     }));
     for (answer, status, result) in [
         ("approve", "completed", Some("completed")),
-        ("Stop Run", "completed", Some("blocked")),
-        // An undeclared answer is never turned into a decision.
+        ("stop", "completed", Some("blocked")),
+        // Labels, accelerators and undeclared answers are never decisions.
+        ("Stop Run", "failed", None),
+        ("S", "failed", None),
         ("maybe", "failed", None),
     ] {
         let runner =

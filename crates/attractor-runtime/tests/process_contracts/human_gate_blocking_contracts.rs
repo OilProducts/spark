@@ -70,10 +70,18 @@ fn spawn_gate_run(
     run_id: &str,
     runner: RuntimeHandlerRunner,
 ) -> GateHarness {
+    spawn_flow_run(temp, run_id, runner, gate_flow())
+}
+
+fn spawn_flow_run(
+    temp: &tempfile::TempDir,
+    run_id: &str,
+    runner: RuntimeHandlerRunner,
+    flow: FlowDefinition,
+) -> GateHarness {
     let store = temp_store(temp);
     let project_path = temp.path().join("project");
     std::fs::create_dir_all(&project_path).expect("project dir");
-    let flow = gate_flow();
     let run_record = record(run_id, &project_path);
     let paths = prepare_fresh_run(
         &store,
@@ -341,8 +349,11 @@ fn skipped_and_undeclared_answers_keep_the_gate_waiting() {
     );
     assert!(!stage_completed(&harness, "review"));
 
-    // A later declared decision is accepted; the label works as well as the id.
+    // Labels are display: only the decision ID is an answer.
     answer(&harness, "run-gate-invalid", &question_id, "Reject", None);
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(!harness.handle.is_finished());
+    answer(&harness, "run-gate-invalid", &question_id, "reject", None);
     let (store, paths) = (harness.store.clone(), harness.paths.clone());
     let result = join_run(harness);
     assert_eq!(result.status, "completed");
@@ -375,7 +386,7 @@ fn queued_interviewer_answers_bypass_the_wait() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runner =
         RuntimeHandlerRunner::with_interviewer(QueueInterviewer::new([HumanAnswer::selected(
-            "Reject",
+            "reject",
         )]))
         .with_blocking_human_gates();
     let harness = spawn_gate_run(&temp, "run-gate-queued", runner);
@@ -416,4 +427,41 @@ fn a_gate_that_cannot_wait_fails_the_run_instead_of_choosing() {
     assert!(!result.completed_nodes.contains(&"rejected".to_string()));
     let events = store.read_raw_events(&paths).expect("events");
     assert!(!events.iter().any(|event| event.event_type == "human_gate"));
+}
+
+/// `approve`'s label and accelerator collide with `stop`'s decision ID.
+fn colliding_gate_flow() -> FlowDefinition {
+    let mut flow = gate_flow();
+    flow.nodes.get_mut("review").unwrap().routes = serde_json::from_value(json!({
+        "approve": {"to": "approved", "description": "Ship the change.", "label": "stop"},
+        "stop": {"to": "rejected", "description": "Stop without shipping.", "label": "Stop Run"}
+    }))
+    .unwrap();
+    flow.validate().expect("valid flow");
+    flow
+}
+
+#[test]
+fn only_decision_ids_answer_a_gate_even_when_labels_collide() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let runner = RuntimeHandlerRunner::new().with_blocking_human_gates();
+    let harness = spawn_flow_run(&temp, "run-gate-collision", runner, colliding_gate_flow());
+    let (question_id, _) = wait_for_pending_gate(&harness);
+    // The other choice's label and accelerator are not answers.
+    for display in ["Stop Run", "S"] {
+        answer(&harness, "run-gate-collision", &question_id, display, None);
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(!harness.handle.is_finished(), "{display}");
+        assert!(!stage_completed(&harness, "review"), "{display}");
+    }
+    // `stop` is the stop decision, never `approve` whose label reads "stop".
+    answer(&harness, "run-gate-collision", &question_id, "stop", None);
+    let (store, paths) = (harness.store.clone(), harness.paths.clone());
+    let result = join_run(harness);
+    assert_eq!(result.status, "completed");
+    assert_eq!(node_status(&store, &paths, "review")["decision"], "stop");
+    assert!(!result.completed_nodes.contains(&"approved".to_string()));
+    let record = final_record(&store, &paths);
+    assert_eq!(record.outcome.as_deref(), Some("failure"));
+    assert_eq!(record.outcome_reason_code.as_deref(), Some("rejected"));
 }
