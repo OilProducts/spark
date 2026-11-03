@@ -121,18 +121,16 @@ export const normalizeGraphAttrs = (attrs: GraphAttrs): GraphAttrs => {
     const normalized: Record<string, unknown> = {}
     const entries = Object.entries(attrs) as [string, unknown][]
     entries.forEach(([key, rawValue]) => {
-        if (rawValue === undefined || rawValue === null) {
+        if (rawValue === undefined) {
             return
         }
-        if (isKnownGraphAttrKey(key)) {
-            normalized[key] = normalizeGraphAttrValue(key as keyof GraphAttrs, String(rawValue))
-            return
-        }
-        if (typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean') {
+        if (!isKnownGraphAttrKey(key)) {
             normalized[key] = rawValue
             return
         }
-        normalized[key] = String(rawValue)
+        if (rawValue !== null) {
+            normalized[key] = normalizeGraphAttrValue(key as keyof GraphAttrs, String(rawValue))
+        }
     })
     return normalized as GraphAttrs
 }
