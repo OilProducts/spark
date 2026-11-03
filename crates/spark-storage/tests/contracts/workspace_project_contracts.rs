@@ -944,3 +944,48 @@ fn attachment_downloads_serialize_with_cleanup() {
     assert_eq!(pruning.join().unwrap().unwrap(), vec![draft.id.clone()]);
     assert_eq!(downloading.join().unwrap().unwrap(), None);
 }
+
+/// Admission is fenced before running work is cancelled: a send or a
+/// provider callback arriving while cancellation runs is refused.
+#[test]
+fn work_arriving_during_deletion_cancellation_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let path = "/projects/cancelling";
+    let (store, deleted) = seeded_project(&home, path);
+    let repo = ConversationRepository::new(store.clone());
+    let attempts = std::sync::Mutex::new(Vec::new());
+    store
+        .delete_project(&deleted, &|conversation_id| {
+            let mut event = serde_json::from_value(
+                json!({"kind": "content_delta", "channel": "assistant", "message": "late"}),
+            )
+            .unwrap();
+            attempts.lock().unwrap().push((
+                conversation_id.to_string(),
+                repo.commit_conversation("chat-new", path, 0, vec![assistant("turn-n", "pending")])
+                    .is_err(),
+                repo.append_provider_event(conversation_id, path, "turn-a", &mut event)
+                    .is_err(),
+            ));
+        })
+        .unwrap();
+    assert_eq!(
+        *attempts.lock().unwrap(),
+        vec![
+            ("chat-a".to_string(), true, true),
+            ("chat-b".to_string(), true, true)
+        ]
+    );
+    assert_eq!(
+        store
+            .database()
+            .read(|read| read.conversation_location("chat-new"))
+            .unwrap(),
+        None
+    );
+    assert!(!home
+        .join("workspace/projects")
+        .join(&deleted.project_id)
+        .exists());
+}

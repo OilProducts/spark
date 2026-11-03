@@ -1991,10 +1991,14 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// Settles a turn whose execution failed. `projected` says whether every
+    /// traced provider event of the turn is reflected in the committed state;
+    /// when it is not, the turn's applied trace cursor stays where it was.
     fn ingest_agent_turn_backend_failure(
         &self,
         prepared: &PreparedConversationTurn,
         error: AgentError,
+        projected: bool,
     ) -> WorkspaceResult<Value> {
         let repository = self.repository();
         let mut snapshot = repository
@@ -2033,7 +2037,7 @@ impl WorkspaceConversationService {
             &prepared.project_path,
             base_revision,
             mutations,
-            Some(&prepared.assistant_turn_id),
+            projected.then_some(prepared.assistant_turn_id.as_str()),
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
@@ -2097,6 +2101,35 @@ impl WorkspaceConversationService {
         started_snapshot: Value,
         progress: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> WorkspaceResult<Value> {
+        // A conversation deleted after its turn was prepared starts no
+        // provider work.
+        if self
+            .repository()
+            .read_snapshot(&prepared.conversation_id, Some(&prepared.project_path))?
+            .is_none()
+        {
+            return Err(WorkspaceError::NotFound(format!(
+                "Conversation {} was deleted.",
+                prepared.conversation_id
+            )));
+        }
+        // When an event cannot be recorded (the trace failed, or the
+        // conversation was deleted meanwhile), the provider is stopped.
+        let stop: Arc<dyn Fn() + Send + Sync> = {
+            let backend = self.agent_turn_backend.clone();
+            let (project_path, conversation_id) = (
+                prepared.project_path.clone(),
+                prepared.conversation_id.clone(),
+            );
+            Arc::new(move || {
+                let (backend, project_path, conversation_id) = (
+                    backend.clone(),
+                    project_path.clone(),
+                    conversation_id.clone(),
+                );
+                std::thread::spawn(move || backend.interrupt_turn(&project_path, &conversation_id));
+            })
+        };
         let (event_sink, provider_event_error) = live_conversation_turn_event_sink(
             started_snapshot,
             prepared.assistant_turn_id.clone(),
@@ -2105,6 +2138,7 @@ impl WorkspaceConversationService {
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
             progress,
+            stop,
         );
         let output = self
             .agent_turn_backend
@@ -2116,6 +2150,18 @@ impl WorkspaceConversationService {
             })?
             .take()
         {
+            // The output is not backed by a durable trace: none of it is
+            // committed, and the turn is settled as failed without advancing
+            // its applied trace cursor.
+            let _ = self.ingest_agent_turn_backend_failure(
+                &prepared,
+                AgentError {
+                    message: format!("Spark could not record this turn's progress: {error}"),
+                    retryable: true,
+                    raw: None,
+                },
+                false,
+            );
             return Err(error.into());
         }
         match output {
@@ -2127,7 +2173,7 @@ impl WorkspaceConversationService {
                 output,
                 false,
             ),
-            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
+            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error, true),
         }
     }
 
@@ -2238,6 +2284,13 @@ impl WorkspaceConversationService {
         Ok(self
             .agent_turn_backend
             .interrupt_turn(&project_path, conversation_id))
+    }
+
+    /// Interrupts whatever provider work runs for the conversation, even
+    /// when the conversation itself was already deleted.
+    pub fn stop_execution(&self, conversation_id: &str, project_path: &str) -> bool {
+        self.agent_turn_backend
+            .interrupt_turn(project_path, conversation_id)
     }
 
     /// Whether the conversation has an assistant turn pending or streaming.
@@ -4865,6 +4918,7 @@ fn live_conversation_turn_event_sink(
     conversation_id: String,
     project_path: String,
     progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
+    stop: Arc<dyn Fn() + Send + Sync>,
 ) -> (
     AgentTurnEventSink,
     Arc<Mutex<Option<spark_storage::StorageError>>>,
@@ -4897,6 +4951,7 @@ fn live_conversation_turn_event_sink(
                 if let Ok(mut stored) = sink_error.lock() {
                     if stored.is_none() {
                         *stored = Some(error);
+                        stop();
                     }
                 }
             }

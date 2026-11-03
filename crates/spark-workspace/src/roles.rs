@@ -101,6 +101,13 @@ impl WorkspaceRoleService {
     pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
         Self { settings, store }
     }
+    /// The project's paths for a read, which never registers it.
+    fn read_scope(&self, project_path: &str) -> WorkspaceResult<ProjectPaths> {
+        if project_path.trim().is_empty() {
+            return Err(invalid("Project path is required"));
+        }
+        Ok(ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project_path)?)
+    }
     fn scope(&self, project_path: &str) -> WorkspaceResult<ProjectPaths> {
         if project_path.trim().is_empty() {
             return Err(invalid("Project path is required"));
@@ -148,7 +155,7 @@ impl WorkspaceRoleService {
     }
 
     pub fn get(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
-        let scope = self.scope(project)?;
+        let scope = self.read_scope(project)?;
         Self::load(&RecordRepository::roles(&scope.root), &scope, name)?
             .map(|role| self.with_derived(role))
             .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
@@ -179,7 +186,7 @@ impl WorkspaceRoleService {
     /// The standing role whose conversation this is, if any. Reads without
     /// the lock, so turn setup under it can call this.
     pub fn conversation_role(&self, project: &str, conversation_id: &str) -> Option<RoleRecord> {
-        let scope = self.scope(project).ok()?;
+        let scope = self.read_scope(project).ok()?;
         let name = conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
         Self::load(&RecordRepository::roles(&scope.root), &scope, name)
             .ok()?

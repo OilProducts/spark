@@ -936,9 +936,9 @@ impl WriteTransaction<'_> {
     /// pending filesystem cleanup. Returns the tombstoned conversation ids.
     pub fn delete_project(&self, marker: &ProjectDeletionMarker) -> Result<Vec<String>> {
         let ids = {
-            let mut statement = self
-                .tx
-                .prepare("SELECT id FROM conversations WHERE project_path = ?1 AND deleted = 0")?;
+            let mut statement = self.tx.prepare(
+                "SELECT id FROM conversations WHERE project_path = ?1 AND deleted = 0 ORDER BY id",
+            )?;
             let ids = statement
                 .query_map([&marker.project_path], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

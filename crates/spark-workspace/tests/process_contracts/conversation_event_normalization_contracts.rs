@@ -364,11 +364,80 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
     // A directory where the trace file belongs makes every append fail.
     fs::create_dir_all(root.join("provider-trace.jsonl")).expect("block trace append");
 
+    let assistant_turn_id = prepared.assistant_turn_id.clone();
     let error = service
         .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
         .expect_err("provider event write must fail the turn");
     assert!(matches!(error, WorkspaceError::Internal(_)));
-    assert_eq!(rows(), before);
+
+    // The turn settles as a visible failure; none of the unbacked provider
+    // output is committed and its applied trace cursor does not move.
+    let after = rows().expect("conversation");
+    let (_, _, applied, assistant) = after
+        .turns
+        .iter()
+        .find(|(id, ..)| *id == assistant_turn_id)
+        .expect("assistant turn");
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    assert!(assistant["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("could not record")));
+    assert_eq!(*applied, 0);
+    assert!(!serde_json::to_string(&after.segments)
+        .unwrap()
+        .contains("must not commit"));
+    assert_eq!(after.segments.len(), before.expect("before").segments.len());
+
+    // The conversation is not left busy: the next message starts a turn.
+    let (next, _) = service
+        .send_turn(
+            "conversation-provider-write-failure",
+            ConversationTurnRequest {
+                project_path: "/projects/provider-write-failure".to_string(),
+                message: "Try again".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("next send");
+    assert!(next.is_some(), "the next message started a turn");
+}
+
+/// A turn prepared before its project was deleted never reaches the
+/// provider when it is resumed afterwards.
+#[test]
+fn a_prepared_turn_resumed_after_project_deletion_starts_no_provider_work() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
+        final_assistant_text: Some("must not run".to_string()),
+        ..AgentTurnOutput::default()
+    }]);
+    let requests = backend.requests();
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
+    let (prepared, started) = service
+        .start_turn(
+            "conversation-deleted-before-start",
+            ConversationTurnRequest {
+                project_path: "/projects/deleted-before-start".to_string(),
+                message: "Run later".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    spark_workspace::WorkspaceProjectService::new(settings.clone())
+        .delete_project(&service, "/projects/deleted-before-start")
+        .expect("delete project");
+
+    let error = service
+        .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
+        .expect_err("a deleted conversation's turn cannot run");
+    assert!(matches!(error, WorkspaceError::NotFound(_)), "{error}");
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(!ProjectRegistry::new(&settings.data_dir)
+        .project_paths("/projects/deleted-before-start")
+        .unwrap()
+        .root
+        .exists());
 }
 
 #[test]

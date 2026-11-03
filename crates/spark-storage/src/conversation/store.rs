@@ -157,34 +157,42 @@ impl ConversationStore {
 
     /// Delete a registered project: fence its work, tombstone everything it
     /// owns with a durable cleanup marker in one transaction, then remove its
-    /// directory once the cleanup barrier allows. `cancel` interrupts each
-    /// live conversation's running work first. A cleanup failure keeps the
+    /// directory once the cleanup barrier allows. `cancel` then interrupts
+    /// each tombstoned conversation's running work. A cleanup failure keeps the
     /// marker and is returned; repeating the deletion retries it.
     pub fn delete_project(
         &self,
         deleted: &DeletedProjectRecord,
         cancel: &dyn Fn(&str),
     ) -> Result<()> {
-        let live = self
-            .database
-            .read(|read| read.conversation_ids(&deleted.project_path))?;
-        for conversation_id in &live {
+        // Fence first: under the exclusive gate, tombstone everything and
+        // record the marker, after which nothing new is admitted.
+        let gate = self.project_gate(&deleted.project_path);
+        let tombstoned = {
+            let _gate = gate.write().unwrap_or_else(|poison| poison.into_inner());
+            let marker = ProjectDeletionMarker {
+                project_path: deleted.project_path.clone(),
+                project_id: deleted.project_id.clone(),
+                response: serde_json::to_value(deleted).map_err(|source| {
+                    StorageError::JsonWrite {
+                        path: PathBuf::from(&deleted.project_path),
+                        source,
+                    }
+                })?,
+            };
+            let (_, tombstoned) = self.database.write(|tx| tx.delete_project(&marker))?;
+            self.pending_deletions()
+                .insert(deleted.project_path.clone());
+            self.evict(&tombstoned);
+            tombstoned
+        };
+        // Then stop the work that was running. Outside the gate, so a provider
+        // blocked on a callback cannot hold up its own interruption; its
+        // callbacks fail against the tombstones.
+        for conversation_id in &tombstoned {
             cancel(conversation_id);
         }
-        let gate = self.project_gate(&deleted.project_path);
         let _gate = gate.write().unwrap_or_else(|poison| poison.into_inner());
-        let marker = ProjectDeletionMarker {
-            project_path: deleted.project_path.clone(),
-            project_id: deleted.project_id.clone(),
-            response: serde_json::to_value(deleted).map_err(|source| StorageError::JsonWrite {
-                path: PathBuf::from(&deleted.project_path),
-                source,
-            })?,
-        };
-        let (_, tombstoned) = self.database.write(|tx| tx.delete_project(&marker))?;
-        self.pending_deletions()
-            .insert(deleted.project_path.clone());
-        self.evict(&tombstoned);
         self.finish_project_deletion_locked(&deleted.project_path)
     }
 

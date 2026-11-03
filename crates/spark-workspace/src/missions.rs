@@ -160,6 +160,13 @@ impl WorkspaceMissionService {
     pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
         Self { settings, store }
     }
+    /// The project's paths for a read, which never registers it.
+    fn read_scope(&self, project_path: &str) -> WorkspaceResult<spark_storage::ProjectPaths> {
+        if project_path.trim().is_empty() {
+            return Err(invalid("Project path is required"));
+        }
+        Ok(ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project_path)?)
+    }
     fn scope(&self, project_path: &str) -> WorkspaceResult<spark_storage::ProjectPaths> {
         if project_path.trim().is_empty() {
             return Err(invalid("Project path is required"));
@@ -269,12 +276,12 @@ impl WorkspaceMissionService {
         }
     }
     pub fn get(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
-        let scope = self.scope(project)?;
+        let scope = self.read_scope(project)?;
         Self::load(&RecordRepository::missions(&scope.root), &scope, id)
             .map(|m| self.with_status(m))
     }
     pub fn list(&self, project: &str) -> WorkspaceResult<Vec<MissionRecord>> {
-        let scope = self.scope(project)?;
+        let scope = self.read_scope(project)?;
         let mut missions: Vec<MissionRecord> = RecordRepository::missions(&scope.root)
             .list()?
             .into_iter()
@@ -309,7 +316,7 @@ impl WorkspaceMissionService {
         project: &str,
         conversation_id: &str,
     ) -> Option<MissionRecord> {
-        let scope = self.scope(project).ok()?;
+        let scope = self.read_scope(project).ok()?;
         Self::load(
             &RecordRepository::missions(&scope.root),
             &scope,

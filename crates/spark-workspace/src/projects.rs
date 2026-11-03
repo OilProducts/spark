@@ -178,7 +178,7 @@ impl WorkspaceProjectService {
                     other => other.into(),
                 })?;
         store.delete_project(&deleted, &|conversation_id| {
-            let _ = conversations.interrupt_turn(conversation_id, &project_path);
+            conversations.stop_execution(conversation_id, &project_path);
         })?;
         Ok(deleted)
     }

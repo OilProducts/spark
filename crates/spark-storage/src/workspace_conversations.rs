@@ -172,9 +172,10 @@ impl ConversationRepository {
         &self.store
     }
 
-    /// The project's storage paths, registering the project if needed.
+    /// The project's storage paths. Never registers the project or creates
+    /// anything: reads must not resurrect a deleted project.
     pub fn project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
-        self.store.registry().ensure_project_paths(project_path)
+        self.store.registry().project_paths(project_path)
     }
 
     /// The project a live conversation belongs to.

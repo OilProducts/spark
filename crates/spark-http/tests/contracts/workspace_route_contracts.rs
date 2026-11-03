@@ -149,8 +149,95 @@ async fn project_deletion_route_removes_conversations_then_the_directory() {
         "{}",
         listed.1
     );
+    // Stale reads of the deleted project resurrect nothing.
+    stale_project_reads(&app, &project_path).await;
+    assert!(!project_root.exists());
+    assert_eq!(
+        spark_storage::ProjectRegistry::new(&settings.data_dir)
+            .read_project_record(&project_path)
+            .unwrap(),
+        None
+    );
+    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
+    assert!(!projects.1.to_string().contains("doomed"), "{}", projects.1);
     let again = request_json(app, "DELETE", &remove, None).await;
     assert_eq!(again.0, StatusCode::NOT_FOUND, "{}", again.1);
+}
+
+/// Reads of a project and its conversations, as a stale browser tab sends them.
+async fn stale_project_reads(app: &axum::Router, project_path: &str) {
+    let project = crate::encode_query(project_path);
+    for uri in [
+        format!("/workspace/api/projects/conversations?project_path={project}"),
+        format!("/workspace/api/conversations/conversation-doomed?project_path={project}"),
+        format!("/workspace/api/conversations/conversation-unseen?project_path={project}"),
+        format!("/workspace/api/roles?project_path={project}"),
+        format!("/workspace/api/missions?project_path={project}"),
+    ] {
+        request_json(app.clone(), "GET", &uri, None).await;
+    }
+}
+
+/// While a deletion's cleanup is pending, stale reads neither register nor
+/// recreate anything, and the finished cleanup leaves no project behind.
+#[tokio::test]
+async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_dir = root.join("pending");
+    fs::create_dir_all(&project_dir).expect("project");
+    let store = crate::shared_store(&settings.data_dir);
+    let app = spark_http::build_app_with_conversation_store(
+        settings.clone(),
+        store.clone(),
+        spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings),
+    );
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_dir})),
+    )
+    .await;
+    let project_path = registered.1["project_path"].as_str().unwrap().to_string();
+    let saved = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/conversation-doomed/settings",
+        Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": "0"})),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .project_paths(&project_path)
+        .unwrap();
+    store.database().defer_next_checkpoints(1);
+    let remove = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project_path)
+    );
+    let deferred = request_json(app.clone(), "DELETE", &remove, None).await;
+    assert_eq!(
+        deferred.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        deferred.1
+    );
+
+    stale_project_reads(&app, &project_path).await;
+    assert!(!paths.conversations_dir.join("conversation-unseen").exists());
+
+    assert!(store.finish_project_deletion(&project_path).unwrap());
+    assert!(!paths.root.exists());
+    stale_project_reads(&app, &project_path).await;
+    assert!(!paths.root.exists());
+    assert_eq!(
+        spark_storage::ProjectRegistry::new(&settings.data_dir)
+            .read_project_record(&project_path)
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
