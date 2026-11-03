@@ -427,10 +427,10 @@ fn has_response_contract(response_contract: &str) -> bool {
 fn context_updates(payload: &BTreeMap<String, Value>) -> Result<ContextMap, String> {
     match payload.get("context_updates") {
         None | Some(Value::Null) => Ok(ContextMap::new()),
-        // Session handles are runtime-owned; an agent never writes them.
+        // Session handles are runtime-owned: an agent writing one is kept
+        // so the write contract rejects it.
         Some(Value::Object(items)) => Ok(items
             .iter()
-            .filter(|(key, _)| key.as_str() != attractor_core::RUNTIME_SESSIONS_KEY)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()),
         _ => Err("invalid decision envelope: context_updates must be an object".to_string()),

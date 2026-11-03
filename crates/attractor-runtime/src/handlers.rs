@@ -2082,6 +2082,7 @@ impl RuntimeHandlerRunner {
         let mut trace = vec![current.clone()];
         let mut decisions = Vec::<Value>::new();
         let mut steps = 0_u64;
+        let mut invocations = 0_u64;
         let mut last: Option<(String, String, String)> = None;
         // A resumed fork continues each unsettled branch where it stopped:
         // the same context, position, budgets and, for an invocation that
@@ -2107,6 +2108,7 @@ impl RuntimeHandlerRunner {
             trace = saved.trace;
             decisions = saved.decisions;
             steps = saved.steps;
+            invocations = saved.invocations;
             last = saved.last;
             accepted = saved.accepted;
         }
@@ -2120,6 +2122,7 @@ impl RuntimeHandlerRunner {
                     trace: trace.clone(),
                     decisions: decisions.clone(),
                     steps,
+                    invocations,
                     last: last.clone(),
                     started: $started,
                     accepted: $accepted,
@@ -2203,7 +2206,12 @@ impl RuntimeHandlerRunner {
                     )
                 );
             };
-            let attempt = runtime.attempt + retries.get(&current).copied().unwrap_or(0);
+            // Every branch invocation has its own execution directory: the
+            // fork invocation's stage, then the branch's invocation number
+            // (under the fork's attempt). An interrupted invocation keeps
+            // its number on resume.
+            // ponytail: one million invocations per branch per fork attempt.
+            let attempt = runtime.attempt * BRANCH_INVOCATIONS_PER_ATTEMPT + invocations;
             let _ = context.set("current_node", json!(current.clone()));
             let outgoing_edges = outgoing_routing_edges(flow, &current).unwrap_or_default();
             let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current, &node);
@@ -2211,7 +2219,7 @@ impl RuntimeHandlerRunner {
             mark_unavailable_routes(&mut request_context, flow, &outgoing_edges, &visits);
             let request = NodeExecutionRequest {
                 node_id: current.clone(),
-                stage_index: steps,
+                stage_index: runtime.stage_index,
                 attempt,
                 context: request_context,
                 prompt: crate::flow_runtime::node_prompt(&node),
@@ -2261,6 +2269,7 @@ impl RuntimeHandlerRunner {
                             panic_payload_message(payload),
                         )),
                     };
+                    invocations += 1;
                     (raw, false)
                 }
             };
@@ -3146,6 +3155,8 @@ fn take_branch_sessions(parent: &ContextMap, results: &mut [Value]) -> Option<Va
     (merged != before).then_some(merged)
 }
 
+const BRANCH_INVOCATIONS_PER_ATTEMPT: u64 = 1_000_000;
+
 /// An unsettled branch's position, saved in its fork's execution directory
 /// before and after every invocation and transition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3157,6 +3168,10 @@ pub(crate) struct BranchProgress {
     trace: Vec<String>,
     decisions: Vec<Value>,
     steps: u64,
+    /// Invocations this branch finished, retries included; numbers the
+    /// next invocation's execution identity.
+    #[serde(default)]
+    invocations: u64,
     last: Option<(String, String, String)>,
     /// The node whose invocation began and has not been accepted yet.
     #[serde(default)]

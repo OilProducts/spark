@@ -1833,3 +1833,84 @@ fn a_subflow_keeps_waiting_on_the_same_child_after_its_observation_bounds() {
         );
     }
 }
+
+/// Answers every agent node through the real codergen path, so the
+/// adapter writes each invocation's prompt, response and status.
+struct RoundBackend {
+    answers: Arc<Mutex<Script>>,
+}
+
+impl spark_agent_adapter::CodergenBackend for RoundBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let mut answers = self.answers.lock().unwrap();
+        let queue = answers.get_mut(&request.node_id).expect("scripted node");
+        let answer = queue.pop_front().expect("answer");
+        Ok(spark_agent_adapter::CodergenBackendOutput::text(
+            json!({"decision": answer.decision, "notes": answer.notes}).to_string(),
+        ))
+    }
+}
+
+#[test]
+fn every_fork_round_keeps_its_own_branch_execution_evidence() {
+    let mut flow = fork_flow(false);
+    flow.nodes.get_mut("synth").unwrap().routes = serde_json::from_value(json!({
+        "again": route("fork"), "done": route("done"), "blocked": route("failed")
+    }))
+    .unwrap();
+    flow.validate().unwrap();
+    let note = |decision: &str, notes: &str| Outcome {
+        notes: notes.to_string(),
+        ..completed(decision)
+    };
+    let answers = script(&[
+        (
+            "a",
+            vec![note("done", "a round one"), note("done", "a round two")],
+        ),
+        (
+            "b",
+            vec![note("done", "b round one"), note("done", "b round two")],
+        ),
+        (
+            "synth",
+            vec![note("again", "again"), note("done", "finished")],
+        ),
+    ]);
+    let runner = RuntimeHandlerRunner::new().with_codergen_backend_factory(move || {
+        Box::new(RoundBackend {
+            answers: answers.clone(),
+        })
+    });
+    let run = execute(flow, runner, None);
+    assert_eq!(
+        run.result.status,
+        "completed",
+        "{}",
+        run.record().last_error
+    );
+    let paths = run.store.find_run_root("run-contract").unwrap().unwrap();
+    for node in ["a", "b"] {
+        let executions = paths.logs_dir().join(node).join("executions");
+        let mut responses = std::fs::read_dir(&executions)
+            .unwrap()
+            .map(|entry| {
+                std::fs::read_to_string(entry.unwrap().path().join("response.md")).unwrap()
+            })
+            .collect::<Vec<_>>();
+        responses.sort();
+        assert_eq!(responses.len(), 2, "{node}: {responses:?}");
+        assert!(
+            responses[0].contains(&format!("{node} round one")),
+            "{responses:?}"
+        );
+        assert!(
+            responses[1].contains(&format!("{node} round two")),
+            "{responses:?}"
+        );
+    }
+}

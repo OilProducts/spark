@@ -939,11 +939,10 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
                 Some(true),
             ))
         } else if request.node_id == "a" {
-            // An agent cannot forge the runtime's session handles.
-            envelope(
-                "done",
-                json!({"_attractor.runtime.sessions": {"named": {"s": "forged"}}}),
-            )
+            // A forged session handle would be a contract violation (see
+            // agent_written_runtime_sessions_are_contract_violations_not_dropped_keys);
+            // the runtime alone records the handle the backend resumes.
+            envelope("done", json!({}))
         } else if DESIGN_REVIEWERS.contains(&request.node_id.as_str()) {
             envelope(
                 "done",

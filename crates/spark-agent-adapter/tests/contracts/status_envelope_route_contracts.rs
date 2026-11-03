@@ -242,3 +242,38 @@ fn exhausted_repair_is_a_contract_error_never_a_default_decision() {
         assert_eq!(execution.contract_violations.len(), 2, "{label}");
     }
 }
+
+#[test]
+fn agent_written_runtime_sessions_are_contract_violations_not_dropped_keys() {
+    let forged = r#"{"decision":"done","context_updates":{"_attractor.runtime.sessions":{"named":{"forged":true}}}}"#;
+    // One bounded repair: the corrected answer is accepted without the forged key.
+    let (execution, requests) = run(
+        Some("decision_envelope"),
+        json!({}),
+        &[forged, r#"{"decision":"done"}"#],
+    );
+    assert_eq!(requests.len(), 2);
+    assert_eq!(execution.outcome.status, OutcomeStatus::Completed);
+    assert!(!execution
+        .outcome
+        .context_updates
+        .contains_key("_attractor.runtime.sessions"));
+    assert_eq!(execution.contract_violations.len(), 1);
+    assert!(
+        execution.contract_violations[0]
+            .reason
+            .contains("_attractor.runtime.sessions"),
+        "{}",
+        execution.contract_violations[0].reason
+    );
+    // Exhausted repair is a contract error, never a completed decision.
+    let (execution, requests) = run(Some("decision_envelope"), json!({}), &[forged, forged]);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(execution.outcome.status, OutcomeStatus::Error);
+    assert_eq!(execution.outcome.failure_kind, Some(FailureKind::Contract));
+    assert!(execution.outcome.decision.is_empty());
+    assert!(!execution
+        .outcome
+        .context_updates
+        .contains_key("_attractor.runtime.sessions"));
+}

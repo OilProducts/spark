@@ -325,9 +325,12 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
         Outcome::error(FailureKind::Runtime, "extension type ran", Some(false)),
     );
     runner.register_handler_fn(HANDLER_CODERGEN, |runtime| {
+        // A branch invocation's identity is the fork's stage, then its
+        // invocation number under the fork's prepared attempt.
+        assert_eq!(runtime.stage_index, 0);
         assert_eq!(
-            runtime.attempt, 3,
-            "branches inherit the prepared parallel attempt"
+            runtime.attempt, 3_000_000,
+            "branches number their invocations under the prepared parallel attempt"
         );
         Ok(Outcome::completed("done"))
     });
