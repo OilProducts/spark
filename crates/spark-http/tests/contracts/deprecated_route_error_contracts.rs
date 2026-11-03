@@ -11,7 +11,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn removed_workspace_and_attractor_event_routes_are_not_found() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
 
     for path in [
         "/workspace/api/conversations/missing/events",
@@ -38,7 +38,7 @@ async fn deprecated_pipeline_events_streams_gap_fill_with_sse_headers() {
         working_directory: temp.path().join("Project").to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let response = request(
         app,
@@ -73,7 +73,7 @@ async fn deprecated_pipeline_event_errors_and_route_boundaries_stay_json() {
         working_directory: temp.path().join("Project").to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let invalid_cursor = request(
         app.clone(),

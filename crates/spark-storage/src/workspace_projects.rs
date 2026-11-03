@@ -7,7 +7,6 @@ use time::OffsetDateTime;
 use toml::map::Map as TomlMap;
 
 use crate::error::{Result, StorageError};
-use crate::workspace_conversations::ConversationHandleRepository;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectPaths {
@@ -354,7 +353,11 @@ impl ProjectRegistry {
         Ok(record)
     }
 
-    pub fn delete_project_record(&self, project_path: &str) -> Result<DeletedProjectRecord> {
+    /// The registered, non-Home project at `project_path`, validated for
+    /// deletion. Removing its directory is a separate step that only the
+    /// conversation store runs, after the project's conversations are
+    /// tombstoned and checkpointed ([`crate::ConversationStore::delete_project`]).
+    pub fn deletable_project(&self, project_path: &str) -> Result<DeletedProjectRecord> {
         let normalized = normalize_project_path_for_storage(project_path)?
             .ok_or_else(|| invalid_project_path(project_path, "Project path is required."))?;
         let project_id = project_id_for_path(&normalized)?;
@@ -374,21 +377,11 @@ impl ProjectRegistry {
                 "The Home project can't be removed.",
             ));
         }
-        let deleted = DeletedProjectRecord {
+        Ok(DeletedProjectRecord {
             project_id: project_paths.project_id.clone(),
             project_path: project_paths.project_path.clone(),
             display_name: project_paths.display_name.clone(),
-        };
-        fs::remove_dir_all(&project_paths.root).map_err(|source| {
-            StorageError::io(
-                "delete workspace project directory",
-                &project_paths.root,
-                source,
-            )
-        })?;
-        ConversationHandleRepository::new(self.home_dir.clone())
-            .remove_project_conversation_handles(&project_paths.project_id)?;
-        Ok(deleted)
+        })
     }
 
     pub fn project_paths(&self, project_path: &str) -> Result<ProjectPaths> {

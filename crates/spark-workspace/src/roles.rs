@@ -8,8 +8,11 @@ use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::{ModelSettings, SparkSettings};
-use spark_storage::{workspace_records::RecordRepository, ProjectPaths, ProjectRegistry};
+use spark_storage::{
+    workspace_records::RecordRepository, ConversationStore, ProjectPaths, ProjectRegistry,
+};
 use std::path::Path;
+use std::sync::Arc;
 
 pub const COORDINATOR: &str = "coordinator";
 /// The persona of ordinary chats; not a standing role.
@@ -92,10 +95,18 @@ pub(crate) fn role_model_settings(role: &attractor_dsl::Role) -> Option<ModelSet
 #[derive(Clone)]
 pub struct WorkspaceRoleService {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
 }
 impl WorkspaceRoleService {
-    pub fn new(settings: SparkSettings) -> Self {
-        Self { settings }
+    pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
+        Self { settings, store }
+    }
+    /// The project's paths for a read, which never registers it.
+    fn read_scope(&self, project_path: &str) -> WorkspaceResult<ProjectPaths> {
+        if project_path.trim().is_empty() {
+            return Err(invalid("Project path is required"));
+        }
+        Ok(ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project_path)?)
     }
     fn scope(&self, project_path: &str) -> WorkspaceResult<ProjectPaths> {
         if project_path.trim().is_empty() {
@@ -133,7 +144,7 @@ impl WorkspaceRoleService {
             RoleState::Stopped
         } else if role.inbox.event_seq > role.inbox.cursor
             || role.inbox.in_flight() > 0
-            || WorkspaceConversationService::new(self.settings.clone())
+            || WorkspaceConversationService::new(self.settings.clone(), self.store.clone())
                 .turn_in_flight(&role.conversation_id, &role.project_path)
         {
             RoleState::Working
@@ -144,7 +155,7 @@ impl WorkspaceRoleService {
     }
 
     pub fn get(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
-        let scope = self.scope(project)?;
+        let scope = self.read_scope(project)?;
         Self::load(&RecordRepository::roles(&scope.root), &scope, name)?
             .map(|role| self.with_derived(role))
             .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
@@ -175,7 +186,7 @@ impl WorkspaceRoleService {
     /// The standing role whose conversation this is, if any. Reads without
     /// the lock, so turn setup under it can call this.
     pub fn conversation_role(&self, project: &str, conversation_id: &str) -> Option<RoleRecord> {
-        let scope = self.scope(project).ok()?;
+        let scope = self.read_scope(project).ok()?;
         let name = conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
         Self::load(&RecordRepository::roles(&scope.root), &scope, name)
             .ok()?
@@ -240,6 +251,7 @@ impl WorkspaceRoleService {
         if let Some(runtime) = inbox::runtime(&self.settings) {
             if let Ok(Some(envelope)) = crate::live::conversation_summary_envelope_for(
                 &self.settings,
+                &self.store,
                 &role.conversation_id,
                 &role.project_path,
             ) {
@@ -269,7 +281,7 @@ impl WorkspaceRoleService {
         if message.trim().is_empty() {
             return Err(invalid("Message is required"));
         }
-        let sender = spark_storage::ConversationHandleRepository::new(&self.settings.data_dir)
+        let sender = spark_storage::ConversationRepository::new(self.store.clone())
             .find_conversation_by_handle(sender_handle)?
             .ok_or_else(|| {
                 WorkspaceError::NotFound(format!("Unknown conversation handle: {sender_handle}"))
@@ -358,6 +370,7 @@ impl WorkspaceRoleService {
         let (project, name) = (role.project_path.clone(), role.name.clone());
         inbox::deliver_inbox(
             &self.settings,
+            &self.store,
             repo,
             &role.name,
             &conversation,
@@ -458,8 +471,9 @@ impl WorkspaceRoleService {
                 continue;
             };
             for role in roles {
-                let _ = WorkspaceConversationService::new(self.settings.clone())
-                    .abandon_active_turn(&role.conversation_id, &role.project_path);
+                let _ =
+                    WorkspaceConversationService::new(self.settings.clone(), self.store.clone())
+                        .abandon_active_turn(&role.conversation_id, &role.project_path);
                 for run in role.inbox.runs.iter().filter(|run| run.in_flight()) {
                     let _ = self.deliver(&run.run_id, true);
                 }

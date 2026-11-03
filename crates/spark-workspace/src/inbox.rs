@@ -112,10 +112,12 @@ pub(crate) fn runtime(settings: &SparkSettings) -> Option<InboxRuntime> {
 }
 pub(crate) fn conversations(
     settings: &SparkSettings,
+    store: &Arc<spark_storage::ConversationStore>,
     runtime: &InboxRuntime,
 ) -> WorkspaceConversationService {
     WorkspaceConversationService::new_with_agent_turn_backend(
         settings.clone(),
+        store.clone(),
         runtime.agent_turn_backend.clone(),
     )
 }
@@ -215,6 +217,7 @@ pub(crate) fn launch_recorded(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn deliver_inbox(
     settings: &SparkSettings,
+    store: &Arc<spark_storage::ConversationStore>,
     repo: &RecordRepository,
     id: &str,
     conversation: &str,
@@ -226,7 +229,7 @@ pub(crate) fn deliver_inbox(
     let Some(runtime) = runtime(settings) else {
         return Ok(false);
     };
-    let conversations = conversations(settings, &runtime);
+    let conversations = conversations(settings, store, &runtime);
     if begin.is_none() && inbox.event_seq <= inbox.cursor {
         // Messages held while a role was stopped start once it delivers again.
         return match conversations.start_queued_turn(conversation, project_path)? {
@@ -290,8 +293,10 @@ fn complete_in_background(
     snapshot: Value,
     after: impl FnOnce() + Send + 'static,
 ) {
+    let store = conversations.store().clone();
     if let Ok(envelope) = crate::live::conversation_snapshot_envelope(
         settings,
+        &store,
         &prepared.conversation_id,
         &prepared.project_path,
     ) {
@@ -319,9 +324,12 @@ fn complete_in_background(
                 ));
             },
         );
-        if let Ok(envelope) =
-            crate::live::conversation_snapshot_envelope(&settings, &conversation, &project_path)
-        {
+        if let Ok(envelope) = crate::live::conversation_snapshot_envelope(
+            &settings,
+            &store,
+            &conversation,
+            &project_path,
+        ) {
             (runtime.publish)(envelope);
         }
         after();
@@ -394,14 +402,22 @@ fn run_owners() -> &'static std::sync::Mutex<
 }
 
 /// Hands a run tree's state to the mission or role that owns it.
-pub fn deliver_run_events(settings: &SparkSettings, run_id: &str) -> WorkspaceResult<()> {
+pub fn deliver_run_events(
+    settings: &SparkSettings,
+    store: &Arc<spark_storage::ConversationStore>,
+    run_id: &str,
+) -> WorkspaceResult<()> {
     match run_owner(settings, run_id)?.map(|owner| owner.owner) {
-        Some(Owner::Mission(_)) => crate::missions::WorkspaceMissionService::new(settings.clone())
-            .deliver_run_events(run_id)
-            .map(|_| ()),
-        Some(Owner::Role(_)) => crate::roles::WorkspaceRoleService::new(settings.clone())
-            .deliver_run_events(run_id)
-            .map(|_| ()),
+        Some(Owner::Mission(_)) => {
+            crate::missions::WorkspaceMissionService::new(settings.clone(), store.clone())
+                .deliver_run_events(run_id)
+                .map(|_| ())
+        }
+        Some(Owner::Role(_)) => {
+            crate::roles::WorkspaceRoleService::new(settings.clone(), store.clone())
+                .deliver_run_events(run_id)
+                .map(|_| ())
+        }
         None => Ok(()),
     }
 }

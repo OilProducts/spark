@@ -18,19 +18,17 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_http::{build_app, build_app_with_agent_turn_backend};
 use spark_storage::conversation::{ConversationMutation, TranscriptSegment, TranscriptTurn};
 use spark_storage::ConversationRepository;
 use spark_workspace::{
-    project_run_milestones, ConversationTurnRequest, TriggerCreateRequest,
-    WorkspaceConversationService, WorkspaceTriggerService,
+    project_run_milestones, ConversationTurnRequest, TriggerCreateRequest, WorkspaceTriggerService,
 };
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn live_route_returns_sse_keepalive_and_json_cursor_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path()));
+    let app = crate::store_app_default(settings(temp.path()));
 
     let response = request(app.clone(), "GET", "/workspace/api/live/events", None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -77,7 +75,7 @@ async fn live_route_replays_conversation_snapshots_and_events_from_storage() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-live");
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let snapshot = request(
         app.clone(),
@@ -112,13 +110,15 @@ async fn live_route_replays_conversation_snapshots_and_events_from_storage() {
         None,
     )
     .await;
+    // An older cursor gets the committed state as one fresh snapshot.
     let mut replay_stream = replay.into_body().into_data_stream();
-    let first = sse_data_json(&next_sse_chunk(&mut replay_stream).await);
-    let second = sse_data_json(&next_sse_chunk(&mut replay_stream).await);
-    assert_eq!(first["type"], "conversation.turn_upsert");
-    assert_eq!(first["cursor"]["value"], 1);
-    assert_eq!(second["type"], "conversation.segment_upsert");
-    assert_eq!(second["cursor"]["value"], 2);
+    let replayed = sse_data_json(&next_sse_chunk(&mut replay_stream).await);
+    assert_eq!(replayed["type"], "conversation.snapshot");
+    assert_eq!(replayed["cursor"]["value"], 2);
+    assert_eq!(
+        replayed["payload"]["state"],
+        snapshot_envelope["payload"]["state"]
+    );
 }
 
 #[tokio::test]
@@ -128,7 +128,7 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-live");
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings,
         Arc::new(StaticAgentTurnBackend::new("Live route answer.")),
     );
@@ -159,20 +159,19 @@ async fn live_route_streams_conversation_mutations_on_open_connection() {
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
 
-    let first = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-    let second = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-    assert_eq!(first["type"], "conversation.turn_upsert");
+    // The accepted turn publishes as a snapshot of the committed state.
+    let accepted = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    assert_eq!(accepted["type"], "conversation.snapshot");
     assert_eq!(
-        first["cursor"],
-        json!({"kind": "conversation_revision", "value": 3})
-    );
-    assert_eq!(first["payload"]["turn"]["role"], "user");
-    assert_eq!(second["type"], "conversation.turn_upsert");
-    assert_eq!(
-        second["cursor"],
+        accepted["cursor"],
         json!({"kind": "conversation_revision", "value": 4})
     );
-    assert_eq!(second["payload"]["turn"]["role"], "assistant");
+    let turns = accepted["payload"]["state"]["turns"]
+        .as_array()
+        .expect("turns");
+    assert_eq!(turns[1]["role"], "user");
+    assert_eq!(turns[1]["content"], "Please run this live.");
+    assert_eq!(turns[2]["role"], "assistant");
 }
 
 #[tokio::test]
@@ -235,7 +234,7 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
         })),
         ..AgentTurnOutput::default()
     };
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
     );
@@ -274,16 +273,19 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && turn["status"] == "pending"
             && turn["content"] == ""));
 
-    // Committed completion arrives as coalesced turn/segment upserts; the
-    // completed assistant turn signals the turn finished durably.
+    // Committed progress arrives as upserts and snapshots; the completed
+    // assistant turn signals the turn finished durably.
     let mut envelopes = Vec::new();
     let mut turn_completed = false;
     for _ in 0..40 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["role"] == "assistant"
-            && envelope["payload"]["turn"]["status"] == "complete"
-            && envelope["payload"]["turn"]["content"] == "Live streamed answer."
+        if carried(std::slice::from_ref(&envelope), "turn")
+            .iter()
+            .any(|turn| {
+                turn["role"] == "assistant"
+                    && turn["status"] == "complete"
+                    && turn["content"] == "Live streamed answer."
+            })
         {
             turn_completed = true;
         }
@@ -320,9 +322,13 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
     }
     let cursors = envelopes
         .iter()
+        .filter(|envelope| envelope["cursor"]["kind"] == "conversation_revision")
         .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
         .collect::<Vec<_>>();
-    assert_eq!(cursors, (3..=final_revision).collect::<Vec<_>>());
+    assert!(
+        cursors.windows(2).all(|pair| pair[0] < pair[1]),
+        "{cursors:?}"
+    );
     assert!(final_snapshot["turns"]
         .as_array()
         .expect("turns")
@@ -379,71 +385,56 @@ async fn live_route_streams_full_backend_ingested_revision_range_for_turn_route(
             && segment["event_status"] == "closed"
             && segment["details"]["state"] == "closed"));
 
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["role"] == "user"
-            && envelope["payload"]["turn"]["content"]
-                == "Please stream the ingested backend output."
+    assert!(carried(&envelopes, "turn").iter().any(|turn| {
+        turn["role"] == "user" && turn["content"] == "Please stream the ingested backend output."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "assistant_message"
-            && envelope["payload"]["segment"]["content"] == "Live streamed answer."
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "assistant_message" && segment["content"] == "Live streamed answer."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "reasoning"
-            && envelope["payload"]["segment"]["content"] == "Live route reasoning."
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "reasoning" && segment["content"] == "Live route reasoning."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "model_tool_call"
-            && envelope["payload"]["segment"]["status"] == "complete"
-            && envelope["payload"]["segment"]["tool_call"]["id"] == "live-tool-1"
-            && envelope["payload"]["segment"]["source"]["raw_kind"] == "model_tool_call_end"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "model_tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["id"] == "live-tool-1"
+            && segment["source"]["raw_kind"] == "model_tool_call_end"
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "tool_call"
-            && envelope["payload"]["segment"]["status"] == "complete"
-            && envelope["payload"]["segment"]["tool_call"]["output"] == "full live output"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "tool_call"
+            && segment["status"] == "complete"
+            && segment["tool_call"]["output"] == "full live output"
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["role"] == "assistant"
-            && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(4)
-            && envelope["payload"]["turn"]["token_usage_breakdown"]["last"]["inputTokens"]
-                == json!(3)
+    assert!(carried(&envelopes, "turn").iter().any(|turn| {
+        turn["role"] == "assistant"
+            && turn["token_usage"]["total"]["outputTokens"] == json!(4)
+            && turn["token_usage_breakdown"]["last"]["inputTokens"] == json!(3)
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "request_user_input"
-            && envelope["payload"]["segment"]["request_user_input"]["status"] == "pending"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["status"] == "pending"
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "agent_event"
-            && envelope["payload"]["segment"]["event_kind"] == "session_start"
-            && envelope["payload"]["segment"]["event_status"] == "processing"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["event_kind"] == "session_start"
+            && segment["event_status"] == "processing"
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "agent_event"
-            && envelope["payload"]["segment"]["event_kind"] == "warning"
-            && envelope["payload"]["segment"]["message"] == "Live route compatibility warning."
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["event_kind"] == "warning"
+            && segment["message"] == "Live route compatibility warning."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "agent_event"
-            && envelope["payload"]["segment"]["event_kind"] == "processing_end"
-            && envelope["payload"]["segment"]["event_status"] == "idle"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "agent_event"
+            && segment["event_kind"] == "processing_end"
+            && segment["event_status"] == "idle"
     }));
     assert_eq!(
         envelopes.last().expect("final envelope")["cursor"]["value"],
         json!(final_revision)
     );
 
-    let raw_log = ConversationRepository::new(&settings.data_dir)
+    let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_codex_jsonrpc_trace(
             "conversation-live-ingested",
             &project_path.to_string_lossy(),
@@ -482,7 +473,7 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
         }),
         ..AgentTurnOutput::default()
     };
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(StaticAgentTurnBackend::from_output(backend_output)),
     );
@@ -542,16 +533,14 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
         }
     }
 
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["role"] == "assistant"
-            && envelope["payload"]["turn"]["status"] == "failed"
-            && envelope["payload"]["turn"]["error"] == "live thread resume failed"
-            && envelope["payload"]["turn"]["error_code"] == "thread_resume_failed"
-            && envelope["payload"]["turn"]["details"]["thread_id"] == "thread-live-resume"
-            && envelope["payload"]["turn"]["token_usage"]["total"]["inputTokens"] == json!(6)
-            && envelope["payload"]["turn"]["token_usage_breakdown"]["last"]["outputTokens"]
-                == json!(0)
+    assert!(carried(&envelopes, "turn").iter().any(|turn| {
+        turn["role"] == "assistant"
+            && turn["status"] == "failed"
+            && turn["error"] == "live thread resume failed"
+            && turn["error_code"] == "thread_resume_failed"
+            && turn["details"]["thread_id"] == "thread-live-resume"
+            && turn["token_usage"]["total"]["inputTokens"] == json!(6)
+            && turn["token_usage_breakdown"]["last"]["outputTokens"] == json!(0)
     }));
     let snapshot_envelope = snapshot_envelope.expect("snapshot envelope");
     assert_eq!(snapshot_envelope["type"], "conversation.snapshot");
@@ -559,7 +548,7 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
         snapshot_envelope["payload"]["state"]["event_log"][0]["details"]["thread_id"],
         "thread-live-resume"
     );
-    let raw_log = ConversationRepository::new(&settings.data_dir)
+    let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_codex_jsonrpc_trace("conversation-live-failure", &project_path.to_string_lossy())
         .expect("raw log");
     assert!(
@@ -593,11 +582,11 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
         ..AgentTurnOutput::default()
     };
     // Built first: startup settles turns left in flight, pending questions included.
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-live-answer",
@@ -664,37 +653,33 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
             break;
         }
     }
+    // Committed state arrives in increasing revisions up to the final one.
     let cursors = envelopes
         .iter()
         .map(|envelope| envelope["cursor"]["value"].as_i64().expect("cursor"))
         .collect::<Vec<_>>();
-    assert_eq!(
-        cursors,
-        ((before_revision + 1)..=final_revision).collect::<Vec<_>>()
+    assert!(
+        cursors.windows(2).all(|pair| pair[0] < pair[1]),
+        "{cursors:?}"
     );
+    assert_eq!(cursors.last(), Some(&final_revision));
 
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "request_user_input"
-            && envelope["payload"]["segment"]["request_user_input"]["status"] == "answered"
-            && envelope["payload"]["segment"]["request_user_input"]["answers"]["decision"]
-                == "Approve"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["status"] == "answered"
+            && segment["request_user_input"]["answers"]["decision"] == "Approve"
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["payload"]["segment"]["kind"] == "assistant_message"
-            && envelope["payload"]["segment"]["content"] == "Answered over live SSE."
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "assistant_message" && segment["content"] == "Answered over live SSE."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["id"] == prepared.assistant_turn_id
-            && envelope["payload"]["turn"]["status"] == "complete"
-            && envelope["payload"]["turn"]["content"] == "Answered over live SSE."
+    assert!(carried(&envelopes, "turn").iter().any(|turn| {
+        turn["id"] == prepared.assistant_turn_id
+            && turn["status"] == "complete"
+            && turn["content"] == "Answered over live SSE."
     }));
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["id"] == prepared.assistant_turn_id
-            && envelope["payload"]["turn"]["token_usage"]["total"]["outputTokens"] == json!(3)
+    assert!(carried(&envelopes, "turn").iter().any(|turn| {
+        turn["id"] == prepared.assistant_turn_id
+            && turn["token_usage"]["total"]["outputTokens"] == json!(3)
     }));
     // Hydration after the committed replay returns the same durable state the
     // answer route reported.
@@ -713,7 +698,7 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     assert_eq!(hydrated_snapshot["revision"], json!(final_revision));
     assert_eq!(hydrated_snapshot["turns"], posted_snapshot["turns"]);
 
-    let raw_log = ConversationRepository::new(&settings.data_dir)
+    let raw_log = ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_codex_jsonrpc_trace("conversation-live-answer", &project_path.to_string_lossy())
         .expect("raw log");
     assert!(
@@ -832,7 +817,7 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
         "block-2",
     );
     let events = vec![narration, text_completion, final_answer];
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings,
         Arc::new(StreamingAgentTurnBackend {
             stream_events: events.clone(),
@@ -899,7 +884,7 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_conversation(&settings, &project_path, "conversation-transient");
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(StreamingAgentTurnBackend {
             stream_events: vec![
@@ -950,9 +935,9 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     let mut turn_completed = false;
     for _ in 0..60 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["status"] == "complete"
-            && envelope["payload"]["turn"]["content"] == "Streaming."
+        if carried(std::slice::from_ref(&envelope), "turn")
+            .iter()
+            .any(|turn| turn["status"] == "complete" && turn["content"] == "Streaming.")
         {
             turn_completed = true;
         }
@@ -1000,11 +985,9 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
 
     // The pending request-user-input mid-turn commit publishes durable
     // segment upserts with real revision cursors.
-    assert!(envelopes.iter().any(|envelope| {
-        envelope["type"] == "conversation.segment_upsert"
-            && envelope["cursor"]["kind"] == "conversation_revision"
-            && envelope["payload"]["segment"]["kind"] == "request_user_input"
-            && envelope["payload"]["segment"]["request_user_input"]["status"] == "pending"
+    assert!(carried(&envelopes, "segment").iter().any(|segment| {
+        segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["status"] == "pending"
     }));
 
     // Reconnect hydration restores committed state without any stream deltas.
@@ -1024,8 +1007,8 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
         .as_i64()
         .expect("final revision");
 
-    // Replay after reconnect returns only committed journal entries: stream
-    // deltas are gone and every envelope carries a contiguous revision cursor.
+    // A reconnect replays committed state only: one snapshot at the final
+    // revision, never stream deltas.
     let replay = request(
         app,
         "GET",
@@ -1038,27 +1021,13 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     .await;
     assert_eq!(replay.status(), StatusCode::OK);
     let mut replay_stream = replay.into_body().into_data_stream();
-    let mut replayed = Vec::new();
-    for _ in 2..final_revision {
-        replayed.push(sse_data_json(&next_sse_chunk(&mut replay_stream).await));
-    }
-    assert!(!replayed.is_empty(), "replay returns committed entries");
-    for envelope in &replayed {
-        assert_ne!(envelope["type"], "conversation.stream_delta");
-        assert_eq!(envelope["cursor"]["kind"], "conversation_revision");
-    }
-    assert_eq!(
-        replayed
-            .iter()
-            .map(|envelope| envelope["cursor"]["value"].as_i64().expect("revision"))
-            .collect::<Vec<_>>(),
-        (3..=final_revision).collect::<Vec<_>>()
-    );
-    assert!(replayed.iter().any(|envelope| {
-        envelope["type"] == "conversation.turn_upsert"
-            && envelope["payload"]["turn"]["content"] == "Streaming."
-            && envelope["payload"]["turn"]["status"] == "complete"
-    }));
+    let replayed = vec![sse_data_json(&next_sse_chunk(&mut replay_stream).await)];
+    assert_eq!(replayed[0]["type"], "conversation.snapshot");
+    assert_eq!(replayed[0]["cursor"]["kind"], "conversation_revision");
+    assert_eq!(replayed[0]["cursor"]["value"], json!(final_revision));
+    assert!(carried(&replayed, "turn")
+        .iter()
+        .any(|turn| { turn["content"] == "Streaming." && turn["status"] == "complete" }));
     assert!(hydrated_snapshot["turns"]
         .as_array()
         .expect("turns")
@@ -1133,7 +1102,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         "final-answer",
     );
     let (open_gate, gate) = std::sync::mpsc::channel();
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(GatedStreamingBackend {
             before: vec![
@@ -1203,12 +1172,13 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     }
 
     // Mid-turn reads of the snapshot and the thread list never commit.
-    let transcript_path = ConversationRepository::new(&settings.data_dir)
-        .conversation_root(conversation_id, Some(&project))
-        .expect("root")
-        .expect("conversation root")
-        .join("transcript.jsonl");
-    let transcript_before = fs::read(&transcript_path).expect("transcript");
+    let stored = || {
+        crate::shared_store(&settings.data_dir)
+            .database()
+            .read(|read| read.conversation(conversation_id))
+            .expect("rows")
+    };
+    let stored_before = stored();
     let snapshot_uri = format!(
         "/workspace/api/conversations/{conversation_id}?project_path={}",
         url_encode(&project)
@@ -1239,10 +1209,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         .await;
         assert_eq!(threads.status(), StatusCode::OK);
     }
-    assert_eq!(
-        fs::read(&transcript_path).expect("transcript"),
-        transcript_before
-    );
+    assert_eq!(stored(), stored_before);
 
     // The agent launches a flow and the thread title is stored mid-turn.
     let handle = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await
@@ -1258,7 +1225,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     )
     .await;
     assert_eq!(launched.status(), StatusCode::OK);
-    let repository = ConversationRepository::new(&settings.data_dir);
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let revision = repository
         .read_snapshot(conversation_id, Some(&project))
         .expect("read")
@@ -1340,7 +1307,7 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
     let conversation_id = "conversation-background";
     seed_conversation(&settings, &project_path, conversation_id);
     write_flow(&settings, "ops/live");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
     let handle = json_body(
         request(
             app.clone(),
@@ -1406,10 +1373,7 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
     fs::create_dir_all(&project_path).expect("project");
     let conversation_id = "conversation-running";
     seed_conversation(&settings, &project_path, conversation_id);
-    let app = build_app_with_agent_turn_backend(
-        settings,
-        Arc::new(StaticAgentTurnBackend::new("Finished.")),
-    );
+    let app = crate::store_app(settings, Arc::new(StaticAgentTurnBackend::new("Finished.")));
     let live = request(
         app.clone(),
         "GET",
@@ -1474,7 +1438,7 @@ async fn live_route_replays_run_journals_and_runs_overview() {
         ..PipelineStartRequest::default()
     });
     assert_eq!(started.status_code, 200);
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let replay = request(
         app.clone(),
@@ -1522,7 +1486,7 @@ async fn live_route_replays_manager_loop_child_journals_with_source_local_cursor
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     seed_parent_child_run_journals(&settings, &project_path);
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let replay = request(
         app.clone(),
@@ -1597,7 +1561,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     write_flow(&settings, "ops/live");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let overview = request(
         app.clone(),
@@ -1700,7 +1664,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     // symlink (macOS /var -> /private/var).
     let project_path = project_path.canonicalize().expect("canonical project");
     trigger_project(&settings, &project_path);
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let live = request(
         app.clone(),
@@ -1790,12 +1754,10 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
 }
 
 /// The handler subscribes before it reads initial state, so a change made
-/// while that read runs still reaches the stream. A FIFO in place of
-/// conversation.json holds the read open while a trigger is created.
-#[cfg(unix)]
+/// while that read runs still reaches the stream. The conversation database
+/// is held, keeping the read open, while a trigger is created.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_route_delivers_a_change_made_while_it_reads_initial_state() {
-    use std::io::Write;
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "ops/run");
@@ -1803,38 +1765,25 @@ async fn live_route_delivers_a_change_made_while_it_reads_initial_state() {
     fs::create_dir_all(&project_path).expect("project");
     let project_path = project_path.canonicalize().expect("canonical project");
     trigger_project(&settings, &project_path);
+    // Seeded through a store that closes again, so the app loads the
+    // conversation from the database when the live route first reads it.
     seed_conversation(&settings, &project_path, "conversation-gap");
-    let record = ConversationRepository::new(&settings.data_dir)
-        .project_paths(&project_path.to_string_lossy())
-        .expect("project paths")
-        .conversations_dir
-        .join("conversation-gap/conversation.json");
-    // Startup recovery reads conversation records, so build before the swap.
-    let app = build_app(settings);
-    let staged = record.with_extension("staged");
-    fs::rename(&record, &staged).expect("stage record");
-    let content = fs::read(&staged).expect("record");
-    assert!(std::process::Command::new("mkfifo")
-        .arg(&record)
-        .status()
-        .expect("mkfifo")
-        .success());
-    let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+    let app = crate::store_app_default(settings.clone());
+    let store = crate::shared_store(&settings.data_dir);
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let writer = std::thread::spawn({
-        let record = record.clone();
-        move || {
-            // Opening blocks until the handler opens the record to read it.
-            let mut fifo = fs::OpenOptions::new()
-                .write(true)
-                .open(&record)
-                .expect("open fifo");
-            opened_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-            fs::rename(&staged, &record).expect("restore record");
-            fifo.write_all(&content).expect("write record");
-        }
+    // Holding the database keeps the handler inside its initial read.
+    let writer = std::thread::spawn(move || {
+        store
+            .database()
+            .read(|_| {
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
     });
+    held_rx.recv().unwrap();
     let uri = format!(
         "/workspace/api/live/events?conversation_id=conversation-gap&conversation_project_path={path}&include_triggers=true&triggers_project_path={path}",
         path = url_encode(&project_path.to_string_lossy())
@@ -1843,10 +1792,8 @@ async fn live_route_delivers_a_change_made_while_it_reads_initial_state() {
         let app = app.clone();
         async move { request(app, "GET", &uri, None).await }
     });
-    tokio::task::spawn_blocking(move || opened_rx.recv_timeout(Duration::from_secs(20)))
-        .await
-        .unwrap()
-        .expect("the handler reads conversation.json");
+    // ponytail: a pause instead of a signal from inside the blocked read.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let created = request(
         app,
         "POST",
@@ -1894,7 +1841,7 @@ async fn live_route_streams_mission_upserts_through_turn_delivery() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project = project_path.to_string_lossy().to_string();
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings,
         Arc::new(StaticAgentTurnBackend::new("Starting now.")),
     );
@@ -1982,7 +1929,7 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     let project = project_path.to_string_lossy().to_string();
     // Hold each turn until the test has seen the role working.
     let (open_gate, gate) = std::sync::mpsc::channel();
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings,
         Arc::new(GatedStreamingBackend {
             before: Vec::new(),
@@ -2054,7 +2001,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
     fs::create_dir_all(&project_path).expect("project");
     trigger_project(&settings, &project_path);
     let project_path_text = project_path.to_string_lossy().to_string();
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let live = request(
         app.clone(),
@@ -2123,7 +2070,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
     fs::create_dir_all(&project_path).expect("project");
     trigger_project(&settings, &project_path);
     let project_path_text = project_path.to_string_lossy().to_string();
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
 
     let trigger_live = request(
         app.clone(),
@@ -2251,7 +2198,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
         project_run_milestones(&settings, "run-log-seeded", &[]).expect("seed milestones");
     assert_eq!(seeded_entries.len(), 1);
 
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let workflow_live = request(
         app.clone(),
@@ -2344,13 +2291,14 @@ async fn dropping_app_cancels_trigger_source_loop() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "ops/run");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
     drop(app);
 
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     trigger_project(&settings, &project_path);
-    let service = WorkspaceTriggerService::new(settings);
+    let service =
+        WorkspaceTriggerService::new(settings.clone(), crate::shared_store(&settings.data_dir));
     let created = service
         .create_trigger(TriggerCreateRequest {
             project_path: project_path.to_string_lossy().into_owned(),
@@ -2659,7 +2607,7 @@ fn request_user_input_event() -> TurnStreamEvent {
 
 fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation_id: &str) {
     let project_path = project_path.to_string_lossy().to_string();
-    let repository = ConversationRepository::new(&settings.data_dir);
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let turn: TranscriptTurn = serde_json::from_value(json!({
         "id": "turn-live",
         "role": "assistant",
@@ -2827,7 +2775,7 @@ async fn live_route_streams_detached_run_progress_mid_flight() {
     // A custom handler slow enough that the run is verifiably mid-flight when
     // the launch response and first live frames arrive. Slow tool nodes hold
     // the run open without needing a custom handler type.
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let live = request(
         app.clone(),
@@ -2925,7 +2873,8 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
     // Production-shaped runner: blocking human gates enabled.
     let factory: attractor_api::RuntimeHandlerRunnerFactory =
         Arc::new(|| attractor_runtime::RuntimeHandlerRunner::new().with_blocking_human_gates());
-    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory);
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory)
+        .expect("app");
 
     let launched = request(
         app.clone(),
@@ -3152,7 +3101,7 @@ async fn live_route_streams_execution_transcript_upserts_through_the_publisher()
         })
         .expect("execution transcript");
 
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
     let before_sequence = latest_journal_sequence(&settings, "run-segment-live");
     let live = request(
         app.clone(),
@@ -3269,7 +3218,8 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         attractor_runtime::RuntimeHandlerRunner::new()
             .with_codergen_backend_factory(|| Box::new(SlowStreamingCodergenBackend))
     });
-    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory);
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory)
+        .expect("app");
 
     // Detached launch returns at prepare time; the codergen node then holds
     // for ~900ms, leaving a wide window to subscribe and observe mid-node.
@@ -3364,7 +3314,7 @@ async fn settings_only_stream_receives_conversation_resource_changes() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).unwrap();
     seed_conversation(&settings, &project_path, "settings-live");
-    let app = build_app(settings);
+    let app = crate::store_app_default(settings);
     let conversation = json_body(
         request(
             app.clone(),
@@ -3400,4 +3350,25 @@ async fn settings_only_stream_receives_conversation_resource_changes() {
         assert_eq!(event["payload"]["section"], section);
         assert!(!event["payload"]["revision"].is_null());
     }
+}
+
+/// The turns or segments live envelopes carry, as upserts or inside
+/// snapshots of the committed state.
+fn carried(envelopes: &[Value], kind: &str) -> Vec<Value> {
+    let mut entities = Vec::new();
+    for envelope in envelopes {
+        match envelope["type"].as_str() {
+            Some(event) if event == format!("conversation.{kind}_upsert") => {
+                entities.push(envelope["payload"][kind].clone());
+            }
+            Some("conversation.snapshot") => entities.extend(
+                envelope["payload"]["state"][format!("{kind}s")]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            _ => {}
+        }
+    }
+    entities
 }

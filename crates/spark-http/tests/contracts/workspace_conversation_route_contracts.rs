@@ -1,11 +1,9 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_http::build_app;
 use spark_storage::ProjectRegistry;
 use tower::ServiceExt;
 
@@ -34,7 +32,12 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
             "title": "HTTP thread",
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-01T00:00:01Z",
-            "turns": [],
+            "turns": [
+                {"id": "turn-a", "role": "assistant", "content": "", "timestamp": "2026-01-01T00:00:01Z", "status": "complete", "kind": "message"}
+            ],
+            "flow_run_requests": [
+                {"id": "request-http", "created_at": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-http", "source_turn_id": "turn-a"}
+            ],
             "segments": [
                 {
                     "id": "segment-tool",
@@ -55,34 +58,25 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
                         "output": "full output",
                         "file_paths": []
                     }
+                },
+                {
+                    "id": "segment-present", "turn_id": "turn-a", "order": 2,
+                    "kind": "tool_call", "role": "assistant", "status": "complete",
+                    "content": "", "source": {},
+                    "tool_call": {"id": "tool-b", "output": "PREVIEW", "output_truncated": true,
+                        "output_size": 14, "output_artifact": "tool-output/present.txt"}
+                },
+                {
+                    "id": "segment-missing", "turn_id": "turn-a", "order": 3,
+                    "kind": "tool_call", "role": "assistant", "status": "complete",
+                    "content": "", "source": {},
+                    "tool_call": {"id": "tool-c", "output": "ONLY PREVIEW", "output_truncated": true,
+                        "output_size": 100000, "output_artifact": "tool-output/missing.txt"}
                 }
             ]
         }),
     );
-    fs::write(
-        project
-            .conversations_dir
-            .join("conversation-http/artifacts/flow-run-requests.json"),
-        serde_json::to_string_pretty(&json!([
-            {"id": "request-http", "created_at": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-http", "source_turn_id": "turn-a"}
-        ]))
-        .expect("json"),
-    )
-    .expect("flow requests");
-    fs::create_dir_all(
-        project
-            .conversations_dir
-            .join("conversation-http/tool-output"),
-    )
-    .expect("tool output directory");
-    fs::write(
-        project
-            .conversations_dir
-            .join("conversation-http/tool-output/segment-tool.txt"),
-        "full output",
-    )
-    .expect("tool output");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let snapshot = request_json(
         app.clone(),
@@ -108,6 +102,24 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
         output.1,
         json!({"output": "full output", "output_size": 11})
     );
+    // Externalized output comes from its blob; a missing blob is reported,
+    // never its preview passed off as the full output.
+    let blobs = project
+        .conversations_dir
+        .join("conversation-http/tool-output");
+    std::fs::create_dir_all(&blobs).expect("tool output dir");
+    std::fs::write(blobs.join("present.txt"), "present output").expect("blob");
+    let output_uri = |segment: &str| {
+        format!("/workspace/api/conversations/conversation-http/tool-output/{segment}?project_path=/projects/http-app")
+    };
+    let present = request_json(app.clone(), "GET", &output_uri("segment-present"), None).await;
+    assert_eq!(
+        present.1,
+        json!({"output": "present output", "output_size": 14})
+    );
+    let missing = request_json(app.clone(), "GET", &output_uri("segment-missing"), None).await;
+    assert_eq!(missing.0, StatusCode::NOT_FOUND, "{}", missing.1);
+    assert!(!missing.1.to_string().contains("ONLY PREVIEW"));
 
     for payload in [
         json!({"project_path": "/projects/http-app", "chat_mode": "plan"}),
@@ -146,7 +158,10 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
     assert_eq!(settings_response.0, StatusCode::OK);
     assert_eq!(settings_response.1["chat_mode"], "plan");
     // Mode-change turn entry plus settings journal entry.
-    assert_eq!(settings_response.1["revision"], 3);
+    assert_eq!(
+        settings_response.1["revision"],
+        snapshot.1["revision"].as_i64().unwrap() + 2
+    );
 
     let rejected = request_json(app.clone(), "PUT",
         "/workspace/api/conversations/conversation-http/settings",
@@ -188,7 +203,7 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project_path)
         .expect("project");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let created = request_json(
         app.clone(),
@@ -202,7 +217,7 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
     assert_eq!(created.1["turns"], json!([]));
 
     // A fresh app reads only what was persisted, like a browser reload.
-    let reloaded_app = build_app(settings.clone());
+    let reloaded_app = crate::store_app_default(settings.clone());
     let listed = request_json(
         reloaded_app.clone(),
         "GET",
@@ -278,7 +293,7 @@ async fn project_conversation_list_allocates_missing_summary_handles() {
             "segments": []
         }),
     );
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let listed = request_json(
         app,
@@ -291,49 +306,19 @@ async fn project_conversation_list_allocates_missing_summary_handles() {
     assert_eq!(listed.0, StatusCode::OK);
     let handle = listed.1[1]["conversation_handle"].as_str().expect("handle");
     assert_eq!(handle.split('-').count(), 2);
-    let index: Value = serde_json::from_str(
-        &fs::read_to_string(settings.workspace_dir.join("conversation-handles.json"))
-            .expect("handles"),
-    )
-    .expect("json");
-    assert_eq!(
-        index["conversation_ids"]["conversation-no-handle"].as_str(),
-        Some(handle)
-    );
+    let stored = crate::shared_store(&settings.data_dir)
+        .database()
+        .read(|read| read.conversation("conversation-no-handle"))
+        .expect("rows")
+        .expect("conversation");
+    assert_eq!(stored.handle, handle);
 }
 
 #[tokio::test]
 async fn conversation_routes_return_json_errors_for_bad_inputs_and_unsupported_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let project = ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths("/projects/http-errors")
-        .expect("project");
-    write_state(
-        &project.conversations_dir,
-        "conversation-old",
-        json!({
-            "schema_version": 4,
-            "revision": 1,
-            "conversation_id": "conversation-old",
-            "project_path": "/projects/http-errors",
-            "segments": []
-        }),
-    );
-    let app = build_app(settings);
-
-    let unsupported = request_json(
-        app.clone(),
-        "GET",
-        "/workspace/api/conversations/conversation-old?project_path=/projects/http-errors",
-        None,
-    )
-    .await;
-    assert_eq!(unsupported.0, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        unsupported.1,
-        json!({"detail": "Unsupported conversation state schema. Delete the local conversation and recreate it."})
-    );
+    let app = crate::store_app_default(settings);
 
     let unknown = request_json(
         app.clone(),

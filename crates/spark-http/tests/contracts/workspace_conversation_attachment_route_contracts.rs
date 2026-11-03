@@ -7,7 +7,6 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use serde_json::{json, Value};
 use spark_agent_adapter::{AgentTurnOutput, HistoryTurn, AGENT_ATTACHMENTS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
-use spark_http::build_app_with_agent_turn_backend;
 use spark_storage::conversation::{ConversationMutation, TranscriptTurn};
 use spark_storage::{ConversationRepository, StorageError};
 use tower::ServiceExt;
@@ -120,7 +119,7 @@ async fn attachments_upload_send_download_and_restore_into_history() {
     let settings = settings(temp.path());
     let backend = answers(2);
     let requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
 
     // A client path is display metadata only; it never becomes a storage path.
     let (status, image) = upload(&app, "chat-a", "../../evil/shot.png", PNG.to_vec()).await;
@@ -224,7 +223,7 @@ async fn attachments_upload_send_download_and_restore_into_history() {
 async fn empty_files_upload_send_persist_and_download() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+    let app = crate::store_app(settings.clone(), Arc::new(answers(1)));
 
     let (status, empty) = upload(&app, "chat-a", "empty.txt", Vec::new()).await;
     assert_eq!(status, StatusCode::OK, "{empty}");
@@ -259,7 +258,7 @@ async fn empty_files_upload_send_persist_and_download() {
 async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+    let app = crate::store_app(settings.clone(), Arc::new(answers(1)));
 
     let (status, body) = upload(&app, "chat-b", "huge.bin", vec![0; 20 * 1024 * 1024 + 1]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -364,7 +363,7 @@ async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server
 async fn unsupported_image_formats_are_detected_and_reported_for_each_provider() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+    let app = crate::store_app(settings.clone(), Arc::new(answers(1)));
 
     let svg = b"\xEF\xBB\xBF<?xml version=\"1.0\"?>\n<!-- logo -->\n<!DOCTYPE svg>\n\
 <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\"/></svg>\n";
@@ -426,7 +425,7 @@ async fn unsupported_image_formats_are_detected_and_reported_for_each_provider()
 async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_uploads() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+    let app = crate::store_app(settings.clone(), Arc::new(answers(1)));
 
     let (_, draft) = upload(&app, "chat-c", "draft.txt", b"draft".to_vec()).await;
     let draft_url = attachment_url("chat-c", draft["id"].as_str().unwrap());
@@ -466,7 +465,7 @@ async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_upload
 
     // Past the window, unreferenced uploads and interrupted leftovers go;
     // referenced ones stay.
-    let repository = ConversationRepository::new(&settings.data_dir);
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let leftover = repository
         .project_paths(PROJECT)
         .expect("project")
@@ -528,7 +527,7 @@ async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_upload
 }
 
 fn attachment_dir(settings: &SparkSettings, conversation_id: &str, attachment: &Value) -> PathBuf {
-    ConversationRepository::new(&settings.data_dir)
+    spark_storage::ProjectRegistry::new(&settings.data_dir)
         .project_paths(PROJECT)
         .expect("project")
         .conversations_dir
@@ -541,7 +540,7 @@ fn content_path(settings: &SparkSettings, conversation_id: &str, attachment: &Va
     std::fs::read_dir(attachment_dir(settings, conversation_id, attachment))
         .expect("attachment dir")
         .map(|entry| entry.expect("entry").path())
-        .find(|path| path.file_name().unwrap() != "attachment.json")
+        .next()
         .expect("content file")
 }
 
@@ -555,7 +554,7 @@ fn user_turn_mutation(attachment: &Value) -> ConversationMutation {
 }
 
 fn turn_count(settings: &SparkSettings, conversation_id: &str) -> usize {
-    ConversationRepository::new(&settings.data_dir)
+    ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .read_snapshot(conversation_id, Some(PROJECT))
         .expect("read")
         .map_or(0, |snapshot| {
@@ -569,7 +568,7 @@ async fn uploads_with_missing_or_damaged_content_are_rejected_before_the_turn_pe
     let settings = settings(temp.path());
     let backend = answers(1);
     let requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
 
     let (_, removed) = upload(&app, "chat-d", "shot.png", PNG.to_vec()).await;
     std::fs::remove_file(content_path(&settings, "chat-d", &removed)).expect("remove bytes");
@@ -606,7 +605,7 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
     // Scripted answers are numbered per backend, so the restart shares one.
     let backend = Arc::new(answers(2));
     let requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), backend.clone());
+    let app = crate::store_app(settings.clone(), backend.clone());
     let (_, image) = upload(&app, "chat-e", "shot.png", PNG.to_vec()).await;
     let (_, notes) = upload(&app, "chat-e", "notes.txt", b"notes".to_vec()).await;
     let (status, _) = send(
@@ -620,10 +619,9 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
     wait_for_answers(&settings, "chat-e", 1).await;
 
     // A restarted server rebuilds history from storage for either provider.
-    let app = build_app_with_agent_turn_backend(settings.clone(), backend);
+    let app = crate::store_app(settings.clone(), backend);
     let image_bytes = content_path(&settings, "chat-e", &image);
-    let notes_record = attachment_dir(&settings, "chat-e", &notes).join("attachment.json");
-    let record = std::fs::read(&notes_record).expect("record");
+    let notes_bytes = content_path(&settings, "chat-e", &notes);
 
     std::fs::remove_file(&image_bytes).expect("remove bytes");
     let (status, body) = send(
@@ -642,7 +640,8 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
     );
     std::fs::write(&image_bytes, PNG).expect("restore bytes");
 
-    std::fs::remove_file(&notes_record).expect("remove record");
+    // Bytes that no longer match the recorded size are unreadable too.
+    std::fs::write(&notes_bytes, b"no").expect("damage bytes");
     let (status, body) = send(
         &app,
         "chat-e",
@@ -657,7 +656,7 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
     assert_eq!(turn_count(&settings, "chat-e"), 2);
     assert_eq!(requests.lock().expect("requests").len(), 1);
 
-    std::fs::write(&notes_record, record).expect("restore record");
+    std::fs::write(&notes_bytes, b"notes").expect("restore bytes");
     let (status, _) = send(
         &app,
         "chat-e",
@@ -679,8 +678,8 @@ async fn restored_history_with_a_missing_attachment_fails_after_restart_and_prov
 async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
-    let repository = ConversationRepository::new(&settings.data_dir);
+    let app = crate::store_app(settings.clone(), Arc::new(answers(1)));
+    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let past_window = || time::OffsetDateTime::now_utc() + time::Duration::hours(25);
 
     // Delete or cleanup first: the send's commit is rejected.
@@ -724,17 +723,25 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
         StatusCode::OK
     );
 
-    // Neither deletion nor cleanup proceeds while a commit holds the lock.
+    // Neither deletion nor cleanup proceeds while another transaction holds
+    // the database.
     let (_, draft) = upload(&app, "chat-f", "d.txt", b"d".to_vec()).await;
-    let lock = std::fs::File::open(
-        repository
-            .project_paths(PROJECT)
-            .expect("project")
-            .conversations_dir
-            .join("chat-f/.commit.lock"),
-    )
-    .expect("lock file");
-    lock.lock().expect("hold conversation lock");
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let store = repository.store().clone();
+        std::thread::spawn(move || {
+            store
+                .database()
+                .read(|_| {
+                    held_tx.send(()).expect("held");
+                    release_rx.recv().expect("release");
+                    Ok(())
+                })
+                .expect("hold database")
+        })
+    };
+    held_rx.recv().expect("database held");
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let blocked = {
         let repository = repository.clone();
@@ -748,7 +755,8 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
     };
     assert!(done_rx.recv_timeout(Duration::from_millis(300)).is_err());
     assert!(attachment_dir(&settings, "chat-f", &draft).exists());
-    lock.unlock().expect("release");
+    release_tx.send(()).expect("release");
+    holder.join().expect("holder");
     let (pruned_ids, deleted_draft) = blocked.join().expect("thread");
     assert_eq!(pruned_ids, vec![draft["id"].as_str().unwrap().to_string()]);
     assert!(!deleted_draft);

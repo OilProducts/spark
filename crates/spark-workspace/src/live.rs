@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
-use spark_storage::conversation::{CONVERSATION_SNAPSHOT_REF_TYPE, TRANSIENT_STREAM_EVENT_TYPE};
+use spark_storage::conversation::TRANSIENT_STREAM_EVENT_TYPE;
+use spark_storage::ConversationStore;
+use std::sync::Arc;
 
 use crate::conversations::WorkspaceConversationService;
 use crate::triggers::WorkspaceTriggerService;
@@ -146,6 +148,7 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
 
 pub fn initial_live_envelopes(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     query: &LiveQuery,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
     let mut envelopes = Vec::new();
@@ -158,6 +161,7 @@ pub fn initial_live_envelopes(
         })?;
         envelopes.extend(conversation_envelopes(
             settings,
+            store,
             conversation_id,
             project_path,
             query.conversation_revision,
@@ -175,6 +179,7 @@ pub fn initial_live_envelopes(
     if query.include_triggers {
         envelopes.push(trigger_snapshot_envelope(
             settings,
+            store,
             query.triggers_project_path.as_deref(),
         )?);
     }
@@ -189,19 +194,27 @@ pub fn initial_live_envelopes(
 
 pub fn conversation_envelopes_after(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     conversation_id: &str,
     project_path: &str,
     revision: i64,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
-    conversation_envelopes(settings, conversation_id, project_path, Some(revision))
+    conversation_envelopes(
+        settings,
+        store,
+        conversation_id,
+        project_path,
+        Some(revision),
+    )
 }
 
 pub fn conversation_snapshot_envelope(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     conversation_id: &str,
     project_path: &str,
 ) -> WorkspaceResult<LiveEnvelope> {
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
     let snapshot = service.get_snapshot(conversation_id, Some(project_path))?;
     Ok(conversation_snapshot_envelope_from_state(
         conversation_id,
@@ -465,82 +478,27 @@ pub fn envelope_matches_query(envelope: &LiveEnvelope, query: &LiveQuery) -> boo
     }
 }
 
+/// A conversation's current snapshot when it is newer than the client's
+/// `revision` (or the client has none). Committed state is replayed as one
+/// snapshot rather than from a journal.
 fn conversation_envelopes(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     conversation_id: &str,
     project_path: &str,
     revision: Option<i64>,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = WorkspaceConversationService::new(settings.clone(), store.clone());
     let snapshot = service.get_snapshot(conversation_id, Some(project_path))?;
     let snapshot_revision = value_revision(&snapshot).unwrap_or(0);
-    let Some(revision) = revision else {
-        return Ok(vec![conversation_snapshot_envelope_from_state(
-            conversation_id,
-            project_path,
-            snapshot,
-        )]);
-    };
-    if snapshot_revision <= revision {
+    if revision.is_some_and(|revision| snapshot_revision <= revision) {
         return Ok(Vec::new());
     }
-    let events = service.read_events_after(conversation_id, project_path, revision)?;
-    if events.is_empty() {
-        return Ok(vec![resync_required(
-            "conversation",
-            Some(conversation_id.to_string()),
-            Some(project_path.to_string()),
-            "conversation journal cannot replay from the requested revision",
-        )]);
-    }
-    let mut envelopes = Vec::new();
-    let mut expected_revision = revision + 1;
-    let mut saw_snapshot_ref = false;
-    for event in events {
-        let Some(event_revision) = value_revision(&event) else {
-            continue;
-        };
-        if event_revision != expected_revision {
-            envelopes.push(resync_required(
-                "conversation",
-                Some(conversation_id.to_string()),
-                Some(project_path.to_string()),
-                "conversation journal has a revision gap from the requested cursor",
-            ));
-            return Ok(envelopes);
-        }
-        if event.get("type").and_then(Value::as_str) == Some(CONVERSATION_SNAPSHOT_REF_TYPE) {
-            // Snapshot-level commits journal slim ref lines that never embed
-            // state; the current committed snapshot supersedes the ref and
-            // everything after it.
-            saw_snapshot_ref = true;
-            break;
-        }
-        envelopes.push(conversation_event_envelope(
-            conversation_id,
-            project_path,
-            event,
-            event_revision,
-        ));
-        expected_revision += 1;
-    }
-    if saw_snapshot_ref {
-        envelopes.push(conversation_snapshot_envelope_from_state(
-            conversation_id,
-            project_path,
-            snapshot,
-        ));
-        return Ok(envelopes);
-    }
-    if expected_revision <= snapshot_revision {
-        envelopes.push(resync_required(
-            "conversation",
-            Some(conversation_id.to_string()),
-            Some(project_path.to_string()),
-            "conversation journal cannot replay from the requested revision",
-        ));
-    }
-    Ok(envelopes)
+    Ok(vec![conversation_snapshot_envelope_from_state(
+        conversation_id,
+        project_path,
+        snapshot,
+    )])
 }
 
 pub(crate) fn conversation_snapshot_envelope_from_state(
@@ -915,9 +873,11 @@ fn run_upsert_envelope_from_record_with_usage(
 
 fn trigger_snapshot_envelope(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     project_path: Option<&str>,
 ) -> WorkspaceResult<LiveEnvelope> {
-    let triggers = WorkspaceTriggerService::new(settings.clone()).list_triggers(project_path)?;
+    let triggers = WorkspaceTriggerService::new(settings.clone(), store.clone())
+        .list_triggers(project_path)?;
     Ok(LiveEnvelope {
         event_type: "trigger.snapshot".to_string(),
         project_path: project_path.map(str::to_string),
@@ -1010,14 +970,17 @@ pub fn conversation_summary_envelope(
 /// The thread-list summary of a stored conversation, for clients outside it.
 pub fn conversation_summary_envelope_for(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     conversation_id: &str,
     project_path: &str,
 ) -> WorkspaceResult<Option<LiveEnvelope>> {
     // Launch responses can carry a handle record's unresolved spelling of the path.
     let project_path = normalized_record_path(project_path).unwrap_or_else(|| project_path.into());
-    Ok(WorkspaceConversationService::new(settings.clone())
-        .thread_list_summary(conversation_id, &project_path)?
-        .map(|summary| conversation_summary_envelope(&summary)))
+    Ok(
+        WorkspaceConversationService::new(settings.clone(), store.clone())
+            .thread_list_summary(conversation_id, &project_path)?
+            .map(|summary| conversation_summary_envelope(&summary)),
+    )
 }
 
 pub fn mission_upsert_envelope(mission: &crate::missions::MissionRecord) -> LiveEnvelope {

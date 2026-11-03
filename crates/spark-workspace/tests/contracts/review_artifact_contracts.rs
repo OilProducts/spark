@@ -7,10 +7,10 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_storage::{ConversationHandleRepository, ProjectRegistry};
+use spark_storage::ProjectRegistry;
 use spark_workspace::{
     ConversationTurnRequest, FlowRunRequestCreateByHandleRequest, FlowRunRequestReviewRequest,
-    ProposedPlanReviewRequest, WorkspaceConversationService,
+    ProposedPlanReviewRequest,
 };
 
 #[test]
@@ -26,7 +26,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
         project_path.to_str().expect("utf-8"),
         "conversation-review",
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     let launched = service
         .create_flow_run_request_by_handle(
@@ -79,7 +79,7 @@ fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
         "conversation-first-turn",
         "streaming",
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
 
     service
         .create_flow_run_request_by_handle(
@@ -135,7 +135,7 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
             ),
         ]),
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let review = |request_id: &str, disposition: &str| {
         service
             .review_flow_run_request(
@@ -193,7 +193,7 @@ fn pending_request(
 #[test]
 fn completed_plan_segments_create_proposed_plan_artifacts() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let (prepared, _) = service
@@ -238,7 +238,7 @@ fn completed_plan_segments_create_proposed_plan_artifacts() {
 #[test]
 fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let project = project_path.to_str().expect("utf-8");
@@ -327,7 +327,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
         project_path.to_str().expect("utf-8"),
         "conversation-plan",
     );
-    let service = WorkspaceConversationService::new(settings);
+    let service = crate::conversations(settings);
 
     let rejected = service
         .review_proposed_plan(
@@ -351,8 +351,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
         project_path.to_str().expect("utf-8"),
         "conversation-plan-approved",
     );
-    let service =
-        WorkspaceConversationService::new(settings_for_project(&project_path, temp.path()));
+    let service = crate::conversations(settings_for_project(&project_path, temp.path()));
     let approved = service
         .review_proposed_plan(
             "conversation-plan-approved",
@@ -413,7 +412,7 @@ fn seed_conversation_with_requests(
     flow_run_requests: Value,
 ) {
     let registry = ProjectRegistry::new(&settings.data_dir);
-    let project = registry
+    let _project = registry
         .ensure_project_paths(project_path)
         .expect("project");
     crate::write_conversation_snapshot(
@@ -459,15 +458,6 @@ fn seed_conversation_with_requests(
             "proposed_plans": []
         }),
     );
-    ConversationHandleRepository::new(&settings.data_dir)
-        .ensure_conversation_handle(
-            conversation_id,
-            &project.project_id,
-            project_path,
-            "2026-01-01T00:00:00Z",
-            Some("amber-anchor"),
-        )
-        .expect("handle");
 }
 
 fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
@@ -569,7 +559,7 @@ mode = "native"
 #[test]
 fn chat_turn_ingest_persists_streamed_reasoning_segments() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let service = crate::conversations(settings(temp.path()));
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let (prepared, _) = service
@@ -832,7 +822,7 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
             None
         )]),
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     seed_proposed_plan(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -890,7 +880,7 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let store = attractor_runtime::RunStore::for_settings(&settings);
     let mut paths = Vec::new();
     for run_id in ["run-a", "run-b"] {
@@ -985,7 +975,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let (prepared, snapshot) = service
         .start_turn(
             "conversation-frame",
@@ -1040,7 +1030,18 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
         .ensure_project_paths(&project_path.to_string_lossy())
         .expect("project paths");
     // A resumed codex thread still gets the frame as pinned instructions.
-    spark_storage::ConversationRepository::new(&settings.data_dir)
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
+            "schema_version": 5,
+            "revision": 1,
+            "conversation_id": "conversation-resume",
+            "project_path": project_path.to_string_lossy(),
+            "turns": [],
+            "segments": []
+        }),
+    );
+    spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
         .write_runtime_session(
             "conversation-resume",
             &project_path.to_string_lossy(),
@@ -1057,7 +1058,7 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
         .expect("seed runtime session");
     let _ = &project;
 
-    let (prepared, _) = WorkspaceConversationService::new(settings.clone())
+    let (prepared, _) = crate::conversations(settings.clone())
         .start_turn(
             "conversation-resume",
             ConversationTurnRequest {

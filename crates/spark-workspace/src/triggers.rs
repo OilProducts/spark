@@ -1,12 +1,13 @@
 use serde_json::{Map, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::TriggerRepositories;
+use spark_storage::{ConversationStore, TriggerRepositories};
 use spark_triggers::{
     SerializedTrigger, TriggerActivationOutcome, TriggerActivationRequest, TriggerActivationSink,
     TriggerActivationSinkOutcome, TriggerCreateRequest, TriggerDeleteResponse, TriggerService,
     TriggerSourceRuntime, TriggerUpdateRequest, WebhookDispatchOutcome, WebhookHandleRequest,
     WebhookHandleResponse, TERMINAL_PIPELINE_STATUSES,
 };
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 use crate::conversations::WorkspaceConversationService;
@@ -16,13 +17,15 @@ use crate::flows::WorkspaceFlowService;
 #[derive(Clone)]
 pub struct WorkspaceTriggerService {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
 }
 
 impl WorkspaceTriggerService {
-    pub fn new(settings: SparkSettings) -> Self {
+    pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
         Self {
             settings,
+            store,
             run_event_observer: None,
         }
     }
@@ -245,8 +248,11 @@ impl WorkspaceTriggerService {
         action: &spark_storage::TriggerAction,
     ) -> WorkspaceResult<()> {
         if action.mode == "mission" {
-            let mission = crate::missions::WorkspaceMissionService::new(self.settings.clone())
-                .get(project_path, action.mission_id.as_deref().unwrap())?;
+            let mission = crate::missions::WorkspaceMissionService::new(
+                self.settings.clone(),
+                self.store.clone(),
+            )
+            .get(project_path, action.mission_id.as_deref().unwrap())?;
             if mission.closed.is_some() {
                 return Err(WorkspaceError::Validation("Mission is closed".into()));
             }
@@ -268,6 +274,7 @@ impl WorkspaceTriggerService {
             TriggerRepositories::from_settings(&self.settings),
             WorkspaceTriggerActivationSink {
                 settings: self.settings.clone(),
+                store: self.store.clone(),
                 run_event_observer: self.run_event_observer.clone(),
             },
         )
@@ -277,6 +284,7 @@ impl WorkspaceTriggerService {
 #[derive(Clone)]
 struct WorkspaceTriggerActivationSink {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
 }
 
@@ -286,16 +294,23 @@ impl TriggerActivationSink for WorkspaceTriggerActivationSink {
         request: TriggerActivationRequest,
     ) -> spark_triggers::TriggerResult<TriggerActivationSinkOutcome> {
         if request.action.mode == "mission" {
-            return crate::missions::WorkspaceMissionService::new(self.settings.clone())
-                .deliver_trigger(&request)
-                .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
+            return crate::missions::WorkspaceMissionService::new(
+                self.settings.clone(),
+                self.store.clone(),
+            )
+            .deliver_trigger(&request)
+            .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
         }
         if request.action.mode == "role" {
-            return crate::roles::WorkspaceRoleService::new(self.settings.clone())
-                .deliver_trigger(&request)
-                .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
+            return crate::roles::WorkspaceRoleService::new(
+                self.settings.clone(),
+                self.store.clone(),
+            )
+            .deliver_trigger(&request)
+            .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
         }
-        let mut service = WorkspaceConversationService::new(self.settings.clone());
+        let mut service =
+            WorkspaceConversationService::new(self.settings.clone(), self.store.clone());
         if let Some(observer) = &self.run_event_observer {
             service = service.with_run_event_observer(observer.clone());
         }

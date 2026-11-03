@@ -11,7 +11,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn source_frontend_dist_serves_index_icon_favicon_and_json_asset_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings_with_project_root(temp.path(), repo_root()));
+    let app = build_app(settings_with_project_root(temp.path(), repo_root())).expect("app");
 
     let index = request_bytes(app.clone(), "/").await;
     assert_eq!(index.0, StatusCode::OK);
@@ -80,7 +80,7 @@ async fn explicit_ui_dir_serves_development_assets_and_blocks_symlink_escape() {
 
     let mut settings = settings(temp.path());
     settings.ui_dir = Some(ui_root);
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let index = request_bytes(app.clone(), "/").await;
     assert_eq!(index.0, StatusCode::OK);
@@ -115,7 +115,7 @@ async fn explicit_ui_dir_serves_development_assets_and_blocks_symlink_escape() {
 #[tokio::test]
 async fn packaged_frontend_dist_serves_when_source_tree_ui_is_unavailable() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
 
     let index = request_bytes(app.clone(), "/").await;
     assert_eq!(index.0, StatusCode::OK);
@@ -142,7 +142,7 @@ async fn packaged_frontend_dist_serves_when_source_tree_ui_is_unavailable() {
 #[tokio::test]
 async fn api_and_legacy_root_paths_do_not_fall_back_to_html() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings_with_project_root(temp.path(), repo_root()));
+    let app = build_app(settings_with_project_root(temp.path(), repo_root())).expect("app");
 
     for path in ["/workspace/api/missing", "/status", "/docs"] {
         let response = request_json(app.clone(), path).await;
@@ -160,7 +160,7 @@ async fn api_and_legacy_root_paths_do_not_fall_back_to_html() {
 #[tokio::test]
 async fn product_mount_base_paths_match_mounted_app_boundaries() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings_with_project_root(temp.path(), repo_root()));
+    let app = build_app(settings_with_project_root(temp.path(), repo_root())).expect("app");
 
     let workspace_base = request_bytes_with_host(app.clone(), "/workspace", "testserver").await;
     assert_eq!(workspace_base.0, StatusCode::TEMPORARY_REDIRECT);

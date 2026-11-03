@@ -34,6 +34,7 @@ fn save_workspace(settings: &SparkSettings, value: Value) {
         .revision;
     update_workspace_settings(
         settings,
+        &shared_store(&(settings).data_dir),
         serde_json::from_value(
             json!({"section": "models", "expected_revision": revision, "value": value}),
         )
@@ -44,7 +45,7 @@ fn save_workspace(settings: &SparkSettings, value: Value) {
 
 fn save_project(settings: &SparkSettings, value: Value) {
     let view = project_model_settings_view(settings, "/projects/inheritance").unwrap();
-    update_workspace_settings(settings, serde_json::from_value(json!({"section": "project_models", "expected_revision": view["models"]["revision"], "value": {"project_path": "/projects/inheritance", "model_settings": value}})).unwrap()).unwrap();
+    update_workspace_settings(settings,&shared_store(&(settings).data_dir), serde_json::from_value(json!({"section": "project_models", "expected_revision": view["models"]["revision"], "value": {"project_path": "/projects/inheritance", "model_settings": value}})).unwrap()).unwrap();
 }
 
 fn start(
@@ -71,7 +72,7 @@ fn workspace_and_project_groups_resolve_at_the_next_message_and_clearing_restore
         .register_project("/projects/inheritance")
         .unwrap();
     save_workspace(&settings, group("codex", Some("workspace-one")));
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = conversations(settings.clone());
     let first = start(&service, "chat");
     assert_eq!(first.model.as_deref(), Some("workspace-one"));
     save_workspace(&settings, group("codex", Some("workspace-two")));
@@ -140,7 +141,7 @@ fn workspace_and_project_groups_resolve_at_the_next_message_and_clearing_restore
 #[test]
 fn conversation_settings_reject_stale_or_missing_revisions_and_invalid_profiles() {
     let (_temp, settings) = fixture();
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = conversations(settings.clone());
     let update = |revision: Value, value: Value| {
         serde_json::from_value(json!({"project_path": "/projects/inheritance", "expected_revision": revision, "model_settings": value})).unwrap()
     };
@@ -177,7 +178,7 @@ fn selected_profile_contents_and_default_model_are_captured_and_secret_values_ar
     let path = settings.config_dir.join("llm-profiles.toml");
     fs::write(&path, "[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9999/v1'\nmodels=['first','second']\ndefault_model='first'\napi_key_env='SPARK_TEST_PROFILE_SECRET'\n").unwrap();
     save_workspace(&settings, json!({"llm_profile": "team"}));
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = conversations(settings.clone());
     let first = start(&service, "first");
     fs::write(&path, "[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9998/v1'\nmodels=['second']\ndefault_model='second'\n").unwrap();
     let second = start(&service, "second");
@@ -266,7 +267,7 @@ fn active_turn_uses_captured_connection(profile: bool) {
     } else {
         fs::write(&path, format!("[models]\nprovider='openai_compatible'\nmodel='captured-model'\n[providers.openai_compatible]\nbase_url='http://{address}/v1'\n")).unwrap();
     }
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = conversations(settings.clone());
     let (prepared, started) = service
         .start_turn(
             "captured-chat",
@@ -352,6 +353,7 @@ fn saved_and_file_edited_provider_and_session_settings_apply_only_to_new_message
         let revision = read_settings_document(&path).unwrap().revision;
         update_workspace_settings(
             &settings,
+            &shared_store(&(&settings).data_dir),
             serde_json::from_value(
                 json!({"section": section, "expected_revision": revision, "value": value}),
             )
@@ -368,7 +370,7 @@ fn saved_and_file_edited_provider_and_session_settings_apply_only_to_new_message
         "agents",
         json!({"max_turns": 7, "default_command_timeout_ms": 321, "max_command_timeout_ms": 999}),
     );
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = conversations(settings.clone());
     let first = start(&service, "capture-first");
     let snapshot = first.agent_turn_request.metadata["spark.execution.settings"].clone();
     save("agents", json!({"max_turns": 11}));
@@ -399,6 +401,96 @@ fn saved_and_file_edited_provider_and_session_settings_apply_only_to_new_message
     );
     let before = fs::read(&path).unwrap();
     let revision = read_settings_document(&path).unwrap().revision;
-    assert!(update_workspace_settings(&settings, serde_json::from_value(json!({"section": "agents", "expected_revision": revision, "value": {"default_command_timeout_ms": 0}})).unwrap()).is_err());
+    assert!(update_workspace_settings(&settings,&shared_store(&(&settings).data_dir), serde_json::from_value(json!({"section": "agents", "expected_revision": revision, "value": {"default_command_timeout_ms": 0}})).unwrap()).is_err());
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+/// One conversation store per test home, shared by every service a test
+/// builds, the way one app shares its store.
+#[allow(dead_code)]
+fn shared_store(
+    data_dir: impl AsRef<std::path::Path>,
+) -> std::sync::Arc<spark_storage::ConversationStore> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    static STORES: OnceLock<Mutex<HashMap<PathBuf, Weak<spark_storage::ConversationStore>>>> =
+        OnceLock::new();
+    let data_dir = data_dir.as_ref();
+    let mut stores = STORES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(store) = stores.get(data_dir).and_then(Weak::upgrade) {
+        return store;
+    }
+    let store = spark_storage::ConversationStore::open(data_dir).expect("conversation store");
+    stores.insert(data_dir.to_path_buf(), Arc::downgrade(&store));
+    store
+}
+
+#[allow(dead_code)]
+fn conversations(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn conversations_with_backend(
+    settings: spark_common::settings::SparkSettings,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_agent_turn_backend(
+        settings, store, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+        settings, store, factory,
+    )
+}
+
+#[allow(dead_code)]
+fn conversations_with_factory_and_backend(
+    settings: spark_common::settings::SparkSettings,
+    factory: attractor_api::RuntimeHandlerRunnerFactory,
+    backend: std::sync::Arc<dyn spark_agent_adapter::AgentTurnBackend>,
+) -> spark_workspace::WorkspaceConversationService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+        settings, store, factory, backend,
+    )
+}
+
+#[allow(dead_code)]
+fn missions(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::missions::WorkspaceMissionService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::missions::WorkspaceMissionService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn roles(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::roles::WorkspaceRoleService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::roles::WorkspaceRoleService::new(settings, store)
+}
+
+#[allow(dead_code)]
+fn triggers(
+    settings: spark_common::settings::SparkSettings,
+) -> spark_workspace::WorkspaceTriggerService {
+    let store = shared_store(&settings.data_dir);
+    spark_workspace::WorkspaceTriggerService::new(settings, store)
 }

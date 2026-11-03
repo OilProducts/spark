@@ -30,7 +30,11 @@ mod claude_auth;
 mod codex_auth;
 mod workspace;
 
-pub fn build_app(settings: SparkSettings) -> Router {
+/// Builders open the Spark home's conversation store and hold its exclusive
+/// home lock for the app's lifetime; a second app on the same home fails here
+/// with [`spark_storage::StorageError::HomeLocked`]. A failed build releases
+/// everything it opened.
+pub fn build_app(settings: SparkSettings) -> Result<Router, spark_storage::StorageError> {
     let agent_turn_backend =
         spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings);
     build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
@@ -43,7 +47,7 @@ pub fn build_app(settings: SparkSettings) -> Router {
 pub fn build_app_with_rust_llm_client(
     settings: SparkSettings,
     client: unified_llm_adapter::Client,
-) -> Router {
+) -> Result<Router, spark_storage::StorageError> {
     let agent_turn_backend: Arc<dyn AgentTurnBackend> =
         Arc::new(RustLlmAgentTurnBackend::new(client.clone()));
     build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
@@ -57,29 +61,26 @@ pub fn build_app_with_rust_llm_client(
 pub fn build_app_with_rust_llm_client_and_settings_notifications(
     settings: SparkSettings,
     client: unified_llm_adapter::Client,
-) -> (Router, impl Fn(&str) + Send + Sync + 'static) {
-    let live_hub = Arc::new(WorkspaceLiveHub::new());
-    let publisher = live_hub.clone();
-    let app = build_app_with_live_hub(
+) -> Result<(Router, impl Fn(&str) + Send + Sync + 'static), spark_storage::StorageError> {
+    let (app, publisher) = build_app_with_live_hub(
         settings,
         attractor_api::rust_llm_runtime_handler_runner_factory(client.clone()),
         Arc::new(RustLlmAgentTurnBackend::new(client)),
-        live_hub,
-    );
-    (app, move |revision| {
+    )?;
+    Ok((app, move |revision: &str| {
         publisher.publish_settings_change(
             "workspace",
             "desktop",
             None,
             serde_json::json!(revision),
         );
-    })
+    }))
 }
 
 pub fn build_app_with_agent_turn_backend(
     settings: SparkSettings,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
-) -> Router {
+) -> Result<Router, spark_storage::StorageError> {
     build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings,
         attractor_api::default_runtime_handler_runner_factory(),
@@ -90,7 +91,7 @@ pub fn build_app_with_agent_turn_backend(
 pub fn build_app_with_runtime_handler_runner_factory(
     settings: SparkSettings,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
-) -> Router {
+) -> Result<Router, spark_storage::StorageError> {
     let agent_turn_backend =
         spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings);
     build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
@@ -104,21 +105,63 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
     settings: SparkSettings,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
-) -> Router {
-    build_app_with_live_hub(
+) -> Result<Router, spark_storage::StorageError> {
+    build_app_with_live_hub(settings, runtime_handler_runner_factory, agent_turn_backend)
+        .map(|(app, _)| app)
+}
+
+/// Builds the app on a conversation store its caller already opened (and so
+/// already holds the home lock), for callers that also use that store
+/// directly, such as tests. The store must belong to the settings' Spark
+/// home; a mismatch is refused before any startup or recovery work.
+pub fn build_app_with_conversation_store(
+    settings: SparkSettings,
+    conversation_store: Arc<spark_storage::ConversationStore>,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+) -> Result<Router, spark_storage::StorageError> {
+    let normalized =
+        |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if normalized(&settings.data_dir) != normalized(conversation_store.home_dir()) {
+        return Err(spark_storage::StorageError::InvalidConversationState {
+            path: settings.data_dir.clone(),
+            reason: format!(
+                "The conversation store belongs to Spark home {}, not {}.",
+                conversation_store.home_dir().display(),
+                settings.data_dir.display()
+            ),
+        });
+    }
+    Ok(build_app_on_store(
         settings,
-        runtime_handler_runner_factory,
+        conversation_store,
+        attractor_api::default_runtime_handler_runner_factory(),
         agent_turn_backend,
-        Arc::new(WorkspaceLiveHub::new()),
     )
+    .0)
 }
 
 fn build_app_with_live_hub(
     settings: SparkSettings,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
-    live_hub: Arc<WorkspaceLiveHub>,
-) -> Router {
+) -> Result<(Router, Arc<WorkspaceLiveHub>), spark_storage::StorageError> {
+    // Before any recovery or request: the home lock and its database.
+    let conversation_store = spark_storage::ConversationStore::open(&settings.data_dir)?;
+    Ok(build_app_on_store(
+        settings,
+        conversation_store,
+        runtime_handler_runner_factory,
+        agent_turn_backend,
+    ))
+}
+
+fn build_app_on_store(
+    settings: SparkSettings,
+    conversation_store: Arc<spark_storage::ConversationStore>,
+    runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+) -> (Router, Arc<WorkspaceLiveHub>) {
+    let live_hub = Arc::new(WorkspaceLiveHub::new(&conversation_store));
     let settings = Arc::new(settings);
     let (run_event_observer, run_event_publisher) =
         RunEventPublisher::spawn(settings.clone(), live_hub.clone());
@@ -126,7 +169,8 @@ fn build_app_with_live_hub(
         claude_connection: Arc::new(Mutex::new(Default::default())),
         codex_connection: Arc::new(Mutex::new(Default::default())),
         settings,
-        live_hub,
+        conversation_store,
+        live_hub: live_hub.clone(),
         runtime_handler_runner_factory,
         agent_turn_backend,
         run_event_observer,
@@ -153,8 +197,11 @@ fn build_app_with_live_hub(
         }
         let _ = service.recover_interrupted_runs();
         // Likewise every chat turn the previous process left in flight.
-        let _ = spark_workspace::WorkspaceConversationService::new((*state.settings).clone())
-            .settle_orphaned_turns();
+        let _ = spark_workspace::WorkspaceConversationService::new(
+            (*state.settings).clone(),
+            state.conversation_store.clone(),
+        )
+        .settle_orphaned_turns();
         let live_hub = state.live_hub.clone();
         spark_workspace::inbox::install_runtime(
             &state.settings,
@@ -163,12 +210,18 @@ fn build_app_with_live_hub(
                 publish: Arc::new(move |envelope| live_hub.publish(envelope)),
             },
         );
-        let _ = spark_workspace::missions::WorkspaceMissionService::new((*state.settings).clone())
-            .recover();
-        let _ =
-            spark_workspace::roles::WorkspaceRoleService::new((*state.settings).clone()).recover();
+        let _ = spark_workspace::missions::WorkspaceMissionService::new(
+            (*state.settings).clone(),
+            state.conversation_store.clone(),
+        )
+        .recover();
+        let _ = spark_workspace::roles::WorkspaceRoleService::new(
+            (*state.settings).clone(),
+            state.conversation_store.clone(),
+        )
+        .recover();
     }
-    Router::new()
+    let app = Router::new()
         .route("/", get(serve_index))
         .route("/favicon.ico", get(serve_favicon))
         .route("/assets/{*asset_path}", get(serve_asset))
@@ -188,7 +241,8 @@ fn build_app_with_live_hub(
         )
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
-        .with_state(state)
+        .with_state(state);
+    (app, live_hub)
 }
 
 #[derive(Clone)]
@@ -196,6 +250,7 @@ pub(crate) struct HttpAppState {
     claude_connection: Arc<Mutex<spark_agent_adapter::claude_code::auth::ClaudeCodeConnection>>,
     codex_connection: Arc<Mutex<codex_auth::ConnectionState>>,
     settings: Arc<SparkSettings>,
+    conversation_store: Arc<spark_storage::ConversationStore>,
     live_hub: Arc<WorkspaceLiveHub>,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
@@ -223,6 +278,12 @@ impl FromRef<HttpAppState> for Arc<SparkSettings> {
     }
 }
 
+impl FromRef<HttpAppState> for Arc<spark_storage::ConversationStore> {
+    fn from_ref(input: &HttpAppState) -> Self {
+        input.conversation_store.clone()
+    }
+}
+
 impl FromRef<HttpAppState> for Arc<WorkspaceLiveHub> {
     fn from_ref(input: &HttpAppState) -> Self {
         input.live_hub.clone()
@@ -241,19 +302,30 @@ impl FromRef<HttpAppState> for Arc<dyn AgentTurnBackend> {
     }
 }
 
-#[derive(Debug)]
+/// The app's live transport. It carries the app's conversation store so
+/// run-event publication can hand terminal runs to their owning
+/// conversations without opening another.
 pub(crate) struct WorkspaceLiveHub {
     sender: broadcast::Sender<LiveEnvelope>,
     execution_cursors: Mutex<HashMap<String, ExecutionTranscriptCursor>>,
+    /// Not owned: background tasks and installed runtimes hold the hub, and
+    /// must not keep the home locked after the app is dropped.
+    conversation_store: std::sync::Weak<spark_storage::ConversationStore>,
 }
 
 impl WorkspaceLiveHub {
-    fn new() -> Self {
+    fn new(conversation_store: &Arc<spark_storage::ConversationStore>) -> Self {
         let (sender, _receiver) = broadcast::channel(256);
         Self {
             sender,
             execution_cursors: Mutex::new(HashMap::new()),
+            conversation_store: Arc::downgrade(conversation_store),
         }
+    }
+
+    /// The app's store while the app is alive.
+    pub(crate) fn conversation_store(&self) -> Option<Arc<spark_storage::ConversationStore>> {
+        self.conversation_store.upgrade()
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<LiveEnvelope> {
@@ -822,7 +894,9 @@ mod incremental_usage_tests {
                 .append_event(&paths, RawRuntimeEvent::new("Log", "failed-live"))
                 .unwrap();
         }
-        let hub = Arc::new(WorkspaceLiveHub::new());
+        let hub = Arc::new(WorkspaceLiveHub::new(
+            &spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        ));
         let mut receiver = hub.subscribe();
         let (sender, notifications) = mpsc::unbounded_channel();
         let cancellation = CancellationToken::new();
@@ -910,7 +984,9 @@ mod incremental_usage_tests {
                 ..Default::default()
             })
             .expect("run");
-        let hub = WorkspaceLiveHub::new();
+        let hub = WorkspaceLiveHub::new(
+            &spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        );
         let mut receiver = hub.subscribe();
         let mut usage = None;
 
@@ -988,7 +1064,9 @@ mod incremental_usage_tests {
             noise.payload.insert("message".into(), json!("noise"));
             store.append_event(&paths, noise).expect("noise");
         }
-        let hub = WorkspaceLiveHub::new();
+        let hub = WorkspaceLiveHub::new(
+            &spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        );
         let mut usage = None;
         let mut initializations = 0;
         let mut initialize = || {
@@ -1037,7 +1115,10 @@ async fn run_trigger_source_loop(
         tokio::select! {
             _ = cancellation.cancelled() => break,
             _ = interval.tick() => {
-                let mut service = WorkspaceTriggerService::new((*settings).clone());
+                let Some(store) = live_hub.conversation_store() else {
+                    break;
+                };
+                let mut service = WorkspaceTriggerService::new((*settings).clone(), store);
                 if let Some(observer) = &run_event_observer.0 {
                     service = service.with_run_event_observer(observer.clone());
                 }
@@ -1055,7 +1136,10 @@ fn publish_terminal_run_trigger_events(
     run_id: &str,
     run_event_observer: Option<attractor_api::RunEventObserver>,
 ) {
-    let mut service = WorkspaceTriggerService::new(settings.clone());
+    let Some(store) = live_hub.conversation_store() else {
+        return;
+    };
+    let mut service = WorkspaceTriggerService::new(settings.clone(), store.clone());
     if let Some(observer) = run_event_observer.clone() {
         service = service.with_run_event_observer(observer);
     }
@@ -1065,7 +1149,7 @@ fn publish_terminal_run_trigger_events(
     // Inbox delivery rides the observed publish path only, so every run a
     // mission or role launches is itself observed and reports back.
     if run_event_observer.is_some() {
-        let _ = spark_workspace::inbox::deliver_run_events(settings, run_id);
+        let _ = spark_workspace::inbox::deliver_run_events(settings, &store, run_id);
     }
 }
 

@@ -2,14 +2,14 @@ use serde_json::{json, Value};
 
 use super::records::{ConversationMeta, TranscriptSegment, TranscriptTurn};
 
-/// Journal line type for snapshot-level commits (metadata/artifact changes).
-/// Journal lines never embed full snapshots; replay across one of these
-/// recovers via a fresh snapshot envelope built from current state.
+/// Entry type for snapshot-level commits (metadata/artifact changes); they
+/// publish live as a full `conversation_snapshot` payload instead.
 pub const CONVERSATION_SNAPSHOT_REF_TYPE: &str = "conversation_snapshot_ref";
 
-/// One committed, replayable journal entry. Revisions are allocated only at
-/// the repository commit boundary and are strictly increasing per
-/// conversation.
+/// One committed change as published to live clients. Its revision is the
+/// conversation's legacy per-conversation counter, allocated only at the
+/// commit boundary; nothing replays these entries, so a reconnecting client
+/// receives a fresh snapshot instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalEntry {
     pub revision: i64,
@@ -37,8 +37,7 @@ pub enum JournalEntryKind {
 }
 
 impl JournalEntry {
-    /// The detailed activity payload. Never embeds a full snapshot, so
-    /// journal growth is bounded by actual transcript content.
+    /// The entry's upsert or tombstone payload.
     pub fn journal_line_payload(&self, meta: &ConversationMeta) -> Value {
         match &self.kind {
             JournalEntryKind::TurnUpserted { turn } => json!({

@@ -48,6 +48,7 @@ pub use codecs::{
     append_jsonl, read_json, read_json_optional, read_jsonl, read_toml, read_toml_optional,
     write_json_atomic, write_toml_atomic, JsonLinesOptions, JsonLinesPolicy, JsonWriteOptions,
 };
+pub use conversation::ConversationStore;
 pub use error::{Result, StorageError};
 pub use repository::{
     AppendLogRepository, DocumentRepository, JsonRepository, JsonlRepository, StorageFormat,
@@ -58,11 +59,9 @@ pub use unknown_fields::{
     validate_toml_table_fields_for, KnownFields, UnknownFieldPolicy, UnknownFieldReport,
 };
 pub use workspace_conversations::{
-    normalize_conversation_handle, ConversationHandleMatch, ConversationHandleRecord,
-    ConversationHandleRepository, ConversationRepository, RawConversationLogLine,
-    CONVERSATION_HANDLE_PATTERN, CONVERSATION_HANDLE_SCHEMA_VERSION,
-    CONVERSATION_STATE_SCHEMA_VERSION, UNSUPPORTED_CONVERSATION_STATE_SCHEMA,
-    UNSUPPORTED_CONVERSATION_STATE_SEGMENTS,
+    normalize_conversation_handle, ConversationHandleMatch, ConversationRepository,
+    RawConversationLogLine, CONVERSATION_STATE_SCHEMA_VERSION,
+    UNSUPPORTED_CONVERSATION_STATE_SCHEMA, UNSUPPORTED_CONVERSATION_STATE_SEGMENTS,
 };
 pub use workspace_projects::{
     DeletedProjectRecord, ProjectPaths, ProjectRecord, ProjectRecordUpdate, ProjectRegistry,

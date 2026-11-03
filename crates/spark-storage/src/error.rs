@@ -96,6 +96,19 @@ pub enum StorageError {
         found: i64,
         expected: i64,
     },
+
+    #[error("Another Spark server is using {path}; stop it or choose a different Spark home.")]
+    HomeLocked { path: PathBuf },
+
+    /// Destructive filesystem cleanup did not run; every file is intact and
+    /// the cleanup is retried later.
+    #[error("Cleanup deferred: {reason}")]
+    CleanupDeferred { reason: String },
+
+    /// A WAL checkpoint failed or did not checkpoint every frame; it is
+    /// retried later and never affects an acknowledged transaction.
+    #[error("Checkpoint incomplete: {reason}")]
+    CheckpointIncomplete { reason: String },
 }
 
 impl StorageError {

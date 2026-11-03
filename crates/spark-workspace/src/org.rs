@@ -18,7 +18,8 @@ use spark_common::settings::SparkSettings;
 use crate::inbox::{invalid, read_events, InboxEvent};
 use crate::roles::{memory_dir, RoleRecord, WorkspaceRoleService};
 use crate::{WorkspaceError, WorkspaceResult};
-use spark_storage::{workspace_records::RecordRepository, ProjectRegistry};
+use spark_storage::{workspace_records::RecordRepository, ConversationStore, ProjectRegistry};
+use std::sync::Arc;
 
 const RECENT_WAKES: usize = 10;
 
@@ -88,11 +89,12 @@ pub struct OrgCommit {
 
 pub struct WorkspaceOrgService {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
 }
 
 impl WorkspaceOrgService {
-    pub fn new(settings: SparkSettings) -> Self {
-        Self { settings }
+    pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
+        Self { settings, store }
     }
 
     fn roots(&self, project: &str) -> WorkspaceResult<FlowRoots> {
@@ -159,7 +161,7 @@ impl WorkspaceOrgService {
     fn standing_roles(&self, project: &str) -> WorkspaceResult<BTreeMap<String, StandingRole>> {
         let scope = ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project)?;
         let repo = RecordRepository::roles(&scope.root);
-        WorkspaceRoleService::new(self.settings.clone())
+        WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
             .list(project)?
             .into_iter()
             .map(|role| {

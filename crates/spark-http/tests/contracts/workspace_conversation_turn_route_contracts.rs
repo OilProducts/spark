@@ -13,8 +13,7 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_http::{build_app_with_agent_turn_backend, build_app_with_rust_llm_client};
-use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService};
+use spark_workspace::ConversationTurnRequest;
 use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
 use unified_llm_adapter::{
@@ -83,7 +82,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
         },
     ]);
     let backend_requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
 
     let first = request_json(
         app.clone(),
@@ -259,36 +258,34 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     let project = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths("/projects/http-turn")
         .expect("project");
-    assert!(project
-        .conversations_dir
-        .join("conversation-http-turn/conversation.json")
-        .exists());
-    assert!(project
-        .conversations_dir
-        .join("conversation-http-turn/transcript.jsonl")
-        .exists());
-    assert!(project
-        .conversations_dir
-        .join("conversation-http-turn/events.jsonl")
-        .exists());
-    assert!(!project
-        .conversations_dir
-        .join("conversation-http-turn/state.json")
-        .exists());
-    let persisted = WorkspaceConversationService::new(settings.clone())
+    // Conversation state lives in the store's rows, not split files.
+    for legacy in [
+        "conversation.json",
+        "transcript.jsonl",
+        "events.jsonl",
+        "state.json",
+    ] {
+        assert!(!project
+            .conversations_dir
+            .join("conversation-http-turn")
+            .join(legacy)
+            .exists());
+    }
+    let persisted = crate::conversations(settings.clone())
         .get_snapshot("conversation-http-turn", Some("/projects/http-turn"))
         .expect("persisted snapshot");
     assert_eq!(persisted["turns"], final_snapshot["turns"]);
     assert_eq!(persisted["segments"], final_snapshot["segments"]);
-    let raw_log = spark_storage::ConversationRepository::new(&settings.data_dir)
-        .read_codex_jsonrpc_trace("conversation-http-turn", "/projects/http-turn")
-        .expect("raw log");
+    let raw_log =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .read_codex_jsonrpc_trace("conversation-http-turn", "/projects/http-turn")
+            .expect("raw log");
     assert!(
         raw_log.is_empty(),
         "Codex JSON-RPC traces are disabled unless SPARK_DEBUG_CODEX_JSONRPC=1"
     );
 
-    WorkspaceConversationService::new(settings.clone())
+    crate::conversations(settings.clone())
         .start_turn(
             "conversation-http-queued",
             ConversationTurnRequest {
@@ -366,7 +363,10 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
             adapter,
         )
         .expect("client");
-    let app = build_app_with_rust_llm_client(settings.clone(), client);
+    let app = crate::store_app(
+        settings.clone(),
+        Arc::new(spark_agent_adapter::RustLlmAgentTurnBackend::new(client)),
+    );
 
     let response = request_json(
         app,
@@ -472,7 +472,7 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
 async fn conversation_turn_route_persists_structured_backend_error_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
             events: vec![stream_error_event("route backend stream failed")],
@@ -538,7 +538,7 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
         .any(|segment| segment["kind"] == "assistant_message"
             && segment["status"] == "failed"
             && segment["error"] == "route backend stream failed"));
-    let persisted = WorkspaceConversationService::new(settings.clone())
+    let persisted = crate::conversations(settings.clone())
         .get_snapshot(
             "conversation-http-output-error",
             Some("/projects/http-output-error"),
@@ -581,7 +581,7 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
 async fn conversation_turn_route_persists_thread_resume_failure_details() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app_with_agent_turn_backend(
+    let app = crate::store_app(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
             token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 0}})),
@@ -649,7 +649,7 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
         final_snapshot["event_log"][0]["details"]["thread_id"],
         "thread-http-resume"
     );
-    let persisted = WorkspaceConversationService::new(settings.clone())
+    let persisted = crate::conversations(settings.clone())
         .get_snapshot(
             "conversation-http-resume-failure",
             Some("/projects/http-resume-failure"),
@@ -665,21 +665,14 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
         0,
         |events| {
             events.iter().any(|event| {
-                event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()
+                event["type"] == "turn_upsert"
+                    && event["turn"]["status"] == "failed"
+                    && event["turn"]["error_code"] == "thread_resume_failed"
             })
         },
     )
     .await;
-    assert!(events.iter().any(|event| {
-        event["type"] == "turn_upsert"
-            && event["turn"]["status"] == "failed"
-            && event["turn"]["error_code"] == "thread_resume_failed"
-    }));
-    // The workflow-event commit journals a slim snapshot ref (durable
-    // event_log content is asserted through the persisted snapshot above).
-    assert!(events.iter().any(|event| {
-        event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()
-    }));
+    assert!(!events.is_empty());
 }
 
 async fn wait_for_conversation_events<F>(
@@ -692,12 +685,10 @@ async fn wait_for_conversation_events<F>(
 where
     F: Fn(&[Value]) -> bool,
 {
-    let service = WorkspaceConversationService::new(settings.clone());
+    let _ = (project_path, revision);
     let mut last_events = Vec::new();
     for _ in 0..100 {
-        let events = service
-            .read_events_after(conversation_id, project_path, revision)
-            .expect("events");
+        let events = crate::stored_upserts(settings, conversation_id);
         if predicate(&events) {
             return events;
         }
@@ -716,7 +707,7 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
     let settings = settings(temp.path());
     let backend = ScriptedAgentTurnBackend::new(Vec::new());
     let backend_requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
 
     let response = request_json(
         app,
@@ -781,8 +772,8 @@ async fn request_user_input_answer_route_continues_pending_requests() {
         }],
     );
     let answer_requests = backend.answer_requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
-    let service = WorkspaceConversationService::new(settings.clone());
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-http-input",
@@ -900,8 +891,8 @@ async fn request_user_input_answer_route_returns_backend_errors_without_expiring
     let settings = settings(temp.path());
     let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
     let answer_requests = backend.answer_requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
-    let service = WorkspaceConversationService::new(settings.clone());
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
+    let service = crate::conversations(settings.clone());
     let (prepared, _) = service
         .start_turn(
             "conversation-http-input-backend-error",
@@ -947,7 +938,7 @@ async fn request_user_input_answer_route_returns_backend_errors_without_expiring
     assert_eq!(answer_requests[0].request_id, "input-1");
     drop(answer_requests);
 
-    let snapshot = WorkspaceConversationService::new(settings)
+    let snapshot = crate::conversations(settings)
         .get_snapshot(
             "conversation-http-input-backend-error",
             Some("/projects/http-input-backend-error"),
@@ -987,7 +978,7 @@ async fn conversation_turn_route_keeps_client_turn_id_and_ignores_a_resend() {
         ..AgentTurnOutput::default()
     }]);
     let backend_requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
     let uri = "/workspace/api/conversations/conversation-client-id/turns";
     let body = json!({
         "project_path": "/projects/client-id",
@@ -1077,7 +1068,7 @@ pub(super) async fn wait_for_conversation_snapshot<F>(
 where
     F: Fn(&Value) -> bool,
 {
-    let service = WorkspaceConversationService::new(settings.clone());
+    let service = crate::conversations(settings.clone());
     let mut last_snapshot = None;
     for _ in 0..100 {
         let snapshot = service
@@ -1483,11 +1474,8 @@ async fn conversation_stop_routes_to_backend_without_completing_or_failing_turn(
     let settings = settings(temp.path());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let backend = Arc::new(StopBackend(calls.clone()));
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        backend.clone(),
-    );
-    let app = build_app_with_agent_turn_backend(settings, backend);
+    let service = crate::conversations_with_backend(settings.clone(), backend.clone());
+    let app = crate::store_app(settings, backend);
     service
         .start_turn(
             "stop-me",
@@ -1528,8 +1516,9 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let project = "/projects/settle";
-    let service = WorkspaceConversationService::new(settings.clone());
-    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+    let service = crate::conversations(settings.clone());
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
     let start = |conversation_id: &str| {
         service
             .start_turn(
@@ -1649,7 +1638,7 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         serde_json::from_value(json!({"kind": "turn_completed", "status": "completed"})).unwrap(),
     );
 
-    let _app = build_app_with_agent_turn_backend(
+    let _app = crate::store_app(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
     );
@@ -1714,7 +1703,7 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
     let revision = settled["revision"].clone();
     let asked_revision = asked["revision"].clone();
     let noted_revision = noted["revision"].clone();
-    let _app = build_app_with_agent_turn_backend(
+    let _app = crate::store_app(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
     );
@@ -1751,7 +1740,7 @@ async fn retry_route_resends_only_a_failed_turn() {
         },
     ]);
     let requests = backend.requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
     let (id, project) = ("conversation-http-retry", "/projects/http-retry");
     let base = format!("/workspace/api/conversations/{id}");
     let body = json!({"project_path": project});

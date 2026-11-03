@@ -70,7 +70,7 @@ fn native_chat(
         }),
     });
     let client = Client::from_adapters(vec![adapter], None).unwrap();
-    let _ = service.set(WorkspaceConversationService::new_with_agent_turn_backend(
+    let _ = service.set(crate::conversations_with_backend(
         settings(temp.path()),
         Arc::new(RustLlmAgentTurnBackend::new(client)),
     ));
@@ -153,9 +153,10 @@ fn a_message_sent_while_a_native_turn_runs_joins_it_in_order() {
     assert_eq!(assistant["content"], "Done.");
 }
 
-/// A resent mid-turn message, matched by its client turn id, is neither
-/// delivered again nor started as a turn: before the turn reports it, after it
-/// does, and after the turn ends.
+/// A mid-turn message is durably accepted, under its client turn id, before
+/// it is delivered. A resend is neither delivered again nor started as a
+/// turn: before the turn reports it, after it does, and after the turn ends.
+/// Reusing the id for a different message is a conflict.
 #[test]
 fn a_resent_mid_turn_message_is_delivered_once() {
     let resend = |service: &WorkspaceConversationService| {
@@ -179,10 +180,23 @@ fn a_resent_mid_turn_message_is_delivered_once() {
     let (_temp, service, calls) = native_chat(move |service, index, _| {
         if index == 0 {
             let first = resend(service);
-            assert!(!reported(&first));
+            assert!(reported(&first), "accepted before delivery: {first}");
             // Before the turn reports the delivery.
             let again = resend(service);
-            assert!(!reported(&again));
+            assert!(reported(&again));
+            let conflict = service
+                .send_turn(
+                    "native-resend",
+                    ConversationTurnRequest {
+                        client_turn_id: Some("turn-steer1".to_string()),
+                        ..turn("A different message.")
+                    },
+                )
+                .unwrap_err();
+            assert!(
+                matches!(conflict, spark_workspace::WorkspaceError::Conflict(_)),
+                "{conflict}"
+            );
             return Ok(answer("Working."));
         }
         // The turn reports the message before the model reads it.
@@ -286,4 +300,64 @@ fn a_native_turns_persisted_usage_sums_every_model_request() {
     assert_eq!(usage["total"]["outputTokens"], json!(20), "{usage}");
     assert_eq!(usage["last"]["inputTokens"], json!(200), "{usage}");
     assert_eq!(usage["context"]["used_tokens"], json!(200), "{usage}");
+}
+
+/// Uploads sent with a message that joins a running turn belong to that
+/// message from its acceptance on: neither deletion nor retention pruning
+/// removes them, through the turn's own delivery report and after it ends.
+#[test]
+fn uploads_delivered_into_a_running_turn_are_owned_by_the_message() {
+    let (_temp, service, _calls) = native_chat(|service, index, _| {
+        if index == 0 {
+            let upload = service
+                .upload_attachment("native-attach", PROJECT, "notes.txt", b"delivered notes")
+                .unwrap();
+            let (started, snapshot) = service
+                .send_turn(
+                    "native-attach",
+                    ConversationTurnRequest {
+                        attachment_ids: vec![upload.id.clone()],
+                        ..turn("See the notes.")
+                    },
+                )
+                .unwrap();
+            assert!(started.is_none(), "the message started a new turn");
+            assert_eq!(
+                user_messages(&snapshot)[0]["attachments"][0]["id"],
+                json!(upload.id)
+            );
+            return Ok(answer("Working."));
+        }
+        Ok(answer("Done."))
+    });
+    let service = service.get().unwrap();
+    let snapshot = service
+        .execute_turn("native-attach", turn("Start"))
+        .unwrap();
+    let messages = user_messages(&snapshot);
+    assert_eq!(messages.len(), 1, "{snapshot}");
+    let id = messages[0]["attachments"][0]["id"]
+        .as_str()
+        .expect("the delivery report kept the message's uploads")
+        .to_string();
+
+    let deletion = service
+        .delete_draft_attachment("native-attach", PROJECT, &id)
+        .unwrap_err();
+    assert!(
+        matches!(deletion, spark_workspace::WorkspaceError::Conflict(_)),
+        "{deletion}"
+    );
+    let pruned = spark_storage::ConversationRepository::new(service.store().clone())
+        .prune_attachments(
+            "native-attach",
+            PROJECT,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(25),
+        )
+        .unwrap();
+    assert!(pruned.is_empty(), "{pruned:?}");
+    let (_, bytes) = service
+        .read_attachment("native-attach", PROJECT, &id)
+        .unwrap();
+    assert_eq!(bytes, b"delivered notes");
 }

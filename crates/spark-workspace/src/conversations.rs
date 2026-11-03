@@ -25,11 +25,12 @@ use spark_common::segments::{
 use spark_common::settings::{ModelSettings, SparkSettings};
 use spark_storage::conversation::{
     ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
-    RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent,
-    ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
+    ProviderTraceRecord, RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody,
+    TransientStreamEvent, ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
 };
 use spark_storage::{
-    ConversationRepository, ProjectRegistry, StorageError, CONVERSATION_STATE_SCHEMA_VERSION,
+    ConversationRepository, ConversationStore, ProjectRegistry, StorageError,
+    CONVERSATION_STATE_SCHEMA_VERSION,
 };
 use spark_triggers::TriggerActivationRequest;
 use time::OffsetDateTime;
@@ -259,6 +260,7 @@ pub struct ConversationDeleteResponse {
 #[derive(Clone)]
 pub struct WorkspaceConversationService {
     settings: SparkSettings,
+    store: Arc<ConversationStore>,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
@@ -431,9 +433,10 @@ fn agent_turn_backend_error(error: AgentError) -> WorkspaceError {
 }
 
 impl WorkspaceConversationService {
-    pub fn new(settings: SparkSettings) -> Self {
+    pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
         Self::new_with_runtime_handler_runner_factory(
             settings,
+            store,
             attractor_api::default_runtime_handler_runner_factory(),
         )
     }
@@ -444,11 +447,13 @@ impl WorkspaceConversationService {
 
     pub fn new_with_runtime_handler_runner_factory(
         settings: SparkSettings,
+        store: Arc<ConversationStore>,
         runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     ) -> Self {
         let agent_turn_backend = default_agent_turn_backend(&settings);
         Self::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
             settings,
+            store,
             runtime_handler_runner_factory,
             agent_turn_backend,
         )
@@ -456,10 +461,12 @@ impl WorkspaceConversationService {
 
     pub fn new_with_agent_turn_backend(
         settings: SparkSettings,
+        store: Arc<ConversationStore>,
         agent_turn_backend: Arc<dyn AgentTurnBackend>,
     ) -> Self {
         Self::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
             settings,
+            store,
             attractor_api::default_runtime_handler_runner_factory(),
             agent_turn_backend,
         )
@@ -467,11 +474,13 @@ impl WorkspaceConversationService {
 
     pub fn new_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings: SparkSettings,
+        store: Arc<ConversationStore>,
         runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
         agent_turn_backend: Arc<dyn AgentTurnBackend>,
     ) -> Self {
         Self {
             settings,
+            store,
             runtime_handler_runner_factory,
             agent_turn_backend,
             run_event_observer: None,
@@ -556,8 +565,10 @@ impl WorkspaceConversationService {
                 }));
             }
         }
-        let repository = self.repository();
-        let missions = crate::missions::WorkspaceMissionService::new(self.settings.clone());
+        let missions = crate::missions::WorkspaceMissionService::new(
+            self.settings.clone(),
+            self.store.clone(),
+        );
         for project in
             ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
         {
@@ -572,47 +583,56 @@ impl WorkspaceConversationService {
                     }));
                 }
             }
-            for conversation_id in
-                repository.list_conversation_ids_for_project(&project.project_path)?
-            {
-                let Ok(Some(snapshot)) =
-                    repository.read_snapshot(&conversation_id, Some(&project.project_path))
-                else {
+        }
+        // Only conversations whose summary row says they need attention are opened.
+        let repository = self.repository();
+        for row in repository.attention_summaries()? {
+            let conversation_id = row.id.clone();
+            let Some(project_path) = row
+                .payload
+                .as_ref()
+                .and_then(|payload| payload["project_path"].as_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Ok(Some(snapshot)) =
+                repository.read_snapshot(&conversation_id, Some(&project_path))
+            else {
+                continue;
+            };
+            let handle = snapshot
+                .get("conversation_handle")
+                .cloned()
+                .unwrap_or_default();
+            for (collection, pending_status, kind) in [
+                ("flow_run_requests", "pending", "flow_run_request"),
+                ("proposed_plans", "pending_review", "proposed_plan"),
+            ] {
+                let Some(artifacts) = snapshot.get(collection).and_then(Value::as_array) else {
                     continue;
                 };
-                let handle = snapshot
-                    .get("conversation_handle")
-                    .cloned()
-                    .unwrap_or_default();
-                for (collection, pending_status, kind) in [
-                    ("flow_run_requests", "pending", "flow_run_request"),
-                    ("proposed_plans", "pending_review", "proposed_plan"),
-                ] {
-                    let Some(artifacts) = snapshot.get(collection).and_then(Value::as_array) else {
+                for artifact in artifacts {
+                    if artifact.get("status").and_then(Value::as_str) != Some(pending_status) {
                         continue;
-                    };
-                    for artifact in artifacts {
-                        if artifact.get("status").and_then(Value::as_str) != Some(pending_status) {
-                            continue;
-                        }
-                        items.push(json!({
-                            "kind": kind,
-                            "id": artifact.get("id").cloned().unwrap_or_default(),
-                            "title": artifact
-                                .get("summary")
-                                .or_else(|| artifact.get("title"))
-                                .cloned()
-                                .unwrap_or_default(),
-                            "project_path": project.project_path,
-                            "conversation_id": conversation_id,
-                            "conversation_handle": handle,
-                            "updated_at": artifact
-                                .get("updated_at")
-                                .or_else(|| artifact.get("created_at"))
-                                .cloned()
-                                .unwrap_or_default(),
-                        }));
                     }
+                    items.push(json!({
+                        "kind": kind,
+                        "id": artifact.get("id").cloned().unwrap_or_default(),
+                        "title": artifact
+                            .get("summary")
+                            .or_else(|| artifact.get("title"))
+                            .cloned()
+                            .unwrap_or_default(),
+                        "project_path": project_path,
+                        "conversation_id": conversation_id,
+                        "conversation_handle": handle,
+                        "updated_at": artifact
+                            .get("updated_at")
+                            .or_else(|| artifact.get("created_at"))
+                            .cloned()
+                            .unwrap_or_default(),
+                    }));
                 }
             }
         }
@@ -648,8 +668,9 @@ impl WorkspaceConversationService {
 
     /// Marks a standing role's conversation and titles it after the role.
     fn with_standing_role(&self, mut summary: ConversationSummary) -> ConversationSummary {
-        if let Some(role) = crate::roles::WorkspaceRoleService::new(self.settings.clone())
-            .conversation_role(&summary.project_path, &summary.conversation_id)
+        if let Some(role) =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
+                .conversation_role(&summary.project_path, &summary.conversation_id)
         {
             summary.title = role.title.clone();
             summary.standing_role = Some(StandingRoleSummary {
@@ -677,40 +698,20 @@ impl WorkspaceConversationService {
                 .filter_map(|mission| mission["id"].as_str().map(str::to_string))
                 .collect();
         let mut summaries = Vec::new();
-        for conversation_id in repository.list_conversation_ids_for_project(&project_path)? {
-            if mission_ids.contains(&conversation_id) {
+        for row in repository.conversation_summaries(Some(&project_path))? {
+            if mission_ids.contains(&row.id) {
                 continue;
             }
-            match repository.read_snapshot(&conversation_id, Some(&project_path)) {
-                Ok(Some(snapshot)) => {
-                    if let Some(mut summary) = conversation_summary_from_snapshot(
-                        &snapshot,
-                        &conversation_id,
-                        &project_path,
-                    ) {
-                        let preferred_handle =
-                            snapshot.get("conversation_handle").and_then(Value::as_str);
-                        summary.conversation_handle =
-                            repository.handle_repository().ensure_conversation_handle(
-                                &summary.conversation_id,
-                                &project_paths.project_id,
-                                &project_path,
-                                &summary.created_at,
-                                preferred_handle,
-                            )?;
-                        summaries.push(self.with_standing_role(summary));
-                    }
-                }
-                Ok(None) => {}
-                Err(StorageError::InvalidConversationState { .. }) => {}
-                Err(error) => return Err(error.into()),
+            if let Some(summary) = conversation_summary_from_row(&row) {
+                summaries.push(self.with_standing_role(summary));
             }
         }
         // A standing role without a conversation yet, such as the Coordinator
         // before its first message, shows as a placeholder row.
-        for role in crate::roles::WorkspaceRoleService::new(self.settings.clone())
-            .list(&project_path)
-            .unwrap_or_default()
+        for role in
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
+                .list(&project_path)
+                .unwrap_or_default()
         {
             if summaries
                 .iter()
@@ -800,8 +801,9 @@ impl WorkspaceConversationService {
     fn role_model_settings(&self, snapshot: &Value) -> Option<ModelSettings> {
         let conversation_id = snapshot["conversation_id"].as_str()?;
         let project_path = snapshot_project_path(snapshot)?;
-        let role = crate::roles::WorkspaceRoleService::new(self.settings.clone())
-            .conversation_role(&project_path, conversation_id)?;
+        let role =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
+                .conversation_role(&project_path, conversation_id)?;
         crate::roles::role_model_settings(
             &crate::roles::role_file(&self.settings, &project_path, &role.name).ok()?,
         )
@@ -814,13 +816,15 @@ impl WorkspaceConversationService {
         conversation_id: &str,
         handle: &str,
     ) -> WorkspaceResult<String> {
-        if let Some(mission) = crate::missions::WorkspaceMissionService::new(self.settings.clone())
-            .conversation_mission(project_path, conversation_id)
+        if let Some(mission) =
+            crate::missions::WorkspaceMissionService::new(self.settings.clone(), self.store.clone())
+                .conversation_mission(project_path, conversation_id)
         {
             return Ok(crate::missions::mission_frame(&mission, handle));
         }
-        if let Some(role) = crate::roles::WorkspaceRoleService::new(self.settings.clone())
-            .conversation_role(project_path, conversation_id)
+        if let Some(role) =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
+                .conversation_role(project_path, conversation_id)
         {
             // The role creates its memory under state, so state ignores
             // itself before the role can write there.
@@ -1278,6 +1282,21 @@ impl WorkspaceConversationService {
             ));
         }
 
+        // What the browser submitted under its turn id, so a resend can be
+        // told apart from a different message reusing the id.
+        let request_sha256 = spark_common::project::sha256_hex(
+            json!([
+                message,
+                attachment_ids,
+                request.provider,
+                request.llm_profile,
+                request.model,
+                request.reasoning_effort,
+                request.chat_mode,
+            ])
+            .to_string()
+            .as_bytes(),
+        );
         if let Some(client_turn_id) = request.client_turn_id.as_deref() {
             // The id becomes a stored turn id, so it gets the same rules as other client ids.
             spark_common::settings::validate_client_id(client_turn_id).map_err(|_| {
@@ -1286,18 +1305,19 @@ impl WorkspaceConversationService {
                         .to_string(),
                 )
             })?;
-            // A resend of an accepted request answers with the current state.
-            // A message delivered into a running turn has no turn of its own:
-            // the turn reports it as a segment, and until then only this
-            // process knows it was accepted.
-            if find_turn(&snapshot, client_turn_id).is_some()
-                || find_segment(&snapshot, &format!("segment-user-message-{client_turn_id}"))
-                    .is_some()
-                || delivered_client_turn_ids()
-                    .lock()
-                    .unwrap()
-                    .contains(&(conversation_id.to_string(), client_turn_id.to_string()))
-            {
+            // An accepted message is durable as its user turn or, accepted
+            // into a running turn, as that turn's user-message segment. A
+            // resend of the same request answers with the current state.
+            let accepted = find_turn(&snapshot, client_turn_id).or_else(|| {
+                find_segment(&snapshot, &format!("segment-user-message-{client_turn_id}"))
+            });
+            if let Some(accepted) = accepted {
+                if accepted["client_request_sha256"] != json!(request_sha256) {
+                    return Err(WorkspaceError::Conflict(
+                        "turn_id_conflict: client_turn_id was already used for a different message."
+                            .to_string(),
+                    ));
+                }
                 prepare_snapshot_for_ui(&mut snapshot, conversation_id);
                 self.attach_model_settings(&mut snapshot)?;
                 return Ok((None, snapshot));
@@ -1417,6 +1437,9 @@ impl WorkspaceConversationService {
                 .map(crate::attachments::turn_attachment_reference)
                 .collect();
         }
+        if request.client_turn_id.is_some() {
+            user_turn["client_request_sha256"] = json!(request_sha256);
+        }
         if busy {
             if !settings_patch.is_empty() {
                 mutations.push(ConversationMutation::MetadataUpdated {
@@ -1425,50 +1448,102 @@ impl WorkspaceConversationService {
             }
             let user_turn_id = user_turn["id"].as_str().unwrap_or_default().to_string();
             // Only a message with nothing queued ahead joins the running
-            // turn, so queued messages keep their order. Live paths take
-            // text, so attachments go as file references.
-            let live_message = spark_agent_adapter::attachments::message_with_attachment_references(
-                &message,
-                &attachments,
-            );
-            let delivered = !held
-                && !queued_ahead
-                && self.deliver_live(conversation_id, &project_path, &user_turn_id, &live_message);
-            if !delivered {
+            // turn, so queued messages keep their order.
+            let running_turn_id = active_assistant_turn_id(&snapshot)
+                .filter(|_| !held && !queued_ahead && !matches!(mode, TurnStart::Queued(_)));
+            let Some(running_turn_id) = running_turn_id else {
                 user_turn["status"] = json!("queued");
                 mutations.push(turn_mutation_from_value(&user_turn)?);
-            } else if let Some(client_turn_id) = request.client_turn_id.clone() {
-                delivered_client_turn_ids()
-                    .lock()
-                    .unwrap()
-                    .insert((conversation_id.to_string(), client_turn_id));
-            }
-            if !mutations.is_empty() {
-                commit_conversation_mutations(
+                let commit = commit_conversation_mutations(
                     &repository,
                     conversation_id,
                     &project_path,
                     base_revision,
                     mutations,
                 )?;
+                let mut snapshot = commit.snapshot;
+                prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+                self.attach_model_settings(&mut snapshot)?;
+                return Ok((None, snapshot));
+            };
+            // Accepted durably before delivery: the message is the running
+            // turn's user-message segment, pending until delivery resolves.
+            let segment_id = format!("segment-user-message-{user_turn_id}");
+            let mut pending = json!({
+                "id": segment_id,
+                "turn_id": running_turn_id,
+                "order": ORDER_UNASSIGNED,
+                "kind": "user_message",
+                "role": "user",
+                "status": "delivery_pending",
+                "timestamp": iso_now(),
+                "updated_at": iso_now(),
+                "content": message,
+            });
+            if request.client_turn_id.is_some() {
+                pending["client_request_sha256"] = json!(request_sha256);
             }
-            let mut snapshot = repository
-                .read_snapshot(conversation_id, Some(&project_path))?
-                .unwrap_or(snapshot);
+            // The accepted message owns its uploads from this commit on.
+            if let Some(references) = user_turn.get("attachments") {
+                pending["attachments"] = references.clone();
+            }
+            mutations.push(segment_mutation_from_value(&pending)?);
+            let accepted = commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                &project_path,
+                base_revision,
+                mutations,
+            )?;
+            // Live paths take text, so attachments go as file references.
+            let live_message = spark_agent_adapter::attachments::message_with_attachment_references(
+                &message,
+                &attachments,
+            );
+            let delivered =
+                self.deliver_live(conversation_id, &project_path, &user_turn_id, &live_message);
+            let current = find_segment(&accepted.snapshot, &segment_id).cloned();
+            let mut outcome = Vec::new();
+            if delivered {
+                if let Some(mut segment) =
+                    current.filter(|segment| segment["status"] == "delivery_pending")
+                {
+                    set_string_value(&mut segment, "status", "complete");
+                    outcome.push(segment_mutation_from_value(&segment)?);
+                }
+            } else {
+                // Never delivered: it queues behind the running turn instead.
+                outcome.push(ConversationMutation::SegmentTombstoned {
+                    turn_id: running_turn_id,
+                    segment_id,
+                });
+                user_turn["status"] = json!("queued");
+                outcome.push(turn_mutation_from_value(&user_turn)?);
+            }
+            let mut snapshot = if outcome.is_empty() {
+                accepted.snapshot
+            } else {
+                commit_conversation_mutations(
+                    &repository,
+                    conversation_id,
+                    &project_path,
+                    accepted.revision,
+                    outcome,
+                )?
+                .snapshot
+            };
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             self.attach_model_settings(&mut snapshot)?;
             return Ok((None, snapshot));
         }
         // The handle is fixed before the commit so the frame, and its hash, are final.
-        let handle = repository.handle_repository().ensure_conversation_handle(
+        let handle = repository.conversation_handle(
             conversation_id,
-            &repository.project_paths(&project_path)?.project_id,
-            &project_path,
-            snapshot["created_at"].as_str().unwrap_or_default(),
             snapshot["conversation_handle"]
                 .as_str()
                 .filter(|handle| !handle.is_empty()),
         )?;
+        snapshot["conversation_handle"] = json!(handle);
         let instructions = self.conversation_frame(&project_path, conversation_id, &handle)?;
         let instructions_sha256 = spark_common::project::sha256_hex(instructions.as_bytes());
         // Providers that resume a thread keep its first instructions, so a change is announced once.
@@ -1851,7 +1926,7 @@ impl WorkspaceConversationService {
                         &mut snapshot,
                         assistant_turn_id,
                         &event,
-                        provenance.map(|record| record.committed_at.as_str()),
+                        provenance.map(|record| record.recorded_at.as_str()),
                         &mut emitted_payloads,
                     );
                     if let Some(segment) = materialize_segment_for_event(
@@ -1903,12 +1978,13 @@ impl WorkspaceConversationService {
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             return Ok(snapshot);
         }
-        let commit = commit_conversation_mutations(
-            &repository,
+        // The terminal commit projects every event the turn traced.
+        let commit = repository.commit_conversation_projecting(
             conversation_id,
             &project_path,
             base_revision,
             mutations,
+            Some(assistant_turn_id),
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
@@ -1916,10 +1992,14 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// Settles a turn whose execution failed. `projected` says whether every
+    /// traced provider event of the turn is reflected in the committed state;
+    /// when it is not, the turn's applied trace cursor stays where it was.
     fn ingest_agent_turn_backend_failure(
         &self,
         prepared: &PreparedConversationTurn,
         error: AgentError,
+        projected: bool,
     ) -> WorkspaceResult<Value> {
         let repository = self.repository();
         let mut snapshot = repository
@@ -1953,12 +2033,12 @@ impl WorkspaceConversationService {
             prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
             return Ok(snapshot);
         }
-        let commit = commit_conversation_mutations(
-            &repository,
+        let commit = repository.commit_conversation_projecting(
             &prepared.conversation_id,
             &prepared.project_path,
             base_revision,
             mutations,
+            projected.then_some(prepared.assistant_turn_id.as_str()),
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
@@ -1982,18 +2062,8 @@ impl WorkspaceConversationService {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let requested_project_path = normalize_project_path_or_400(&request.project_path)?;
-        let before_revision = self
-            .repository()
-            .read_snapshot(conversation_id, Some(&requested_project_path))?
-            .and_then(|snapshot| snapshot.get("revision").and_then(Value::as_i64))
-            .unwrap_or(0);
         let (prepared, started_snapshot) = self.start_turn(conversation_id, request)?;
-        for payload in
-            self.read_events_after(conversation_id, &prepared.project_path, before_revision)?
-        {
-            progress(payload);
-        }
+        progress(snapshot_progress_payload(&started_snapshot));
         self.complete_started_turn_with_progress_payloads(prepared, started_snapshot, progress)
     }
 
@@ -2015,24 +2085,12 @@ impl WorkspaceConversationService {
         );
         let mut result = self.run_started_turn(prepared, started_snapshot, progress.clone());
         loop {
-            let before = self
-                .repository()
-                .read_snapshot(&conversation_id, Some(&project_path))
-                .ok()
-                .flatten()
-                .map(|snapshot| snapshot_revision(&snapshot))
-                .unwrap_or(0);
             let next = match self.start_queued_turn(&conversation_id, &project_path) {
                 Ok(Some(next)) => next,
                 // A storage failure leaves the rest queued, visible as queued.
                 Ok(None) | Err(_) => break,
             };
-            for payload in self
-                .read_events_after(&conversation_id, &project_path, before)
-                .unwrap_or_default()
-            {
-                progress(payload);
-            }
+            progress(snapshot_progress_payload(&next.1));
             result = self.run_started_turn(next.0, next.1, progress.clone());
         }
         result
@@ -2044,6 +2102,35 @@ impl WorkspaceConversationService {
         started_snapshot: Value,
         progress: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> WorkspaceResult<Value> {
+        // A conversation deleted after its turn was prepared starts no
+        // provider work.
+        if self
+            .repository()
+            .read_snapshot(&prepared.conversation_id, Some(&prepared.project_path))?
+            .is_none()
+        {
+            return Err(WorkspaceError::NotFound(format!(
+                "Conversation {} was deleted.",
+                prepared.conversation_id
+            )));
+        }
+        // When an event cannot be recorded (the trace failed, or the
+        // conversation was deleted meanwhile), the provider is stopped.
+        let stop: Arc<dyn Fn() + Send + Sync> = {
+            let backend = self.agent_turn_backend.clone();
+            let (project_path, conversation_id) = (
+                prepared.project_path.clone(),
+                prepared.conversation_id.clone(),
+            );
+            Arc::new(move || {
+                let (backend, project_path, conversation_id) = (
+                    backend.clone(),
+                    project_path.clone(),
+                    conversation_id.clone(),
+                );
+                std::thread::spawn(move || backend.interrupt_turn(&project_path, &conversation_id));
+            })
+        };
         let (event_sink, provider_event_error) = live_conversation_turn_event_sink(
             started_snapshot,
             prepared.assistant_turn_id.clone(),
@@ -2052,6 +2139,7 @@ impl WorkspaceConversationService {
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
             progress,
+            stop,
         );
         let output = self
             .agent_turn_backend
@@ -2063,6 +2151,18 @@ impl WorkspaceConversationService {
             })?
             .take()
         {
+            // The output is not backed by a durable trace: none of it is
+            // committed, and the turn is settled as failed without advancing
+            // its applied trace cursor.
+            let _ = self.ingest_agent_turn_backend_failure(
+                &prepared,
+                AgentError {
+                    message: format!("Spark could not record this turn's progress: {error}"),
+                    retryable: true,
+                    raw: None,
+                },
+                false,
+            );
             return Err(error.into());
         }
         match output {
@@ -2074,7 +2174,7 @@ impl WorkspaceConversationService {
                 output,
                 false,
             ),
-            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
+            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error, true),
         }
     }
 
@@ -2187,6 +2287,13 @@ impl WorkspaceConversationService {
             .interrupt_turn(&project_path, conversation_id))
     }
 
+    /// Interrupts whatever provider work runs for the conversation, even
+    /// when the conversation itself was already deleted.
+    pub fn stop_execution(&self, conversation_id: &str, project_path: &str) -> bool {
+        self.agent_turn_backend
+            .interrupt_turn(project_path, conversation_id)
+    }
+
     /// Whether the conversation has an assistant turn pending or streaming.
     pub(crate) fn turn_in_flight(&self, conversation_id: &str, project_path: &str) -> bool {
         matches!(
@@ -2197,30 +2304,63 @@ impl WorkspaceConversationService {
 
     /// Whether this is a stopped standing role's conversation.
     fn role_stopped(&self, project_path: &str, conversation_id: &str) -> bool {
-        crate::roles::WorkspaceRoleService::new(self.settings.clone())
+        crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
             .conversation_role(project_path, conversation_id)
             .is_some_and(|role| role.stopped_at.is_some())
     }
 
     /// Startup recovery: settles every chat turn a previous process left in
-    /// flight. Assumes one server per Spark home.
+    /// flight, found through indexed status queries. The home lock makes this
+    /// server the only one for its Spark home.
     pub fn settle_orphaned_turns(&self) -> WorkspaceResult<()> {
-        let repository = self.repository();
-        for project in
-            ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
-        {
-            let Ok(conversation_ids) =
-                repository.list_conversation_ids_for_project(&project.project_path)
-            else {
-                continue;
-            };
-            for conversation_id in conversation_ids {
-                let _ = self.abandon_active_turn(&conversation_id, &project.project_path);
-                // A stopped role's held messages wait for it to start again.
-                if !self.role_stopped(&project.project_path, &conversation_id) {
-                    let _ = self.fail_queued_turns(&conversation_id, &project.project_path);
-                }
+        for (conversation_id, project_path) in self.repository().unsettled_conversations()? {
+            let _ = self.abandon_active_turn(&conversation_id, &project_path);
+            let _ = self.settle_interrupted_deliveries(&conversation_id, &project_path);
+            // A stopped role's held messages wait for it to start again.
+            if !self.role_stopped(&project_path, &conversation_id) {
+                let _ = self.fail_queued_turns(&conversation_id, &project_path);
             }
+        }
+        Ok(())
+    }
+
+    /// A message accepted for delivery into a running turn whose outcome a
+    /// previous process never recorded may or may not have reached the
+    /// provider, which offers no idempotency: it is shown as failed rather
+    /// than resent.
+    fn settle_interrupted_deliveries(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        let Some(snapshot) = repository.read_snapshot(conversation_id, Some(project_path))? else {
+            return Ok(());
+        };
+        let mutations = snapshot["segments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|segment| segment["status"] == "delivery_pending")
+            .map(|segment| {
+                let mut segment = segment.clone();
+                set_string_value(&mut segment, "status", "failed");
+                set_string_value(
+                    &mut segment,
+                    "error",
+                    "Spark restarted while delivering this message; it may not have reached the agent.",
+                );
+                segment_mutation_from_value(&segment)
+            })
+            .collect::<WorkspaceResult<Vec<_>>>()?;
+        if !mutations.is_empty() {
+            commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                project_path,
+                snapshot_revision(&snapshot),
+                mutations,
+            )?;
         }
         Ok(())
     }
@@ -2276,20 +2416,11 @@ impl WorkspaceConversationService {
         let base_revision = snapshot_revision(&snapshot);
         let mut emitted_payloads = Vec::new();
         let mut turn_completed = false;
-        let root = repository.conversation_root(conversation_id, Some(project_path))?;
-        for record in root
-            .map(|root| spark_storage::ActivityRepository::new(root).read_events())
-            .transpose()?
-            .unwrap_or_default()
+        // Replay only what the committed state has not projected yet.
+        for record in
+            repository.unapplied_provider_events(conversation_id, project_path, &turn_id)?
         {
-            if record.event.get("turn_id").and_then(Value::as_str) != Some(turn_id.as_str()) {
-                continue;
-            }
-            let Some(Ok(event)) = record
-                .event
-                .get("event")
-                .map(|event| serde_json::from_value::<TurnStreamEvent>(event.clone()))
-            else {
+            let Ok(event) = serde_json::from_value::<TurnStreamEvent>(record.event.clone()) else {
                 continue;
             };
             match event.kind {
@@ -2299,7 +2430,7 @@ impl WorkspaceConversationService {
                         &mut snapshot,
                         &turn_id,
                         &event,
-                        Some(&record.committed_at),
+                        Some(&record.recorded_at),
                         &mut emitted_payloads,
                     );
                 }
@@ -2394,12 +2525,12 @@ impl WorkspaceConversationService {
                 &mut emitted_payloads,
             );
         }
-        commit_conversation_mutations(
-            &repository,
+        repository.commit_conversation_projecting(
             conversation_id,
             project_path,
             base_revision,
             mutations_from_emitted_payloads(&emitted_payloads)?,
+            Some(&turn_id),
         )?;
         Ok(())
     }
@@ -2673,7 +2804,6 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<Value> {
         let handle_match = self
             .repository()
-            .handle_repository()
             .find_conversation_by_handle(conversation_handle)?
             .ok_or_else(|| {
                 WorkspaceError::NotFound(format!(
@@ -2699,13 +2829,17 @@ impl WorkspaceConversationService {
             execution_profile_id: request.execution_profile_id,
         };
         let (project, conversation) = (&handle_match.project_path, &handle_match.conversation_id);
-        let missions = crate::missions::WorkspaceMissionService::new(self.settings.clone());
+        let missions = crate::missions::WorkspaceMissionService::new(
+            self.settings.clone(),
+            self.store.clone(),
+        );
         if let Some(mission) = missions.conversation_mission(project, conversation) {
             return missions.launch(project, &mission.id, launch, |launch| {
                 self.launch_workspace_run(launch)
             });
         }
-        let roles = crate::roles::WorkspaceRoleService::new(self.settings.clone());
+        let roles =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone());
         if let Some(role) = roles.conversation_role(project, conversation) {
             return roles.launch(project, &role.name, launch, |launch| {
                 self.launch_workspace_run(launch)
@@ -3163,7 +3297,6 @@ impl WorkspaceConversationService {
         let mut launch_artifact: Option<FlowLaunchArtifactCreated> = None;
         let project_path = if let Some(handle) = conversation_handle.as_deref() {
             let handle_match = repository
-                .handle_repository()
                 .find_conversation_by_handle(handle)?
                 .ok_or_else(|| {
                     WorkspaceError::NotFound(format!(
@@ -3552,18 +3685,6 @@ impl WorkspaceConversationService {
         Ok(Value::Object(response))
     }
 
-    pub fn read_events_after(
-        &self,
-        conversation_id: &str,
-        project_path: &str,
-        revision: i64,
-    ) -> WorkspaceResult<Vec<Value>> {
-        let project_path = normalize_project_path_or_400(project_path)?;
-        self.repository()
-            .read_conversation_events_after(conversation_id, &project_path, revision)
-            .map_err(Into::into)
-    }
-
     pub fn delete_conversation(
         &self,
         conversation_id: &str,
@@ -3601,11 +3722,24 @@ impl WorkspaceConversationService {
         project_path: Option<&str>,
     ) -> WorkspaceResult<Value> {
         let requested_project_path = normalize_optional_project_path(project_path)?;
-        if let Some(output) = self.repository().read_segment_tool_output(
-            conversation_id,
-            requested_project_path.as_deref(),
-            segment_id,
-        )? {
+        let stored = self
+            .repository()
+            .read_segment_tool_output(
+                conversation_id,
+                requested_project_path.as_deref(),
+                segment_id,
+            )
+            .map_err(|error| match error {
+                StorageError::Io { source, .. }
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    WorkspaceError::NotFound(
+                        "The full output of this tool call is no longer available.".to_string(),
+                    )
+                }
+                other => other.into(),
+            })?;
+        if let Some(output) = stored {
             return Ok(json!({
                 "output": output,
                 "output_size": output.len(),
@@ -3825,7 +3959,6 @@ impl WorkspaceConversationService {
         };
         let handle_match = self
             .repository()
-            .handle_repository()
             .find_conversation_by_handle(&handle)?
             .ok_or_else(|| {
                 WorkspaceError::NotFound(format!(
@@ -4131,7 +4264,12 @@ impl WorkspaceConversationService {
     }
 
     pub(crate) fn repository(&self) -> ConversationRepository {
-        ConversationRepository::new(self.settings.data_dir.clone())
+        ConversationRepository::new(self.store.clone())
+    }
+
+    /// The app's conversation store this service writes through.
+    pub fn store(&self) -> &Arc<ConversationStore> {
+        &self.store
     }
 
     fn runtime_api_service(&self) -> attractor_api::AttractorApiService {
@@ -4402,17 +4540,6 @@ enum TurnStart<'a> {
     Queued(&'a Value),
 }
 
-/// Client turn ids of messages delivered into a running turn, by conversation.
-/// Callers hold the conversation's turn lock.
-fn delivered_client_turn_ids() -> &'static Mutex<std::collections::BTreeSet<(String, String)>> {
-    static IDS: std::sync::OnceLock<Mutex<std::collections::BTreeSet<(String, String)>>> =
-        std::sync::OnceLock::new();
-    // ponytail: one small entry per mid-turn message for the process's
-    // lifetime. After a restart the reported segment answers; a message its
-    // turn never reported died with that turn, so a resend may start it again.
-    IDS.get_or_init(Default::default)
-}
-
 /// Held from deciding whether a message starts, joins or queues behind a
 /// turn through the commit that records it.
 fn conversation_turn_lock(conversation_id: &str) -> Arc<Mutex<()>> {
@@ -4521,13 +4648,13 @@ fn materialize_segment_for_event(
     snapshot: &mut Value,
     assistant_turn_id: &str,
     event: &TurnStreamEvent,
-    provenance: Option<&spark_storage::ActivityEvent>,
+    provenance: Option<&ProviderTraceRecord>,
 ) -> Option<Value> {
-    // Provider provenance (append sequence + committed timestamp) keeps live
+    // Provider provenance (trace sequence + recorded timestamp) keeps live
     // projection replay-stable: recovery re-deriving the same segment from the
-    // same activity record produces identical identity and timestamps.
+    // same trace record produces identical identity and timestamps.
     let now = provenance
-        .map(|record| record.committed_at.clone())
+        .map(|record| record.recorded_at.clone())
         .unwrap_or_else(iso_now);
     spark_common::segments::materialize_segment_for_event(
         snapshot,
@@ -4805,6 +4932,7 @@ fn live_conversation_turn_event_sink(
     conversation_id: String,
     project_path: String,
     progress: Arc<dyn Fn(Value) + Send + Sync + 'static>,
+    stop: Arc<dyn Fn() + Send + Sync>,
 ) -> (
     AgentTurnEventSink,
     Arc<Mutex<Option<spark_storage::StorageError>>>,
@@ -4837,6 +4965,7 @@ fn live_conversation_turn_event_sink(
                 if let Ok(mut stored) = sink_error.lock() {
                     if stored.is_none() {
                         *stored = Some(error);
+                        stop();
                     }
                 }
             }
@@ -4973,7 +5102,7 @@ impl LiveConversationTurnState {
                     &mut self.snapshot,
                     &self.assistant_turn_id,
                     &event,
-                    Some(provenance.committed_at.as_str()),
+                    Some(provenance.recorded_at.as_str()),
                     &mut emitted_payloads,
                 );
                 self.emit_materialized_segment(&event, &provenance, &mut emitted_payloads);
@@ -5029,14 +5158,17 @@ impl LiveConversationTurnState {
                 if mutations.is_empty() {
                     return Ok(None);
                 }
-                commit_conversation_mutations(
-                    &self.repository,
-                    &self.conversation_id,
-                    &self.project_path,
-                    self.base_revision,
-                    mutations,
-                )
-                .map(Some)
+                // Everything this turn appended so far is projected here.
+                self.repository
+                    .commit_conversation_projecting(
+                        &self.conversation_id,
+                        &self.project_path,
+                        self.base_revision,
+                        mutations,
+                        Some(&self.assistant_turn_id),
+                    )
+                    .map_err(WorkspaceError::from)
+                    .map(Some)
             });
         let Ok(Some(commit)) = committed else {
             return false;
@@ -5088,7 +5220,7 @@ impl LiveConversationTurnState {
     fn emit_materialized_segment(
         &mut self,
         event: &TurnStreamEvent,
-        provenance: &spark_storage::ActivityEvent,
+        provenance: &ProviderTraceRecord,
         emitted_payloads: &mut Vec<Value>,
     ) {
         if let Some(segment) = materialize_segment_for_event(
@@ -6238,6 +6370,15 @@ fn build_segment_upsert_payload(snapshot: &Value, segment: &Value) -> Value {
     })
 }
 
+/// A committed snapshot as a live progress payload.
+fn snapshot_progress_payload(snapshot: &Value) -> Value {
+    json!({
+        "type": "conversation_snapshot",
+        "revision": snapshot_revision(snapshot),
+        "state": snapshot,
+    })
+}
+
 fn snapshot_revision(snapshot: &Value) -> i64 {
     snapshot
         .get("revision")
@@ -6403,6 +6544,41 @@ fn mode_change_turn_value(chat_mode: &str) -> Value {
         "timestamp": iso_now(),
         "status": "complete",
         "kind": "mode_change",
+    })
+}
+
+/// A Threads-list summary from a conversation's summary row; `None` for a
+/// conversation with no committed transcript yet (only uploads).
+fn conversation_summary_from_row(
+    row: &spark_storage::conversation::EntityRow,
+) -> Option<ConversationSummary> {
+    let payload = row.payload.as_ref()?;
+    let revision = payload["metadata"]["revision"].as_i64().unwrap_or(0);
+    if revision == 0 {
+        return None;
+    }
+    let text = |key: &str| payload[key].as_str().unwrap_or_default().to_string();
+    Some(ConversationSummary {
+        conversation_id: row.id.clone(),
+        conversation_handle: text("handle"),
+        project_path: text("project_path"),
+        title: text("title"),
+        created_at: text("created_at"),
+        updated_at: text("updated_at"),
+        revision,
+        last_message_preview: payload["preview"]
+            .as_str()
+            .filter(|preview| !preview.is_empty())
+            .map(str::to_string),
+        launched_run_ids: payload["launched_run_ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        standing_role: None,
+        running: payload["running"].as_bool().unwrap_or(false),
     })
 }
 

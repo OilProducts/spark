@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
-use spark_workspace::WorkspaceProjectService;
+use spark_workspace::{WorkspaceError, WorkspaceProjectService};
 
 #[test]
 fn project_service_validates_execution_profile_selection() {
@@ -31,10 +31,13 @@ enabled = false
     fs::create_dir_all(&project_dir).expect("project");
 
     let record = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: Some("native-dev".to_string()),
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: Some("native-dev".to_string()),
+            },
+        )
         .expect("register");
     assert_eq!(record.execution_profile_id.as_deref(), Some("native-dev"));
 
@@ -46,19 +49,25 @@ enabled = false
     );
     fs::write(&paths.project_file, text).unwrap();
     let updated = service
-        .update_project_state(ProjectStateUpdate {
-            project_path: record.project_path.clone(),
-            last_accessed_at: Some(Some("2002-01-01T00:00:00Z".into())),
-            is_favorite: Some(true),
-            ..ProjectStateUpdate::default()
-        })
+        .update_project_state(
+            &crate::shared_store(&settings.data_dir),
+            ProjectStateUpdate {
+                project_path: record.project_path.clone(),
+                last_accessed_at: Some(Some("2002-01-01T00:00:00Z".into())),
+                is_favorite: Some(true),
+                ..ProjectStateUpdate::default()
+            },
+        )
         .unwrap();
     assert_eq!(updated.last_opened_at, "2001-01-01T00:00:00Z");
     let reopened = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: record.project_path.clone(),
-            execution_profile_id: None,
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: record.project_path.clone(),
+                execution_profile_id: None,
+            },
+        )
         .unwrap();
     assert!(reopened.last_opened_at > updated.last_opened_at);
     assert_eq!(reopened.created_at, record.created_at);
@@ -67,20 +76,26 @@ enabled = false
     assert!(reopened.is_favorite);
 
     let missing = service
-        .update_project_state(ProjectStateUpdate {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: Some(Some("missing".to_string())),
-            ..ProjectStateUpdate::default()
-        })
+        .update_project_state(
+            &crate::shared_store(&settings.data_dir),
+            ProjectStateUpdate {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: Some(Some("missing".to_string())),
+                ..ProjectStateUpdate::default()
+            },
+        )
         .expect_err("missing profile");
     assert_eq!(missing.to_string(), "Unknown execution profile: missing");
 
     let disabled = service
-        .update_project_state(ProjectStateUpdate {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: Some(Some("disabled".to_string())),
-            ..ProjectStateUpdate::default()
-        })
+        .update_project_state(
+            &crate::shared_store(&settings.data_dir),
+            ProjectStateUpdate {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: Some(Some("disabled".to_string())),
+                ..ProjectStateUpdate::default()
+            },
+        )
         .expect_err("disabled profile");
     assert_eq!(
         disabled.to_string(),
@@ -95,10 +110,13 @@ fn project_service_sets_up_definitions_before_recording_a_registration() {
     let service = WorkspaceProjectService::new(settings.clone());
     let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
     let register = |path: &Path, profile: Option<&str>| {
-        service.register_project(ProjectRegistrationRequest {
-            project_path: path.to_string_lossy().into_owned(),
-            execution_profile_id: profile.map(str::to_string),
-        })
+        service.register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: path.to_string_lossy().into_owned(),
+                execution_profile_id: profile.map(str::to_string),
+            },
+        )
     };
     let recorded = |path: &Path| {
         registry
@@ -251,7 +269,6 @@ default_model = "local-model"
 }
 
 #[test]
-#[ignore = "legacy state.json fixtures are unsupported after the conversation hard cutover"]
 fn project_service_lists_conversation_summaries_for_python_created_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -259,19 +276,17 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     fs::create_dir_all(&project_dir).expect("project dir");
     let service = WorkspaceProjectService::new(settings.clone());
     let project = service
-        .register_project(ProjectRegistrationRequest {
-            project_path: project_dir.to_string_lossy().into_owned(),
-            execution_profile_id: None,
-        })
+        .register_project(
+            &crate::shared_store(&settings.data_dir),
+            ProjectRegistrationRequest {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: None,
+            },
+        )
         .expect("register");
-    let conversations_dir = settings
-        .projects_dir
-        .join(&project.project_id)
-        .join("conversations");
-    write_state(
-        &conversations_dir,
-        "conversation-a",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 2,
             "conversation_id": "conversation-a",
@@ -306,10 +321,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "segments": []
         }),
     );
-    write_state(
-        &conversations_dir,
-        "conversation-b",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 3,
             "conversation_id": "conversation-b",
@@ -330,10 +344,9 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "segments": []
         }),
     );
-    write_state(
-        &conversations_dir,
-        "conversation-invalid",
-        json!({
+    crate::write_conversation_snapshot(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 1,
             "conversation_id": "conversation-invalid",
@@ -343,11 +356,22 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
             "turns": []
         }),
     );
+    // The SQL store cannot hold an unreadable record; the conversation a
+    // listing must skip is a deleted one.
+    spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
+        .delete_conversation("conversation-invalid", &project.project_path)
+        .expect("delete conversation");
 
     let summaries = service
-        .list_project_conversations(Some(&project.project_path))
+        .list_project_conversations(
+            &crate::conversations(settings.clone()),
+            Some(&project.project_path),
+        )
         .expect("conversations");
 
+    // Registration starts the project's coordinator, pinned first.
+    let (coordinator, summaries) = summaries.split_first().expect("coordinator");
+    assert!(coordinator.conversation_id.ends_with("-coordinator"));
     assert_eq!(
         summaries
             .iter()
@@ -368,16 +392,6 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     assert!(summaries
         .iter()
         .all(|summary| summary.project_path == project.project_path));
-}
-
-fn write_state(conversations_dir: &Path, conversation_id: &str, payload: serde_json::Value) {
-    let state_path = conversations_dir.join(conversation_id).join("state.json");
-    fs::create_dir_all(state_path.parent().expect("state parent")).expect("state parent");
-    fs::write(
-        state_path,
-        serde_json::to_string_pretty(&payload).expect("json"),
-    )
-    .expect("state");
 }
 
 fn settings(root: &Path) -> SparkSettings {
@@ -697,4 +711,88 @@ fn chat_models_discovery_uses_resolved_configuration_and_invalidates_cache() {
             response
         );
     }
+}
+
+/// State updates never register a project: an unregistered or deleted one
+/// is unknown, one whose deletion awaits cleanup is refused, and explicit
+/// registration still works afterwards.
+#[test]
+fn project_state_updates_never_resurrect_deleted_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let store = crate::shared_store(&settings.data_dir);
+    let service = WorkspaceProjectService::new(settings.clone());
+    let conversations = crate::conversations(settings.clone());
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let favorite = |path: &Path| ProjectStateUpdate {
+        project_path: path.to_string_lossy().into_owned(),
+        is_favorite: Some(true),
+        ..ProjectStateUpdate::default()
+    };
+    let register = |path: &Path| {
+        service
+            .register_project(
+                &store,
+                ProjectRegistrationRequest {
+                    project_path: path.to_string_lossy().into_owned(),
+                    execution_profile_id: None,
+                },
+            )
+            .expect("register")
+    };
+
+    let unregistered = temp.path().join("never-registered");
+    fs::create_dir_all(&unregistered).unwrap();
+    assert!(matches!(
+        service.update_project_state(&store, favorite(&unregistered)),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    assert_eq!(
+        registry
+            .read_project_record(&unregistered.to_string_lossy())
+            .unwrap(),
+        None
+    );
+
+    // Deleted, then updated by a stale client.
+    let deleted_dir = temp.path().join("deleted");
+    fs::create_dir_all(&deleted_dir).unwrap();
+    let record = register(&deleted_dir);
+    let root = registry.project_paths(&record.project_path).unwrap().root;
+    service
+        .delete_project(&conversations, &record.project_path)
+        .expect("delete");
+    assert!(matches!(
+        service.update_project_state(&store, favorite(&deleted_dir)),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    assert!(!root.exists());
+    assert_eq!(
+        registry.read_project_record(&record.project_path).unwrap(),
+        None
+    );
+
+    // Deleted with cleanup pending: refused, files left for the cleanup.
+    let pending_dir = temp.path().join("pending");
+    fs::create_dir_all(&pending_dir).unwrap();
+    let record = register(&pending_dir);
+    let pending_root = registry.project_paths(&record.project_path).unwrap().root;
+    store.database().defer_next_checkpoints(1);
+    assert!(service
+        .delete_project(&conversations, &record.project_path)
+        .is_err());
+    assert!(matches!(
+        service.update_project_state(&store, favorite(&pending_dir)),
+        Err(WorkspaceError::Conflict(_))
+    ));
+    assert!(store.finish_project_deletion(&record.project_path).unwrap());
+    assert!(!pending_root.exists());
+
+    // Explicit registration brings a deleted project back.
+    let again = register(&deleted_dir);
+    assert!(!again.is_favorite);
+    let updated = service
+        .update_project_state(&store, favorite(&deleted_dir))
+        .expect("update after re-registration");
+    assert!(updated.is_favorite);
 }

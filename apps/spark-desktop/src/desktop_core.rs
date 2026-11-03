@@ -286,10 +286,18 @@ pub fn start_desktop_server(
                     }
                 };
                 let client = spark_server::rust_llm_client_from_settings(&settings);
+                // A failed build has already released the home lock and database.
                 let (app, notify) =
-                    spark_http::build_app_with_rust_llm_client_and_settings_notifications(
+                    match spark_http::build_app_with_rust_llm_client_and_settings_notifications(
                         settings, client,
-                    );
+                    ) {
+                        Ok(built) => built,
+                        Err(error) => {
+                            let _ = startup_tx
+                                .send(Err(format!("Unable to initialize desktop server: {error}")));
+                            return;
+                        }
+                    };
                 let _ = startup_tx.send(Ok(Box::new(notify)));
                 let server = axum::serve(listener, app).with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;

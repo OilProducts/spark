@@ -12,7 +12,7 @@ use tower::ServiceExt;
 async fn codex_connection_routes_validate_login_input_and_cancel_without_changing_files() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     for body in [
         json!({"method": "unknown"}),
         json!({"method": "browser", "access_token": "unexpected"}),
@@ -54,7 +54,7 @@ async fn codex_connection_routes_validate_login_input_and_cancel_without_changin
 #[tokio::test]
 async fn claude_connection_routes_validate_codes_and_cancel() {
     let temp = tempfile::tempdir().unwrap();
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
     for (body, status) in [
         (
             json!({"code": "a#b", "token": "unexpected"}),
@@ -96,6 +96,215 @@ async fn claude_connection_routes_validate_codes_and_cancel() {
     assert!(body["login_url"].is_null());
 }
 
+/// Deleting a project removes its conversations from the store before its
+/// directory goes; deleting it again is unknown.
+#[tokio::test]
+async fn project_deletion_route_removes_conversations_then_the_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_dir = root.join("doomed");
+    fs::create_dir_all(&project_dir).expect("project");
+    let app = build_app(settings.clone()).expect("app");
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_dir})),
+    )
+    .await;
+    let project_path = registered.1["project_path"].as_str().unwrap().to_string();
+    let saved = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/conversation-doomed/settings",
+        Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": "0"})),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    let project_root = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .project_paths(&project_path)
+        .unwrap()
+        .root;
+    assert!(project_root.exists());
+
+    let remove = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project_path)
+    );
+    let deleted = request_json(app.clone(), "DELETE", &remove, None).await;
+    assert_eq!(deleted.0, StatusCode::OK, "{}", deleted.1);
+    assert_eq!(deleted.1["status"], "deleted");
+    assert_eq!(deleted.1["project_path"], project_path.as_str());
+    assert!(!project_root.exists());
+    let listed = request_json(
+        app.clone(),
+        "GET",
+        "/workspace/api/projects/conversations",
+        None,
+    )
+    .await;
+    assert!(
+        !listed.1.to_string().contains("conversation-doomed"),
+        "{}",
+        listed.1
+    );
+    // Stale reads and state updates of the deleted project resurrect nothing.
+    stale_project_reads(&app, &project_path).await;
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::NOT_FOUND, "{}", favorite.1);
+    assert!(!project_root.exists());
+    assert_eq!(
+        spark_storage::ProjectRegistry::new(&settings.data_dir)
+            .read_project_record(&project_path)
+            .unwrap(),
+        None
+    );
+    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
+    assert!(!projects.1.to_string().contains("doomed"), "{}", projects.1);
+    let again = request_json(app, "DELETE", &remove, None).await;
+    assert_eq!(again.0, StatusCode::NOT_FOUND, "{}", again.1);
+}
+
+/// Reads of a project and its conversations, as a stale browser tab sends them.
+async fn stale_project_reads(app: &axum::Router, project_path: &str) {
+    let project = crate::encode_query(project_path);
+    for uri in [
+        format!("/workspace/api/projects/conversations?project_path={project}"),
+        format!("/workspace/api/conversations/conversation-doomed?project_path={project}"),
+        format!("/workspace/api/conversations/conversation-unseen?project_path={project}"),
+        format!("/workspace/api/roles?project_path={project}"),
+        format!("/workspace/api/missions?project_path={project}"),
+    ] {
+        request_json(app.clone(), "GET", &uri, None).await;
+    }
+}
+
+/// A store opened for one Spark home never serves settings for another;
+/// the refusal comes before any startup work in either home.
+#[tokio::test]
+async fn app_on_a_store_refuses_settings_for_another_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ours = settings(&temp.path().join("ours"));
+    let theirs = settings(&temp.path().join("theirs"));
+    let store = spark_storage::ConversationStore::open(&theirs.data_dir).expect("store");
+    let backend = spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&ours);
+    let Err(error) =
+        spark_http::build_app_with_conversation_store(ours.clone(), store.clone(), backend.clone())
+    else {
+        panic!("mismatched homes were accepted");
+    };
+    assert!(
+        error.to_string().contains("belongs to Spark home"),
+        "{error}"
+    );
+    assert!(!ours.data_dir.exists());
+    let no_projects = spark_storage::ProjectRegistry::new(&theirs.data_dir)
+        .list_project_records()
+        .expect("projects");
+    assert!(no_projects.is_empty());
+
+    // Another spelling of the store's own home is the same home.
+    let mut same = theirs.clone();
+    same.data_dir = theirs.data_dir.join(".");
+    assert!(spark_http::build_app_with_conversation_store(same, store, backend).is_ok());
+}
+
+/// While a deletion's cleanup is pending, stale reads neither register nor
+/// recreate anything, and the finished cleanup leaves no project behind.
+#[tokio::test]
+async fn stale_reads_during_pending_project_cleanup_recreate_nothing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_dir = root.join("pending");
+    fs::create_dir_all(&project_dir).expect("project");
+    let store = crate::shared_store(&settings.data_dir);
+    let app = spark_http::build_app_with_conversation_store(
+        settings.clone(),
+        store.clone(),
+        spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings),
+    )
+    .expect("app on the home's store");
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_dir})),
+    )
+    .await;
+    let project_path = registered.1["project_path"].as_str().unwrap().to_string();
+    let saved = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/conversation-doomed/settings",
+        Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": "0"})),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .project_paths(&project_path)
+        .unwrap();
+    store.database().defer_next_checkpoints(1);
+    let remove = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project_path)
+    );
+    let deferred = request_json(app.clone(), "DELETE", &remove, None).await;
+    assert_eq!(
+        deferred.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        deferred.1
+    );
+
+    stale_project_reads(&app, &project_path).await;
+    assert!(!paths.conversations_dir.join("conversation-unseen").exists());
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::CONFLICT, "{}", favorite.1);
+
+    assert!(store.finish_project_deletion(&project_path).unwrap());
+    assert!(!paths.root.exists());
+    stale_project_reads(&app, &project_path).await;
+    let favorite = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({"project_path": project_path, "is_favorite": true})),
+    )
+    .await;
+    assert_eq!(favorite.0, StatusCode::NOT_FOUND, "{}", favorite.1);
+    assert!(!paths.root.exists());
+    assert_eq!(
+        spark_storage::ProjectRegistry::new(&settings.data_dir)
+            .read_project_record(&project_path)
+            .unwrap(),
+        None
+    );
+    // Explicit registration still brings the project back.
+    let again = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project_dir})),
+    )
+    .await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    assert!(paths.root.exists());
+}
+
 #[tokio::test]
 async fn workspace_project_routes_persist_records_and_return_json_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -104,7 +313,7 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
     let settings = settings(&root);
     let project_dir = root.join("project");
     fs::create_dir_all(&project_dir).expect("project");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let register = request_json(
         app.clone(),
@@ -145,7 +354,7 @@ async fn workspace_browse_and_metadata_routes_match_validation_contracts() {
     fs::write(root.join("notes.txt"), "ignored").expect("file");
     let mut settings = settings(temp.path());
     settings.project_roots = vec![root.clone()];
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let browse = request_json(app.clone(), "GET", "/workspace/api/projects/browse", None).await;
     assert_eq!(browse.0, StatusCode::OK);
@@ -189,7 +398,7 @@ async fn workspace_browse_and_metadata_routes_match_validation_contracts() {
 async fn workspace_settings_wrap_execution_placement_payload() {
     let temp = tempfile::tempdir().expect("tempdir");
     let response = request_json(
-        build_app(settings(temp.path())),
+        build_app(settings(temp.path())).expect("app"),
         "GET",
         "/workspace/api/settings",
         None,
@@ -210,7 +419,7 @@ async fn workspace_settings_wrap_execution_placement_payload() {
 #[tokio::test]
 async fn attractor_routes_remain_mounted_when_workspace_routes_are_composed() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
 
     let status = request_json(app.clone(), "GET", "/attractor/status", None).await;
     assert_eq!(status.0, StatusCode::OK);
@@ -235,7 +444,7 @@ async fn attractor_routes_remain_mounted_when_workspace_routes_are_composed() {
 #[tokio::test]
 async fn workspace_public_extractor_errors_return_json_envelopes() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
 
     let missing_query =
         request_json(app.clone(), "GET", "/workspace/api/projects/metadata", None).await;
@@ -263,13 +472,12 @@ async fn workspace_public_extractor_errors_return_json_envelopes() {
 }
 
 #[tokio::test]
-#[ignore = "legacy state.json fixture is unsupported after the conversation hard cutover"]
 async fn project_conversations_route_returns_summary_shape_for_existing_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_dir = temp.path().join("project-a");
     fs::create_dir_all(&project_dir).expect("project dir");
-    let app = build_app(settings.clone());
+    let app = crate::store_app_default(settings.clone());
 
     let register = request_json(
         app.clone(),
@@ -279,12 +487,9 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     )
     .await;
     assert_eq!(register.0, StatusCode::OK);
-    let project_id = register.1["project_id"].as_str().expect("project id");
-    let conversations_dir = settings.projects_dir.join(project_id).join("conversations");
-    write_state(
-        &conversations_dir,
-        "conversation-a",
-        json!({
+    crate::seed_conversation(
+        &settings.data_dir,
+        &json!({
             "schema_version": 5,
             "revision": 2,
             "conversation_id": "conversation-a",
@@ -318,18 +523,21 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     .await;
 
     assert_eq!(listed.0, StatusCode::OK);
-    assert_eq!(listed.1[0]["conversation_id"], "conversation-a");
-    assert_eq!(listed.1[0]["conversation_handle"], "amber-anchor");
-    assert_eq!(listed.1[0]["title"], "Design thread");
-    assert_eq!(listed.1[0]["last_message_preview"], "Design thread preview");
-    assert!(listed.1[0].get("turns").is_none());
+    // Registration starts the project's coordinator, pinned first.
+    assert_eq!(listed.1.as_array().expect("summaries").len(), 2);
+    assert_eq!(listed.1[0]["standing_role"]["name"], "coordinator");
+    assert_eq!(listed.1[1]["conversation_id"], "conversation-a");
+    assert_eq!(listed.1[1]["conversation_handle"], "amber-anchor");
+    assert_eq!(listed.1[1]["title"], "Design thread");
+    assert_eq!(listed.1[1]["last_message_preview"], "Design thread preview");
+    assert!(listed.1[1].get("turns").is_none());
 }
 
 #[tokio::test]
 async fn registering_a_project_installs_its_definitions_once() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let project_path = project.to_string_lossy().into_owned();
@@ -378,7 +586,7 @@ async fn registering_a_project_installs_its_definitions_once() {
 async fn rejected_registrations_install_nothing_and_record_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let file = temp.path().join("file");
     fs::write(&file, "").unwrap();
     let unprofiled = temp.path().join("unprofiled");
@@ -440,7 +648,7 @@ async fn startup_sets_up_home_without_touching_spark_config() {
         fs::write(settings.config_dir.join(name), text).unwrap();
     }
 
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     assert!(spark_home.join("definitions/.initialized").is_file());
     assert!(spark_home
         .join("definitions/flows/organization/review-change/flow.md")
@@ -507,7 +715,7 @@ async fn home_setup_failure_child() {
         return;
     };
     let root = Path::new(&root);
-    let app = build_app(settings(root));
+    let app = build_app(settings(root)).expect("app");
     let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
     assert_eq!(projects.0, StatusCode::OK);
     assert_eq!(projects.1, json!([]));
@@ -529,7 +737,7 @@ async fn home_project_is_default_and_lists_span_projects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let home = spark_common::project::normalize_project_path(&std::env::var("HOME").unwrap())
         .unwrap()
         .unwrap()
@@ -696,7 +904,7 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     let project = project.to_string_lossy().into_owned();
     let agent = std::sync::Arc::new(GatedAgent::default());
     agent.release();
-    let app = spark_http::build_app_with_agent_turn_backend(settings, agent);
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent).expect("app");
     let home = spark_common::project::normalize_project_path(&std::env::var("HOME").unwrap())
         .unwrap()
         .unwrap()
@@ -830,16 +1038,6 @@ async fn execute_request(app: axum::Router, request: Request<Body>) -> (StatusCo
         .expect("body");
     let value = serde_json::from_slice::<Value>(&bytes).expect("json");
     (status, value, content_type)
-}
-
-fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) {
-    let state_path = conversations_dir.join(conversation_id).join("state.json");
-    fs::create_dir_all(state_path.parent().expect("state parent")).expect("state parent");
-    fs::write(
-        state_path,
-        serde_json::to_string_pretty(&payload).expect("json"),
-    )
-    .expect("state");
 }
 
 fn settings(root: &Path) -> SparkSettings {
@@ -997,7 +1195,7 @@ async fn role_routes_list_start_send_and_stop_standing_roles() {
     fs::create_dir_all(&project).unwrap();
     let agent = std::sync::Arc::new(GatedAgent::default());
     agent.release();
-    let app = spark_http::build_app_with_agent_turn_backend(settings, agent);
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent).expect("app");
     let project = project.to_string_lossy().to_string();
     let at = |suffix: &str| {
         format!(
@@ -1091,7 +1289,7 @@ async fn a_stopped_role_holds_user_messages_until_it_is_started_again() {
     fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy().to_string();
     let agent = std::sync::Arc::new(RecordingAgent::default());
-    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone()).expect("app");
     let control = |action: &str| {
         format!(
             "/workspace/api/roles/coordinator/{action}?project_path={}",
@@ -1197,7 +1395,7 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
         runtime: tokio::runtime::Handle::current(),
         prompts: Default::default(),
     });
-    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone()).expect("app");
     agent.app.set(app.clone()).ok().unwrap();
     let project = project.display().to_string();
     let created = request_json(
@@ -1311,7 +1509,7 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
     let agent = std::sync::Arc::new(GatedAgent::default());
-    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone()).expect("app");
     let list_uri = format!(
         "/workspace/api/missions?project_path={}",
         crate::encode_query(project.to_string_lossy())
@@ -1470,7 +1668,7 @@ async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_scope_i
         "[desktop]\nremote_access_enabled = false\n[extension]\nkeep = 12\n",
     )
     .unwrap();
-    let app = build_app(config.clone());
+    let app = build_app(config.clone()).expect("app");
     let first = request_json(app.clone(), "GET", "/workspace/api/settings", None).await;
     let revision = first.1["runtime"]["revision"].clone();
     let payload = json!({"expected_revision": revision, "section": "runtime", "value": {"runs_dir": "/new/runs", "project_roots": []}});
@@ -1546,7 +1744,7 @@ async fn model_settings_http_scopes_have_independent_conflicts_and_browser_impor
     spark_storage::ProjectRegistry::new(&config.data_dir)
         .register_project("/projects/scoped")
         .unwrap();
-    let app = build_app(config.clone());
+    let app = build_app(config.clone()).expect("app");
     let workspace = request_json(app.clone(), "GET", "/workspace/api/settings", None)
         .await
         .1;
@@ -1622,7 +1820,7 @@ async fn model_settings_http_scopes_have_independent_conflicts_and_browser_impor
 #[tokio::test]
 async fn utility_model_settings_http_round_trip_and_clear() {
     let temp = tempfile::tempdir().unwrap();
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
     let read = || request_json(app.clone(), "GET", "/workspace/api/settings", None);
     let initial = read().await.1;
     assert!(initial["utility_models"]["stored"].is_null());
@@ -1663,7 +1861,7 @@ async fn utility_model_settings_http_round_trip_and_clear() {
 async fn conversation_resource_requires_revisions_for_every_model_selector() {
     let temp = tempfile::tempdir().unwrap();
     let config = settings(temp.path());
-    let app = build_app(config.clone());
+    let app = build_app(config.clone()).expect("app");
     let uri = "/workspace/api/conversations/revision-chat/settings";
     let read_uri = "/workspace/api/conversations/revision-chat?project_path=/projects/revisions";
     let initial = request_json(app.clone(), "GET", read_uri, None).await;
@@ -1697,19 +1895,15 @@ async fn conversation_resource_requires_revisions_for_every_model_selector() {
     )
     .await;
     assert_eq!(saved.0, StatusCode::OK, "{:?}", saved.1);
-    let paths = spark_storage::ProjectRegistry::new(&config.data_dir)
-        .project_paths("/projects/revisions")
-        .unwrap();
-    let metadata = paths
-        .conversations_dir
-        .join("revision-chat/conversation.json");
-    let before = fs::read(&metadata).unwrap();
+    // Rejected updates leave the stored conversation unchanged.
+    let stored = || request_json(app.clone(), "GET", read_uri, None);
+    let before = stored().await.1;
     for mut payload in selectors {
         payload["project_path"] = json!("/projects/revisions");
         payload["expected_revision"] = initial_revision.clone();
         let response = request_json(app.clone(), "PUT", uri, Some(payload)).await;
         assert_eq!(response.0, StatusCode::CONFLICT, "{:?}", response.1);
-        assert_eq!(fs::read(&metadata).unwrap(), before);
+        assert_eq!(stored().await.1, before);
     }
     let read = request_json(app, "GET", read_uri, None).await;
     assert_eq!(read.1["settings"], saved.1["settings"]);
@@ -1718,7 +1912,7 @@ async fn conversation_resource_requires_revisions_for_every_model_selector() {
 #[tokio::test]
 async fn scoped_conversation_settings_get_set_and_inherit_use_common_revisions() {
     let temp = tempfile::tempdir().unwrap();
-    let app = build_app(settings(temp.path()));
+    let app = build_app(settings(temp.path())).expect("app");
     let uri =
         "/workspace/api/settings?project_path=/projects/scoped-chat&conversation_id=scoped-chat";
     let before = request_json(app.clone(), "GET", uri, None).await;
@@ -1765,7 +1959,7 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     let project = temp.path().join("revision");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy().into_owned();
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let registered = request_json(
         app.clone(),
         "POST",
@@ -1844,7 +2038,7 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
 async fn client_preferences_are_isolated_revision_checked_and_validated() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let mut app = build_app(settings.clone()).expect("app");
     let uri = "/workspace/api/settings?client_id=browser-one";
     let initial = request_json(app.clone(), "GET", uri, None).await;
     assert_eq!(initial.0, StatusCode::OK);
@@ -1875,7 +2069,10 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         ("editor_mode", json!("files")),
     ] {
         assert_eq!(saved.1["preferences"]["stored"][field], expected);
-        let restarted = request_json(build_app(settings.clone()), "GET", uri, None).await;
+        // One app per home: the old one releases the home before a restart.
+        drop(app);
+        app = build_app(settings.clone()).expect("app");
+        let restarted = request_json(app.clone(), "GET", uri, None).await;
         assert_eq!(restarted.1["preferences"]["effective"][field], expected);
     }
     let file = settings.config_dir.join("clients/browser-one.toml");
@@ -1959,7 +2156,8 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
             StatusCode::BAD_REQUEST
         );
     }
-    let restarted = build_app(settings);
+    drop(app);
+    let restarted = build_app(settings).expect("app");
     let read = request_json(restarted, "GET", uri, None).await;
     assert_eq!(
         read.1["preferences"]["stored"],
@@ -1971,7 +2169,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
 async fn profile_resource_adapters_share_settings_revisions_and_validation() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let profile = json!({"id":"team", "provider":"openai_compatible", "base_url":"http://localhost:9999/v1", "models":["model"], "api_key_env":"SPARK_ROUTE_PROFILE_MISSING"});
     let created = request_json(
         app.clone(),
@@ -2003,7 +2201,14 @@ async fn profile_resource_adapters_share_settings_revisions_and_validation() {
     )
     .await;
     assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
-    let restarted = request_json(build_app(settings), "GET", "/workspace/api/settings", None).await;
+    drop(app);
+    let restarted = request_json(
+        build_app(settings).expect("app"),
+        "GET",
+        "/workspace/api/settings",
+        None,
+    )
+    .await;
     assert_eq!(restarted.1["llm_profiles"]["stored"], json!([]));
 }
 
@@ -2013,7 +2218,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let registered = request_json(
         app.clone(),
         "POST",
@@ -2098,7 +2303,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             let original = fs::read_to_string(&path).unwrap_or_default();
             fs::write(&path, format!("{original}\n[{section}]\n{group}\n")).unwrap();
-            let app = build_app(settings.clone());
+            let app = build_app(settings.clone()).expect("app");
             let uri = if scope == "workspace" {
                 "/workspace/api/settings".to_owned()
             } else {
@@ -2195,7 +2400,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     std::env::set_var("SPARK_FAKE_CLAUDE_CODE_LOG", &claude_log);
     let runtime = temp.path().join("codex-runtime");
     settings.agents.native.codex_runtime_root = Some(runtime.to_string_lossy().into());
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
     let live = app
         .clone()
         .oneshot(
@@ -2502,7 +2707,7 @@ async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
     spark_storage::ProjectRegistry::new(&config.data_dir)
         .register_project("/projects/reasoning")
         .unwrap();
-    let app = build_app(config);
+    let app = build_app(config).expect("app");
     let group = json!({"provider":"openai", "model":"future-model", "thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"pro", "reasoning_summary":"concise"});
     for (scope, query) in [
         ("models", ""),

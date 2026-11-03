@@ -306,7 +306,7 @@ impl Drop for TestServer {
 }
 
 async fn spawn_server(settings: SparkSettings) -> TestServer {
-    serve(build_app(settings)).await
+    serve(build_app(settings).expect("app")).await
 }
 
 async fn serve(app: axum::Router) -> TestServer {
@@ -411,10 +411,13 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     fs::create_dir_all(&project).unwrap();
     let project = project.to_str().unwrap();
     // Mission turns run on an agent that answers without spawning a real CLI.
-    let server = serve(spark_http::build_app_with_agent_turn_backend(
-        settings.clone(),
-        std::sync::Arc::new(QuietAgent),
-    ))
+    let server = serve(
+        spark_http::build_app_with_agent_turn_backend(
+            settings.clone(),
+            std::sync::Arc::new(QuietAgent),
+        )
+        .expect("app"),
+    )
     .await;
     let payload_file = temp.path().join("mission.json");
     fs::write(
@@ -797,10 +800,13 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         "---\ntitle: Org bug report\ndescription: Fix it here.\n---\n\nOrg steps.\n",
     )
     .unwrap();
-    let server = serve(spark_http::build_app_with_agent_turn_backend(
-        settings.clone(),
-        std::sync::Arc::new(QuietAgent),
-    ))
+    let server = serve(
+        spark_http::build_app_with_agent_turn_backend(
+            settings.clone(),
+            std::sync::Arc::new(QuietAgent),
+        )
+        .expect("app"),
+    )
     .await;
     let spark = |args: &[&str]| {
         let mut argv = args.to_vec();
@@ -881,16 +887,25 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
     let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project.to_str().unwrap())
         .unwrap();
-    spark_storage::ConversationHandleRepository::new(&settings.data_dir)
-        .ensure_conversation_handle(
-            "conversation-chat",
-            &paths.project_id,
-            &paths.project_path,
-            "2026-10-01T00:00:00Z",
-            Some("amber-anchor"),
-        )
-        .unwrap();
-    let server = serve(build_app(settings.clone())).await;
+    // Seeded through a store that closes before the server opens its own.
+    spark_storage::ConversationRepository::new(
+        spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+    )
+    .seed_record(
+        &spark_storage::conversation::record_from_snapshot(&json!({
+            "schema_version": 5,
+            "revision": 1,
+            "conversation_id": "conversation-chat",
+            "conversation_handle": "amber-anchor",
+            "project_path": paths.project_path,
+            "created_at": "2026-10-01T00:00:00Z",
+            "turns": [],
+            "segments": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let server = serve(build_app(settings.clone()).expect("app")).await;
     let payload_file = temp.path().join("mission.json");
     fs::write(
         &payload_file,
@@ -966,10 +981,13 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_str().unwrap();
-    let server = serve(spark_http::build_app_with_agent_turn_backend(
-        settings.clone(),
-        std::sync::Arc::new(QuietAgent),
-    ))
+    let server = serve(
+        spark_http::build_app_with_agent_turn_backend(
+            settings.clone(),
+            std::sync::Arc::new(QuietAgent),
+        )
+        .expect("app"),
+    )
     .await;
     let role_cli = |args: &[&str]| {
         let mut argv = vec!["role"];

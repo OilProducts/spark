@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use spark_agent_adapter::AgentTurnBackend;
 use spark_common::settings::SparkSettings;
+use spark_storage::ConversationStore;
 use spark_storage::{DeletedProjectRecord, ProjectRecord};
 use spark_workspace::conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
@@ -48,6 +49,7 @@ type ApiResult<T> = std::result::Result<Json<T>, WorkspaceApiError>;
 
 fn conversation_service(
     settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
     runtime_handler_runner_factory: &attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: &Arc<dyn AgentTurnBackend>,
     run_event_observer: &RunEventObserverHandle,
@@ -55,6 +57,7 @@ fn conversation_service(
     let service =
         WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
             settings.clone(),
+            store.clone(),
             runtime_handler_runner_factory.clone(),
             agent_turn_backend.clone(),
         );
@@ -242,12 +245,14 @@ async fn list_projects(
 
 async fn register_project(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<ProjectRegistrationRequest>, JsonRejection>,
 ) -> ApiResult<ProjectRecord> {
     let request = json_payload(payload)?;
     let changes_settings = request.execution_profile_id.is_some();
-    let record = WorkspaceProjectService::new((*settings).clone()).register_project(request)?;
+    let record =
+        WorkspaceProjectService::new((*settings).clone()).register_project(&store, request)?;
     if changes_settings {
         live_hub.publish_settings_change(
             "project",
@@ -261,6 +266,7 @@ async fn register_project(
 
 async fn update_project_state(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<ProjectStateUpdateBody>, JsonRejection>,
 ) -> ApiResult<ProjectRecord> {
@@ -268,6 +274,7 @@ async fn update_project_state(
     let is_favorite = request.is_favorite.map(|value| value.unwrap_or(false));
     let changes_settings = request.execution_profile_id.is_some();
     let record = WorkspaceProjectService::new((*settings).clone()).update_project_state(
+        &store,
         ProjectStateUpdate {
             expected_revision: request.expected_revision,
             project_path: request.project_path,
@@ -290,32 +297,46 @@ async fn update_project_state(
 
 async fn delete_project(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     payload: Result<Query<DeleteProjectQuery>, QueryRejection>,
 ) -> ApiResult<DeletedProjectRecordWithStatus> {
     let query = query_payload(payload)?;
-    let deleted =
-        WorkspaceProjectService::new((*settings).clone()).delete_project(&query.project_path)?;
+    let conversations = WorkspaceConversationService::new_with_agent_turn_backend(
+        (*settings).clone(),
+        store,
+        agent_turn_backend,
+    );
+    let deleted = tokio::task::spawn_blocking(move || {
+        WorkspaceProjectService::new((*settings).clone())
+            .delete_project(&conversations, &query.project_path)
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("project deletion failed: {error}")))??;
     Ok(Json(DeletedProjectRecordWithStatus::from(deleted)))
 }
 
 async fn list_project_conversations(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Vec<ConversationSummary>> {
     let query = optional_query_payload(payload)?;
+    let conversations = WorkspaceConversationService::new((*settings).clone(), store);
     WorkspaceProjectService::new((*settings).clone())
-        .list_project_conversations(query.project_path.as_deref())
+        .list_project_conversations(&conversations, query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
 }
 
 async fn get_conversation(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(conversation_id): AxumPath<String>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = optional_query_payload(payload)?;
-    WorkspaceConversationService::new((*settings).clone())
+    WorkspaceConversationService::new((*settings).clone(), store.clone())
         .get_snapshot(&conversation_id, query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
@@ -323,6 +344,7 @@ async fn get_conversation(
 
 async fn update_conversation_settings(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_id): AxumPath<String>,
     payload: Result<Json<ConversationSettingsUpdate>, JsonRejection>,
@@ -333,7 +355,7 @@ async fn update_conversation_settings(
         || request.llm_profile.is_some()
         || request.model.is_some()
         || request.reasoning_effort.is_some();
-    let service = WorkspaceConversationService::new((*settings).clone());
+    let service = WorkspaceConversationService::new((*settings).clone(), store.clone());
     let updated = service.update_conversation_settings(&conversation_id, request)?;
     let project_path = updated["project_path"]
         .as_str()
@@ -353,6 +375,7 @@ async fn update_conversation_settings(
 
 async fn send_conversation_turn(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -364,6 +387,7 @@ async fn send_conversation_turn(
     let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -381,6 +405,7 @@ async fn send_conversation_turn(
 
 async fn retry_conversation_turn(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -391,6 +416,7 @@ async fn retry_conversation_turn(
     let project_path = json_payload(payload)?.project_path;
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -476,9 +502,14 @@ async fn run_conversation_turn(
     tokio::spawn(async move {
         let completion_conversation_id = prepared_for_completion.conversation_id.clone();
         let completion_project_path = prepared_for_completion.project_path.clone();
-        let missions = mission_service(&settings_for_completion);
-        let roles =
-            spark_workspace::roles::WorkspaceRoleService::new((*settings_for_completion).clone());
+        // The running turn keeps the app's store open through its final
+        // publication, even if the app itself is dropped meanwhile.
+        let store = service_for_completion.store().clone();
+        let missions = mission_service(&settings_for_completion, &store);
+        let roles = spark_workspace::roles::WorkspaceRoleService::new(
+            (*settings_for_completion).clone(),
+            store.clone(),
+        );
         let (mission_project, mission_id) = (
             completion_project_path.clone(),
             completion_conversation_id.clone(),
@@ -544,6 +575,7 @@ async fn run_conversation_turn(
                 );
             }
         }
+        drop(store);
     });
     Ok(Json(started_snapshot))
 }
@@ -555,6 +587,7 @@ struct ConversationProjectPathRequest {
 
 async fn interrupt_conversation_turn(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -564,6 +597,7 @@ async fn interrupt_conversation_turn(
     let request = json_payload(payload)?;
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -582,6 +616,7 @@ async fn interrupt_conversation_turn(
 
 async fn answer_conversation_request_user_input(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -593,6 +628,7 @@ async fn answer_conversation_request_user_input(
     let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -626,6 +662,7 @@ async fn answer_conversation_request_user_input(
 
 async fn create_flow_run_request_by_handle(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -636,6 +673,7 @@ async fn create_flow_run_request_by_handle(
     let request = json_payload(payload)?;
     let payload = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -648,6 +686,7 @@ async fn create_flow_run_request_by_handle(
 
 async fn review_flow_run_request(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -659,6 +698,7 @@ async fn review_flow_run_request(
     let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -679,6 +719,7 @@ async fn review_flow_run_request(
 
 async fn review_proposed_plan(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -690,6 +731,7 @@ async fn review_proposed_plan(
     let project_path = request.project_path.clone();
     let service = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -710,6 +752,7 @@ async fn review_proposed_plan(
 
 async fn launch_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -722,6 +765,7 @@ async fn launch_workspace_run(
     };
     let payload = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -734,6 +778,7 @@ async fn launch_workspace_run(
 
 async fn retry_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -748,6 +793,7 @@ async fn retry_workspace_run(
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
     let payload = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -761,6 +807,7 @@ async fn retry_workspace_run(
 
 async fn continue_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
@@ -775,6 +822,7 @@ async fn continue_workspace_run(
     let before_sequence = latest_run_sequence(&settings, &run_id).ok().flatten();
     let payload = conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -788,11 +836,12 @@ async fn continue_workspace_run(
 
 async fn delete_conversation(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(conversation_id): AxumPath<String>,
     payload: Result<Query<DeleteConversationQuery>, QueryRejection>,
 ) -> ApiResult<ConversationDeleteResponse> {
     let query = query_payload(payload)?;
-    WorkspaceConversationService::new((*settings).clone())
+    WorkspaceConversationService::new((*settings).clone(), store.clone())
         .delete_conversation(&conversation_id, &query.project_path)
         .map(Json)
         .map_err(Into::into)
@@ -801,6 +850,7 @@ async fn delete_conversation(
 /// Raw request body upload; the filename travels as display metadata only.
 async fn upload_conversation_attachment(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(conversation_id): AxumPath<String>,
     query: Result<Query<AttachmentUploadQuery>, QueryRejection>,
     body: Result<Bytes, BytesRejection>,
@@ -810,7 +860,7 @@ async fn upload_conversation_attachment(
         WorkspaceError::Validation("Attachments are limited to 20 MiB per file.".to_string())
     })?;
     tokio::task::spawn_blocking(move || {
-        WorkspaceConversationService::new((*settings).clone()).upload_attachment(
+        WorkspaceConversationService::new((*settings).clone(), store.clone()).upload_attachment(
             &conversation_id,
             &query.project_path,
             &query.filename,
@@ -827,11 +877,12 @@ async fn upload_conversation_attachment(
 /// HTML or SVG never renders in the app's origin.
 async fn download_conversation_attachment(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath((conversation_id, attachment_id)): AxumPath<(String, String)>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> Result<Response, WorkspaceApiError> {
     let query = optional_query_payload(payload)?;
-    let (attachment, bytes) = WorkspaceConversationService::new((*settings).clone())
+    let (attachment, bytes) = WorkspaceConversationService::new((*settings).clone(), store.clone())
         .read_attachment(
             &conversation_id,
             query.project_path.as_deref().unwrap_or_default(),
@@ -878,11 +929,12 @@ async fn download_conversation_attachment(
 
 async fn delete_conversation_attachment(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath((conversation_id, attachment_id)): AxumPath<(String, String)>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = optional_query_payload(payload)?;
-    WorkspaceConversationService::new((*settings).clone())
+    WorkspaceConversationService::new((*settings).clone(), store.clone())
         .delete_draft_attachment(
             &conversation_id,
             query.project_path.as_deref().unwrap_or_default(),
@@ -894,11 +946,12 @@ async fn delete_conversation_attachment(
 
 async fn get_conversation_segment_tool_output(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath((conversation_id, segment_id)): AxumPath<(String, String)>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = optional_query_payload(payload)?;
-    WorkspaceConversationService::new((*settings).clone())
+    WorkspaceConversationService::new((*settings).clone(), store.clone())
         .get_segment_tool_output(&conversation_id, &segment_id, query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
@@ -906,6 +959,7 @@ async fn get_conversation_segment_tool_output(
 
 async fn workspace_live_events(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Query<RawLiveQuery>, QueryRejection>,
 ) -> Result<Response, WorkspaceApiError> {
@@ -914,7 +968,7 @@ async fn workspace_live_events(
     // Subscribe before reading initial state so a commit in between is
     // delivered live; the browser drops the resulting stale duplicates.
     let mut live_receiver = live_query_subscribes(&query).then(|| live_hub.subscribe());
-    let initial = initial_live_envelopes(&settings, &query)?;
+    let initial = initial_live_envelopes(&settings, &store, &query)?;
     let has_initial = !initial.is_empty();
     let stream = async_stream::stream! {
         for envelope in initial {
@@ -1018,10 +1072,11 @@ struct TriggerListQuery {
 
 async fn list_triggers(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<TriggerListQuery>, QueryRejection>,
 ) -> ApiResult<Vec<SerializedTrigger>> {
     let query = query_payload(payload)?;
-    WorkspaceTriggerService::new((*settings).clone())
+    WorkspaceTriggerService::new((*settings).clone(), store.clone())
         .list_triggers(
             query
                 .project_path
@@ -1034,11 +1089,13 @@ async fn list_triggers(
 
 async fn create_trigger(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<TriggerCreateRequest>, JsonRejection>,
 ) -> ApiResult<SerializedTrigger> {
     let request = json_payload(payload)?;
-    let trigger = WorkspaceTriggerService::new((*settings).clone()).create_trigger(request)?;
+    let trigger =
+        WorkspaceTriggerService::new((*settings).clone(), store.clone()).create_trigger(request)?;
     if let Ok(value) = serde_json::to_value(&trigger) {
         live_hub.publish(trigger_upsert_envelope(&value));
     }
@@ -1054,11 +1111,12 @@ struct TriggerQuery {
 
 async fn get_trigger(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(trigger_id): AxumPath<String>,
     payload: Result<Query<TriggerQuery>, QueryRejection>,
 ) -> ApiResult<SerializedTrigger> {
     let query = query_payload(payload)?;
-    WorkspaceTriggerService::new((*settings).clone())
+    WorkspaceTriggerService::new((*settings).clone(), store.clone())
         .get_trigger(&query.project_path, &trigger_id)
         .map(Json)
         .map_err(Into::into)
@@ -1066,6 +1124,7 @@ async fn get_trigger(
 
 async fn update_trigger(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(trigger_id): AxumPath<String>,
     query: Result<Query<TriggerQuery>, QueryRejection>,
@@ -1073,7 +1132,7 @@ async fn update_trigger(
 ) -> ApiResult<SerializedTrigger> {
     let query = query_payload(query)?;
     let request = json_payload(payload)?;
-    let trigger = WorkspaceTriggerService::new((*settings).clone()).update_trigger(
+    let trigger = WorkspaceTriggerService::new((*settings).clone(), store.clone()).update_trigger(
         &query.project_path,
         &trigger_id,
         request,
@@ -1094,12 +1153,13 @@ struct TriggerDeleteQuery {
 
 async fn delete_trigger(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(trigger_id): AxumPath<String>,
     payload: Result<Query<TriggerDeleteQuery>, QueryRejection>,
 ) -> ApiResult<TriggerDeleteResponse> {
     let query = query_payload(payload)?;
-    let deleted = WorkspaceTriggerService::new((*settings).clone()).delete_trigger(
+    let deleted = WorkspaceTriggerService::new((*settings).clone(), store.clone()).delete_trigger(
         &query.project_path,
         &trigger_id,
         &query.expected_revision,
@@ -1117,6 +1177,7 @@ async fn delete_trigger(
 
 async fn post_trigger_webhook(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     State(run_event_observer): State<RunEventObserverHandle>,
     headers: HeaderMap,
@@ -1137,7 +1198,7 @@ async fn post_trigger_webhook(
     let payload = value.as_object().cloned().ok_or_else(|| {
         WorkspaceError::Validation("Webhook payload must be a JSON object.".to_string())
     })?;
-    let mut service = WorkspaceTriggerService::new((*settings).clone());
+    let mut service = WorkspaceTriggerService::new((*settings).clone(), store.clone());
     if let Some(observer) = run_event_observer.0 {
         service = service.with_run_event_observer(observer);
     }
@@ -1153,12 +1214,14 @@ async fn post_trigger_webhook(
 
 async fn pending_attention(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
 ) -> ApiResult<Value> {
     conversation_service(
         &settings,
+        &store,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
@@ -1212,6 +1275,7 @@ struct SettingsQuery {
 
 async fn settings(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     Query(query): Query<SettingsQuery>,
 ) -> ApiResult<Value> {
     if let Some(id) = query.client_id {
@@ -1226,9 +1290,11 @@ async fn settings(
             .map_err(Into::into);
     }
     match (query.project_path, query.conversation_id) {
-        (project_path, Some(id)) => WorkspaceConversationService::new((*settings).clone())
-            .get_snapshot(&id, project_path.as_deref())
-            .map(|snapshot| snapshot["settings"].clone()),
+        (project_path, Some(id)) => {
+            WorkspaceConversationService::new((*settings).clone(), store.clone())
+                .get_snapshot(&id, project_path.as_deref())
+                .map(|snapshot| snapshot["settings"].clone())
+        }
         (Some(path), None) => {
             spark_workspace::settings::project_model_settings_view(&settings, &path)
         }
@@ -1308,7 +1374,11 @@ async fn patch_settings(
         } => Some((conversation_id.clone(), project_path.clone())),
         _ => None,
     };
-    let response = spark_workspace::settings::update_workspace_settings(&settings, request)?;
+    let store = live_hub
+        .conversation_store()
+        .ok_or_else(|| WorkspaceError::ServiceUnavailable("Spark is shutting down.".to_string()))?;
+    let response =
+        spark_workspace::settings::update_workspace_settings(&settings, &store, request)?;
     if let Some((id, project)) = conversation {
         publish_conversation_snapshot(&settings, &live_hub, &id, &project);
     }
@@ -1573,7 +1643,16 @@ fn publish_conversation_after(
     project_path: &str,
     before_revision: i64,
 ) {
-    match conversation_envelopes_after(settings, conversation_id, project_path, before_revision) {
+    let Some(store) = live_hub.conversation_store() else {
+        return;
+    };
+    match conversation_envelopes_after(
+        settings,
+        &store,
+        conversation_id,
+        project_path,
+        before_revision,
+    ) {
         Ok(envelopes) if !envelopes.is_empty() => {
             for envelope in envelopes {
                 live_hub.publish(envelope);
@@ -1594,8 +1673,11 @@ fn publish_conversation_summary(
     conversation_id: &str,
     project_path: &str,
 ) {
+    let Some(store) = live_hub.conversation_store() else {
+        return;
+    };
     if let Ok(Some(envelope)) =
-        conversation_summary_envelope_for(settings, conversation_id, project_path)
+        conversation_summary_envelope_for(settings, &store, conversation_id, project_path)
     {
         live_hub.publish(envelope);
     }
@@ -1607,7 +1689,12 @@ fn publish_conversation_snapshot(
     conversation_id: &str,
     project_path: &str,
 ) {
-    if let Ok(envelope) = conversation_snapshot_envelope(settings, conversation_id, project_path) {
+    let Some(store) = live_hub.conversation_store() else {
+        return;
+    };
+    if let Ok(envelope) =
+        conversation_snapshot_envelope(settings, &store, conversation_id, project_path)
+    {
         live_hub.publish(envelope);
     }
     publish_conversation_summary(settings, live_hub, conversation_id, project_path);
@@ -1696,8 +1783,11 @@ fn collect_run_ids_from_value(value: &Value, run_ids: &mut BTreeSet<String>) {
     }
 }
 
-fn mission_service(settings: &SparkSettings) -> spark_workspace::missions::WorkspaceMissionService {
-    spark_workspace::missions::WorkspaceMissionService::new(settings.clone())
+fn mission_service(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+) -> spark_workspace::missions::WorkspaceMissionService {
+    spark_workspace::missions::WorkspaceMissionService::new(settings.clone(), store.clone())
 }
 
 /// Runs a blocking mission operation; the service publishes the result.
@@ -1735,21 +1825,23 @@ async fn get_playbook(
 
 async fn list_missions(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = optional_query_payload(payload)?;
     Ok(Json(
-        mission_service(&settings).board(query.project_path.as_deref())?,
+        mission_service(&settings, &store).board(query.project_path.as_deref())?,
     ))
 }
 async fn get_mission(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(id): AxumPath<String>,
     payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(payload)?;
     Ok(Json(
-        mission_service(&settings).get(&query.project_path, &id)?,
+        mission_service(&settings, &store).get(&query.project_path, &id)?,
     ))
 }
 #[derive(Debug, Default, Deserialize)]
@@ -1760,13 +1852,14 @@ struct MissionCreateQuery {
 
 async fn create_mission(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     query: Result<Query<MissionCreateQuery>, QueryRejection>,
     payload: Result<Json<MissionMutation>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = optional_query_payload(query)?;
     let mutation = json_payload(payload)?;
     mission_call(move || {
-        let service = mission_service(&settings);
+        let service = mission_service(&settings, &store);
         match query.conversation_handle.as_deref() {
             Some(handle) => {
                 service.create_from_conversation(handle, query.project_path.as_deref(), mutation)
@@ -1778,28 +1871,35 @@ async fn create_mission(
 }
 async fn update_mission(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(id): AxumPath<String>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     payload: Result<Json<MissionMutation>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let mutation = json_payload(payload)?;
-    mission_call(move || mission_service(&settings).update(&query.project_path, &id, mutation))
-        .await
+    mission_call(move || {
+        mission_service(&settings, &store).update(&query.project_path, &id, mutation)
+    })
+    .await
 }
 async fn post_mission_event(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath(id): AxumPath<String>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     payload: Result<Json<spark_workspace::inbox::InboxPost>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let post = json_payload(payload)?;
-    mission_call(move || mission_service(&settings).post_event(&query.project_path, &id, post))
-        .await
+    mission_call(move || {
+        mission_service(&settings, &store).post_event(&query.project_path, &id, post)
+    })
+    .await
 }
 async fn control_mission(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath((id, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     body: Bytes,
@@ -1809,7 +1909,7 @@ async fn control_mission(
     let close: spark_workspace::missions::MissionCloseRequest = serde_json::from_slice(body)
         .map_err(|error| WorkspaceError::Validation(format!("Invalid close request: {error}")))?;
     mission_call(move || {
-        let service = mission_service(&settings);
+        let service = mission_service(&settings, &store);
         let project = query.project_path.as_str();
         match control.as_str() {
             "start" => service.start(project, &id),
@@ -1824,11 +1924,13 @@ async fn control_mission(
 
 async fn list_roles(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    let roles = spark_workspace::roles::WorkspaceRoleService::new((*settings).clone())
-        .list(&query.project_path)?;
+    let roles =
+        spark_workspace::roles::WorkspaceRoleService::new((*settings).clone(), store.clone())
+            .list(&query.project_path)?;
     Ok(Json(json!({ "roles": roles })))
 }
 
@@ -1846,24 +1948,31 @@ struct OrgQuery {
     file: Option<String>,
 }
 
-fn org_service(settings: &SparkSettings) -> spark_workspace::org::WorkspaceOrgService {
-    spark_workspace::org::WorkspaceOrgService::new(settings.clone())
+fn org_service(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+) -> spark_workspace::org::WorkspaceOrgService {
+    spark_workspace::org::WorkspaceOrgService::new(settings.clone(), store.clone())
 }
 
 async fn list_org(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<OrgQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    Ok(Json(org_service(&settings).list(&query.project_path)?))
+    Ok(Json(
+        org_service(&settings, &store).list(&query.project_path)?,
+    ))
 }
 
 async fn get_org_item(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<OrgQuery>, QueryRejection>,
 ) -> ApiResult<spark_workspace::org::OrgItemDetail> {
     let query = query_payload(payload)?;
-    Ok(Json(org_service(&settings).item(
+    Ok(Json(org_service(&settings, &store).item(
         &query.project_path,
         &query.kind,
         &query.name,
@@ -1872,19 +1981,21 @@ async fn get_org_item(
 
 async fn get_org_history(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<OrgQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    let commits = org_service(&settings).history(&query.project_path, &query.path)?;
+    let commits = org_service(&settings, &store).history(&query.project_path, &query.path)?;
     Ok(Json(json!({ "commits": commits })))
 }
 
 async fn get_org_memory(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     payload: Result<Query<OrgQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    Ok(Json(org_service(&settings).memory(
+    Ok(Json(org_service(&settings, &store).memory(
         &query.project_path,
         &query.role,
         query.file.as_deref(),
@@ -1900,6 +2011,7 @@ struct RoleSendRequest {
 
 async fn control_role(
     State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
     AxumPath((name, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     body: Bytes,
@@ -1910,7 +2022,8 @@ async fn control_role(
         .transpose()
         .map_err(|error| WorkspaceError::Validation(format!("Invalid send request: {error}")))?;
     let role = tokio::task::spawn_blocking(move || {
-        let service = spark_workspace::roles::WorkspaceRoleService::new((*settings).clone());
+        let service =
+            spark_workspace::roles::WorkspaceRoleService::new((*settings).clone(), store.clone());
         let project = query.project_path.as_str();
         match (control.as_str(), send) {
             ("start", _) => service.start(project, &name),

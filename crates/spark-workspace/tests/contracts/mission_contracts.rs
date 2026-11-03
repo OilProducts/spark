@@ -10,8 +10,7 @@ use spark_common::settings::SparkSettings;
 use spark_workspace::{
     inbox::{install_runtime, InboxPost, InboxRuntime},
     missions::{MissionMutation, MissionRecord, MissionStatus, WorkspaceMissionService},
-    ConversationSettingsUpdate, FlowRunRequestCreateByHandleRequest, WorkspaceConversationService,
-    WorkspaceError,
+    ConversationSettingsUpdate, FlowRunRequestCreateByHandleRequest, WorkspaceError,
 };
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -89,7 +88,7 @@ impl Harness {
                 publish: Arc::new(|_| {}),
             },
         );
-        let missions = WorkspaceMissionService::new(settings.clone());
+        let missions = crate::missions(settings.clone());
         Self {
             _temp: temp,
             settings,
@@ -118,7 +117,7 @@ impl Harness {
         });
     }
     fn transcript(&self, id: &str) -> Value {
-        WorkspaceConversationService::new(self.settings.clone())
+        crate::conversations(self.settings.clone())
             .get_snapshot(id, Some(&self.project))
             .unwrap()
     }
@@ -133,7 +132,7 @@ impl Harness {
     }
     /// The agent's `spark convo run-request` from inside its turn.
     fn launch(&self, id: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
-        WorkspaceConversationService::new(self.settings.clone())
+        crate::conversations(self.settings.clone())
             .create_flow_run_request_by_handle(
                 &self.handle(id),
                 FlowRunRequestCreateByHandleRequest {
@@ -332,7 +331,7 @@ fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript(
     assert!(!frame.contains("Playbook"));
     assert!(started.playbook.is_none());
     // The mission's thread stays out of the project's Threads list.
-    let threads = WorkspaceConversationService::new(harness.settings.clone())
+    let threads = crate::conversations(harness.settings.clone())
         .list_project_conversations(&harness.project)
         .unwrap();
     assert!(threads
@@ -352,7 +351,7 @@ fn a_model_set_on_a_draft_missions_conversation_runs_its_turns() {
     let harness = Harness::new();
     let mission = harness.create(json!({"title": "Search"}));
     // The UI addresses a draft's conversation by the mission id.
-    let conversations = WorkspaceConversationService::new(harness.settings.clone());
+    let conversations = crate::conversations(harness.settings.clone());
     conversations
         .update_conversation_settings(
             &mission.id,
@@ -772,7 +771,7 @@ fn derived_status_covers_each_group_including_a_run_waiting_on_recovery() {
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
     assert!(harness.agent.prompts()[1].contains("is waiting on a recovery decision"));
-    let attention = WorkspaceConversationService::new(harness.settings.clone())
+    let attention = crate::conversations(harness.settings.clone())
         .pending_attention()
         .unwrap();
     assert!(attention
@@ -830,7 +829,7 @@ fn recovery_fails_stale_turns_and_delivers_missing_terminal_events() {
 fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
     let harness = Harness::new();
     super::role_contracts::seed_bundled_roles(&harness.settings);
-    let roles = spark_workspace::roles::WorkspaceRoleService::new(harness.settings.clone());
+    let roles = crate::roles(harness.settings.clone());
     let coordinator = roles.get(&harness.project, "coordinator").unwrap();
     roles
         .post(
@@ -906,7 +905,7 @@ fn ordinary_conversations_launch_directly_without_mission_integration() {
     harness.install("ops/review", simple_flow());
     seed_conversation(&harness.settings, &harness.project, "conversation-task");
     let mission = harness.create(json!({"title": "Unrelated"}));
-    let response = WorkspaceConversationService::new(harness.settings.clone())
+    let response = crate::conversations(harness.settings.clone())
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
@@ -951,7 +950,7 @@ pub(crate) fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
 fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
     let harness = Harness::new();
     let mission = harness.create(json!({"title":"Reasoning"}));
-    let conversations = WorkspaceConversationService::new(harness.settings.clone());
+    let conversations = crate::conversations(harness.settings.clone());
     let group = json!({"provider":"openai", "model":"future", "thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"pro", "reasoning_summary":"detailed"});
     let saved = conversations
         .update_conversation_settings(
@@ -1247,7 +1246,7 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
     let question = harness.get(&mission.id).question.unwrap();
     assert_eq!(question["prompt"], "Ready to publish?");
     assert_eq!(question["options"][0]["label"], "Ship it");
-    let attention = WorkspaceConversationService::new(harness.settings.clone())
+    let attention = crate::conversations(harness.settings.clone())
         .pending_attention()
         .unwrap();
     assert!(attention
@@ -1414,7 +1413,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
         .start(&harness.project, &mission.id)
         .unwrap();
     harness.wait_turns(1);
-    let launched = WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+    let launched = crate::conversations_with_factory(
         harness.settings.clone(),
         Arc::new(|| attractor_runtime::RuntimeHandlerRunner::new().with_blocking_human_gates()),
     )
@@ -1527,12 +1526,12 @@ fn human_edits_to_a_started_mission_reach_the_agent_as_a_turn() {
 #[tokio::test]
 async fn triggers_deliver_to_missions_wait_batch_and_close() {
     use spark_triggers::{TriggerCreateRequest, TriggerUpdateRequest, WebhookHandleRequest};
-    use spark_workspace::WorkspaceTriggerService;
+
     use std::io::{Read, Write};
     let h = Harness::new();
     let mission = h.create(json!({"title": "Wait for outside work"}));
     let id = &mission.id;
-    let triggers = WorkspaceTriggerService::new(h.settings.clone());
+    let triggers = crate::triggers(h.settings.clone());
     let action = json!({"mode": "mission", "mission_id": id});
     let create = |kind: &str, source: Value| {
         triggers
@@ -1607,7 +1606,7 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     h.agent.release(1);
     wait_for("waiting", || h.get(id).waiting);
     assert_eq!(h.get(id).status, MissionStatus::Running);
-    assert!(!WorkspaceConversationService::new(h.settings.clone())
+    assert!(!crate::conversations(h.settings.clone())
         .pending_attention()
         .unwrap()
         .iter()
@@ -1762,7 +1761,6 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
 #[test]
 fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
     use spark_triggers::TriggerCreateRequest;
-    use spark_workspace::WorkspaceTriggerService;
 
     for actor in ["human", "assistant", "cancel"] {
         let h = Harness::new();
@@ -1776,7 +1774,7 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
             },
         );
         let mission = h.create(json!({"title": "Waiting mission"}));
-        let triggers = WorkspaceTriggerService::new(h.settings.clone());
+        let triggers = crate::triggers(h.settings.clone());
         let create = |name: &str, enabled: bool, mission_id: &str| {
             triggers
                 .create_trigger(TriggerCreateRequest {
@@ -1864,14 +1862,14 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
 #[test]
 fn a_retried_webhook_delivery_reaches_the_mission_once() {
     use spark_triggers::{TriggerCreateRequest, WebhookHandleRequest};
-    use spark_workspace::WorkspaceTriggerService;
+
     let h = Harness::new();
     let mission = h.create(json!({"title": "Watch a webhook"}));
     h.missions.start(&h.project, &mission.id).unwrap();
     h.wait_turns(1);
     h.agent.release(1);
     h.wait_idle(&mission.id);
-    let triggers = WorkspaceTriggerService::new(h.settings.clone());
+    let triggers = crate::triggers(h.settings.clone());
     let webhook = triggers
         .create_trigger(TriggerCreateRequest {
             project_path: h.project.clone(),

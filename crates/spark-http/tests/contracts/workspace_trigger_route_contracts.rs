@@ -20,7 +20,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let other = project(&settings, "other");
     let project = project(&settings, "project");
     let org = spark_common::project::definitions_dir(Path::new(&project));
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let empty = request_json(app.clone(), "GET", "/workspace/api/triggers", None).await;
     assert_eq!(empty.0, StatusCode::OK);
@@ -164,7 +164,7 @@ async fn triggers_are_created_in_registered_projects_only() {
     let unregistered = temp.path().join("unregistered");
     fs::create_dir_all(&unregistered).expect("project");
     let response = request_json(
-        build_app(settings),
+        build_app(settings).expect("app"),
         "POST",
         "/workspace/api/triggers",
         Some(json!({
@@ -191,7 +191,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
     let settings = settings(&root);
     install_run_flow(&settings);
     let project_dir = project(&settings, "webhook-project");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let created = request_json(
         app.clone(),
@@ -354,7 +354,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
     definitions
         .put(&protected_definition("trigger-protected"), None)
         .expect("protected");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let missing = request_json(
         app.clone(),
@@ -500,7 +500,7 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
     let original_state_value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&state_path).expect("state text"))
             .expect("state json");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let protected_delete = request_json(app.clone(), "DELETE", &delete_url, None).await;
     assert_eq!(protected_delete.0, StatusCode::BAD_REQUEST);
@@ -569,7 +569,7 @@ weekdays = ["mon", "noday"]
 hour = 9
 minute = 0"#,
     );
-    let app = build_app(settings);
+    let app = build_app(settings).expect("app");
 
     let listed = request_json(app.clone(), "GET", "/workspace/api/triggers", None).await;
     assert_eq!(listed.0, StatusCode::OK);
@@ -636,7 +636,7 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
     let settings = settings(temp.path());
     install_run_flow(&settings);
     let project = project(&settings, "project");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
 
     let created = request_json(
         app,
@@ -902,7 +902,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
         }),
     );
 
-    let app = spark_http::build_app(settings.clone());
+    let app = spark_http::build_app(settings.clone()).expect("app");
 
     let created = request_json(
         app.clone(),
@@ -1017,7 +1017,7 @@ async fn trigger_revisions_reject_missing_and_stale_http_writes() {
     let settings = settings(temp.path());
     install_run_flow(&settings);
     let project = project(&settings, "project");
-    let app = build_app(settings.clone());
+    let app = build_app(settings.clone()).expect("app");
     let created = request_json(
         app.clone(),
         "POST",

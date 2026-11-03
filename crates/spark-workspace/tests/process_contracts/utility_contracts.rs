@@ -72,6 +72,7 @@ fn save_utility(settings: &SparkSettings, value: Value) -> Result<Value, Workspa
     let revision = read_settings_document(&core(settings)).unwrap().revision;
     update_workspace_settings(
         settings,
+        &crate::shared_store(&(settings).data_dir),
         serde_json::from_value(
             json!({"section": "utility_models", "expected_revision": revision, "value": value}),
         )
@@ -151,11 +152,10 @@ fn service_with_updates(
 ) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(ReplyBackend))
-            .with_live_publisher(Arc::new(move |envelope| {
-                let _ = sender.lock().unwrap().send(envelope);
-            }));
+    let service = crate::conversations_with_backend(settings, Arc::new(ReplyBackend))
+        .with_live_publisher(Arc::new(move |envelope| {
+            let _ = sender.lock().unwrap().send(envelope);
+        }));
     (service, receiver)
 }
 
@@ -414,7 +414,7 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     let (_temp, settings) = fixture();
     let calls = fake_claude(&settings, "Generated", "0", 0);
     let (service, updates) = service_with_updates(settings.clone());
-    ConversationRepository::new(settings.data_dir.clone())
+    ConversationRepository::new(crate::shared_store(settings.data_dir.clone()))
         .commit_conversation(
             "named",
             PROJECT,
@@ -434,10 +434,7 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
 
     // Off: no utility model, so the derived title stays.
     let (_temp, settings) = fixture();
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(ReplyBackend),
-    );
+    let service = crate::conversations_with_backend(settings.clone(), Arc::new(ReplyBackend));
     turn(&service, "off", "first question");
     assert_eq!(
         service.generate_conversation_title("off", PROJECT).unwrap(),
@@ -482,15 +479,14 @@ fn run_service_with_updates(
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
     let observed = settings.clone();
-    let service = WorkspaceConversationService::new(settings).with_run_event_observer(Arc::new(
-        move |run_id: &str| {
+    let service =
+        crate::conversations(settings).with_run_event_observer(Arc::new(move |run_id: &str| {
             if let Ok(Some(envelope)) =
                 spark_workspace::live::run_upsert_envelope(&observed, run_id)
             {
                 let _ = sender.lock().unwrap().send(envelope);
             }
-        },
-    ));
+        }));
     (service, receiver)
 }
 

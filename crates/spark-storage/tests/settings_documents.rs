@@ -184,28 +184,6 @@ fn legacy_defaults_file_is_rejected_naming_the_file() {
 }
 
 #[test]
-fn unsupported_conversation_settings_version_is_rejected_naming_the_file() {
-    let root = tempfile::tempdir().unwrap();
-    let project = spark_storage::ProjectRegistry::new(root.path())
-        .ensure_project_paths("/projects/old")
-        .unwrap();
-    let dir = project.conversations_dir.join("chat");
-    fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("conversation.json");
-    let mut meta = spark_storage::conversation::ConversationMeta::new("chat", "/projects/old");
-    meta.settings_schema_version = 0;
-    let bytes = serde_json::to_vec(&meta).unwrap();
-    fs::write(&path, &bytes).unwrap();
-    let error = spark_storage::ConversationRepository::new(root.path())
-        .read_snapshot("chat", Some("/projects/old"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains(&path.display().to_string()), "{error}");
-    assert!(error.contains("settings_schema_version 0"), "{error}");
-    assert_eq!(fs::read(&path).unwrap(), bytes);
-}
-
-#[test]
 fn project_operational_writer_child() {
     let Some(home) = std::env::var_os("SPARK_TEST_PROJECT_LOCK_HOME") else {
         return;

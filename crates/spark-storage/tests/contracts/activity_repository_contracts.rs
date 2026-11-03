@@ -341,13 +341,18 @@ fn architecture_has_one_activity_writer_and_no_run_projection_sources() {
             "{relative} returned"
         );
     }
-    let storage = std::fs::read_to_string(
-        repository_root.join("crates/spark-storage/src/conversation/store.rs"),
-    )
-    .expect("conversation store");
-    assert!(storage.contains("ActivityRepository"));
-    assert!(!storage.contains("transcript.json\""));
-    assert!(!storage.contains("journal.jsonl"));
+    // Conversations persist through SQLite rows, not the run activity logs.
+    for relative in [
+        "crates/spark-storage/src/conversation/store.rs",
+        "crates/spark-storage/src/conversation/commit.rs",
+        "crates/spark-storage/src/workspace_conversations.rs",
+    ] {
+        let source =
+            std::fs::read_to_string(repository_root.join(relative)).expect("conversation source");
+        assert!(!source.contains("ActivityRepository"), "{relative}");
+        assert!(!source.contains("transcript.json"), "{relative}");
+        assert!(!source.contains("journal.jsonl"), "{relative}");
+    }
 }
 
 fn turn_record(revision: u64, source_event_sequence: u64) -> TranscriptRecord {

@@ -80,10 +80,26 @@ pub fn snapshot_from_record(record: &ConversationRecord) -> Value {
         "turns".to_string(),
         serde_json::to_value(&record.transcript.turns).unwrap_or_else(|_| json!([])),
     );
-    object.insert(
-        "segments".to_string(),
-        serde_json::to_value(&record.transcript.segments).unwrap_or_else(|_| json!([])),
-    );
+    let mut segments =
+        serde_json::to_value(&record.transcript.segments).unwrap_or_else(|_| json!([]));
+    // Derive the plan review link from the durable plan record, so a segment
+    // rewrite that drops its `artifact_id` cannot orphan a plan's controls.
+    for plan in &record.artifacts.proposed_plans {
+        let (Some(plan_id), Some(segment_id)) = (
+            plan.get("id").and_then(Value::as_str),
+            plan.get("source_segment_id").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if let Some(segment) = segments.as_array_mut().and_then(|segments| {
+            segments
+                .iter_mut()
+                .find(|segment| segment["id"] == segment_id && segment.get("artifact_id").is_none())
+        }) {
+            segment["artifact_id"] = json!(plan_id);
+        }
+    }
+    object.insert("segments".to_string(), segments);
     object.insert(
         "event_log".to_string(),
         Value::Array(record.artifacts.event_log.clone()),

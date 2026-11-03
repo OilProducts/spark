@@ -364,7 +364,7 @@ fn append_activity_record<T: Serialize>(path: &Path, record: &T) -> Result<()> {
 
 /// Make an unterminated final record consistent with reads before appending:
 /// a valid record gets its missing newline, an invalid one is truncated away.
-fn repair_partial_tail<T: DeserializeOwned>(path: &Path) -> Result<()> {
+pub(crate) fn repair_partial_tail<T: DeserializeOwned>(path: &Path) -> Result<()> {
     let mut file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
