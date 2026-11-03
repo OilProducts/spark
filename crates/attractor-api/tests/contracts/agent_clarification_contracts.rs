@@ -41,29 +41,14 @@ fn settings(root: &Path) -> SparkSettings {
     }
 }
 
-#[test]
-fn codex_clarification_continues_same_execution_and_keeps_durable_history() {
-    clarification_scenario(Duration::from_millis(350));
-}
-
-#[test]
-#[ignore = "Exercises the real five-minute Codex inactivity threshold"]
-fn codex_human_wait_exceeds_inactivity_threshold() {
-    clarification_scenario(Duration::from_secs(301));
-}
-
-fn clarification_scenario(human_wait: Duration) {
-    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut first_wait = Some(human_wait);
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    fs::create_dir_all(&settings.project_root).unwrap();
-    let bin = temp.path().join("codex");
-    fs::write(&bin, r#"#!/usr/bin/env python3
+/// A Codex app-server that asks two rounds of two questions. Once the first
+/// round is flushed, an `exit-agent` file in its project makes it exit 1,
+/// standing in for an agent that dies.
+const FAKE_CODEX_CLARIFICATION: &str = r#"#!/usr/bin/env python3
 import json, sys, os, threading, time
 round = 0
 cwd = ''
+asked = threading.Event()
 def send(x):
     print(json.dumps(x), flush=True)
 def ask():
@@ -73,7 +58,7 @@ def ask():
         {'id':'notes', 'question':'Any constraints?', 'options':[]}]}})
 def watch_exit():
     while True:
-        if cwd and os.path.exists(cwd+'/exit-agent'): os._exit(1)
+        if asked.is_set() and os.path.exists(cwd+'/exit-agent'): os._exit(1)
         time.sleep(.05)
 threading.Thread(target=watch_exit,daemon=True).start()
 while True:
@@ -92,6 +77,7 @@ while True:
         assert m['params']['collaborationMode']['mode']=='default'
         send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
         ask()
+        asked.set()
     elif method=='turn/interrupt':
         send({'id':m['id'],'result':{}})
         send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'interrupted'}}})
@@ -103,8 +89,26 @@ while True:
         else:
             send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':json.dumps({'decision':'done'})}}})
             send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'completed'}}})
-"#).unwrap();
-    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+"#;
+
+#[test]
+fn codex_clarification_continues_same_execution_and_keeps_durable_history() {
+    clarification_scenario(Duration::from_millis(350));
+}
+
+#[test]
+#[ignore = "Exercises the real five-minute Codex inactivity threshold"]
+fn codex_human_wait_exceeds_inactivity_threshold() {
+    clarification_scenario(Duration::from_secs(301));
+}
+
+fn clarification_scenario(human_wait: Duration) {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut first_wait = Some(human_wait);
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "codex", FAKE_CODEX_CLARIFICATION);
     let old_bin = std::env::var_os("SPARK_CODEX_APP_SERVER_BIN");
     let old_runtime = std::env::var_os("ATTRACTOR_CODEX_RUNTIME_ROOT");
     std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", &bin);
@@ -375,6 +379,86 @@ while True:
     } else {
         std::env::remove_var("ATTRACTOR_CODEX_RUNTIME_ROOT");
     }
+}
+
+/// `exit-agent` persists across a retry, so it must not end an attempt before
+/// that attempt has asked its questions.
+#[test]
+fn clarification_fixture_exits_only_after_asking_its_initial_questions() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, Command, Stdio};
+    struct KillOnDrop(Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("exit-agent"), "exit").unwrap();
+    let mut agent = KillOnDrop(
+        Command::new("python3")
+            .args(["-c", FAKE_CODEX_CLARIFICATION])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdin = agent.0.stdin.take().unwrap();
+    let stdout = agent.0.stdout.take().unwrap();
+    let (lines, received) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = lines.send(line);
+        }
+    });
+    let mut rpc = |request: Value| {
+        writeln!(stdin, "{request}").unwrap();
+        stdin.flush().unwrap();
+    };
+    let next = || -> Value {
+        let line = received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("agent output");
+        serde_json::from_str(&line).unwrap()
+    };
+
+    rpc(json!({"id": 1, "method": "initialize"}));
+    assert_eq!(next()["id"], 1);
+    rpc(json!({"id": 2, "method": "thread/start", "params": {
+        "cwd": temp.path(),
+        "config": {"features.default_mode_request_user_input": true},
+    }}));
+    assert_eq!(next()["id"], 2);
+
+    // Several 50 ms watchdog intervals pass with the marker already present.
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        agent.0.try_wait().unwrap(),
+        None,
+        "agent exited before asking"
+    );
+
+    rpc(json!({"id": 3, "method": "turn/start", "params": {
+        "collaborationMode": {"mode": "default"},
+    }}));
+    assert_eq!(next()["id"], 3);
+    let request = next();
+    assert_eq!(request["method"], "item/tool/requestUserInput");
+    let questions: Vec<_> = request["params"]["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|question| question["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(questions, ["choice", "notes"]);
+
+    let mut status = None;
+    wait(|| {
+        status = agent.0.try_wait().unwrap();
+        status.is_some()
+    });
+    assert_eq!(status.unwrap().code(), Some(1));
 }
 
 #[test]
