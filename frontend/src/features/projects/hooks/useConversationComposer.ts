@@ -156,14 +156,12 @@ export function useConversationComposer({
             ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
         }])
         // The message shows in the transcript now, so the composer clears now;
-        // a failed send puts the text back unless something new was typed.
-        const replaceDraft = (from: string, to: string) => {
-            const store = useStore.getState()
-            if ((store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? '') === from) {
-                store.updateHomeProjectSession(activeProjectPath, { chatDraft: to })
-            }
+        // a failed send puts the text back ahead of anything typed meanwhile.
+        const currentDraft = () => useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? ''
+        const setDraft = (draft: string) => useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
+        if (currentDraft() === chatDraft) {
+            setDraft('')
         }
-        replaceDraft(chatDraft, '')
         const accepted = await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
@@ -176,7 +174,7 @@ export function useConversationComposer({
         })
         if (!accepted) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
-            replaceDraft('', chatDraft)
+            setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
         }
     }
 

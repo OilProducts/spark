@@ -98,6 +98,22 @@ describe('onChatComposerSubmit', () => {
         expect(pendingMessages().map((message) => message.id)).toEqual([request.client_turn_id])
     })
 
+    it('keeps a failed message and the draft typed while it was sending', async () => {
+        let reject!: (error: Error) => void
+        vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise((_, fail) => { reject = fail }))
+        const setPanelError = vi.fn()
+        composer({ setPanelError }).onChatComposerSubmit()
+        await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+        expect(draft()).toBe('')
+
+        useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'A newer draft' })
+        reject(new Error('offline'))
+
+        await vi.waitFor(() => expect(setPanelError).toHaveBeenCalledWith('Unable to send the project chat turn.'))
+        expect(pendingMessages()).toEqual([])
+        expect(draft()).toBe('Hello there\n\nA newer draft')
+    })
+
     it('reports a failed send and puts the message text back', async () => {
         vi.mocked(sendConversationTurnValidated).mockRejectedValue(new Error('offline'))
         const setPanelError = vi.fn()
