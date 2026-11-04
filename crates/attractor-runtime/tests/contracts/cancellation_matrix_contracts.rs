@@ -57,6 +57,7 @@ const CRASH_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_DIR";
 const CANCEL_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_DIR";
 const CANCEL_EXPECTS_ERROR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_EXPECTS_ERROR";
 const AT_REGISTRATION_ENV: &str = "SPARK_CANCELLATION_MATRIX_AT_REGISTRATION";
+const ISOLATED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_DIR";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1569,6 +1570,384 @@ fn a_crash_before_a_tool_is_registered_leaves_nothing_and_resumes() {
             Vec::<PathBuf>::new(),
             "{name}"
         );
+    }
+}
+
+fn real_tool(name: &str) -> String {
+    let output = Command::new("sh")
+        .args(["-c", &format!("command -v {name}")])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn write_shim(signals: &Signals, name: &str, body: String) {
+    let bin = signals.path("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let shim = bin.join(name);
+    std::fs::write(&shim, format!("#!/bin/sh\n{body}\n")).unwrap();
+    #[cfg(unix)]
+    set_mode(&shim, 0o755);
+}
+
+/// This test binary, running only `isolated_tool_run`, with the case's shims
+/// first on PATH: PATH is per process, so a shim cannot reach any other test.
+fn isolated_run_command(signals: &Signals) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "routing_model_contracts::cancellation_matrix_contracts::isolated_tool_run",
+            "--nocapture",
+        ])
+        .env(ISOLATED_DIR_ENV, &signals.dir)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                signals.path("bin").display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+const ISOLATED_CASE: Case = Case {
+    fork: Fork::Strict,
+    running: Running::Tool,
+    stop: Stop::External,
+    timing: Timing::MidExecution,
+};
+
+/// Child process entry point: runs the case's flow to its end and writes down
+/// what the executor returned. A no-op in the ordinary test run.
+#[test]
+fn isolated_tool_run() {
+    let Ok(dir) = std::env::var(ISOLATED_DIR_ENV) else {
+        return;
+    };
+    let signals = Signals {
+        dir: PathBuf::from(dir),
+    };
+    let flow: FlowDefinition =
+        serde_json::from_str(&std::fs::read_to_string(signals.path("flow.json")).unwrap()).unwrap();
+    let result = executor(runner(ISOLATED_CASE, &signals), &signals.store())
+        .execute(fresh_request(flow, &signals))
+        .expect("execute");
+    std::fs::write(
+        signals.path("result.json"),
+        json!({"status": result.status, "reason": result.failure_reason}).to_string(),
+    )
+    .unwrap();
+}
+
+/// A tool with no durable owner never starts: whichever step of registration
+/// fails, the invocation fails to launch and leaves no anchor behind.
+#[test]
+fn a_tool_that_cannot_be_registered_never_starts() {
+    let record_anchor = |signals: &Signals| {
+        format!(
+            "[ \"$1 $2\" = '-o lstart=' ] && echo \"$4\" >> '{}'",
+            signals.path("anchors").display()
+        )
+    };
+    type Shims = fn(&Signals, String);
+    let rows: [(&str, Shims); 3] = [
+        ("identity", |signals, record| {
+            write_shim(
+                signals,
+                "ps",
+                format!("{record} && exit 1\nexec {} \"$@\"", real_tool("ps")),
+            );
+        }),
+        ("output FIFOs", |signals, record| {
+            write_shim(
+                signals,
+                "ps",
+                format!("{record}\nexec {} \"$@\"", real_tool("ps")),
+            );
+            write_shim(signals, "mkfifo", "exit 1".to_string());
+        }),
+        ("record", |signals, record| {
+            write_shim(
+                signals,
+                "ps",
+                format!("{record}\nexec {} \"$@\"", real_tool("ps")),
+            );
+            write_shim(
+                signals,
+                "mkfifo",
+                format!(
+                    "{} \"$@\" && chmod 555 \"$(dirname \"$1\")\"",
+                    real_tool("mkfifo")
+                ),
+            );
+        }),
+    ];
+    for (step, shims) in rows {
+        let (_temp, signals) = in_new_case_dir(ISOLATED_CASE);
+        shims(&signals, record_anchor(&signals));
+        let command = format!(
+            "touch '{}'; ( sleep {} ) & exit 0",
+            signals.path("started").display(),
+            DEADLINE.as_secs() * 2
+        );
+        let flow = parse_flow(json!({
+            "start": {"kind": "start", "routes": {"next": route("work")}},
+            "work": tool(command, "done"),
+            "done": exit("completed", "success"),
+        }));
+        std::fs::write(
+            signals.path("flow.json"),
+            serde_json::to_vec(&flow).unwrap(),
+        )
+        .unwrap();
+        let mut run = isolated_run_command(&signals).spawn().unwrap();
+        let mut status = None;
+        wait_for(|| {
+            status = run.try_wait().unwrap();
+            status.is_some()
+        });
+        if status.is_none() {
+            let _ = run.kill();
+            let _ = run.wait();
+        }
+        assert!(status.is_some_and(|status| status.success()), "{step}");
+        let result: Value =
+            serde_json::from_str(&std::fs::read_to_string(signals.path("result.json")).unwrap())
+                .unwrap();
+        assert_eq!(result["status"], json!("failed"), "{step}: {result}");
+        let reason = result["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("could not be launched") && reason.contains("ownership"),
+            "{step}: {reason}"
+        );
+        assert!(!signals.raised("started"), "{step}: the tool started");
+        let anchors = std::fs::read_to_string(signals.path("anchors")).unwrap();
+        assert!(!anchors.is_empty(), "{step}");
+        for anchor in anchors.lines() {
+            assert!(!group_running(anchor), "{step}: anchor {anchor} still runs");
+        }
+        // The record row's shim left the directory unwritable; let the temp
+        // directory go.
+        #[cfg(unix)]
+        for entry in tool_ownership_entries(&signals) {
+            set_mode(entry.parent().unwrap(), 0o755);
+        }
+    }
+}
+
+/// How a live cleanup with process discovery failing ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Recovery {
+    /// Discovery comes back while the executor still runs.
+    Restored,
+    /// The executor dies first; orphan cancellation finishes after discovery
+    /// comes back.
+    ExecutorDies,
+}
+
+/// A stop whose process discovery fails keeps the tool's ownership and publishes
+/// nothing. Once discovery returns, the descendant stops and the output settles
+/// before the terminal state appears, in the live executor or from the record
+/// after it dies.
+#[test]
+fn a_failed_live_cleanup_keeps_ownership_and_publishes_nothing_until_it_settles() {
+    for (deadline, recovery) in [
+        (true, Recovery::Restored),
+        (false, Recovery::Restored),
+        (true, Recovery::ExecutorDies),
+        (false, Recovery::ExecutorDies),
+    ] {
+        let name = format!("deadline={deadline} {recovery:?}");
+        let (_temp, signals) = in_new_case_dir(ISOLATED_CASE);
+        let p = |name: &str| signals.path(name).display().to_string();
+        signals.raise("discovery-down");
+        write_shim(
+            &signals,
+            "ps",
+            format!(
+                "if [ \"$1\" = -A ] && [ -f '{down}' ]; then touch '{failed}'; exit 1; fi\n\
+                 exec {ps} \"$@\"",
+                down = p("discovery-down"),
+                failed = p("discovery-failed"),
+                ps = real_tool("ps"),
+            ),
+        );
+        let command = format!(
+            "set -m; ( exec 9<&-; echo descendant-output; \
+             while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
+             exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
+            started = p("started"),
+            holder = p("holder"),
+            seconds = DEADLINE.as_secs() * 2,
+        );
+        let mut flow = flow(ISOLATED_CASE, &signals);
+        let work = flow.nodes.get_mut("work").unwrap();
+        *work = serde_json::from_value(tool(command, "join")).unwrap();
+        if deadline {
+            work.runtime = Some(attractor_core::NodeRuntimeConfig {
+                timeout: Some("2s".to_string()),
+                ..Default::default()
+            });
+        }
+        std::fs::write(
+            signals.path("flow.json"),
+            serde_json::to_vec(&flow).unwrap(),
+        )
+        .unwrap();
+        let mut run = isolated_run_command(&signals).spawn().unwrap();
+        let holders = || {
+            std::fs::read_to_string(signals.path("holder"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let process_running = |pid: &str| {
+            let output = Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&output.stdout);
+            !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert!(wait_for(|| signals.raised("started")), "{name}: no tool");
+            if !deadline {
+                request_external_cancel(&signals);
+            }
+            assert!(
+                wait_for(|| signals.raised("discovery-failed")),
+                "{name}: the stop never reached process discovery"
+            );
+
+            // Unsettled: nothing terminal, nothing given up.
+            let store = signals.store();
+            let paths = store.find_run_root(RUN).unwrap().unwrap();
+            let status = || store.read_run_record(&paths).unwrap().unwrap().status;
+            assert_eq!(
+                status(),
+                if deadline {
+                    "running"
+                } else {
+                    "cancel_requested"
+                },
+                "{name}"
+            );
+            assert_eq!(
+                store.read_result(&paths).unwrap().expect("result").state,
+                "pending",
+                "{name}"
+            );
+            assert!(run.try_wait().unwrap().is_none(), "{name}: it returned");
+            assert!(!signals.branch_settled(0), "{name}: settled too early");
+            assert!(
+                holders().iter().all(|pid| process_running(pid)),
+                "{name}: the descendant ended without its stop"
+            );
+            let ownership = tool_ownership_entries(&signals);
+            assert_eq!(ownership.len(), 3, "{name}: {ownership:?}");
+            assert!(
+                wait_for(
+                    || store.read_raw_events(&paths).unwrap().iter().any(|event| {
+                        event
+                            .payload
+                            .get("msg")
+                            .and_then(Value::as_str)
+                            .is_some_and(|msg| msg.contains("is not settled yet"))
+                    })
+                ),
+                "{name}: nothing says why it waits"
+            );
+
+            // The first sight of the terminal state finds everything settled.
+            let observer = {
+                let signals = signals.clone();
+                std::thread::spawn(move || {
+                    let store = signals.store();
+                    let paths = store.find_run_root(RUN).unwrap().unwrap();
+                    let saw_terminal = wait_for(|| {
+                        matches!(
+                            store
+                                .read_run_record(&paths)
+                                .unwrap()
+                                .unwrap()
+                                .status
+                                .as_str(),
+                            "canceled" | "failed"
+                        )
+                    });
+                    (
+                        saw_terminal,
+                        signals.branch_settled(0),
+                        tool_ownership_entries(&signals).is_empty(),
+                    )
+                })
+            };
+            let holders_at_stop = holders();
+            if recovery == Recovery::ExecutorDies {
+                run.kill().unwrap();
+                run.wait().unwrap();
+                assert_eq!(tool_ownership_entries(&signals).len(), 3, "{name}");
+                assert!(
+                    holders_at_stop.iter().all(|pid| process_running(pid)),
+                    "{name}: the crash must not have stopped it"
+                );
+            }
+            std::fs::remove_file(signals.path("discovery-down")).unwrap();
+            let expected = match recovery {
+                Recovery::Restored => {
+                    let mut exit = None;
+                    wait_for(|| {
+                        exit = run.try_wait().unwrap();
+                        exit.is_some()
+                    });
+                    assert!(exit.is_some_and(|exit| exit.success()), "{name}: {exit:?}");
+                    if deadline {
+                        "failed"
+                    } else {
+                        "canceled"
+                    }
+                }
+                Recovery::ExecutorDies => {
+                    let store = signals.store();
+                    bounded(&name, move || {
+                        RuntimeControls::new(store)
+                            .mark_canceled(RUN, "no executor")
+                            .unwrap();
+                    });
+                    "canceled"
+                }
+            };
+            assert_eq!(observer.join().unwrap(), (true, true, true), "{name}");
+            assert_eq!(status(), expected, "{name}");
+            for pid in holders() {
+                assert!(
+                    !process_running(&pid),
+                    "{name}: descendant {pid} still runs"
+                );
+            }
+            if recovery == Recovery::Restored {
+                // The readers settled with what the descendant wrote.
+                let log = std::fs::read_to_string(
+                    paths.logs_dir().join("fork/executions/1-0/branches/0.json"),
+                )
+                .unwrap();
+                assert!(log.contains("descendant-output"), "{name}: {log}");
+            }
+        }));
+        // Protection for a failed case only.
+        if let Err(payload) = outcome {
+            let _ = run.kill();
+            let _ = run.wait();
+            for pid in holders() {
+                let _ = Command::new("kill").args(["-9", &pid]).status();
+            }
+            std::panic::resume_unwind(payload);
+        }
     }
 }
 

@@ -1444,17 +1444,37 @@ impl RuntimeHandlerRunner {
             runtime.stop_requested()
         };
         let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
-        let owner = runtime.run_paths.as_ref().and_then(ToolOwner::start);
-        let spawned = run_shell_command(
-            &command,
-            &cwd,
-            timeout,
-            tool_env,
-            None,
-            can_stop.then_some(&mut stop_check as &mut dyn FnMut() -> bool),
-            owner.as_ref(),
-        );
-        drop(owner);
+        let report_cleanup = |problem: &str| {
+            let _ = self.emit(
+                &runtime,
+                crate::events::log_event(
+                    &runtime.run_id,
+                    &format!(
+                        "[System] Tool at {} is not settled yet, retrying: {problem}",
+                        runtime.node_id
+                    ),
+                ),
+            );
+        };
+        // A tool with no durable owner could outlive a crash undiscoverably, so
+        // it does not start. Dropped only once the tool has ended and settled.
+        let spawned = runtime
+            .run_paths
+            .as_ref()
+            .map_or(Ok(None), ToolOwner::start)
+            .and_then(|owner| {
+                run_shell_command(
+                    &command,
+                    &cwd,
+                    timeout,
+                    tool_env,
+                    None,
+                    can_stop.then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+                    owner
+                        .as_ref()
+                        .map(|owner| (owner, &report_cleanup as &dyn Fn(&str))),
+                )
+            });
         let command_output = match spawned {
             Ok(output) => output,
             Err(error) => {
@@ -2955,7 +2975,11 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
 /// exited and its output has closed, so a descendant still holding the output
 /// keeps it running and stoppable. The shell stays unreaped until then, which
 /// keeps its group's ID from being reused when no `owner` holds it. An `owner`
-/// supplies the output, so a stop finds whoever still holds it.
+/// supplies the output, so a stop finds whoever still holds it, and a stop does
+/// not return until that has settled, however long a failing discovery takes:
+/// the owner's record and everything above this wait, so nothing is published,
+/// and a crash meanwhile leaves the record for recovery. Its problems go to the
+/// given report.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
@@ -2963,23 +2987,23 @@ fn run_shell_command(
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
     mut stop: Option<&mut dyn FnMut() -> bool>,
-    owner: Option<&ToolOwner>,
+    owner: Option<(&ToolOwner, &dyn Fn(&str))>,
 ) -> std::io::Result<ShellOutput> {
     let mut command_line = Command::new("sh");
     // Its own process group, so a timeout or cancellation stops every
     // descendant, not just the shell.
     spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
     #[cfg(unix)]
-    if let Some(owner) = owner {
+    if let Some((owner, _)) = owner {
         use std::os::unix::process::CommandExt;
         command_line.process_group(owner.group as i32);
     }
     let script = match owner {
-        Some(owner) => format!("{}\n{command}", owner.open_marker_command()),
+        Some((owner, _)) => format!("{}\n{command}", owner.open_marker_command()),
         None => command.to_string(),
     };
     let (out_reader, out_writer, err_reader, err_writer) = match owner {
-        Some(owner) => {
+        Some((owner, _)) => {
             let (out_reader, out_writer) = owner.open_output("out")?;
             let (err_reader, err_writer) = owner.open_output("err")?;
             (
@@ -3057,30 +3081,46 @@ fn run_shell_command(
         let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
         if timed_out || interrupted {
             spark_agent_adapter::local_environment::terminate_process_group(
-                owner.map_or(child.id(), |owner| owner.group),
+                owner.map_or(child.id(), |(owner, _)| owner.group),
                 Some(&mut child),
             );
-            let settled =
-                owner.map(|owner| settle_tool(Some(owner.group), &tool_marks(&owner.marker)));
             let _ = child.kill();
-            let status = child.wait()?;
-            // With every holder stopped the output closes at once. This bound
-            // only matters when a holder could not be found or stopped.
-            let deadline = Instant::now() + OUTPUT_CLOSE_GRACE;
-            while !drained() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
+            let status = child.wait();
+            let output_closed = || {
+                let deadline = Instant::now() + OUTPUT_CLOSE_GRACE;
+                while !drained() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                drained()
+            };
+            if let Some((owner, report)) = owner {
+                let marks = tool_marks(&owner.marker);
+                let mut reported = None;
+                while let Err(error) = settle_tool(Some(owner.group), &marks).and_then(|()| {
+                    output_closed()
+                        .then_some(())
+                        .ok_or_else(|| std::io::Error::other("its output is still held open"))
+                }) {
+                    let problem = error.to_string();
+                    if reported.as_ref() != Some(&problem) {
+                        report(&problem);
+                        reported = Some(problem);
+                    }
+                    std::thread::sleep(TOOL_SETTLE_RETRY);
+                    spark_agent_adapter::local_environment::terminate_process_group(
+                        owner.group,
+                        None,
+                    );
+                }
+            } else if !output_closed() {
+                // No owner means nothing durable to retry from (no run root).
+                if let Ok(mut stderr) = stderr.lock() {
+                    stderr.extend_from_slice(
+                        b"\ntool cleanup incomplete: a descendant still holds its output\n",
+                    );
+                }
             }
-            let mut problem = settled
-                .and_then(|settled| settled.err())
-                .map(|error| error.to_string());
-            if !drained() {
-                problem.get_or_insert_with(|| "a descendant still holds its output".to_string());
-            }
-            if let (Some(problem), Ok(mut stderr)) = (problem, stderr.lock()) {
-                stderr.extend_from_slice(
-                    format!("\ntool cleanup incomplete: {problem}\n").as_bytes(),
-                );
-            }
+            let status = status?;
             break (status, timed_out, interrupted);
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -3127,10 +3167,9 @@ const TOOL_ANCHOR_SCRIPT: &str = "pause=1; trap 'pause=0.05' TERM; exec 3<&0; \
 /// process also inherits the record open on descriptor 9, and writes its output
 /// to FIFOs beside it, so holding any of them identifies a descendant that left
 /// the group, even after a crash.
-// ponytail: without `ps` and `mkfifo` (Windows, minimal images), or with a run
-// root it cannot write, a tool has no owner, and no recovery finds it. A
-// descendant that leaves the group and closes all of these is a daemon no
-// process table can tie to its tool; only then does one run on.
+// ponytail: Windows has no owner, and no recovery finds its tools. A descendant
+// that leaves the group and closes all of these is a daemon no process table
+// can tie to its tool; only then does one run on.
 struct ToolOwner {
     group: u32,
     marker: PathBuf,
@@ -3139,10 +3178,15 @@ struct ToolOwner {
 }
 
 impl ToolOwner {
-    fn start(paths: &RunRootPaths) -> Option<Self> {
+    /// None only where tools have no owner at all (not unix). An error means
+    /// no durable ownership could be established, so the tool must not start.
+    fn start(paths: &RunRootPaths) -> std::io::Result<Option<Self>> {
         if cfg!(not(unix)) {
-            return None;
+            return Ok(None);
         }
+        let failed = |error: std::io::Error| {
+            std::io::Error::other(format!("tool ownership could not be recorded: {error}"))
+        };
         let mut command = Command::new("sh");
         spark_agent_adapter::local_environment::configure_process_group(&mut command);
         let mut anchor = command
@@ -3152,38 +3196,40 @@ impl ToolOwner {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .ok()?;
+            .map_err(failed)?;
         let group = anchor.id();
         let marker = paths.root.join(TOOL_PROCESSES_DIR).join(group.to_string());
         let release = anchor.stdin.take();
         let [_, out, err] = tool_marks(&marker);
-        let recorded = process_started_at(group)
-            .ok()
-            .flatten()
-            .is_some_and(|started_at| {
-                fs::create_dir_all(paths.root.join(TOOL_PROCESSES_DIR)).is_ok()
-                    && Command::new("mkfifo")
-                        .args([&out, &err])
-                        .status()
-                        .is_ok_and(|status| status.success())
-                    && write_atomically(&marker, started_at.as_bytes()).is_ok()
-            });
-        if !recorded {
+        let recorded = (|| {
+            let started_at = process_started_at(group)?
+                .ok_or_else(|| std::io::Error::other("ps cannot see the anchor process"))?;
+            fs::create_dir_all(paths.root.join(TOOL_PROCESSES_DIR))?;
+            if !Command::new("mkfifo")
+                .args([&out, &err])
+                .status()?
+                .success()
+            {
+                return Err(std::io::Error::other("mkfifo failed"));
+            }
+            write_atomically(&marker, started_at.as_bytes())
+        })();
+        if let Err(error) = recorded {
             let _ = fs::remove_file(&out);
             let _ = fs::remove_file(&err);
             drop(release);
             let _ = anchor.kill();
             let _ = anchor.wait();
-            return None;
+            return Err(failed(error));
         }
-        Some(Self {
+        Ok(Some(Self {
             group,
             marker,
             release,
             anchor: Some(thread::spawn(move || {
                 let _ = anchor.wait();
             })),
-        })
+        }))
     }
 
     fn open_marker_command(&self) -> String {
@@ -3429,6 +3475,7 @@ const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
 const TOOL_PROCESSES_DIR: &str = "tool-processes";
 const OUTPUT_CLOSE_GRACE: Duration = Duration::from_secs(1);
 const TOOL_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+const TOOL_SETTLE_RETRY: Duration = Duration::from_millis(200);
 
 enum HumanGateWaitResult {
     Answered(Choice, String),
