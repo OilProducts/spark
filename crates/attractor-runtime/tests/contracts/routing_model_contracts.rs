@@ -2374,14 +2374,19 @@ fn gated_runner(
     runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
         seen.lock().unwrap().push(runtime.node_id.clone());
         if runtime.node_id == "b" {
-            // Wait until the child run sits on its unanswered gate.
+            // Wait until the child run sits on its unanswered gate, or an
+            // external cancel already moved it past that.
             let store = RunStore::for_runs_dir(runs.clone());
             while !store
                 .list_run_records()
                 .unwrap_or_default()
                 .iter()
                 .any(|record| {
-                    record.parent_node_id.as_deref() == Some("sub") && record.status == "waiting"
+                    record.parent_node_id.as_deref() == Some("sub")
+                        && matches!(
+                            record.status.as_str(),
+                            "waiting" | "cancel_requested" | "canceled"
+                        )
                 })
             {
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2512,6 +2517,180 @@ fn external_cancellation_stops_a_subflow_child() {
 #[test]
 fn external_cancellation_stops_a_subflow_child_in_a_fork_branch() {
     assert_external_cancel_stops_child(gated_child_fork(false));
+}
+
+/// A custom launcher running a real child executor on the shared store: inline
+/// before it returns, or detached with the child reported as still running.
+fn with_custom_child_launcher(
+    mut runner: RuntimeHandlerRunner,
+    runs: PathBuf,
+    root: PathBuf,
+    detached: bool,
+) -> RuntimeHandlerRunner {
+    runner.set_child_run_launcher(move |request| {
+        let store = RunStore::for_runs_dir(runs.clone());
+        let child_id = request.child_run_id.clone();
+        let mut record = RunRecord::new(&child_id, root.to_string_lossy());
+        record.parent_run_id = Some(request.parent_run_id.clone());
+        record.parent_node_id = Some(request.parent_node_id.clone());
+        let flow = request.child_flow.clone();
+        let context = LaunchContext::empty();
+        let paths = attractor_runtime::prepare_fresh_run(
+            &store,
+            &record,
+            &flow,
+            None,
+            None,
+            &context,
+            &ContextMap::new(),
+        )
+        .unwrap();
+        let control_store = store.clone();
+        let control_paths = paths.clone();
+        let run = move || {
+            PipelineExecutor::with_control(
+                RuntimeHandlerRunner::new().with_blocking_human_gates(),
+                move || {
+                    let status = control_store.read_run_record(&control_paths).ok()??.status;
+                    (status == "cancel_requested")
+                        .then_some(attractor_runtime::ExecutionControlAction::Cancel)
+                },
+            )
+            .execute(ExecuteRunRequest {
+                store,
+                record,
+                flow,
+                flow_definition_json: None,
+                launch_context: context,
+                runtime_context: ContextMap::new(),
+                max_steps: None,
+                start: ExecutionStart::Prepared { paths },
+            })
+            .unwrap()
+            .status
+        };
+        let status = if detached {
+            std::thread::spawn(run);
+            "running".to_string()
+        } else {
+            run()
+        };
+        attractor_runtime::ChildRunResult {
+            run_id: child_id,
+            status,
+            ..Default::default()
+        }
+    });
+    runner
+}
+
+/// Cancels `run-parent` from outside once the custom child waits on its gate.
+fn cancel_parent_when_child_waits(store: RunStore) {
+    std::thread::spawn(move || {
+        while !store
+            .list_run_records()
+            .unwrap_or_default()
+            .iter()
+            .any(|record| {
+                record.parent_node_id.as_deref() == Some("sub") && record.status == "waiting"
+            })
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        attractor_runtime::RuntimeControls::new(store)
+            .request_cancel("run-parent")
+            .unwrap();
+    });
+}
+
+/// `run_parent` with its record polled for a cancel request, as a server does.
+fn run_cancelable_parent(
+    root: PathBuf,
+    flow: FlowDefinition,
+    runner: RuntimeHandlerRunner,
+) -> PipelineExecutionResult {
+    let store = RunStore::for_runs_dir(root.join("runs"));
+    let control_store = store.clone();
+    PipelineExecutor::with_control(runner, move || {
+        let paths = control_store.find_run_root("run-parent").ok().flatten()?;
+        let record = control_store.read_run_record(&paths).ok().flatten()?;
+        (record.status == "cancel_requested")
+            .then_some(attractor_runtime::ExecutionControlAction::Cancel)
+    })
+    .execute(ExecuteRunRequest {
+        store,
+        record: RunRecord::new("run-parent", root.to_string_lossy()),
+        flow,
+        flow_definition_json: None,
+        launch_context: LaunchContext::empty(),
+        runtime_context: ContextMap::from([(
+            "internal.bundled_root".to_string(),
+            json!(root.to_string_lossy()),
+        )]),
+        max_steps: None,
+        start: Default::default(),
+    })
+    .unwrap()
+}
+
+fn plain_subflow() -> FlowDefinition {
+    parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("sub")}},
+        "sub": {"kind": "subflow", "manager": {"poll_interval": "10ms"},
+            "config": {"kind": "subflow", "flow_ref": "gated", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": route("done")}},
+        "done": exit("completed", "success"),
+    }))
+}
+
+/// External cancellation reaches a custom-launched child, and the parent ends
+/// only after the child settled: `gated_child_record` reads it right after.
+#[test]
+fn external_cancellation_stops_custom_launched_children() {
+    for (flow, detached) in [
+        (plain_subflow(), false),
+        (plain_subflow(), true),
+        (gated_child_fork(false), false),
+        (gated_child_fork(false), true),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_gate_child(temp.path());
+        let root = temp.path().to_path_buf();
+        let runs = root.join("runs");
+        cancel_parent_when_child_waits(RunStore::for_runs_dir(runs.clone()));
+        let (runner, _) = gated_runner(runs.clone(), completed("done"), false);
+        let runner = with_custom_child_launcher(runner, runs.clone(), root.clone(), detached);
+        let result = settled(move || run_cancelable_parent(root, flow, runner));
+        assert_eq!(result.status, "canceled", "{}", result.failure_reason);
+        assert_eq!(
+            gated_child_record(&runs).status,
+            "canceled",
+            "detached {detached}"
+        );
+    }
+}
+
+/// A sibling ending the fork reaches a custom-launched child the same way.
+#[test]
+fn sibling_cancellation_stops_custom_launched_children() {
+    for detached in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        write_gate_child(temp.path());
+        let root = temp.path().to_path_buf();
+        let runs = root.join("runs");
+        let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
+        let runner = with_custom_child_launcher(runner, runs.clone(), root.clone(), detached);
+        let result =
+            settled(move || run_parent(&root, gated_child_fork(false), runner, ContextMap::new()));
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
+        assert_eq!(count(&calls, "synth"), 0);
+        assert_eq!(
+            gated_child_record(&runs).status,
+            "canceled",
+            "detached {detached}"
+        );
+    }
 }
 
 const GATED_CHILD_ENV: &str = "SPARK_GATED_CHILD_INTERRUPT_DIR";

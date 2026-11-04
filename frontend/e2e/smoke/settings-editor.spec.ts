@@ -312,7 +312,7 @@ test('provider and agent sections validate, save, report references and restart 
 })
 
 test('saved core and Desktop-identity preferences survive a real server restart on a different port', async ({ page }, testInfo) => {
-    test.setTimeout(60000)
+    test.setTimeout(180_000)
     const home = testInfo.outputPath('restart-home')
     mkdirSync(home, { recursive: true })
     // Keep the server's Home registration off the developer's real HOME.

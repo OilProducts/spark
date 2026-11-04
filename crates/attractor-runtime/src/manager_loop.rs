@@ -89,6 +89,7 @@ pub(crate) fn execute_manager_loop(
     // never completion: past them the same invocation keeps waiting for the
     // child's terminal result.
     let mut observing = true;
+    let (mut stopping_since, mut cancel_forwarded) = (None, false);
     for cycle in 1.. {
         if cycle > max_cycles {
             observing = false;
@@ -157,6 +158,18 @@ pub(crate) fn execute_manager_loop(
             ));
         }
         if runtime.stop_requested() {
+            observing = false;
+            let stopping_since = *stopping_since.get_or_insert_with(Instant::now);
+            if !cancel_forwarded {
+                cancel_forwarded = request_child_cancel(&runtime, &context);
+            }
+            // The next cycle reads the child's terminal status and resolves it.
+            if stopping_since.elapsed() < CHILD_SETTLE_GRACE
+                && !context_string(&context, "context.stack.child.run_id").is_empty()
+            {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             return Ok(Outcome::error(
                 FailureKind::Runtime,
                 "Canceled while its child ran",
@@ -494,7 +507,15 @@ fn autostart_child_pipeline(
         root_run_id: root_run_id.clone(),
     };
     let child_result = if let Some(launcher) = runner.child_run_launcher() {
-        launcher(request)
+        // A launcher may run the child before returning; a stop reaches it
+        // through the run controls like any other child.
+        match runtime.run_paths.as_ref() {
+            Some(paths) => {
+                let store = RunStore::for_runs_dir(paths.runs_dir.clone());
+                watch_owner_cancel(runtime, &store, &child_run_id, || launcher(request))
+            }
+            None => launcher(request),
+        }
     } else {
         match launch_default_child_run(runner.clone(), runtime, request, child_flow_files) {
             Ok(result) => result,
@@ -607,6 +628,23 @@ fn child_control(
         let paths = store.find_run_root(&child_run_id).ok().flatten()?;
         crate::controls::disk_execution_control(paths)()
     }
+}
+
+/// How long a stopped invocation waits for the child it observes to settle.
+// ponytail: a child whose executor died, or that no store knows, never settles;
+// past this its parent stops waiting, and the child is left to restart recovery.
+const CHILD_SETTLE_GRACE: Duration = Duration::from_secs(60);
+
+/// Asks the observed child to cancel; true once the request is accepted. The
+/// child's record may not exist yet, so a false answer is retried.
+fn request_child_cancel(runtime: &HandlerRuntime, context: &ContextMap) -> bool {
+    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let Some(paths) = runtime.run_paths.as_ref() else {
+        return false;
+    };
+    crate::controls::RuntimeControls::new(RunStore::for_runs_dir(paths.runs_dir.clone()))
+        .request_cancel(&child_run_id)
+        .is_ok()
 }
 
 /// Runs a child invocation. If the owning fork or the user cancels this

@@ -39,7 +39,10 @@ export default defineConfig({
   testDir: "./e2e",
   // Playwright empties this at the start of a run; concurrent runs each keep their own.
   outputDir,
-  timeout: 30_000,
+  // Generous for runs that share the machine. Saving profiles re-checks every flow
+  // in every registered project, which took 8 s on this debug server under load.
+  timeout: 120_000,
+  expect: { timeout: 30_000 },
   fullyParallel: false,
   // Every test shares one Spark home, and some change workspace-wide settings
   // (such as the default model provider) that other tests' chats inherit.
