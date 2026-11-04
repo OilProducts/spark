@@ -1064,7 +1064,7 @@ impl ClaudeCodeTurnState {
         let mut event = TurnStreamEvent::thinking_progress(active, estimated_tokens);
         event.source.backend = Some(CLAUDE_CODE_BACKEND.to_string());
         event.source.app_thread_id = self.session_id.clone();
-        event.source.raw_kind = Some("system_thinking_tokens".to_string());
+        event.source.raw_kind = Some("thinking_progress".to_string());
         event
     }
 
@@ -1245,8 +1245,15 @@ impl ClaudeCodeTurnState {
             ),
             _ => return Vec::new(),
         };
+        // A withheld thought's deltas carry only this estimate, with empty text.
+        let mut events = match delta.get("estimated_tokens").and_then(Value::as_u64) {
+            Some(tokens) if channel == TurnStreamChannel::Reasoning => {
+                self.thinking_tokens(Some(tokens))
+            }
+            _ => Vec::new(),
+        };
         let Some(text) = text.filter(|text| !text.is_empty()) else {
-            return Vec::new();
+            return events;
         };
         let (item_id, is_new) = self.item_id_for_partial(index);
         if is_new {
@@ -1260,7 +1267,7 @@ impl ClaudeCodeTurnState {
                 _ => {}
             }
         }
-        vec![stream_event(
+        events.push(stream_event(
             TurnStreamEventKind::ContentDelta,
             self.session_id.as_deref(),
             raw_kind,
@@ -1271,7 +1278,8 @@ impl ClaudeCodeTurnState {
                 stream_event.source.item_id = Some(item_id);
                 stream_event.phase = Some("commentary".to_string());
             },
-        )]
+        ));
+        events
     }
 
     fn item_id_for_partial(&mut self, index: usize) -> (String, bool) {

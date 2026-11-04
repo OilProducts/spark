@@ -813,6 +813,38 @@ fn main() {
         return;
     }
 
+    if mode == "thinking-delta-estimates" {
+        // Only the deltas carry estimates: no system thinking_tokens frames.
+        let delta = |tokens: u64| {
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": tokens}}})
+        };
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""}}}),
+        );
+        emit(&mut out, delta(50));
+        // Past the adapter's one-second throttle, so an update shows live.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        emit(&mut out, delta(120));
+        emit(&mut out, delta(186));
+        for line in [
+            serde_json::json!({"type": "assistant", "session_id": session_id,
+                "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "s"}]}}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_stop", "index": 0}}),
+            serde_json::json!({"type": "result", "subtype": "success", "is_error": false,
+                "result": "All set.", "session_id": session_id,
+                "usage": {"input_tokens": 1, "output_tokens": 2}}),
+        ] {
+            emit(&mut out, line);
+        }
+        return;
+    }
+
     if mode == "multi-block" {
         for line in [
             serde_json::json!({"type": "stream_event", "session_id": session_id,

@@ -113,6 +113,18 @@ fn fake_claude(settings: &SparkSettings, reply: &str, delay: &str, status: i32) 
     calls
 }
 
+/// A fake utility call that cannot answer until the returned gate file exists,
+/// so whatever finishes before the test creates it did not wait for the call.
+/// Without the gate it fails after 30s, and no title is generated.
+fn fake_claude_behind_gate(settings: &SparkSettings, reply: &str) -> (PathBuf, PathBuf) {
+    let gate = settings.config_dir.join("utility-gate");
+    let wait = format!(
+        "0; i=0; while [ ! -e '{gate}' ]; do i=$((i+1)); [ $i -lt 300 ] || exit 1; sleep 0.1; done",
+        gate = gate.display()
+    );
+    (fake_claude(settings, reply, &wait, 0), gate)
+}
+
 fn call_count(calls: &Path) -> usize {
     fs::read_to_string(calls)
         .map(|text| text.lines().count())
@@ -412,14 +424,13 @@ fn utility_call_runs_the_configured_model_and_surfaces_failures() {
 fn first_completed_turn_gets_one_generated_title_in_the_background() {
     let _env = claude_env();
     let (_temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline repair.\"", "1", 0);
+    let (calls, gate) = fake_claude_behind_gate(&settings, "\"Deploy pipeline repair.\"");
     let (service, updates) = service_with_updates(settings);
 
-    let started = Instant::now();
+    // The turn returns while the utility call is still held open.
     let snapshot = turn(&service, "titled", "please fix the deploy pipeline");
-    // The turn does not wait for the one-second utility call.
-    assert!(started.elapsed() < Duration::from_millis(900));
     assert_eq!(snapshot["title"], "please fix the deploy pipeline");
+    fs::write(&gate, "").unwrap();
 
     // Every client's thread list and the thread's own view get the title.
     let (summary, state) = title_updates(&service, &updates, Duration::from_secs(10)).unwrap();
@@ -582,13 +593,12 @@ fn stored_run_title(settings: &SparkSettings, run_id: &str) -> Option<String> {
 fn root_run_gets_a_generated_title_in_the_background() {
     let _env = claude_env();
     let (temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline fix.\"", "1", 0);
+    let (calls, gate) = fake_claude_behind_gate(&settings, "\"Deploy pipeline fix.\"");
     let (service, updates) = run_service_with_updates(settings.clone());
 
-    let started = Instant::now();
+    // Launch returns while the utility call is still held open.
     let run_id = launch(&service, temp.path());
-    // Launch does not wait for the one-second utility call.
-    assert!(started.elapsed() < Duration::from_millis(900));
+    fs::write(&gate, "").unwrap();
 
     // A live client gets the title as a run-record update.
     let deadline = Instant::now() + Duration::from_secs(10);

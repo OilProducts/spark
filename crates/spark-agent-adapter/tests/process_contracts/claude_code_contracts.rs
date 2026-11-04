@@ -2178,11 +2178,36 @@ fn thinking_without_text_reports_live_progress_only_and_adds_no_transcript_event
     assert!(output.events.iter().all(|event| {
         event.thinking_state().is_none() && event.channel != Some(TurnStreamChannel::Reasoning)
     }));
-    assert!(
-        !output
-            .events
-            .iter()
-            .any(|event| event.source.raw_kind.as_deref() == Some("system_thinking_tokens")),
-        "token updates are not recorded"
+}
+
+#[test]
+fn thinking_delta_estimates_reach_live_clients_without_system_token_events() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "thinking-delta-estimates");
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = live.clone();
+    let sink: AgentTurnEventSink = Arc::new(move |event: TurnStreamEvent| {
+        if let Some(state) = event.thinking_state() {
+            sink_events.lock().unwrap().push(state);
+        }
+    });
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(agent_request(temp.path()), Some(sink))
+        .expect("turn");
+
+    assert_eq!(
+        *live.lock().unwrap(),
+        vec![(true, None), (true, Some(120)), (false, Some(186))]
     );
+    // Live only: no transcript row and nothing in the turn's recorded events.
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.channel == Some(TurnStreamChannel::Reasoning)));
+    let recorded = serde_json::to_string(&output.events).expect("events");
+    assert!(!recorded.contains("thinking_progress"), "{recorded}");
+    assert!(!recorded.contains("estimated_tokens"), "{recorded}");
 }

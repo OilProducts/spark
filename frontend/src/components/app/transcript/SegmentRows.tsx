@@ -20,7 +20,7 @@ import { TranscriptCopyButton } from './TranscriptCopyButton'
 //
 // Grammar: consecutive tool calls fold into a ToolCallGroupRow (see groupTranscript.ts)
 // whose expanded body lists each call as a compact ToolCallRow variant="line"; thinking
-// is hidden until the ShowThinkingToggle is pressed; assistant turns open with an
+// follows the Show thinking preference and its ShowThinkingToggle; assistant turns open with an
 // AssistantTurnHeader; things that happen to a mission or chat are EventLines or RunCards.
 
 export type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
