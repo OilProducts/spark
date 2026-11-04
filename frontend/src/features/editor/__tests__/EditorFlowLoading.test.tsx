@@ -315,6 +315,86 @@ describe('Editor flow loading behavior', () => {
   })
 })
 
+describe('Editor structured metadata', () => {
+  const metadata = {
+    software_development: { launcher: true },
+    arbitrary_settings: { stages: [{ name: 'one', retries: [1, 2] }, null], owner: null, enabled: false },
+  }
+  const flow = {
+    schema_version: '2',
+    id: 'bundled-flow',
+    title: 'Bundled flow',
+    description: 'From the bundle.',
+    goal: 'Keep metadata.',
+    inputs: [],
+    nodes: {},
+    metadata,
+  }
+
+  const flowSaveRequests = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.filter(([url, init]) =>
+    String(url).includes('/api/flows') && (init as RequestInit | undefined)?.method === 'POST')
+
+  beforeEach(() => {
+    resetEditorState('bundled-flow')
+    resetFlowSaveBaselines()
+    useStore.setState({
+      editorMode: 'structured',
+      clientPreferencesLoaded: true,
+      activeProjectPath: '/tmp/project',
+      suppressPreview: false,
+    })
+    // The bundled fallback: the project holds no copy of this flow.
+    vi.mocked(loadEditorFlowPayload).mockReset()
+    vi.mocked(loadEditorFlowPayload).mockResolvedValue({
+      name: 'bundled-flow',
+      layer: 'bundled',
+      files: [{ name: 'flow.md', content: '---\nid: bundled-flow\n---\n' }],
+      flow,
+    })
+    vi.mocked(loadEditorPreview).mockReset()
+    vi.mocked(loadEditorPreview).mockImplementation(async (previewFlow) => ({
+      status: 'ok',
+      graph: { nodes: [], edges: [], metadata: previewFlow?.metadata ?? {} },
+      flow: previewFlow,
+      diagnostics: [],
+      errors: [],
+    }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('switches an unedited flow to Files without saving, then saves a real edit with the metadata intact', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderEditor()
+    await waitFor(() => expect(useStore.getState().flowMetadata.software_development).toBeDefined())
+
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    await screen.findByTestId('flow-file-editor')
+
+    expect(flowSaveRequests(fetchMock)).toEqual([])
+    expect(useStore.getState().flowMetadata).toMatchObject(metadata)
+
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'Edited title'))
+    await user.click(screen.getByRole('button', { name: 'Files' }))
+    await screen.findByTestId('flow-file-editor')
+
+    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
+    const [, init] = flowSaveRequests(fetchMock)[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.flow.title).toBe('Edited title')
+    expect(body.flow.metadata).toEqual(metadata)
+    expect(useStore.getState().flowMetadata).toMatchObject(metadata)
+  })
+})
+
 describe('Editor file view', () => {
   const files = [
     { name: 'flow.md', content: '---\nid: demo\n---\nThe flow.\n' },
