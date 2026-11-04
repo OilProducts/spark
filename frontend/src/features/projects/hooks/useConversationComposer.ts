@@ -7,6 +7,7 @@ import {
     type ConversationChatMode,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
+import { randomHexId } from '@/lib/utils'
 import { useStore } from '@/store'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
@@ -146,8 +147,7 @@ export function useConversationComposer({
         const attachmentIds = sentAttachments.map((attachment) => attachment.id)
         // The server records the message under this id, so the pending entry is
         // replaced in place and a resent request cannot add a second turn.
-        // getRandomValues, unlike randomUUID, also works on plain-HTTP (non-secure) origins.
-        const clientTurnId = `turn-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+        const clientTurnId = `turn-${randomHexId()}`
         const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
             const store = useStore.getState()
             store.updateHomeConversationSession(conversationId, {

@@ -1,6 +1,7 @@
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
 import { ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
 import type { Appearance } from '@/lib/theme'
+import { randomHexId } from '@/lib/utils'
 import type { EditorMode } from '@/state/store-types'
 
 const ID_KEY = 'spark.client_id'
@@ -18,8 +19,7 @@ export async function clientIdentity(): Promise<string> {
         if (!validId(stored)) throw new Error('Invalid browser client identity in spark.client_id.')
         return stored
     }
-    const random = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')
-    const id = `browser-${random}`
+    const id = `browser-${randomHexId()}`
     localStorage.setItem(ID_KEY, id)
     return id
 }
