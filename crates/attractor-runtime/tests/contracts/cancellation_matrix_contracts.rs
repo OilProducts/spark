@@ -58,6 +58,7 @@ const CANCEL_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_DIR";
 const CANCEL_EXPECTS_ERROR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_EXPECTS_ERROR";
 const AT_REGISTRATION_ENV: &str = "SPARK_CANCELLATION_MATRIX_AT_REGISTRATION";
 const ISOLATED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_DIR";
+const ISOLATED_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_CASE";
 const HOOK_PHASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_HOOK_PHASE";
 const CRASH_EXIT_CODE: i32 = 7;
 
@@ -2013,12 +2014,22 @@ fn isolated_tool_run() {
     };
     let flow: FlowDefinition =
         serde_json::from_str(&std::fs::read_to_string(signals.path("flow.json")).unwrap()).unwrap();
-    let result = executor(runner(ISOLATED_CASE, &signals), &signals.store())
+    let case = std::env::var(ISOLATED_CASE_ENV)
+        .ok()
+        .and_then(|name| {
+            cases(Timing::MidExecution)
+                .into_iter()
+                .find(|case| case.name() == name)
+        })
+        .unwrap_or(ISOLATED_CASE);
+    let result = executor(runner(case, &signals), &signals.store())
         .execute(fresh_request(flow, &signals))
         .expect("execute");
     std::fs::write(
         signals.path("result.json"),
-        json!({"status": result.status, "reason": result.failure_reason}).to_string(),
+        json!({"status": result.status, "reason": result.failure_reason,
+            "result_name": result.outcome_reason_code})
+        .to_string(),
     )
     .unwrap();
 }
@@ -2115,6 +2126,305 @@ fn a_tool_that_cannot_be_registered_never_starts() {
         #[cfg(unix)]
         for entry in tool_ownership_entries(&signals) {
             set_mode(entry.parent().unwrap(), 0o755);
+        }
+    }
+}
+
+/// A `sh` that wraps the anchor, recognized by its script, and runs `after` once
+/// the real anchor has ended. Everything else goes to the real shell.
+fn write_anchor_wrapper(signals: &Signals, before: &str, after: &str) {
+    let sh = real_tool("sh");
+    write_shim(
+        signals,
+        "sh",
+        format!(
+            "case \"$2\" in pause=1*) ;; *) exec {sh} \"$@\";; esac\n{before}\n{sh} \"$@\"\n{after}"
+        ),
+    );
+}
+
+fn wait_for_isolated_run(run: &mut std::process::Child, name: &str) {
+    let mut exit = None;
+    wait_for(|| {
+        exit = run.try_wait().unwrap();
+        exit.is_some()
+    });
+    if exit.is_none() {
+        let _ = run.kill();
+        let _ = run.wait();
+    }
+    assert!(exit.is_some_and(|exit| exit.success()), "{name}: {exit:?}");
+}
+
+/// A hook that ended on its own keeps its result when a stop lands right after
+/// it, in the window before the runtime looks at that result: its failure stays
+/// the branch's error, with its evidence and precedence, and only a hook that
+/// succeeded yields to the stop. In neither case does the tool start.
+#[test]
+fn a_stop_after_a_pre_hook_ended_keeps_the_hooks_own_result() {
+    for (fork, stop, hook_exit, status, reason, affected_status) in [
+        (
+            Fork::Strict,
+            Stop::External,
+            17,
+            "canceled",
+            "aborted_by_user",
+            "error",
+        ),
+        (
+            Fork::Tolerant,
+            Stop::External,
+            17,
+            "canceled",
+            "aborted_by_user",
+            "error",
+        ),
+        // Losing this error would turn a failed run into the sibling's blocked.
+        (
+            Fork::Strict,
+            Stop::Blocked,
+            17,
+            "failed",
+            "branch pre (index 0)",
+            "error",
+        ),
+        (Fork::Tolerant, Stop::Blocked, 17, "completed", "", "error"),
+        (
+            Fork::Strict,
+            Stop::External,
+            0,
+            "canceled",
+            "aborted_by_user",
+            "canceled",
+        ),
+        (Fork::Strict, Stop::Blocked, 0, "completed", "", "canceled"),
+    ] {
+        let case = Case {
+            fork,
+            running: Running::Tool,
+            stop,
+            timing: Timing::MidExecution,
+        };
+        let name = format!("{} hook_exit={hook_exit}", case.name());
+        let (_temp, signals) = in_new_case_dir(case);
+        let p = |name: &str| signals.path(name).display().to_string();
+        // The window: the hook's owner is being released, its result not yet read.
+        write_anchor_wrapper(
+            &signals,
+            "",
+            &format!(
+                "if grep -qx hook-done '{calls}'; then touch '{window}'; i=0; \
+                 while [ ! -f '{resume}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; fi",
+                calls = p("calls.log"),
+                window = p("window"),
+                resume = p("window-resume"),
+            ),
+        );
+        let mut flow = flow(case, &signals);
+        *flow.nodes.get_mut("work").unwrap() =
+            serde_json::from_value(tool(format!("echo work >> '{}'", p("calls.log")), "join"))
+                .unwrap();
+        flow.extensions.insert(
+            HookPhase::Pre.attr().to_string(),
+            json!(format!(
+                "[ \"$ATTRACTOR_TOOL_NODE_ID\" = work ] || exit 0; \
+                 echo hook-done >> '{calls}'; echo independent-prehook-error >&2; exit {hook_exit}",
+                calls = p("calls.log"),
+            )),
+        );
+        std::fs::write(
+            signals.path("flow.json"),
+            serde_json::to_vec(&flow).unwrap(),
+        )
+        .unwrap();
+
+        let mut command = isolated_run_command(&signals);
+        command.env(ISOLATED_CASE_ENV, case.name());
+        let mut run = command.spawn().unwrap();
+        assert!(wait_for(|| signals.raised("window")), "{name}: no window");
+        signals.raise("trigger");
+        if stop == Stop::External {
+            request_external_cancel(&signals);
+        } else {
+            assert!(wait_for(|| signals.branch_settled(1)), "{name}: no sibling");
+        }
+        signals.raise("window-resume");
+        wait_for_isolated_run(&mut run, &name);
+
+        let result: Value =
+            serde_json::from_str(&std::fs::read_to_string(signals.path("result.json")).unwrap())
+                .unwrap();
+        assert_eq!(result["status"], json!(status), "{name}: {result}");
+        assert!(
+            result["reason"].as_str().unwrap().starts_with(reason),
+            "{name}: {result}"
+        );
+        if stop == Stop::Blocked && status == "completed" {
+            assert_eq!(result["result_name"], json!("blocked"), "{name}: {result}");
+        }
+        let affected = signals.branch_record(0);
+        assert_eq!(
+            affected["status"],
+            json!(affected_status),
+            "{name}: {affected}"
+        );
+        let paths = signals.store().find_run_root(RUN).unwrap().unwrap();
+        let failures =
+            std::fs::read_to_string(paths.logs_dir().join("work/tool_hook_failures.jsonl"))
+                .unwrap_or_default();
+        if hook_exit == 0 {
+            assert!(affected.get("error").is_none(), "{name}: {affected}");
+            assert_eq!(affected["canceled_at"], json!("work"), "{name}: {affected}");
+            assert!(failures.is_empty(), "{name}: {failures}");
+        } else {
+            assert!(affected.get("canceled_at").is_none(), "{name}: {affected}");
+            assert_eq!(
+                affected["error"]["kind"],
+                json!("runtime"),
+                "{name}: {affected}"
+            );
+            assert!(
+                affected["error"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("independent-prehook-error"),
+                "{name}: {affected}"
+            );
+            assert!(failures.contains("independent-prehook-error"), "{name}");
+            assert_eq!(
+                signals.calls("hook-done"),
+                1,
+                "{name}: retried after the stop"
+            );
+        }
+        assert_eq!(signals.calls("work"), 0, "{name}: the tool started");
+        assert_eq!(signals.calls("synth"), 0, "{name}: joined after the stop");
+    }
+}
+
+/// Once a tool's recorded anchor no longer holds its group's ID, that ID is
+/// someone else's. `ps` here reports a different process behind it, while a real
+/// process stays in the group to catch any signal: no attempt may send one, and
+/// discovery through the retained marks still finishes the cleanup.
+#[test]
+fn a_cleanup_never_signals_a_group_id_its_anchor_no_longer_holds() {
+    for deadline in [false, true] {
+        let name = format!("deadline={deadline}");
+        let (_temp, signals) = in_new_case_dir(ISOLATED_CASE);
+        let p = |name: &str| signals.path(name).display().to_string();
+        signals.raise("discovery-down");
+        write_shim(
+            &signals,
+            "ps",
+            format!(
+                "if [ \"$1\" = -A ] && [ -f '{down}' ]; then touch '{failed}'; exit 1; fi\n\
+                 if [ \"$1 $2\" = '-o lstart=' ] && [ -f '{turned}' ]; then\n\
+                 echo asked >> '{asked}'; echo 'Thu Jan  1 00:00:00 1970'; exit 0; fi\n\
+                 exec {ps} \"$@\"",
+                down = p("discovery-down"),
+                failed = p("discovery-failed"),
+                turned = p("identity-turned"),
+                asked = p("identity-asked"),
+                ps = real_tool("ps"),
+            ),
+        );
+        // The anchor's wrapper stays in the group as the unrelated process.
+        write_anchor_wrapper(
+            &signals,
+            &format!(
+                "trap \"touch '{}'\" TERM; echo $$ > '{}'",
+                p("group-signaled"),
+                p("group")
+            ),
+            "",
+        );
+        let command = format!(
+            "set -m; ( exec 9<&-; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; \
+             touch '{started}'; exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
+            started = p("started"),
+            holder = p("holder"),
+            seconds = DEADLINE.as_secs() * 2,
+        );
+        let mut flow = flow(ISOLATED_CASE, &signals);
+        let work = flow.nodes.get_mut("work").unwrap();
+        *work = serde_json::from_value(tool(command, "join")).unwrap();
+        if deadline {
+            work.runtime = Some(attractor_core::NodeRuntimeConfig {
+                timeout: Some("3s".to_string()),
+                ..Default::default()
+            });
+        }
+        std::fs::write(
+            signals.path("flow.json"),
+            serde_json::to_vec(&flow).unwrap(),
+        )
+        .unwrap();
+        let mut run = isolated_run_command(&signals).spawn().unwrap();
+        let holder = || std::fs::read_to_string(signals.path("holder")).unwrap_or_default();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert!(wait_for(|| signals.raised("started")), "{name}: no tool");
+            signals.raise("identity-turned");
+            if !deadline {
+                request_external_cancel(&signals);
+            }
+            assert!(wait_for(|| signals.raised("discovery-failed")), "{name}");
+            // Several attempts have looked at the ID, and none signaled it.
+            assert!(
+                wait_for(|| std::fs::read_to_string(signals.path("identity-asked"))
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+                    >= 3),
+                "{name}: no retries"
+            );
+            assert!(
+                !signals.raised("group-signaled"),
+                "{name}: signaled a stranger"
+            );
+            let group = std::fs::read_to_string(signals.path("group")).unwrap();
+            assert!(group_running(group.trim()), "{name}: the stranger stopped");
+            assert_eq!(
+                tool_ownership_entries(&signals).len(),
+                3,
+                "{name}: ownership"
+            );
+            assert!(run.try_wait().unwrap().is_none(), "{name}: it returned");
+            let store = signals.store();
+            let paths = store.find_run_root(RUN).unwrap().unwrap();
+            assert_eq!(
+                store.read_result(&paths).unwrap().expect("result").state,
+                "pending",
+                "{name}"
+            );
+
+            std::fs::remove_file(signals.path("discovery-down")).unwrap();
+            wait_for_isolated_run(&mut run, &name);
+            assert!(
+                !signals.raised("group-signaled"),
+                "{name}: signaled a stranger"
+            );
+            assert_eq!(
+                tool_ownership_entries(&signals),
+                Vec::<PathBuf>::new(),
+                "{name}"
+            );
+            for pid in holder().lines() {
+                assert!(!group_running(pid), "{name}: descendant {pid} still runs");
+            }
+            let status = store.read_run_record(&paths).unwrap().unwrap().status;
+            assert_eq!(
+                status,
+                if deadline { "failed" } else { "canceled" },
+                "{name}"
+            );
+        }));
+        if let Err(payload) = outcome {
+            let _ = run.kill();
+            let _ = run.wait();
+            for pid in holder().lines() {
+                let _ = Command::new("kill").args(["-9", pid]).status();
+            }
+            std::panic::resume_unwind(payload);
         }
     }
 }

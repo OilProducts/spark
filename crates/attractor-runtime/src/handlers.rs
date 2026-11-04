@@ -1457,9 +1457,8 @@ impl RuntimeHandlerRunner {
                 &mut || stop_check(true),
                 &report_cleanup,
             );
-            // A stop, during the hook or just after it, is no hook failure, and
-            // no reason to start the tool.
-            if pre_hook_result.interrupted || runtime.stop_requested() {
+            // A stop that ended the hook is no hook failure.
+            if pre_hook_result.interrupted {
                 write_tool_output_if_available(&runtime, "")?;
                 return Ok(tool_stopped_outcome(""));
             }
@@ -1474,6 +1473,12 @@ impl RuntimeHandlerRunner {
                         None,
                     )
                 });
+            }
+            // The hook succeeded, and a stop since then starts no tool. Only here:
+            // a hook that failed on its own keeps that error whatever came after.
+            if runtime.stop_requested() {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(tool_stopped_outcome(""));
             }
         }
 
@@ -3147,10 +3152,17 @@ fn run_shell_command(
         let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
         let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
         if timed_out || interrupted {
-            spark_agent_adapter::local_environment::terminate_process_group(
-                owner.map_or(child.id(), |(owner, _)| owner.group),
-                Some(&mut child),
-            );
+            // An owner's group is signaled only while its anchor proves the ID.
+            let group = match owner {
+                Some((owner, _)) => owner.live_group().ok().flatten(),
+                None => Some(child.id()),
+            };
+            if let Some(group) = group {
+                spark_agent_adapter::local_environment::terminate_process_group(
+                    group,
+                    Some(&mut child),
+                );
+            }
             let _ = child.kill();
             let status = child.wait();
             let output_closed = || {
@@ -3163,7 +3175,16 @@ fn run_shell_command(
             if let Some((owner, report)) = owner {
                 let marks = tool_marks(&owner.marker);
                 let mut reported = None;
-                while let Err(error) = settle_tool(Some(owner.group), &marks).and_then(|()| {
+                let mut retrying = false;
+                // Asked afresh on every attempt: once the anchor has gone, the ID
+                // may be anyone's, and only the marks still lead to the tool.
+                while let Err(error) = owner.live_group().and_then(|group| {
+                    if let Some(group) = group.filter(|_| retrying) {
+                        spark_agent_adapter::local_environment::terminate_process_group(
+                            group, None,
+                        );
+                    }
+                    settle_tool(group, &marks)?;
                     output_closed()
                         .then_some(())
                         .ok_or_else(|| std::io::Error::other("its output is still held open"))
@@ -3174,10 +3195,7 @@ fn run_shell_command(
                         reported = Some(problem);
                     }
                     std::thread::sleep(TOOL_SETTLE_RETRY);
-                    spark_agent_adapter::local_environment::terminate_process_group(
-                        owner.group,
-                        None,
-                    );
+                    retrying = true;
                 }
             } else if !output_closed() {
                 // No owner means nothing durable to retry from (no run root).
@@ -3239,6 +3257,7 @@ const TOOL_ANCHOR_SCRIPT: &str = "pause=1; trap 'pause=0.05' TERM; exec 3<&0; \
 // can tie to its tool; only then does one run on.
 struct ToolOwner {
     group: u32,
+    started_at: String,
     marker: PathBuf,
     release: Option<std::process::ChildStdin>,
     anchor: Option<thread::JoinHandle<()>>,
@@ -3279,24 +3298,36 @@ impl ToolOwner {
             {
                 return Err(std::io::Error::other("mkfifo failed"));
             }
-            write_atomically(&marker, started_at.as_bytes())
+            write_atomically(&marker, started_at.as_bytes())?;
+            Ok(started_at)
         })();
-        if let Err(error) = recorded {
-            let _ = fs::remove_file(&out);
-            let _ = fs::remove_file(&err);
-            drop(release);
-            let _ = anchor.kill();
-            let _ = anchor.wait();
-            return Err(failed(error));
-        }
+        let started_at = match recorded {
+            Ok(started_at) => started_at,
+            Err(error) => {
+                let _ = fs::remove_file(&out);
+                let _ = fs::remove_file(&err);
+                drop(release);
+                let _ = anchor.kill();
+                let _ = anchor.wait();
+                return Err(failed(error));
+            }
+        };
         Ok(Some(Self {
             group,
+            started_at,
             marker,
             release,
             anchor: Some(thread::spawn(move || {
                 let _ = anchor.wait();
             })),
         }))
+    }
+
+    /// The group's ID while the anchor on record still holds it. Once the anchor
+    /// is gone the group is empty, and its ID may be reused by anyone's.
+    fn live_group(&self) -> std::io::Result<Option<u32>> {
+        let current = process_started_at(self.group)?;
+        Ok((current.as_deref() == Some(self.started_at.as_str())).then_some(self.group))
     }
 
     fn open_marker_command(&self) -> String {
