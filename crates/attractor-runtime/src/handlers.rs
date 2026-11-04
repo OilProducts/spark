@@ -2254,7 +2254,11 @@ impl RuntimeHandlerRunner {
             {
                 return record!(status, extra);
             }
-            if cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime) {
+            // An accepted result goes first: it decided this branch's next step
+            // before the stop, and consuming it runs nothing.
+            if accepted.is_none()
+                && (cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime))
+            {
                 // A child that failed on its own before this stop stays the
                 // branch's error, though a crash kept the branch from seeing it.
                 return match runtime.run_paths.as_ref().map_or(Ok(None), |paths| {
@@ -2442,19 +2446,15 @@ impl RuntimeHandlerRunner {
                     )
                 }
             };
-            decisions.push(json!({
-                "node": current,
-                "decision": transition.decision,
-                "target": transition.target,
-            }));
-            last = Some((
-                current.clone(),
-                transition.decision.clone(),
-                outcome.notes.clone(),
-            ));
-            *visits.entry(transition.target.clone()).or_default() += 1;
-            trace.push(transition.target.clone());
-            current = transition.target;
+            record_transition(
+                transition,
+                &outcome.notes,
+                &mut current,
+                &mut visits,
+                &mut trace,
+                &mut decisions,
+                &mut last,
+            );
             if let Err(error) = save_progress!(None, None) {
                 return record!(
                     "error",
@@ -3792,8 +3792,8 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result
                 if dir.join(format!("{index}.json")).exists() {
                     continue;
                 }
-                let progress: BranchProgress = serde_json::from_str(&fs::read_to_string(&path)?)
-                    .map_err(|error| {
+                let mut progress: BranchProgress =
+                    serde_json::from_str(&fs::read_to_string(&path)?).map_err(|error| {
                         std::io::Error::other(format!("{}: {error}", path.display()))
                     })?;
                 let flow = store
@@ -3813,19 +3813,41 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result
                     )));
                 };
                 let entry = progress.trace.first().cloned().unwrap_or_default();
+                // An accepted result decided the branch's next step, as it would
+                // have live: a route it cannot take is its own routing error.
+                let mut routing_failure = None;
+                if let Some(outcome) = progress.accepted.take() {
+                    match select_transition(&flow, &progress.current, &outcome, &progress.visits) {
+                        Ok(transition) => record_transition(
+                            transition,
+                            &outcome.notes,
+                            &mut progress.current,
+                            &mut progress.visits,
+                            &mut progress.trace,
+                            &mut progress.decisions,
+                            &mut progress.last,
+                        ),
+                        Err(reason) => routing_failure = Some(reason),
+                    }
+                }
                 // A branch that reached its join or an exit has ended, whatever
                 // came after. A child that failed on its own stays this branch's
                 // error. Only the run as a whole is canceled.
-                let (status, extra) = match branch_boundary(
+                let boundary = branch_boundary(
                     &flow,
                     &progress.current,
                     join,
                     &progress.last,
                     &entry,
                     index,
-                ) {
-                    Some(boundary) => boundary,
-                    None => {
+                );
+                let (status, extra) = match (routing_failure, boundary) {
+                    (Some(reason), _) => (
+                        "error",
+                        error_value(&progress.current, FailureKind::Routing, &reason, 1),
+                    ),
+                    (None, Some(boundary)) => boundary,
+                    (None, None) => {
                         match crate::manager_loop::recorded_child_failure(paths, &progress.current)
                             .map_err(|error| std::io::Error::other(error.to_string()))?
                         {
@@ -3941,6 +3963,31 @@ fn record_stops_fork(record: &Value, tolerate: bool) -> bool {
         "error" => !record_tolerated(record, tolerate),
         _ => false,
     }
+}
+
+/// Moves a branch along a selected transition.
+fn record_transition(
+    transition: crate::routing::Transition,
+    notes: &str,
+    current: &mut String,
+    visits: &mut BTreeMap<String, u64>,
+    trace: &mut Vec<String>,
+    decisions: &mut Vec<Value>,
+    last: &mut Option<(String, String, String)>,
+) {
+    decisions.push(json!({
+        "node": current,
+        "decision": transition.decision,
+        "target": transition.target,
+    }));
+    *last = Some((
+        current.clone(),
+        transition.decision.clone(),
+        notes.to_string(),
+    ));
+    *visits.entry(transition.target.clone()).or_default() += 1;
+    trace.push(transition.target.clone());
+    *current = transition.target;
 }
 
 /// How a branch standing at `current` has ended, if it has: at its join, or at

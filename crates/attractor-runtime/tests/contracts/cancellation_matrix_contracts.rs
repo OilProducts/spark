@@ -61,6 +61,7 @@ const ISOLATED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_DIR";
 const ISOLATED_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_CASE";
 const HOOK_PHASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_HOOK_PHASE";
 const FAILED_CHILD_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_DIR";
+const ACCEPTED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ACCEPTED_DIR";
 const FAILED_CHILD_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_CASE";
 const CRASH_EXIT_CODE: i32 = 7;
 
@@ -357,6 +358,10 @@ impl spark_agent_adapter::CodergenBackend for Backend {
     ) -> Result<CodergenBackendOutput, CodergenError> {
         self.signals.log_call(&request.node_id);
         match request.node_id.as_str() {
+            "work" if self.signals.raised("work-blocks") => {
+                self.signals.raise("started");
+                Self::answer("blocked", "work cannot proceed")
+            }
             "work" if self.signals.raised("child-fails-routing") => {
                 Self::answer("again", "the child selected an exhausted target")
             }
@@ -2758,6 +2763,246 @@ fn a_childs_recorded_failure_survives_a_crash_before_its_branch_settled() {
             }),
             "{name}: the join ran"
         );
+    }
+}
+
+/// The crash table's flow: `work` may also reach the failure exit, so a blocked
+/// result can be on record while `sib` decides.
+fn accepted_outcome_flow(case: Case, signals: &Signals) -> FlowDefinition {
+    let mut flow = flow(case, signals);
+    *flow.nodes.get_mut("work").unwrap() = serde_json::from_value(agent(
+        json!({"done": route("join"), "blocked": route("failed")}),
+    ))
+    .unwrap();
+    flow
+}
+
+/// Child process entry point: `sib` selects an exhausted target with its record's
+/// publication held open by a FIFO, which leaves its accepted result durable and
+/// nothing else, and the process dies there. A no-op in the ordinary test run.
+#[test]
+fn accepted_outcome_first_life() {
+    let Ok(dir) = std::env::var(ACCEPTED_DIR_ENV) else {
+        return;
+    };
+    let signals = Signals {
+        dir: PathBuf::from(dir),
+    };
+    let name = std::env::var(FAILED_CHILD_CASE_ENV).unwrap();
+    let case = cases(Timing::CrashThenResume)
+        .into_iter()
+        .find(|case| case.name() == name)
+        .expect("known case");
+    let conductor = signals.clone();
+    std::thread::spawn(move || {
+        if !wait_for(|| conductor.raised("started")) {
+            return;
+        }
+        let branches = conductor.branches_dir().unwrap();
+        let hold = Command::new("mkfifo")
+            .arg(branches.join("1.json.tmp"))
+            .status()
+            .unwrap();
+        assert!(hold.success());
+        if conductor.raised("work-blocks") && !wait_for(|| conductor.branch_settled(0)) {
+            return;
+        }
+        if conductor.raised("external-stop") {
+            request_external_cancel(&conductor);
+        }
+        conductor.raise("trigger");
+        let accepted = wait_for(|| {
+            std::fs::read_to_string(branches.join("1.progress.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .is_some_and(|progress| progress["accepted"]["decision"] == json!("again"))
+        });
+        if accepted {
+            std::process::exit(CRASH_EXIT_CODE);
+        }
+    });
+    let _ = executor(runner(case, &signals), &signals.store()).execute(fresh_request(
+        accepted_outcome_flow(case, &signals),
+        &signals,
+    ));
+    panic!("the first life should have crashed");
+}
+
+/// What a sibling's accepted, not yet transitioned result selected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AcceptedDecision {
+    /// A target with no visits left: the branch's own routing error.
+    Exhausted,
+    /// The join. The FIFO holds only a failing transition, since a good one moves
+    /// on at once, so this rewrites the saved decision to the state that a crash
+    /// in that instant leaves.
+    ToJoin,
+}
+
+/// A result accepted before a stop still decides its branch after a crash, without
+/// running the invocation again: an exhausted target stays a routing error and
+/// overrides a sibling's blocked result, and external cancellation still decides
+/// the run.
+#[test]
+fn an_accepted_result_decides_its_branch_when_a_stopped_fork_settles() {
+    use AcceptedDecision::{Exhausted, ToJoin};
+    use FinishedBy::{OrphanCancel, Resume};
+    for fork in [Fork::Strict, Fork::Tolerant] {
+        for (work_blocks, external, decision, finished_by, status) in [
+            (true, false, Exhausted, Resume, "failed"),
+            (false, true, Exhausted, Resume, "canceled"),
+            (false, true, Exhausted, OrphanCancel, "canceled"),
+            (true, false, Exhausted, OrphanCancel, "canceled"),
+            (false, true, ToJoin, Resume, "canceled"),
+            (false, true, ToJoin, OrphanCancel, "canceled"),
+        ] {
+            let case = Case {
+                fork,
+                running: Running::Agent,
+                stop: Stop::Fatal,
+                timing: Timing::CrashThenResume,
+            };
+            let name = format!(
+                "{fork:?} work_blocks={work_blocks} external={external} {decision:?} {finished_by:?}"
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let signals = Signals {
+                dir: temp.path().to_path_buf(),
+            };
+            signals.raise("hold");
+            if work_blocks {
+                signals.raise("work-blocks");
+            }
+            if external {
+                signals.raise("external-stop");
+            }
+            let code = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "routing_model_contracts::cancellation_matrix_contracts::accepted_outcome_first_life",
+                    "--nocapture",
+                ])
+                .env(ACCEPTED_DIR_ENV, &signals.dir)
+                .env(FAILED_CHILD_CASE_ENV, case.name())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .and_then(|mut first_life| {
+                    let mut exit = None;
+                    wait_for(|| {
+                        exit = first_life.try_wait().unwrap();
+                        exit.is_some()
+                    });
+                    if exit.is_none() {
+                        first_life.kill()?;
+                        first_life.wait()?;
+                    }
+                    Ok(exit.and_then(|exit| exit.code()))
+                })
+                .unwrap();
+            assert_eq!(code, Some(CRASH_EXIT_CODE), "{name}: first life");
+            std::fs::remove_file(signals.path("hold")).unwrap();
+
+            // The boundary: accepted, with no record, and nothing published.
+            let branches = signals.branches_dir().unwrap();
+            assert!(!signals.branch_settled(1), "{name}: published");
+            assert_eq!(signals.branch_settled(0), work_blocks, "{name}");
+            let progress_path = branches.join("1.progress.json");
+            let mut saved: Value =
+                serde_json::from_str(&std::fs::read_to_string(&progress_path).unwrap()).unwrap();
+            assert_eq!(saved["accepted"]["decision"], json!("again"), "{name}");
+            assert_eq!(saved["visits"]["sib"], json!(1), "{name}");
+            std::fs::remove_file(branches.join("1.json.tmp")).unwrap();
+            if decision == ToJoin {
+                saved["accepted"]["decision"] = json!("done");
+                std::fs::write(&progress_path, saved.to_string()).unwrap();
+            }
+
+            let (runner, store) = (runner(case, &signals), signals.store());
+            let flow = accepted_outcome_flow(case, &signals);
+            let (result_status, reason, kind) = match finished_by {
+                Resume => {
+                    let result = bounded(&name, move || resume(runner, flow, store));
+                    (result.status, result.failure_reason, result.failure_kind)
+                }
+                OrphanCancel => {
+                    let status = bounded(&name, move || {
+                        RuntimeControls::new(store)
+                            .mark_canceled(RUN, "aborted_by_user")
+                            .unwrap()
+                            .status
+                    });
+                    (status, "aborted_by_user".to_string(), None)
+                }
+            };
+            assert_eq!(result_status, status, "{name}: {reason}");
+            if status == "failed" {
+                assert_eq!(kind, Some(FailureKind::Routing), "{name}");
+                assert!(
+                    reason.starts_with("branch sib (index 1) failed at sib: visit_limit_reached"),
+                    "{name}: {reason}"
+                );
+            } else {
+                assert_eq!(reason, "aborted_by_user", "{name}");
+            }
+
+            let sib = signals.branch_record(1);
+            assert!(sib.get("canceled_at").is_none(), "{name}: {sib}");
+            assert_eq!(sib["visits"]["sib"], json!(1), "{name}: {sib}");
+            assert_eq!(sib["id"], json!("sib"), "{name}: {sib}");
+            if decision == Exhausted {
+                assert_eq!(sib["status"], json!("error"), "{name}: {sib}");
+                assert_eq!(sib["error"]["kind"], json!("routing"), "{name}: {sib}");
+                assert_eq!(sib["error"]["tolerable"], json!(false), "{name}: {sib}");
+                assert_eq!(sib["error"]["node"], json!("sib"), "{name}: {sib}");
+                assert_eq!(sib["error"]["attempts"], json!(1), "{name}: {sib}");
+                let error = sib["error"]["reason"].as_str().unwrap();
+                assert!(
+                    error.contains("visit_limit_reached") && error.contains("again"),
+                    "{name}: {error}"
+                );
+                assert_eq!(sib["route_trace"], json!(["sib"]), "{name}: {sib}");
+            } else {
+                assert_eq!(sib["status"], json!("completed"), "{name}: {sib}");
+                assert_eq!(sib["route_trace"], json!(["sib", "join"]), "{name}: {sib}");
+                assert_eq!(sib["visits"]["join"], json!(1), "{name}: {sib}");
+                assert_eq!(
+                    sib["decisions"][0]["decision"],
+                    json!("done"),
+                    "{name}: {sib}"
+                );
+            }
+            let affected = signals.branch_record(0);
+            let affected_status = if work_blocks {
+                "terminal_result"
+            } else {
+                "canceled"
+            };
+            assert_eq!(
+                affected["status"],
+                json!(affected_status),
+                "{name}: {affected}"
+            );
+
+            // Nothing ran again, and the join never ran.
+            assert_eq!(
+                signals.calls("sib"),
+                1,
+                "{name}: the accepted invocation ran again"
+            );
+            assert_eq!(signals.calls("pre"), 1, "{name}: pre ran again");
+            assert_eq!(signals.calls("work"), 1, "{name}: work ran again");
+            assert_eq!(signals.calls("synth"), 0, "{name}: joined");
+            let store = signals.store();
+            let paths = store.find_run_root(RUN).unwrap().unwrap();
+            assert!(
+                !store.read_raw_events(&paths).unwrap().iter().any(|event| {
+                    event.event_type == "StageStarted"
+                        && event.payload.get("node_id") == Some(&json!("join"))
+                }),
+                "{name}: the join ran"
+            );
+        }
     }
 }
 
