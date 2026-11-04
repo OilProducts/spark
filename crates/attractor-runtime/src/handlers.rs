@@ -1432,19 +1432,7 @@ impl RuntimeHandlerRunner {
         // Tools stop when their fork or the user cancels, at the root and in
         // a child as in a branch; the run record is read at most every 250 ms.
         let mut last_check = Instant::now();
-        let mut recorded = None;
-        let mut record_interval = Duration::from_millis(50);
-        let mut next_record = Instant::now();
-        let mut stop_check = |group: u32| {
-            if let Some(paths) = runtime
-                .run_paths
-                .as_ref()
-                .filter(|_| Instant::now() >= next_record)
-            {
-                recorded = record_tool_group(paths, group).or(recorded.take());
-                record_interval = (record_interval * 2).min(Duration::from_secs(1));
-                next_record = Instant::now() + record_interval;
-            }
+        let mut stop_check = || {
             if runtime.canceled_by_owner() {
                 runtime.interrupted.store(true, Ordering::SeqCst);
                 return true;
@@ -1456,17 +1444,17 @@ impl RuntimeHandlerRunner {
             runtime.stop_requested()
         };
         let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
+        let owner = runtime.run_paths.as_ref().and_then(ToolOwner::start);
         let spawned = run_shell_command(
             &command,
             &cwd,
             timeout,
             tool_env,
             None,
-            can_stop.then_some(&mut stop_check as &mut dyn FnMut(u32) -> bool),
+            can_stop.then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+            owner.as_ref(),
         );
-        if let Some(path) = recorded {
-            let _ = fs::remove_file(path);
-        }
+        drop(owner);
         let command_output = match spawned {
             Ok(output) => output,
             Err(error) => {
@@ -2817,15 +2805,22 @@ fn run_hook(
         "ATTRACTOR_TOOL_COMMAND".to_string(),
         tool_command.to_string(),
     );
-    run_shell_command(command, cwd, None, env, Some(payload.to_string()), None).unwrap_or_else(
-        |error| ShellOutput {
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: error.to_string(),
-            timed_out: false,
-            interrupted: false,
-        },
+    run_shell_command(
+        command,
+        cwd,
+        None,
+        env,
+        Some(payload.to_string()),
+        None,
+        None,
     )
+    .unwrap_or_else(|error| ShellOutput {
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: error.to_string(),
+        timed_out: false,
+        interrupted: false,
+    })
 }
 
 fn record_hook_failure(
@@ -2955,26 +2950,36 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
 }
 
 /// Runs `command`, draining stdout and stderr concurrently so a chatty
-/// command never blocks on a full pipe, and kills its process group at
-/// `timeout` or when `stop`, asked with the group's ID, answers true. The
-/// command ends when its shell has exited and its output has closed, so a
-/// descendant still holding the output keeps it running and stoppable. The
-/// shell stays unreaped until then, which keeps the group's ID from being reused.
+/// command never blocks on a full pipe, and kills it, with its descendants, at
+/// `timeout` or when `stop` answers true. The command ends when its shell has
+/// exited and its output has closed, so a descendant still holding the output
+/// keeps it running and stoppable. The shell stays unreaped until then, which
+/// keeps its group's ID from being reused when no `owner` holds it.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
     timeout: Option<Duration>,
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
-    mut stop: Option<&mut dyn FnMut(u32) -> bool>,
+    mut stop: Option<&mut dyn FnMut() -> bool>,
+    owner: Option<&ToolOwner>,
 ) -> std::io::Result<ShellOutput> {
     let mut command_line = Command::new("sh");
     // Its own process group, so a timeout or cancellation stops every
     // descendant, not just the shell.
     spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
+    #[cfg(unix)]
+    if let Some(owner) = owner {
+        use std::os::unix::process::CommandExt;
+        command_line.process_group(owner.group as i32);
+    }
+    let script = match owner {
+        Some(owner) => format!("{}\n{command}", owner.open_marker_command()),
+        None => command.to_string(),
+    };
     let mut child = command_line
         .arg("-c")
-        .arg(command)
+        .arg(script)
         .current_dir(cwd)
         .envs(env)
         .stdin(if stdin_text.is_some() {
@@ -3025,18 +3030,20 @@ fn run_shell_command(
             }
         }
         let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
-        let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop(child.id()));
+        let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
         if timed_out || interrupted {
             spark_agent_adapter::local_environment::terminate_process_group(
-                child.id(),
+                owner.map_or(child.id(), |owner| owner.group),
                 Some(&mut child),
             );
+            if let Some(owner) = owner {
+                stop_marker_holders(&owner.marker);
+            }
             let _ = child.kill();
             let status = child.wait()?;
-            // A descendant that left the group may keep the output open past
-            // the group's end. The command settles anyway, with what it wrote.
-            // ponytail: such a descendant keeps running; nothing identifies it.
-            let deadline = Instant::now() + DETACHED_OUTPUT_GRACE;
+            // ponytail: a descendant that left the group and closed the marker
+            // cannot be identified; it must not hold this settlement forever.
+            let deadline = Instant::now() + UNIDENTIFIED_OUTPUT_GRACE;
             while !drained() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -3058,66 +3065,166 @@ fn run_shell_command(
     Ok(shell_output_from_process(output, timed_out, interrupted))
 }
 
-/// Every process, as its group's ID and its identity: a pid and the time it
-/// started, which tell it from a later process reusing the pid.
-fn list_processes() -> Vec<(u32, String)> {
-    let Ok(output) = Command::new("ps")
-        .args(["-A", "-o", "pid=,pgid=,lstart="])
+/// A process's start time, which tells it from a later process reusing its pid.
+fn process_started_at(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let started_at = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !started_at.is_empty()).then_some(started_at)
+}
+
+/// Holds a tool's process group until the executor answers (the tool ended).
+/// If the executor dies (end of input) or the group is told to stop (TERM), it
+/// instead stays until no one else is left in the group, so it proves the
+/// group's identity for as long as there is a group to stop, and an unresumed
+/// run leaves nothing. Its own helpers are its children; no tool process is.
+const TOOL_ANCHOR_SCRIPT: &str = "pause=1; trap 'pause=0.05' TERM; exec 3<&0; \
+    ( read _ <&3 ) & wait $! && exit 0; \
+    while ps -A -o pgid=,ppid=,pid= | awk -v me=$$ \
+    '$1 == me && $2 != me && $3 != me { found = 1 } END { exit !found }'; do sleep $pause; done";
+
+/// A running tool's durable ownership, on record in its run root before the
+/// tool spawns and until it ends, so an entry that exists while no executor
+/// owns the run marks what a dead executor left behind, at any point in the
+/// tool's life. The tool joins the group of an anchor process, whose pid and
+/// start time on record prove the group is still this tool's. Each tool
+/// process also inherits the record open on descriptor 9, which identifies a
+/// descendant that left the group.
+// ponytail: without `ps` (Windows, minimal images), or with a run root it cannot
+// write, a tool has no owner, and no recovery finds it.
+struct ToolOwner {
+    group: u32,
+    marker: PathBuf,
+    release: Option<std::process::ChildStdin>,
+    anchor: Option<thread::JoinHandle<()>>,
+}
+
+impl ToolOwner {
+    fn start(paths: &RunRootPaths) -> Option<Self> {
+        if cfg!(not(unix)) {
+            return None;
+        }
+        let mut command = Command::new("sh");
+        spark_agent_adapter::local_environment::configure_process_group(&mut command);
+        let mut anchor = command
+            .args(["-c", TOOL_ANCHOR_SCRIPT])
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let group = anchor.id();
+        let marker = paths.root.join(TOOL_PROCESSES_DIR).join(group.to_string());
+        let release = anchor.stdin.take();
+        let recorded = process_started_at(group)
+            .is_some_and(|started_at| write_atomically(&marker, started_at.as_bytes()).is_ok());
+        if !recorded {
+            drop(release);
+            let _ = anchor.kill();
+            let _ = anchor.wait();
+            return None;
+        }
+        Some(Self {
+            group,
+            marker,
+            release,
+            anchor: Some(thread::spawn(move || {
+                let _ = anchor.wait();
+            })),
+        })
+    }
+
+    fn open_marker_command(&self) -> String {
+        let marker = self.marker.to_string_lossy().replace('\'', "'\\''");
+        format!("exec 9<'{marker}'")
+    }
+}
+
+impl Drop for ToolOwner {
+    /// The tool ended: nothing of it is an orphan, and any daemon it started
+    /// on purpose stays.
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.marker);
+        if let Some(mut release) = self.release.take() {
+            let _ = release.write_all(b"\n");
+        }
+        if let Some(anchor) = self.anchor.take() {
+            let _ = anchor.join();
+        }
+    }
+}
+
+/// The processes holding a tool's record open as its marker descriptor.
+fn marker_holders(marker: &Path) -> Vec<u32> {
+    if Path::new("/proc/self/fd").exists() {
+        let marker = fs::canonicalize(marker).ok();
+        return fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let pid = entry.file_name().to_string_lossy().parse().ok()?;
+                let held = fs::read_link(entry.path().join("fd/9")).ok();
+                (held.is_some() && held == marker).then_some(pid)
+            })
+            .collect();
+    }
+    let Ok(output) = Command::new("lsof")
+        .args(["-w", "-t", "-a", "-d", "9"])
+        .arg(marker)
         .output()
     else {
         return Vec::new();
     };
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?;
-            let group = fields.next()?.parse().ok()?;
-            let started_at = fields.collect::<Vec<_>>().join(" ");
-            Some((group, format!("{pid} {started_at}")))
-        })
+        .filter_map(|pid| pid.trim().parse().ok())
         .collect()
 }
 
-/// Records a running tool's process group and its current members in its run
-/// root, refreshed until the tool ends, so a later executor can stop what a
-/// dead one left behind. An entry that exists while no executor owns the run
-/// is therefore an orphan.
-// ponytail: without `ps` (Windows, minimal images) orphans are not recorded.
-fn record_tool_group(paths: &RunRootPaths, group: u32) -> Option<PathBuf> {
-    let members = list_processes()
-        .into_iter()
-        .filter_map(|(member_group, identity)| (member_group == group).then_some(identity))
-        .collect::<Vec<_>>();
-    let path = paths.root.join(TOOL_PROCESSES_DIR).join(group.to_string());
-    (!members.is_empty() && write_atomically(&path, members.join("\n").as_bytes()).is_ok())
-        .then_some(path)
+/// Stops each group holding a marker. Holding it proves a process descends
+/// from the tool, and holders are looked for again in case one forked past
+/// the last look.
+fn stop_marker_holders(marker: &Path) {
+    for _ in 0..3 {
+        let holders = marker_holders(marker);
+        if holders.is_empty() {
+            return;
+        }
+        let mut groups = holders
+            .iter()
+            .filter_map(|pid| {
+                let output = Command::new("ps")
+                    .args(["-o", "pgid=", "-p", &pid.to_string()])
+                    .output()
+                    .ok()?;
+                String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+            })
+            .collect::<Vec<u32>>();
+        groups.sort_unstable();
+        groups.dedup();
+        for group in groups {
+            spark_agent_adapter::local_environment::terminate_process_group(group, None);
+        }
+    }
 }
 
-/// Stops every tool process group a dead executor of this run left running.
-/// A group's ID proves nothing once its shell is gone, so a group is stopped
-/// only while a member on record still lives in it: the ID cannot have been
-/// reused while that member held it.
-// ponytail: a crash before a group's latest member is on record (at most 1 s)
-// leaves that member running if every member on record has ended.
+/// Stops every tool a dead executor of this run left running. A record goes
+/// only once its tool is stopped, so a recovery that dies here can be redone.
 pub(crate) fn stop_orphaned_tools(paths: &RunRootPaths) {
     let Ok(entries) = fs::read_dir(paths.root.join(TOOL_PROCESSES_DIR)) else {
         return;
     };
-    let entries = entries.flatten().collect::<Vec<_>>();
-    if entries.is_empty() {
-        return;
-    }
-    let processes = list_processes();
-    for entry in entries {
-        let group = entry.file_name().to_string_lossy().parse::<u32>().ok();
-        let recorded = fs::read_to_string(entry.path()).unwrap_or_default();
-        if let Some(group) = group.filter(|group| {
-            processes.iter().any(|(member_group, identity)| {
-                member_group == group && recorded.lines().any(|line| line == identity)
-            })
-        }) {
-            spark_agent_adapter::local_environment::terminate_process_group(group, None);
+    for entry in entries.flatten() {
+        if let Ok(group) = entry.file_name().to_string_lossy().parse::<u32>() {
+            let recorded = fs::read_to_string(entry.path()).ok();
+            if recorded.is_some() && process_started_at(group) == recorded {
+                spark_agent_adapter::local_environment::terminate_process_group(group, None);
+            }
+            stop_marker_holders(&entry.path());
         }
         let _ = fs::remove_file(entry.path());
     }
@@ -3139,7 +3246,7 @@ fn shell_output_from_process(
 
 const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
 const TOOL_PROCESSES_DIR: &str = "tool-processes";
-const DETACHED_OUTPUT_GRACE: Duration = Duration::from_secs(1);
+const UNIDENTIFIED_OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 enum HumanGateWaitResult {
     Answered(Choice, String),

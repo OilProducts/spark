@@ -15,7 +15,7 @@
 //! Separately, one small table has the affected branch fail on its own while
 //! the stop lands, which no row of the main table can do.
 //!
-//! Dropped combinations: none. Each of the 144 rows can occur:
+//! Dropped combinations: none. Each of the 168 rows can occur:
 //! - external x already finished needs work still in flight to cancel, which
 //!   `sib` provides as a bystander;
 //! - tolerant x tolerable error never stops the fork, so its "mid-execution"
@@ -24,8 +24,10 @@
 //!
 //! Beyond the requested matrix, "subflow child" is split by what the child
 //! runs, an agent or a tool, because the two stop through different paths, and
-//! each tool also runs detached: its shell exits while a descendant holds its
-//! output, so only the process group is left to stop.
+//! each tool also runs detached: its shell and a middle process exit while a
+//! last descendant holds its output, so only the process group is left to stop.
+//! A branch tool runs once more with a descendant that leaves the group, so
+//! only the record it inherited is left to find it by.
 //!
 //! Deliberately not asserted, because the design does not decide them: a
 //! child whose own routing failure lands after its cancellation was requested
@@ -52,6 +54,7 @@ const RUN: &str = "run-contract";
 const DEADLINE: Duration = Duration::from_secs(60);
 const CRASH_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_CASE";
 const CRASH_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_DIR";
+const CANCEL_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_DIR";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,6 +68,8 @@ enum Running {
     Tool,
     /// A tool whose shell exits while a descendant runs on, holding its output.
     DetachedTool,
+    /// A tool whose shell exits while a descendant in its own group runs on.
+    LeftGroupTool,
     Agent,
     ChildAgent,
     ChildTool,
@@ -77,17 +82,6 @@ impl Running {
             self,
             Self::ChildAgent | Self::ChildTool | Self::ChildDetachedTool
         )
-    }
-
-    fn is_tool(self) -> bool {
-        matches!(
-            self,
-            Self::Tool | Self::DetachedTool | Self::ChildTool | Self::ChildDetachedTool
-        )
-    }
-
-    fn is_detached(self) -> bool {
-        matches!(self, Self::DetachedTool | Self::ChildDetachedTool)
     }
 
     /// The branch node the affected branch stops at.
@@ -143,6 +137,7 @@ fn cases(timing: Timing) -> Vec<Case> {
         for running in [
             Running::Tool,
             Running::DetachedTool,
+            Running::LeftGroupTool,
             Running::Agent,
             Running::ChildAgent,
             Running::ChildTool,
@@ -260,27 +255,6 @@ impl Signals {
 
     fn store(&self) -> RunStore {
         RunStore::for_runs_dir(self.path("runs"))
-    }
-
-    /// Whether a run of this case has a tool on record with `members` processes
-    /// in its group.
-    fn tool_recorded(&self, members: usize) -> bool {
-        let store = self.store();
-        store
-            .list_run_records()
-            .unwrap_or_default()
-            .iter()
-            .any(|record| {
-                let root = store.find_run_root(&record.run_id).ok().flatten();
-                root.and_then(|paths| std::fs::read_dir(paths.root.join("tool-processes")).ok())
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .any(|entry| {
-                        std::fs::read_to_string(entry.path())
-                            .is_ok_and(|text| text.lines().count() >= members)
-                    })
-            })
     }
 
     fn branches_dir(&self) -> Option<PathBuf> {
@@ -432,41 +406,94 @@ fn step_tool(signals: &Signals, node: &str, next: &str) -> Value {
     )
 }
 
-/// A `work` tool: announces its pid and holds until released, bounded so a
-/// stop that never arrives shows up as a finished tool. It ignores TERM while
-/// `hold` is raised, so only a KILL settles it once the executor is gone.
+/// Records the shell's process group for the stopped-process assertions.
+const RECORD_GROUP: &str = "ps -o pgid= -p $$ | tr -d ' '";
+
+/// While `hold` is raised, the commands that make a shell survive TERM, so only
+/// a KILL settles it once the executor is gone. TERM leaves a signal. Stderr
+/// goes first: with the executor gone, the shell's notice of a killed job would
+/// die on the closed pipe.
+fn survive_term(signals: &Signals) -> String {
+    let p = |name: &str| signals.path(name).display().to_string();
+    format!(
+        "if [ -f '{hold}' ]; then exec 2>/dev/null; trap \"touch '{seen}'\" TERM; fi",
+        hold = p("hold"),
+        seen = p("term-seen"),
+    )
+}
+
+/// Holds until released, bounded so a stop that never arrives shows up as a
+/// finished tool.
+fn hold_work(signals: &Signals) -> String {
+    let p = |name: &str| signals.path(name).display().to_string();
+    format!(
+        "touch '{started}'; i=0; while [ ! -f '{release}' ] && [ $i -lt 1800 ]; \
+         do sleep 0.05; i=$((i+1)); done; echo work-finished >> '{calls}'",
+        started = p("started"),
+        release = p("release"),
+        calls = p("calls.log"),
+    )
+}
+
+/// A `work` tool: announces its group and holds, signaling as early as a tool
+/// can, with no wait for anything the runtime records.
 fn work_tool(signals: &Signals, next: &str) -> Value {
     let p = |name: &str| signals.path(name).display().to_string();
     tool(
         format!(
-            "if [ -f '{hold}' ]; then trap '' TERM; fi; echo work >> '{calls}'; echo $$ >> '{pids}'; \
-             touch '{started}'; i=0; while [ ! -f '{release}' ] && [ $i -lt 1800 ]; \
-             do sleep 0.05; i=$((i+1)); done; echo work-finished >> '{calls}'",
-            hold = p("hold"),
+            "{survive}; echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; {hold}",
+            survive = survive_term(signals),
             calls = p("calls.log"),
             pids = p("pids"),
-            started = p("started"),
-            release = p("release"),
+            hold = hold_work(signals),
         ),
         next,
     )
 }
 
-/// `work_tool` with the shell gone: the shell exits at once, and a descendant
-/// holding its output announces the shell's exit and then does the holding.
+/// A `work` tool whose processes turn over: the shell starts a middle process
+/// and exits, the middle starts the holder and exits, and the holder, after
+/// seeing both gone, closes the inherited marker and holds their output. Only
+/// its process group is left to find it by.
 fn detached_work_tool(signals: &Signals, next: &str) -> Value {
+    let p = |name: &str| signals.path(name).display().to_string();
+    let middle = signals.path("middle.sh");
+    std::fs::write(
+        &middle,
+        format!(
+            "( {survive}; exec 9<&-; \
+             gone() {{ ! ps -o stat= -p \"$1\" | grep -qv Z; }}; \
+             while ! gone \"$1\" || ! gone $$; do sleep 0.02; done; {hold} ) & exit 0\n",
+            survive = survive_term(signals),
+            hold = hold_work(signals),
+        ),
+    )
+    .unwrap();
+    tool(
+        format!(
+            "echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; sh '{middle}' $$ & exit 0",
+            calls = p("calls.log"),
+            pids = p("pids"),
+            middle = middle.display(),
+        ),
+        next,
+    )
+}
+
+/// A `work` tool whose descendant leaves the group for its own, keeps the
+/// record it inherited, and outlives the shell. `set -m` needs a shell with job
+/// control; elsewhere the row runs as the in-group one.
+fn left_group_work_tool(signals: &Signals, next: &str) -> Value {
     let p = |name: &str| signals.path(name).display().to_string();
     tool(
         format!(
-            "if [ -f '{hold}' ]; then trap '' TERM; fi; echo work >> '{calls}'; echo $$ >> '{pids}'; \
-             ( while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
-             i=0; while [ ! -f '{release}' ] && [ $i -lt 1800 ]; do sleep 0.05; i=$((i+1)); done; \
-             echo work-finished >> '{calls}' ) & exit 0",
-            hold = p("hold"),
+            "set -m; echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; \
+             ( {survive}; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; {hold} ) & \
+             echo $! >> '{pids}'; exit 0",
             calls = p("calls.log"),
             pids = p("pids"),
-            started = p("started"),
-            release = p("release"),
+            survive = survive_term(signals),
+            hold = hold_work(signals),
         ),
         next,
     )
@@ -490,6 +517,7 @@ fn flow(case: Case, signals: &Signals) -> FlowDefinition {
     nodes[case.running.node()] = match case.running {
         Running::Tool => work_tool(signals, "join"),
         Running::DetachedTool => detached_work_tool(signals, "join"),
+        Running::LeftGroupTool => left_group_work_tool(signals, "join"),
         Running::Agent => agent(json!({"done": route("join")})),
         Running::ChildAgent | Running::ChildTool | Running::ChildDetachedTool => json!({
             "kind": "subflow", "manager": {"poll_interval": "0s"},
@@ -555,12 +583,6 @@ fn request_external_cancel(signals: &Signals) {
 fn conduct(case: Case, signals: Signals) {
     let reached = wait_for(|| match case.timing {
         Timing::AlreadyFinished => signals.branch_settled(0),
-        // A crash needs the tool on record: only a spawned tool is an orphan
-        // a later executor can find.
-        Timing::CrashThenResume if case.running.is_tool() => {
-            signals.raised("started")
-                && signals.tool_recorded(if case.running.is_detached() { 2 } else { 1 })
-        }
         Timing::MidExecution | Timing::CrashThenResume => signals.raised("started"),
     });
     if !reached {
@@ -989,6 +1011,11 @@ fn matrix_crash_before_settlement_then_resume() {
 fn an_independent_error_during_a_stop_stays_an_error() {
     // Tolerant x tolerable never stops the fork, and two fatal errors on a
     // strict fork have no primary the design decides, so `reason` is open there.
+    // Agents only: a stopped tool is killed, so it cannot then fail on its own,
+    // and a child's own failure is covered by routing_model_contracts'
+    // a_child_routing_failure_stays_fatal_inside_a_tolerant_fork,
+    // a_child_execution_error_stays_tolerated_inside_a_tolerant_fork and
+    // an_independent_child_failure_after_sibling_cancellation_stays_an_error.
     let rows = [
         (Fork::Strict, Stop::External, "canceled", "aborted_by_user"),
         (
@@ -1077,33 +1104,201 @@ fn an_independent_error_during_a_stop_stays_an_error() {
     }
 }
 
-/// A tool's deadline and cancellation still work once its shell has exited,
-/// and it settles even if the descendant holding its output left the group,
-/// where nothing can stop it. `set -m` gives a background job its own group
-/// where the shell supports it; elsewhere that row runs as the in-group one.
+/// The process group the case's first tool reported.
+fn group_of_tool(signals: &Signals) -> String {
+    let pids = std::fs::read_to_string(signals.path("pids")).unwrap_or_default();
+    pids.lines().next().expect("tool group").to_string()
+}
+
+fn in_new_case_dir(case: Case) -> (tempfile::TempDir, Signals) {
+    let temp = tempfile::tempdir().unwrap();
+    let signals = Signals {
+        dir: temp.path().to_path_buf(),
+    };
+    if case.running.is_child() {
+        write_child_flow(case, &signals);
+    }
+    (temp, signals)
+}
+
+/// A crash with no stop in flight, so the tool has seen no TERM yet.
+fn crashed_running_case(running: Running) -> Case {
+    Case {
+        fork: Fork::Tolerant,
+        running,
+        stop: Stop::Tolerable,
+        timing: Timing::CrashThenResume,
+    }
+}
+
+/// Child process entry point: runs a real orphan cancellation and dies as soon
+/// as the tool has been told to stop. A no-op in the ordinary test run.
+#[test]
+fn cancellation_of_a_crashed_run_dies_midway() {
+    let Ok(dir) = std::env::var(CANCEL_DIR_ENV) else {
+        return;
+    };
+    let signals = Signals {
+        dir: PathBuf::from(dir),
+    };
+    let watcher = signals.clone();
+    std::thread::spawn(move || {
+        if wait_for(|| watcher.raised("term-seen")) {
+            std::process::exit(CRASH_EXIT_CODE);
+        }
+    });
+    let outcome = RuntimeControls::new(signals.store()).mark_canceled(RUN, "no executor");
+    panic!("the cancellation should have died while stopping the tool: {outcome:?}");
+}
+
+/// A dead executor's run: canceling it publishes no terminal state until its
+/// tool, branches and child have settled; a cancellation dying midway publishes
+/// none and can be redone through the same API.
+#[test]
+fn orphan_cancellation_publishes_its_end_last_and_survives_a_crash() {
+    for running in [Running::Tool, Running::DetachedTool, Running::ChildTool] {
+        let case = crashed_running_case(running);
+        let name = case.name();
+        let (_temp, signals) = in_new_case_dir(case);
+        run_first_life_until_crash(case, &signals);
+        let group = group_of_tool(&signals);
+        let store = signals.store();
+        let paths = store.find_run_root(RUN).unwrap().unwrap();
+        let controls = RuntimeControls::new(store.clone());
+        assert_eq!(
+            controls.request_cancel(RUN).unwrap().status,
+            "cancel_requested"
+        );
+
+        let mut midway = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "routing_model_contracts::cancellation_matrix_contracts::cancellation_of_a_crashed_run_dies_midway",
+                "--nocapture",
+            ])
+            .env(CANCEL_DIR_ENV, &signals.dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut status = None;
+        wait_for(|| {
+            status = midway.try_wait().unwrap();
+            status.is_some()
+        });
+        if status.is_none() {
+            let _ = midway.kill();
+            let _ = midway.wait();
+        }
+        assert_eq!(
+            status.and_then(|status| status.code()),
+            Some(CRASH_EXIT_CODE),
+            "{name}: must die with the tool told to stop"
+        );
+        assert_eq!(
+            store.read_run_record(&paths).unwrap().unwrap().status,
+            "cancel_requested",
+            "{name}: terminal before settlement"
+        );
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").state,
+            "pending",
+            "{name}: result published before settlement"
+        );
+        let canceled_events = || {
+            store
+                .read_raw_events(&paths)
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload.get("status") == Some(&json!("canceled")))
+                .count()
+        };
+        assert_eq!(canceled_events(), 0, "{name}: event before settlement");
+        assert!(group_alive(&group), "{name}: the tool should still run");
+
+        // The first sight of the terminal state must find everything settled.
+        let observer_signals = signals.clone();
+        let observer_group = group.clone();
+        let observer = std::thread::spawn(move || {
+            let store = observer_signals.store();
+            let paths = store.find_run_root(RUN).unwrap().unwrap();
+            wait_for(|| store.read_run_record(&paths).unwrap().unwrap().status == "canceled");
+            let children_settled = store
+                .list_run_records()
+                .unwrap()
+                .iter()
+                .filter(|record| record.parent_run_id.as_deref() == Some(RUN))
+                .all(|record| record.status == "canceled");
+            (
+                observer_signals.branch_settled(0),
+                children_settled,
+                wait_for(|| !group_alive(&observer_group)),
+            )
+        });
+        let redone = bounded(&name, move || {
+            RuntimeControls::new(signals.store())
+                .mark_canceled(RUN, "no executor")
+                .unwrap()
+        });
+        assert_eq!(redone.status, "canceled", "{name}");
+        assert_eq!(observer.join().unwrap(), (true, true, true), "{name}");
+        assert_eq!(canceled_events(), 1, "{name}");
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").status,
+            "canceled",
+            "{name}"
+        );
+    }
+}
+
+/// With no resume at all, a crashed tool that ends on its own leaves nothing,
+/// not even the process holding its group.
+#[test]
+fn an_unresumed_crash_leaves_nothing_once_its_tool_ends() {
+    let case = crashed_running_case(Running::DetachedTool);
+    let (_temp, signals) = in_new_case_dir(case);
+    run_first_life_until_crash(case, &signals);
+    let group = group_of_tool(&signals);
+    assert!(group_alive(&group), "the tool should still run");
+    signals.raise("release");
+    assert!(
+        wait_for(|| !group_alive(&group)),
+        "group {group} still runs"
+    );
+}
+
+/// A tool's deadline and cancellation still work once its shell has exited, and
+/// the runtime stops a descendant that left the group before it returns. `set
+/// -m` gives a background job its own group where the shell supports it;
+/// elsewhere that row runs as the in-group one. A descendant that also closes
+/// the inherited record cannot be identified: it must not hold settlement, but
+/// nothing stops it, so only this test's cleanup does.
 #[test]
 fn a_tool_settles_when_a_descendant_outlives_its_shell() {
-    for (deadline, left_group) in [(true, false), (true, true), (false, true)] {
+    for (deadline, left_group, unidentifiable) in [
+        (true, false, false),
+        (true, true, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
         let case = Case {
             fork: Fork::Strict,
             running: Running::Tool,
             stop: Stop::External,
             timing: Timing::MidExecution,
         };
-        let name = format!("deadline={deadline} left_group={left_group}");
-        let temp = tempfile::tempdir().unwrap();
-        let signals = Signals {
-            dir: temp.path().to_path_buf(),
-        };
+        let name =
+            format!("deadline={deadline} left_group={left_group} unidentifiable={unidentifiable}");
+        let (_temp, signals) = in_new_case_dir(case);
         let p = |name: &str| signals.path(name).display().to_string();
         // Longer than every wait here, so a settlement that needs it to end
-        // fails the case. The test ends it by its pid.
+        // on its own fails the case.
         let command = format!(
-            "{job_control}echo $$ >> '{group}'; \
-             ( while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
+            "{job_control}\
+             ( {close}while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
              exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
             job_control = if left_group { "set -m; " } else { "" },
-            group = p("pids"),
+            close = if unidentifiable { "exec 9<&-; " } else { "" },
             started = p("started"),
             holder = p("holder"),
             seconds = DEADLINE.as_secs() * 2,
@@ -1113,24 +1308,32 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
         *work = serde_json::from_value(tool(command, "join")).unwrap();
         if deadline {
             work.runtime = Some(attractor_core::NodeRuntimeConfig {
-                timeout: Some("300ms".to_string()),
+                timeout: Some("2s".to_string()),
                 ..Default::default()
             });
-        }
-        let conductor = signals.clone();
-        if !deadline {
+        } else {
+            let conductor = signals.clone();
             std::thread::spawn(move || {
                 if wait_for(|| conductor.raised("started")) {
                     request_external_cancel(&conductor);
                 }
             });
         }
+        let holder_alive = |pid: &str| {
+            Command::new("kill")
+                .args(["-0", pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
         let (runner, store) = (runner(case, &signals), signals.store());
         let request = fresh_request(flow, &signals);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let result = bounded(&name, move || {
                 executor(runner, &store).execute(request).expect("execute")
             });
+            let affected = signals.branch_record(0);
             if deadline {
                 assert_eq!(result.status, "failed", "{name}");
                 assert!(
@@ -1138,23 +1341,27 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
                     "{name}: {}",
                     result.failure_reason
                 );
-                let affected = signals.branch_record(0);
                 assert_eq!(affected["status"], json!("error"), "{name}: {affected}");
             } else {
                 assert_eq!(result.status, "canceled", "{name}");
                 assert_eq!(result.failure_reason, "aborted_by_user", "{name}");
-                let affected = signals.branch_record(0);
                 assert_eq!(affected["status"], json!("canceled"), "{name}: {affected}");
             }
-            if !left_group {
-                assert_processes_stopped(&signals, &name);
+            let holders = std::fs::read_to_string(signals.path("holder")).unwrap();
+            assert!(!holders.is_empty(), "{name}");
+            for pid in holders.lines().filter(|_| !unidentifiable) {
+                assert!(
+                    wait_for(|| !holder_alive(pid)),
+                    "{name}: descendant {pid} still runs"
+                );
             }
         }));
-        for pid in std::fs::read_to_string(signals.path("holder"))
-            .unwrap_or_default()
-            .lines()
-        {
-            let _ = Command::new("kill").args(["-9", pid]).status();
+        // Nothing is left to kill after a passing identifiable case.
+        if outcome.is_err() || unidentifiable {
+            let holders = std::fs::read_to_string(signals.path("holder")).unwrap_or_default();
+            for pid in holders.lines() {
+                let _ = Command::new("kill").args(["-9", pid]).status();
+            }
         }
         if let Err(payload) = outcome {
             std::panic::resume_unwind(payload);

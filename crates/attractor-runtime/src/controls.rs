@@ -809,6 +809,10 @@ impl RuntimeControls {
         })
     }
 
+    /// Finalizes a run with no executor as canceled. The request is durable
+    /// first and the terminal state is published last, once everything the run
+    /// left behind has settled: a cleanup that dies midway stays recoverable,
+    /// and whoever sees the terminal state sees nothing still running.
     pub fn mark_canceled(
         &self,
         run_id: &str,
@@ -818,6 +822,16 @@ impl RuntimeControls {
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
+        {
+            let _lock = crate::records::lock_run_record(&bundle.paths)?;
+            let mut record = self
+                .store
+                .read_run_record(&bundle.paths)?
+                .ok_or(RuntimeControlError::UnknownPipeline)?;
+            mark_record_cancel_requested(&mut record);
+            self.store.write_run_record(&bundle.paths, &record)?;
+        }
+        self.settle_orphaned_work(&bundle.paths, run_id, last_error)?;
         let _lock = crate::records::lock_run_record(&bundle.paths)?;
         let mut record = self
             .store
@@ -840,7 +854,6 @@ impl RuntimeControls {
             &bundle.paths,
             &crate::results::canceled_run_result(run_id, last_error),
         )?;
-        self.settle_orphaned_work(&bundle.paths, run_id, last_error)?;
         Ok(RuntimeControlStatus {
             status: "canceled".to_string(),
             pipeline_id: run_id.to_string(),
@@ -849,7 +862,7 @@ impl RuntimeControls {
     }
 
     /// Settles what a canceled run's dead executor left behind: its tool
-    /// processes, its unsettled branches and its child runs.
+    /// processes, its unsettled branches and its child runs. Safe to repeat.
     pub(crate) fn settle_orphaned_work(
         &self,
         paths: &crate::paths::RunRootPaths,
