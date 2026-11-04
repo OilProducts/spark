@@ -427,7 +427,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
         ],
         &env,
     );
-    assert_eq!(validate_output.exit_code, 0);
+    assert_eq!(validate_output.exit_code, 1);
     assert!(validate_output.stdout.contains("Status: invalid"));
     assert!(validate_output
         .stdout
@@ -807,7 +807,7 @@ fn flow_validate_dir_checks_stylesheet_controls_and_inherited_budgets() {
             ],
             &BTreeMap::new(),
         );
-        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.exit_code, if valid { 0 } else { 1 });
         let payload: Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(
             payload["status"],
@@ -852,7 +852,7 @@ fn flow_validate_dir_text_renders_diagnostics() {
         &env,
     );
 
-    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.exit_code, 1);
     assert_eq!(output.stderr, "");
     assert_eq!(
         output.stdout,

@@ -852,6 +852,9 @@ fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
         Ok(payload) => payload,
         Err(output) => return output,
     };
+    if is_flow_validate_path(&plan.path) {
+        return flow_validation_output(&payload, plan.text);
+    }
     if plan.text {
         if is_flow_list_path(&plan.path) {
             return CommandOutput::stdout(0, flow_list_text(&payload));
@@ -861,9 +864,6 @@ fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
         }
         if is_flow_files_path(&plan.path) {
             return CommandOutput::stdout(0, flow_files_text(&payload));
-        }
-        if is_flow_validate_path(&plan.path) {
-            return CommandOutput::stdout(0, validate_flow_text(&payload));
         }
         if is_trigger_list_path(&plan.path) {
             return CommandOutput::stdout(0, trigger_list_text(&payload));
@@ -1300,7 +1300,7 @@ fn is_flow_describe_path(path: &str) -> bool {
     let path = without_query(path);
     path.starts_with("/workspace/api/flows/")
         && !path.ends_with("/files")
-        && !path.ends_with("/validate")
+        && !is_flow_validate_path(path)
 }
 
 fn is_flow_files_path(path: &str) -> bool {
@@ -1309,8 +1309,10 @@ fn is_flow_files_path(path: &str) -> bool {
 }
 
 fn is_flow_validate_path(path: &str) -> bool {
-    let path = without_query(path);
-    path.starts_with("/workspace/api/flows/") && path.ends_with("/validate")
+    // Requires a flow name, so a flow named `validate` still describes.
+    without_query(path)
+        .strip_prefix("/workspace/api/flows/")
+        .is_some_and(|flow| flow.ends_with("/validate"))
 }
 
 fn is_trigger_list_path(path: &str) -> bool {
@@ -1895,11 +1897,23 @@ fn run_flow_validate_dir_command(args: &[String], env: &impl Environment) -> Com
             .unwrap_or_default()),
     );
     response.insert("path".to_string(), json!(resolve_display_path(&flow_path)));
-    let payload = Value::Object(response);
-    if options.text {
-        CommandOutput::stdout(0, validate_flow_text(&payload))
+    flow_validation_output(&Value::Object(response), options.text)
+}
+
+/// The full report, exiting nonzero when it records a validation failure.
+fn flow_validation_output(payload: &Value, text: bool) -> CommandOutput {
+    let failed = payload["status"] == "validation_error"
+        || payload["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| diagnostics.iter().any(|d| d["severity"] == "error"));
+    let output = if text {
+        CommandOutput::stdout(0, validate_flow_text(payload))
     } else {
-        success_json(&payload)
+        success_json(payload)
+    };
+    CommandOutput {
+        exit_code: if failed { EXIT_GENERAL_FAILURE } else { 0 },
+        ..output
     }
 }
 

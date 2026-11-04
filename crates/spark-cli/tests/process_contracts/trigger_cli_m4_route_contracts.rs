@@ -331,7 +331,7 @@ async fn flow_validate_through_the_api_reports_an_invalid_project_copy_without_b
         ];
         args.extend_from_slice(extra);
         let output = run_spark(temp.path(), args);
-        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
         stdout(&output)
     };
 
