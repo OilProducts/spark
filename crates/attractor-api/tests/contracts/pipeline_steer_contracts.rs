@@ -1,4 +1,4 @@
-use attractor_api::{AttractorApiService, PipelineStartRequest};
+use attractor_api::{AttractorApiService, ContinuePipelineRequest, PipelineStartRequest};
 use attractor_runtime::{
     parallel_branch_node_started_event, parallel_branch_started_event, stage_started_event,
     CreateRunRequest, RunStore,
@@ -966,4 +966,247 @@ fn steer_rejects_unsteerable_parallel_agent_nodes() {
         "provider_steering_unsupported"
     );
     assert_eq!(events[1]["target_node_id"], "left");
+}
+
+/// Runs `run` to `status` and returns each logged CLI launch's `--effort`.
+fn launched_efforts(
+    log: &Path,
+    settings: &SparkSettings,
+    run_id: &str,
+    status: &str,
+    run: impl FnOnce(),
+) -> Vec<String> {
+    let _ = fs::remove_file(log);
+    run();
+    wait_for_status(settings, run_id, status);
+    // Parallel launches can interleave log entries, but each argument list is
+    // written whole, so `--effort` stays next to its value.
+    let log = fs::read_to_string(log).unwrap_or_default();
+    let args: Vec<_> = log.lines().collect();
+    args.windows(2)
+        .filter(|pair| pair[0] == "--effort")
+        .map(|pair| pair[1].to_string())
+        .collect()
+}
+
+/// An agent flow declaring `defaults.reasoning_effort = xhigh`, routed by the
+/// fake CLI's structured `approve` decision.
+fn xhigh_flow(id: &str) -> Value {
+    let mut flow = agent_flow(id);
+    flow["defaults"] = json!({"reasoning_effort": "xhigh"});
+    flow["nodes"]["work"]["routes"] =
+        json!({"approve": {"to": "done", "description": "The step is complete."}});
+    flow
+}
+
+#[test]
+fn flow_default_effort_reaches_the_cli_on_every_launch_path() {
+    let log = std::env::temp_dir().join(format!("spark-effort-{}.log", std::process::id()));
+    let envs = [
+        (
+            "SPARK_CLAUDE_CODE_BIN",
+            fake_bin("spark-agent-fake-claude-code"),
+        ),
+        ("SPARK_FAKE_CLAUDE_CODE_MODE", "structured".to_string()),
+        ("SPARK_FAKE_CLAUDE_CODE_LOG", log.to_string_lossy().into()),
+    ];
+    if !in_child_process(
+        "flow_default_effort_reaches_the_cli_on_every_launch_path",
+        &envs,
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("spark.toml"),
+        "[models]\nprovider = \"claude-code\"\nreasoning_effort = \"minimal\"\n",
+    )
+    .unwrap();
+    let service = service(&settings);
+    let log = log_path("SPARK_FAKE_CLAUDE_CODE_LOG");
+    let launch = |run_id: &str, request: PipelineStartRequest| {
+        launched_efforts(&log, &settings, run_id, "completed", || {
+            start(&service, &settings, run_id, "claude-code", request)
+        })
+    };
+    let flow = crate::install_flow(&settings, xhigh_flow("effort_flow"));
+    let from_flow = |request| PipelineStartRequest {
+        flow_name: Some(flow.clone()),
+        ..request
+    };
+
+    // Flow default beats the project default and reaches a node without effort.
+    assert_eq!(
+        launch("effort-default", from_flow(Default::default())),
+        ["xhigh"]
+    );
+    let record = RunStore::for_settings(&settings)
+        .read_run_bundle("effort-default")
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(record.reasoning_effort.as_deref(), Some("xhigh"));
+
+    // Explicit request and launch context beat the flow default.
+    assert_eq!(
+        launch(
+            "effort-request",
+            from_flow(PipelineStartRequest {
+                reasoning_effort: Some("low".into()),
+                launch_context: Some(
+                    [(
+                        unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+                        json!("medium"),
+                    )]
+                    .into()
+                ),
+                ..Default::default()
+            })
+        ),
+        ["low"]
+    );
+    assert_eq!(
+        launch(
+            "effort-context",
+            from_flow(PipelineStartRequest {
+                launch_context: Some(
+                    [(
+                        unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+                        json!("medium"),
+                    )]
+                    .into()
+                ),
+                ..Default::default()
+            })
+        ),
+        ["medium"]
+    );
+
+    // A node's own effort beats all of them.
+    let mut own_effort = xhigh_flow("effort_node");
+    own_effort["nodes"]["work"]["execution"] = json!({"reasoning_effort": "high"});
+    assert_eq!(
+        launch(
+            "effort-node",
+            PipelineStartRequest {
+                reasoning_effort: Some("low".into()),
+                ..content(&settings, own_effort)
+            }
+        ),
+        ["high"]
+    );
+
+    // Without a flow default, the project default still applies.
+    let mut no_default = xhigh_flow("effort_project");
+    no_default.as_object_mut().unwrap().remove("defaults");
+    assert_eq!(
+        launch("effort-project", content(&settings, no_default)),
+        ["minimal"]
+    );
+
+    // Parallel branches and subflows inherit the parent's resolved effort.
+    let mut child = xhigh_flow("effort_child");
+    child.as_object_mut().unwrap().remove("defaults");
+    crate::install_flow(&settings, child);
+    let branch = json!({
+        "kind": "agent_task",
+        "config": {"kind": "agent_task", "prompt": "Branch work"},
+        "contracts": {"response": "decision_envelope"},
+        "routes": {"approve": {"to": "join", "description": "The step is complete."}}
+    });
+    let nested = json!({
+        "schema_version": "2",
+        "id": "effort_nested",
+        "defaults": {"reasoning_effort": "xhigh"},
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "fork", "description": "Enter the first workflow step."}}
+            },
+            "fork": {
+                "kind": "parallel",
+                "config": {"kind": "parallel", "branches": ["left", "right"], "join": "join"}
+            },
+            "left": branch,
+            "right": branch,
+            "join": {
+                "kind": "fan_in",
+                "config": {"kind": "fan_in"},
+                "routes": {"next": {"to": "child", "description": "All branches settled; continue."}}
+            },
+            "child": {
+                "kind": "subflow",
+                "config": {
+                    "kind": "subflow",
+                    "flow_ref": "effort-child",
+                    "results": {"completed": "done"}
+                },
+                "routes": {"done": {"to": "done", "description": "The step is complete."}}
+            },
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+            }
+        }
+    });
+    assert_eq!(
+        launch("effort-nested", content(&settings, nested)),
+        ["xhigh", "xhigh", "xhigh"]
+    );
+
+    // Continue keeps the resolved effort unless the request replaces it.
+    for (run_id, requested, expected) in [
+        ("effort-continue", None, "xhigh"),
+        ("effort-continue-override", Some("low"), "low"),
+    ] {
+        let _ = fs::remove_file(&log);
+        let response = service.continue_pipeline_route(
+            "effort-default",
+            ContinuePipelineRequest {
+                start_node: "work".into(),
+                flow_source_mode: "snapshot".into(),
+                reasoning_effort: requested.map(Into::into),
+                ..Default::default()
+            },
+        );
+        assert_eq!(response.body["status"], "started", "{run_id}: {response:?}");
+        let new_run = response.body["run_id"].as_str().unwrap();
+        wait_for_status(&settings, new_run, "completed");
+        assert!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .contains(&format!("--effort\n{expected}\n")),
+            "{run_id}"
+        );
+    }
+
+    // Retry resumes a failed run with the effort it captured at launch.
+    let mut retried = xhigh_flow("effort_retry");
+    retried["nodes"]["start"]["routes"]["next"]["to"] = json!("gate");
+    retried["nodes"]["gate"] = json!({
+        "kind": "tool",
+        "config": {"kind": "tool", "command": "test -f retry-ok", "exit_codes": {"0": "done"}},
+        "routes": {"done": {"to": "work", "description": "The gate passed."}}
+    });
+    let failed = launched_efforts(&log, &settings, "effort-retry", "failed", || {
+        start(
+            &service,
+            &settings,
+            "effort-retry",
+            "claude-code",
+            content(&settings, retried),
+        )
+    });
+    assert!(failed.is_empty(), "{failed:?}");
+    fs::write(settings.project_root.join("retry-ok"), "").unwrap();
+    // The failed status lands just before the executor releases the run.
+    wait(|| service.retry_pipeline_route("effort-retry").status_code != 409);
+    wait_for_status(&settings, "effort-retry", "completed");
+    assert!(fs::read_to_string(&log)
+        .unwrap()
+        .contains("--effort\nxhigh\n"));
 }
