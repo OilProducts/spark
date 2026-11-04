@@ -1,3 +1,4 @@
+import { conversationThinkingKey, LiveThinkingIndicator } from '@/components/app/transcript/liveThinking'
 import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
 import type {
     ConversationTimelineEntry,
@@ -430,6 +431,9 @@ export function ProjectConversationHistory({
                 onRetryTurn={onRetryTurn}
                 renderEntry={renderEntry}
             />
+            {activeConversationId ? (
+                <LiveThinkingIndicator thinkingKey={conversationThinkingKey(activeConversationId)} testId="project-live-thinking" />
+            ) : null}
         </div>
     )
 }

@@ -2379,12 +2379,34 @@ impl WorkspaceConversationService {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(progress);
+        // A harness that stops mid-thought never reports the end of its thinking.
+        let open_thinking = Arc::new(Mutex::new(None::<Value>));
+        let progress: Arc<dyn Fn(Value) + Send + Sync> = {
+            let open_thinking = open_thinking.clone();
+            Arc::new(move |payload: Value| {
+                if payload["delta_kind"] == "thinking" {
+                    *open_thinking.lock().unwrap_or_else(|p| p.into_inner()) =
+                        (payload["active"] == true).then(|| payload.clone());
+                }
+                progress(payload);
+            })
+        };
+        let end_thinking = || {
+            let open = open_thinking
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(mut last) = open {
+                last["active"] = json!(false);
+                progress(last);
+            }
+        };
         let (conversation_id, project_path) = (
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
         );
         let mut result = self.run_started_turn(prepared, progress.clone());
+        end_thinking();
         loop {
             let next = match self.start_queued_turn(&conversation_id, &project_path) {
                 Ok(Some((next, _))) => next,
@@ -2392,6 +2414,7 @@ impl WorkspaceConversationService {
                 Ok(None) | Err(_) => break,
             };
             result = self.run_started_turn(next, progress.clone());
+            end_thinking();
         }
         result
     }
@@ -5307,6 +5330,18 @@ struct LiveConversationTurnState {
 
 impl LiveConversationTurnState {
     fn ingest_event(&mut self, mut event: TurnStreamEvent) -> spark_storage::Result<()> {
+        if let Some((active, estimated_tokens)) = event.thinking_state() {
+            // Live clients only: nothing is recorded for it.
+            let delta = self.transient_event(
+                self.assistant_turn_id.clone(),
+                TransientStreamBody::Thinking {
+                    active,
+                    estimated_tokens,
+                },
+            );
+            (self.progress)(delta);
+            return Ok(());
+        }
         let provenance = self.repository.append_provider_event(
             &self.conversation_id,
             &self.project_path,
@@ -5513,19 +5548,23 @@ impl LiveConversationTurnState {
         let turn_id = match &body {
             TransientStreamBody::TurnDelta { turn } => turn.id.clone(),
             TransientStreamBody::SegmentDelta { segment } => segment.turn_id.clone(),
-            TransientStreamBody::TokenUsage { .. } => self.assistant_turn_id.clone(),
-        };
-        self.stream_sequence += 1;
-        Some(
-            TransientStreamEvent {
-                conversation_id: self.conversation_id.clone(),
-                turn_id,
-                stream_sequence: self.stream_sequence,
-                base_revision: self.base_revision,
-                body,
+            TransientStreamBody::TokenUsage { .. } | TransientStreamBody::Thinking { .. } => {
+                self.assistant_turn_id.clone()
             }
-            .wire_payload(),
-        )
+        };
+        Some(self.transient_event(turn_id, body))
+    }
+
+    fn transient_event(&mut self, turn_id: String, body: TransientStreamBody) -> Value {
+        self.stream_sequence += 1;
+        TransientStreamEvent {
+            conversation_id: self.conversation_id.clone(),
+            turn_id,
+            stream_sequence: self.stream_sequence,
+            base_revision: self.base_revision,
+            body,
+        }
+        .wire_payload()
     }
 
     fn emit_materialized_segment(

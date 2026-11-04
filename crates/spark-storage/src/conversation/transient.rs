@@ -44,4 +44,10 @@ pub enum TransientStreamBody {
     SegmentDelta { segment: TranscriptSegment },
     /// Token usage progress for the active turn.
     TokenUsage { token_usage: Value },
+    /// The turn is thinking, or has stopped, with the harness's token estimate.
+    Thinking {
+        active: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        estimated_tokens: Option<u64>,
+    },
 }

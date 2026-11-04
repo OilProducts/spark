@@ -49,6 +49,7 @@ export interface ClientPreferences {
     show_advanced_controls?: boolean | null
     expand_child_flows?: boolean | null
     graph_settings_open?: boolean | null
+    show_thinking?: boolean | null
     appearance?: Appearance | null
 }
 export interface ClientPreferencesView {
@@ -98,7 +99,7 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
         const ratio = fields.home_sidebar_primary_split_ratio
         if (ratio != null && (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0 || ratio > 1)) throw new ApiSchemaError(endpoint, 'Invalid home sidebar split.')
         if (ratio !== undefined) presentation.home_sidebar_primary_split_ratio = ratio as number | null
-        for (const key of ['show_advanced_controls', 'expand_child_flows', 'graph_settings_open'] as const) {
+        for (const key of ['show_advanced_controls', 'expand_child_flows', 'graph_settings_open', 'show_thinking'] as const) {
             const field = fields[key]
             if (field != null && typeof field !== 'boolean') throw new ApiSchemaError(endpoint, `Invalid ${key}.`)
             if (field !== undefined) presentation[key] = field as boolean | null

@@ -343,6 +343,42 @@ fn model_list_is_supported_and_matches_generated_schema_shape() {
     assert_eq!(models["data"][0]["id"], json!("gpt-codex-test"));
 }
 
+#[cfg(unix)]
+#[test]
+fn app_server_launch_requests_raw_reasoning_from_the_harness() {
+    use std::os::unix::fs::PermissionsExt;
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let args_path = temp.path().join("args.log");
+    let wrapper = temp.path().join("codex");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec '{}' \"$@\"\n",
+            args_path.display(),
+            fake_codex_app_server_bin()
+        ),
+    )
+    .expect("wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("executable");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", wrapper.as_os_str());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+
+    CodexAppServerClient::connect(temp.path().to_path_buf()).expect("connect");
+
+    assert_eq!(
+        fs::read_to_string(&args_path)
+            .expect("args")
+            .lines()
+            .collect::<Vec<_>>(),
+        ["-c", "show_raw_agent_reasoning=true", "app-server"]
+    );
+}
+
 #[test]
 fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
     let _lock = ENV_LOCK
@@ -979,6 +1015,49 @@ fn app_server_notifications_normalize_assistant_plan_reasoning_tool_usage_and_co
     assert!(events
         .iter()
         .any(|event| event.kind == TurnStreamEventKind::TurnCompleted));
+}
+
+#[test]
+fn app_server_reasoning_reports_live_thinking_and_keeps_raw_text_apart_from_summaries() {
+    let mut state = CodexAppServerTurnState::default();
+    let messages = [
+        json!({"method": "item/started", "params": {"turnId": "turn-1", "item": {"type": "reasoning", "id": "r1", "summary": [], "content": []}}}),
+        json!({"method": "item/reasoning/textDelta", "params": {"turnId": "turn-1", "itemId": "r1", "contentIndex": 0, "delta": "raw thought"}}),
+        json!({"method": "item/completed", "params": {"turnId": "turn-1", "item": {"type": "reasoning", "id": "r1",
+            "summary": ["The summary."], "content": ["raw thought"]}}}),
+    ];
+    let events = messages
+        .iter()
+        .flat_map(|message| process_codex_app_server_message(message, &mut state))
+        .collect::<Vec<_>>();
+
+    let thinking = events
+        .iter()
+        .filter_map(|event| event.thinking_state())
+        .collect::<Vec<_>>();
+    assert_eq!(thinking, vec![(true, None), (false, None)]);
+    let text = |kind: TurnStreamEventKind| {
+        events
+            .iter()
+            .filter(|event| {
+                event.kind == kind && event.channel == Some(TurnStreamChannel::Reasoning)
+            })
+            .map(|event| {
+                (
+                    event.source.item_id.as_deref().unwrap_or(""),
+                    event.content_delta.as_deref().unwrap_or(""),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        text(TurnStreamEventKind::ContentDelta),
+        vec![("r1:raw", "raw thought")]
+    );
+    assert_eq!(
+        text(TurnStreamEventKind::ContentCompleted),
+        vec![("r1:raw", "raw thought"), ("r1", "The summary.")]
+    );
 }
 
 #[test]

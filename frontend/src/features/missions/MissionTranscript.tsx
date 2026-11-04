@@ -67,7 +67,8 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         void retryConversationTurn(conversationId, turnId, project).then(reload)
             .catch((e: unknown) => setRetryError(e instanceof Error ? e.message : String(e)))
     }
-    const [showThinking, setShowThinking] = useState(false)
+    const showThinking = useStore((state) => state.preferredShowThinking)
+    const setShowThinking = useStore((state) => state.setPreferredShowThinking)
     const entries = getConversationTimelineEntries(record)
     const launchesById = new Map(getConversationFlowLaunches(record).map(launch => [launch.id, launch]))
     const firstTurnId = entries.find(entry => entry.kind === 'message' && entry.role === 'user')?.id

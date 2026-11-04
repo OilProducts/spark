@@ -313,8 +313,24 @@ impl ContainerizedNodeExecutor {
                     return;
                 }
                 match frame {
-                    WorkerFrame::Event(_) => {
-                        inner.notify_run_event(&run_id);
+                    WorkerFrame::Event(frame) => {
+                        if frame
+                            .event
+                            .payload
+                            .get("adapter_event_type")
+                            .and_then(|value| value.as_str())
+                            == Some(attractor_runtime::events::NODE_THINKING_ADAPTER_EVENT)
+                        {
+                            if let Some(thinking) =
+                                frame.event.payload.get("payload").and_then(|payload| {
+                                    serde_json::from_value(payload.clone()).ok()
+                                })
+                            {
+                                inner.publish_node_thinking(&run_id, thinking);
+                            }
+                        } else {
+                            inner.notify_run_event(&run_id);
+                        }
                     }
                     WorkerFrame::Result(frame) => {
                         saw_result = true;

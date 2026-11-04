@@ -6,13 +6,13 @@ use spark_agent_adapter::claude_code::auth::{
     ClaudeCodeConnection, ClaudeCodeConnectionStatus, AUTH_REQUIRED_MESSAGE,
 };
 use spark_agent_adapter::{
-    list_available_claude_code_models, AgentAttachment, AgentTurnBackend, AgentTurnRequest,
-    ClaudeCodeBackend, ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest,
-    CodergenBackendResponse, CodergenError, CodergenRuntimeMode, HistoryTurn,
-    RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
-    AGENT_INSTRUCTIONS_METADATA_KEY,
+    list_available_claude_code_models, AgentAttachment, AgentTurnBackend, AgentTurnEventSink,
+    AgentTurnRequest, ClaudeCodeBackend, ClaudeCodeModelMetadata, CodergenBackend,
+    CodergenBackendRequest, CodergenBackendResponse, CodergenError, CodergenRuntimeMode,
+    HistoryTurn, RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn,
+    AGENT_ATTACHMENTS_METADATA_KEY, AGENT_INSTRUCTIONS_METADATA_KEY,
 };
-use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
+use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
 use unified_llm_adapter::Client;
 
 use super::test_support::ENV_LOCK;
@@ -275,6 +275,7 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         "stream-json",
         "--include-partial-messages",
         "--verbose",
+        "--thinking-display\nsummarized\n",
         "--permission-mode",
         "--model",
         // Background tasks hold the turn open instead of being disabled.
@@ -2148,4 +2149,65 @@ fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
         reset.session.expect("fresh handle").resume["spark.runtime.claude_code.session_id"],
         "sess-fake-claude-fresh"
     );
+}
+
+#[test]
+fn thinking_without_text_reports_live_progress_only_and_adds_no_transcript_event() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "empty-thinking");
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = live.clone();
+    let sink: AgentTurnEventSink = Arc::new(move |event: TurnStreamEvent| {
+        if let Some(state) = event.thinking_state() {
+            sink_events.lock().unwrap().push(state);
+        }
+    });
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(agent_request(temp.path()), Some(sink))
+        .expect("turn");
+
+    // Shown at the block's start, updates throttled, closed with the last estimate.
+    assert_eq!(
+        *live.lock().unwrap(),
+        vec![(true, None), (false, Some(186))]
+    );
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    assert!(output.events.iter().all(|event| {
+        event.thinking_state().is_none() && event.channel != Some(TurnStreamChannel::Reasoning)
+    }));
+}
+
+#[test]
+fn thinking_delta_estimates_reach_live_clients_without_system_token_events() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "thinking-delta-estimates");
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = live.clone();
+    let sink: AgentTurnEventSink = Arc::new(move |event: TurnStreamEvent| {
+        if let Some(state) = event.thinking_state() {
+            sink_events.lock().unwrap().push(state);
+        }
+    });
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(agent_request(temp.path()), Some(sink))
+        .expect("turn");
+
+    assert_eq!(
+        *live.lock().unwrap(),
+        vec![(true, None), (true, Some(120)), (false, Some(186))]
+    );
+    // Live only: no transcript row and nothing in the turn's recorded events.
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.channel == Some(TurnStreamChannel::Reasoning)));
+    let recorded = serde_json::to_string(&output.events).expect("events");
+    assert!(!recorded.contains("thinking_progress"), "{recorded}");
+    assert!(!recorded.contains("estimated_tokens"), "{recorded}");
 }

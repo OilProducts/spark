@@ -1,7 +1,9 @@
+import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { workspaceLiveEventsUrl } from '@/lib/api/apiClient'
 import {
     parseConversationBatchResponse,
     parseConversationResetResponse,
+    parseConversationStreamDeltaEventResponse,
     parseConversationSummarySnapshotResponse,
     type ConversationBatch,
     type ConversationReset,
@@ -54,6 +56,16 @@ export function dispatchConversationLiveEnvelope(envelope: LiveEnvelope, handler
         return false
     }
     const conversationId = envelope.resource.id
+    if (envelope.type === 'conversation.stream_delta') {
+        // Kept here, not in the open chat's stream: thinking that ends while its chat is off screen must clear.
+        const delta = parseConversationStreamDeltaEventResponse(envelope.payload)
+        if (delta?.delta_kind === 'thinking') {
+            useLiveThinkingStore.getState().report(
+                conversationThinkingKey(conversationId), delta.active === true, delta.estimated_tokens, delta.turn_id, delta.elapsed_ms,
+            )
+            return true
+        }
+    }
     window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
         detail: {
             type: envelope.type,

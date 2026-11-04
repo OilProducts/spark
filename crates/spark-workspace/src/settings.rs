@@ -608,6 +608,7 @@ fn client_preferences_view(
             "show_advanced_controls": stored.show_advanced_controls.unwrap_or(false),
             "expand_child_flows": stored.expand_child_flows.unwrap_or(false),
             "graph_settings_open": stored.graph_settings_open.unwrap_or(false),
+            "show_thinking": stored.show_thinking.unwrap_or(true),
             "runs_scope": stored.runs_scope.clone().unwrap_or(spark_common::settings::PresentationScope::Active),
             "run_presentation": stored.run_presentation,
             "flow_node_positions": stored.flow_node_positions,

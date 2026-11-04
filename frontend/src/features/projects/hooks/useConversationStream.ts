@@ -10,6 +10,7 @@ import {
     type ConversationPage,
     type ConversationStreamDeltaEventResponse,
 } from '@/lib/workspaceClient'
+import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 
 const LIVE_ENDPOINT = '/workspace/api/live/events'
@@ -57,6 +58,7 @@ export function useConversationStream(args: UseConversationStreamArgs) {
 
         let isCancelled = false
         let issued = 0
+        const thinkingKey = conversationThinkingKey(activeConversationId)
         // A conversation missing on a reopen after a reset is gone; on a first open it is a new thread.
         let afterReset = false
 
@@ -131,6 +133,12 @@ export function useConversationStream(args: UseConversationStreamArgs) {
                 }
             } catch {
                 // A malformed frame is dropped whole; the next window or batch restores state.
+            }
+            // A turn that settled without reporting the end of its thinking stops showing it.
+            const thinking = useLiveThinkingStore.getState().byKey[thinkingKey]
+            const turnStatus = thinking?.turnId ? argsRef.current.getConversationRecord(activeConversationId)?.turnsById[thinking.turnId]?.status : null
+            if (turnStatus === 'complete' || turnStatus === 'failed') {
+                useLiveThinkingStore.getState().report(thinkingKey, false)
             }
         }
 

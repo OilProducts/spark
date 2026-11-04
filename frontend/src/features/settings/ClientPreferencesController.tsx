@@ -23,6 +23,7 @@ export function ClientPreferencesController() {
                 preferredAdvancedControls: value.effective.show_advanced_controls ?? false,
                 preferredExpandChildFlows: value.effective.expand_child_flows ?? false,
                 preferredGraphSettingsOpen: value.effective.graph_settings_open ?? false,
+                preferredShowThinking: value.effective.show_thinking ?? true,
                 preferredHomeSidebarPrimarySplitRatio: value.effective.home_sidebar_primary_split_ratio ?? null,
             }))
         }

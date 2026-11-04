@@ -213,6 +213,8 @@ export interface EditorSlice {
     clientFlowEdgePorts: import('@/features/settings/services/clientPreferences').FlowEdgePorts
     clientFlowNodePositions: import('@/features/settings/services/clientPreferences').FlowNodePositions
     preferredEditorMode: EditorMode
+    preferredShowThinking: boolean
+    setPreferredShowThinking: (show: boolean) => void
     editorMode: EditorMode
     setEditorMode: (mode: EditorMode) => void
     selectedNodeId: string | null

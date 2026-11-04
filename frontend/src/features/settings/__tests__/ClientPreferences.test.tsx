@@ -65,3 +65,19 @@ it('validates and explicitly saves the home split, with Discard restoring the do
     await screen.findByText('Saved.')
     expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, home_sidebar_primary_split_ratio: 0.6 })
 })
+
+it('defaults Show thinking on and offers it in the settings editor', async () => {
+    const view = parseClientPreferences({ preferences: { scope: 'client', client_id: 'c', revision: 'r',
+        stored: { editor_mode: null, editor_sidebar_width: null, show_thinking: false },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 288, show_thinking: false } } }, '/workspace/api/settings')
+    expect(view.stored.show_thinking).toBe(false)
+    expect(() => parseClientPreferences({ preferences: { scope: 'client', client_id: 'c', revision: 'r',
+        stored: { editor_mode: null, editor_sidebar_width: null, show_thinking: 'yes' },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 288 } } }, '/workspace/api/settings')).toThrow('Invalid show_thinking')
+    vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'c', revision: 'r',
+        stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288, show_thinking: true } })
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const select = await screen.findByLabelText('Show thinking')
+    expect(select).toHaveValue('')
+    expect(select).toHaveDisplayValue('Default (on)')
+})

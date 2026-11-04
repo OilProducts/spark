@@ -252,6 +252,49 @@ pub fn latest_run_sequence(settings: &SparkSettings, run_id: &str) -> WorkspaceR
     Ok(entries.into_iter().map(|entry| entry.sequence).max())
 }
 
+/// A transient run envelope: droppable and never stored.
+pub const NODE_THINKING_EVENT_TYPE: &str = "run.thinking";
+
+/// The run's unpublished thinking updates as transient live envelopes, shaped
+/// like its transcript envelopes.
+pub fn node_thinking_envelopes(settings: &SparkSettings, run_id: &str) -> Vec<LiveEnvelope> {
+    let updates = attractor_runtime::events::take_node_thinking(run_id);
+    if updates.is_empty() {
+        return Vec::new();
+    }
+    let parent_run_id = RunStore::for_settings(settings)
+        .read_run_meta(run_id)
+        .ok()
+        .flatten()
+        .and_then(|meta| meta.record)
+        .and_then(|record| record.parent_run_id);
+    updates
+        .into_iter()
+        .map(|thinking| LiveEnvelope {
+            event_type: NODE_THINKING_EVENT_TYPE.to_string(),
+            project_path: None,
+            resource: LiveResource {
+                kind: "node_execution".to_string(),
+                id: Some(format!(
+                    "{}:{}:{}:{}",
+                    run_id, thinking.node_id, thinking.stage_index, thinking.attempt
+                )),
+            },
+            cursor: None,
+            reason: None,
+            payload: json!({
+                "run_id": run_id,
+                "presentation_run_id": parent_run_id.as_deref().unwrap_or(run_id),
+                "node_id": thinking.node_id,
+                "stage_index": thinking.stage_index,
+                "attempt": thinking.attempt,
+                "active": thinking.active,
+                "estimated_tokens": thinking.estimated_tokens,
+            }),
+        })
+        .collect()
+}
+
 pub fn execution_transcript_envelopes(
     settings: &SparkSettings,
     run_id: &str,

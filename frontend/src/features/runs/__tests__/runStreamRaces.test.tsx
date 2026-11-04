@@ -1,6 +1,8 @@
 import { act, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { useStore } from '@/store'
+import { visitKey } from '../model/visitModel'
 import { RunStream } from '../RunStream'
 import { WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { useRunJournalStore } from '../state/runJournalStore'
@@ -258,6 +260,7 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
     'rejects captured workspace callbacks after %s before dispatch or cursor updates', async (transition) => {
         class Source {
             static instances: Source[] = []
+            onopen: (() => void) | null = null
             onmessage: ((event: MessageEvent<string>) => void) | null = null
             onerror: (() => void) | null = null
             close = vi.fn()
@@ -329,6 +332,26 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
             expect(useRunTranscriptStore.getState().byRunId.a.segments[0]).toMatchObject({ id: 'segment', content: 'message' })
             emit(replacement.onmessage!, events[2])
             expect(loadSelectedRunStatus).toHaveBeenCalledTimes(requests[0] + 1)
+            // Live thinking reaches its node's visit through the same stream, and only there.
+            const thinking = (active: boolean) => ({ type: 'run.thinking', resource: { kind: 'node_execution', id: 'n' },
+                payload: { run_id: 'a', node_id: 'task', stage_index: 2, attempt: 1, active, estimated_tokens: 90 } })
+            const key = visitKey('a', 'task', 2, 1)
+            emit(replacement.onmessage!, thinking(true))
+            expect(useLiveThinkingStore.getState().byKey[key]).toMatchObject({ estimatedTokens: 90 })
+            emit(replacement.onmessage!, thinking(false))
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeUndefined()
+            // A reconnect drops thinking that ended unseen; its first frames restore what still runs.
+            emit(replacement.onmessage!, thinking(true))
+            act(() => replacement.onerror!())
+            act(() => vi.advanceTimersByTime(500))
+            const reconnected = Source.instances.at(-1)!
+            expect(reconnected).not.toBe(replacement)
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeDefined()
+            act(() => reconnected.onopen!())
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeUndefined()
+            const restored = thinking(true)
+            emit(reconnected.onmessage!, { ...restored, payload: { ...restored.payload, elapsed_ms: 60_000 } })
+            expect(useLiveThinkingStore.getState().byKey[key].startedAt).toBeLessThanOrEqual(Date.now() - 60_000)
         } finally {
             window.removeEventListener('spark:run-segment-upsert', dispatched)
         }

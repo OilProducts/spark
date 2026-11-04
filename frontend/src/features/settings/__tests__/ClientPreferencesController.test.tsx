@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '../ClientPreferencesController'
-import { fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
+import { completePreferenceInteraction, fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 import { useStore } from '@/store'
 
 vi.mock('../services/clientPreferences', () => ({ fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn(), completePreferenceInteraction: vi.fn() }))
@@ -52,4 +52,26 @@ it('ignores a refresh that started before a completed save and keeps the new rev
     act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { expand_child_flows: true } })))
     await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledTimes(2))
     expect(saveClientPreferences).toHaveBeenLastCalledWith(saved, { ...saved.stored, expand_child_flows: true })
+})
+
+it('keeps Show thinking on by default, follows the saved setting and persists the toggle', async () => {
+    const actual = await vi.importActual<typeof import('../services/clientPreferences')>('../services/clientPreferences')
+    vi.mocked(completePreferenceInteraction).mockImplementation(actual.completePreferenceInteraction)
+    const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',
+        stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288, show_thinking: true } }
+    const off = { ...view, revision: 'second', stored: { ...view.stored, show_thinking: false }, effective: { ...view.effective, show_thinking: false } }
+    vi.mocked(fetchClientPreferences).mockResolvedValue(view)
+    vi.mocked(saveClientPreferences).mockResolvedValue(off)
+    expect(useStore.getState().preferredShowThinking).toBe(true)
+    render(<ClientPreferencesController />)
+    await waitFor(() => expect(fetchClientPreferences).toHaveBeenCalled())
+    await waitFor(() => expect(useStore.getState().clientPreferencesLoaded).toBe(true))
+    expect(useStore.getState().preferredShowThinking).toBe(true)
+    act(() => useStore.getState().setPreferredShowThinking(false))
+    expect(useStore.getState().preferredShowThinking).toBe(false)
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, show_thinking: false }))
+    // A change saved from the settings editor reaches every transcript through the same state.
+    vi.mocked(fetchClientPreferences).mockResolvedValue({ ...off, revision: 'third', effective: { ...off.effective, show_thinking: true } })
+    await act(async () => { window.dispatchEvent(new Event('spark:settings-live-event')) })
+    await waitFor(() => expect(useStore.getState().preferredShowThinking).toBe(true))
 })

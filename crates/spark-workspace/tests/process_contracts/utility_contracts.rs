@@ -113,6 +113,18 @@ fn fake_claude(settings: &SparkSettings, reply: &str, delay: &str, status: i32) 
     calls
 }
 
+/// A fake utility call that cannot answer until the returned gate file exists,
+/// so whatever finishes before the test creates it did not wait for the call.
+/// Without the gate it fails after 30s, and no title is generated.
+fn fake_claude_behind_gate(settings: &SparkSettings, reply: &str) -> (PathBuf, PathBuf) {
+    let gate = settings.config_dir.join("utility-gate");
+    let wait = format!(
+        "0; i=0; while [ ! -e '{gate}' ]; do i=$((i+1)); [ $i -lt 300 ] || exit 1; sleep 0.1; done",
+        gate = gate.display()
+    );
+    (fake_claude(settings, reply, &wait, 0), gate)
+}
+
 fn call_count(calls: &Path) -> usize {
     fs::read_to_string(calls)
         .map(|text| text.lines().count())
@@ -412,14 +424,13 @@ fn utility_call_runs_the_configured_model_and_surfaces_failures() {
 fn first_completed_turn_gets_one_generated_title_in_the_background() {
     let _env = claude_env();
     let (_temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline repair.\"", "5", 0);
+    let (calls, gate) = fake_claude_behind_gate(&settings, "\"Deploy pipeline repair.\"");
     let (service, updates) = service_with_updates(settings);
 
-    let started = Instant::now();
+    // The turn returns while the utility call is still held open.
     let snapshot = turn(&service, "titled", "please fix the deploy pipeline");
-    // The turn does not wait for the five-second utility call.
-    assert!(started.elapsed() < Duration::from_secs(4));
     assert_eq!(snapshot["title"], "please fix the deploy pipeline");
+    fs::write(&gate, "").unwrap();
 
     // Every client's thread list and the thread's own view get the title.
     let (summary, state) = title_updates(&service, &updates, Duration::from_secs(30)).unwrap();
@@ -582,13 +593,12 @@ fn stored_run_title(settings: &SparkSettings, run_id: &str) -> Option<String> {
 fn root_run_gets_a_generated_title_in_the_background() {
     let _env = claude_env();
     let (temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline fix.\"", "5", 0);
+    let (calls, gate) = fake_claude_behind_gate(&settings, "\"Deploy pipeline fix.\"");
     let (service, updates) = run_service_with_updates(settings.clone());
 
-    let started = Instant::now();
+    // Launch returns while the utility call is still held open.
     let run_id = launch(&service, temp.path());
-    // Launch does not wait for the five-second utility call.
-    assert!(started.elapsed() < Duration::from_secs(4));
+    fs::write(&gate, "").unwrap();
 
     // A live client gets the title as a run-record update.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -673,4 +683,50 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
     assert!(service.generate_run_title("child-run").unwrap().is_none());
     assert_eq!(call_count(&calls), 0);
     assert_eq!(stored_run_title(&settings, "child-run"), None);
+}
+
+#[test]
+fn node_thinking_is_published_once_as_a_transient_envelope_for_that_run() {
+    let (_temp, settings) = fixture();
+    let runner = attractor_runtime::RuntimeHandlerRunner::new()
+        .with_run_event_observer(std::sync::Arc::new(|_: &str| {}));
+    let thinking = |active, estimated_tokens| attractor_runtime::events::NodeThinking {
+        node_id: "task".to_string(),
+        stage_index: 2,
+        attempt: 1,
+        active,
+        estimated_tokens,
+    };
+    runner.publish_node_thinking("run-a", thinking(true, Some(10)));
+    runner.publish_node_thinking("run-a", thinking(true, Some(90)));
+
+    let envelopes = spark_workspace::live::node_thinking_envelopes(&settings, "run-a");
+
+    // Between publisher passes only the node's latest state survives.
+    assert_eq!(envelopes.len(), 1);
+    let envelope = &envelopes[0];
+    assert_eq!(envelope.event_type, "run.thinking");
+    assert!(envelope.cursor.is_none(), "never replayed from a cursor");
+    assert_eq!(envelope.payload["run_id"], "run-a");
+    assert_eq!(envelope.payload["node_id"], "task");
+    assert_eq!(envelope.payload["stage_index"], 2);
+    assert_eq!(envelope.payload["attempt"], 1);
+    assert_eq!(envelope.payload["active"], true);
+    assert_eq!(envelope.payload["estimated_tokens"], 90);
+    let query = |run_id: &str| {
+        validate_live_query(RawLiveQuery {
+            run_id: Some(run_id.to_string()),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    assert!(spark_workspace::live::envelope_matches_query(
+        envelope,
+        &query("run-a")
+    ));
+    assert!(!spark_workspace::live::envelope_matches_query(
+        envelope,
+        &query("run-b")
+    ));
+    assert!(spark_workspace::live::node_thinking_envelopes(&settings, "run-a").is_empty());
 }

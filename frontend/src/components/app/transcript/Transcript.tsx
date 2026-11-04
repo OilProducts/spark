@@ -41,7 +41,7 @@ export function useTranscriptExpansion(): TranscriptExpansionState {
         setExpandedToolCalls((current) => ({ ...current, [toolCallId]: !current[toolCallId] }))
     }, [])
     const onToggleThinking = useCallback((entryId: string) => {
-        setExpandedThinking((current) => ({ ...current, [entryId]: !current[entryId] }))
+        setExpandedThinking((current) => ({ ...current, [entryId]: current[entryId] === false }))
     }, [])
     return { expandedToolCalls, expandedThinking, onToggleToolCall, onToggleThinking }
 }
@@ -223,7 +223,7 @@ export function Transcript({
                             key={key}
                             entry={entry}
                             formatConversationTimestamp={formatTimestamp}
-                            isExpanded={expansion.expandedThinking[entry.id] === true}
+                            isExpanded={expansion.expandedThinking[entry.id] !== false}
                             onToggleThinkingEntryExpanded={expansion.onToggleThinking}
                             testIdPrefix={testIdPrefix}
                         />

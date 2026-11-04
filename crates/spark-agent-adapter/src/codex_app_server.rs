@@ -532,6 +532,9 @@ impl CodexAppServerClient {
             .unwrap_or_else(codex_executable);
         let mut command = Command::new(&executable);
         command
+            // Models that return raw reasoning stream it as item/reasoning/textDelta.
+            .arg("-c")
+            .arg("show_raw_agent_reasoning=true")
             .arg("app-server")
             .current_dir(&working_dir)
             .envs(build_codex_runtime_environment_with_settings(native)?)
@@ -1000,7 +1003,12 @@ impl CodexAppServerClient {
                     sink(event.clone());
                 }
             }
-            events.extend(normalized);
+            // Thinking progress is live-only: it is never part of the turn's record.
+            events.extend(
+                normalized
+                    .into_iter()
+                    .filter(|event| event.thinking_state().is_none()),
+            );
             if completed {
                 break;
             }
@@ -1689,7 +1697,9 @@ pub fn process_codex_app_server_message(
         "item/started" => {
             if let Some(item) = params.get("item").and_then(Value::as_object) {
                 remember_agent_message_phase(item, state);
-                if is_context_compaction_item(item) {
+                if is_reasoning_item(item) {
+                    events.push(codex_thinking_event(true));
+                } else if is_context_compaction_item(item) {
                     events.push(
                         event(
                             TurnStreamEventKind::ContextCompactionStarted,
@@ -1712,6 +1722,18 @@ pub fn process_codex_app_server_message(
         "item/completed" => {
             if let Some(item) = params.get("item").and_then(Value::as_object) {
                 let item_id = object_text(item, &["id"]);
+                if is_reasoning_item(item) {
+                    events.push(codex_thinking_event(false));
+                    if let Some(text) = reasoning_raw_text_from_item(item) {
+                        events.push(
+                            event(TurnStreamEventKind::ContentCompleted, "reasoning_completed")
+                                .channel(TurnStreamChannel::Reasoning)
+                                .content(Some(text))
+                                .item_id(item_id.as_deref().map(raw_reasoning_item_id))
+                                .build(),
+                        );
+                    }
+                }
                 if let Some(text) = extract_agent_message_text_from_item(item) {
                     let phase = remember_agent_message_phase(item, state)
                         .or_else(|| agent_message_phase(item));
@@ -1798,6 +1820,21 @@ pub fn process_codex_app_server_message(
                         .channel(TurnStreamChannel::Plan)
                         .content(Some(delta))
                         .item_id(object_text(&params, &["itemId"]))
+                        .build(),
+                );
+            }
+        }
+        "item/reasoning/textDelta" => {
+            if let Some(delta) = object_text(&params, &["delta"]) {
+                events.push(
+                    event(TurnStreamEventKind::ContentDelta, "reasoning_delta")
+                        .channel(TurnStreamChannel::Reasoning)
+                        .content(Some(delta))
+                        .item_id(
+                            object_text(&params, &["itemId"])
+                                .as_deref()
+                                .map(raw_reasoning_item_id),
+                        )
                         .build(),
                 );
             }
@@ -2800,6 +2837,40 @@ fn extract_plan_text_from_item(item: &Map<String, Value>) -> Option<String> {
             .join("\n\n");
         (!text.is_empty()).then_some(text)
     })
+}
+
+fn is_reasoning_item(item: &Map<String, Value>) -> bool {
+    object_text(item, &["type"]).is_some_and(|kind| kind.eq_ignore_ascii_case("reasoning"))
+}
+
+/// Raw reasoning renders apart from the same item's summary parts.
+fn raw_reasoning_item_id(item_id: &str) -> String {
+    format!("{item_id}:raw")
+}
+
+fn reasoning_raw_text_from_item(item: &Map<String, Value>) -> Option<String> {
+    let text = item
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn codex_thinking_event(active: bool) -> TurnStreamEvent {
+    let mut event = TurnStreamEvent::thinking_progress(active, None);
+    event.source.backend = Some(CODEX_APP_SERVER_BACKEND.to_string());
+    event.source.raw_kind = Some(
+        if active {
+            "item/started"
+        } else {
+            "item/completed"
+        }
+        .to_string(),
+    );
+    event
 }
 
 /// Extracts the summary part texts from a completed reasoning item. Returns

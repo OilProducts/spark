@@ -42,6 +42,13 @@ export function ClientPreferencesEditor() {
                         <option value="">Default (off)</option><option value="true">On</option><option value="false">Off</option>
                     </NativeSelect>
                 </Field>)}
+                <h4 className="text-sm font-semibold">Transcripts</h4>
+                <Field><FieldLabel htmlFor="preference-show_thinking">Show thinking</FieldLabel>
+                    <NativeSelect id="preference-show_thinking" value={editor.draft?.show_thinking == null ? '' : String(editor.draft.show_thinking)}
+                        onChange={(event) => { const value = event.target.value; editor.setDraft((draft) => draft && ({ ...draft, show_thinking: value === '' ? null : value === 'true' })) }}>
+                        <option value="">Default (on)</option><option value="true">On</option><option value="false">Off</option>
+                    </NativeSelect>
+                </Field>
                 <h4 className="text-sm font-semibold">Layout</h4>
                 <Field><FieldLabel htmlFor="preference-sidebar-width">Editor sidebar width (pixels)</FieldLabel>
                     <Input id="preference-sidebar-width" type="number" min={256} max={560} step={1}

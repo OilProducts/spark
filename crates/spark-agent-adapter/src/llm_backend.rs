@@ -1171,6 +1171,7 @@ fn codergen_turn_stream_event_category(event: &TurnStreamEvent) -> &'static str 
         TurnStreamEventKind::RequestUserInputRequested => "request_user_input",
         TurnStreamEventKind::ContextCompactionStarted
         | TurnStreamEventKind::ContextCompactionCompleted => "context_compaction",
+        TurnStreamEventKind::ThinkingProgress => "reasoning",
         TurnStreamEventKind::TurnCompleted => "processing",
         TurnStreamEventKind::Error => "error",
         TurnStreamEventKind::Other(_) => "other",

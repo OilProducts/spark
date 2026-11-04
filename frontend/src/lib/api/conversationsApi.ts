@@ -226,10 +226,13 @@ export interface ConversationStreamDeltaEventResponse {
     turn_id: string
     stream_sequence: number
     base_revision: number
-    delta_kind: 'turn_delta' | 'segment_delta' | 'token_usage'
+    delta_kind: 'turn_delta' | 'segment_delta' | 'token_usage' | 'thinking'
     turn?: ConversationTurnResponse
     segment?: ConversationSegmentResponse
     token_usage?: Record<string, unknown>
+    active?: boolean
+    estimated_tokens?: number | null
+    elapsed_ms?: number | null
 }
 
 /** Metadata and summary of a conversation; never its transcript. */
@@ -1009,6 +1012,11 @@ export function parseConversationStreamDeltaEventResponse(
     if (record.delta_kind === 'token_usage') {
         const tokenUsage = asUnknownRecord(record.token_usage)
         return tokenUsage ? { ...base, delta_kind: 'token_usage', token_usage: tokenUsage } : null
+    }
+    if (record.delta_kind === 'thinking') {
+        return typeof record.active === 'boolean'
+            ? { ...base, delta_kind: 'thinking', active: record.active, estimated_tokens: typeof record.estimated_tokens === 'number' ? record.estimated_tokens : null, elapsed_ms: typeof record.elapsed_ms === 'number' ? record.elapsed_ms : null }
+            : null
     }
     return null
 }
