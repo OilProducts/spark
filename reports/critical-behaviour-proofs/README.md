@@ -1,6 +1,6 @@
 # Critical-behaviour proofs
 
-Tested source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`. The breaks exist only in the diffs quoted here; none is in the code.
+Tested source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`. The breaks exist only in the diffs quoted here; none is in the code.
 
 Every break ran in a throwaway `git archive` export of that commit, never in the real tree.
 
@@ -45,15 +45,15 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [B4-group](#b4-group) | stopping a tool kills only the shell, not its process group | `routing_model_contracts::canceling_a_branch_tool_stops_its_descendants_promptly` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2071:5` 120.687003709s |
-| [B4-group](#b4-group) | stopping a tool kills only the shell, not its process group | `routing_model_contracts::a_tool_timeout_stops_its_descendants` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2094:5` 120.635741917s |
+| [B4-group](#b4-group) | stopping a tool kills only the shell, not its process group | `routing_model_contracts::canceling_a_branch_tool_stops_its_descendants_promptly` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2071:5` 120.715866125s |
+| [B4-group](#b4-group) | stopping a tool kills only the shell, not its process group | `routing_model_contracts::a_tool_timeout_stops_its_descendants` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2094:5` 120.658197042s |
 | [B4-external](#b4-external) | a branch tool ignores a persisted cancel request | `routing_model_contracts::external_cancellation_stops_branch_tools_that_never_return_on_their_own` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `routing_model_contracts.rs:1723:5` assertion failed: started.elapsed() < std::time::Duration::from_secs(20) |
 | [B4-sibling](#b4-sibling) | a branch tool ignores its fork raising cancellation | `routing_model_contracts::a_tool_interrupted_by_its_fork_is_canceled_not_failed` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `routing_model_contracts.rs:1757:5` assertion `left == right` failed left: String("completed") right: String("canceled") |
 | [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::a_blocked_sibling_cancels_a_waiting_child_and_settles_it` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout  |
 | [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::a_fatal_sibling_cancels_a_waiting_child_and_fails_the_owner` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout |
-| [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::external_cancellation_stops_a_subflow_child` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout  |
-| [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::external_cancellation_stops_a_subflow_child_in_a_fork_branch` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout |
-| [C-inline](#c-inline) | the launcher runs outside the cancel watcher | `routing_model_contracts::external_cancellation_stops_custom_launched_children` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout |
+| [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::external_cancellation_stops_a_subflow_child` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout |
+| [B4-child](#b4-child) | a canceled fork never requests its child subflow cancel | `routing_model_contracts::external_cancellation_stops_a_subflow_child_in_a_fork_branch` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout  |
+| [C-inline](#c-inline) | the launcher runs outside the cancel watcher | `routing_model_contracts::external_cancellation_stops_custom_launched_children` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout  |
 | [C-inline](#c-inline) | the launcher runs outside the cancel watcher | `routing_model_contracts::sibling_cancellation_stops_custom_launched_children` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `routing_model_contracts.rs:2363:10` the fork settled its waiting child: Timeout |
 | [C-forward](#c-forward) | an observed child is never asked to cancel | `routing_model_contracts::external_cancellation_stops_custom_launched_children` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `routing_model_contracts.rs:2665:9` assertion `left == right` failed: detached true left: "waiting" right: "canceled" |
 | [C-forward](#c-forward) | an observed child is never asked to cancel | `routing_model_contracts::sibling_cancellation_stops_custom_launched_children` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `routing_model_contracts.rs:2688:9` assertion `left == right` failed: detached true left: "waiting" right: "canceled" |
@@ -68,7 +68,7 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [B5-prune](#b5-prune) | prune selects attached uploads as well as drafts | `workspace_conversation_attachment_route_contracts::draft_removal_abandoned_cleanup_and_conversation_deletion_remove_uploads` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_conversation_attachment_route_contracts.rs:497:5` assertion `left == right` failed left: ["att-b60b6634c9211e1b1cfcab0f7d7c59a0", "att-b9df84984574d8ca3c1e63bfbf15f73a", "att-interrupted"] right: ["at |
+| [B5-prune](#b5-prune) | prune selects attached uploads as well as drafts | `workspace_conversation_attachment_route_contracts::draft_removal_abandoned_cleanup_and_conversation_deletion_remove_uploads` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_conversation_attachment_route_contracts.rs:497:5` assertion `left == right` failed left: ["att-3f1c71d9dc377f0a865b679ea6d77bfb", "att-9eda45dd7f0cef2eb9d208c06b9b911f", "att-interrupted"] right: ["at |
 | [B5-prune](#b5-prune) | prune selects attached uploads as well as drafts | `workspace_conversation_attachment_route_contracts::referenced_uploads_survive_deletion_and_cleanup_racing_a_send` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_conversation_attachment_route_contracts.rs:752:5` assertion failed: repository.prune_attachments("chat-f", PROJECT, past_window()).expect("prune").is_empty() |
 | [B5-delete](#b5-delete) | explicit delete no longer refuses an attached upload | `workspace_conversation_attachment_route_contracts::attachments_upload_send_download_and_restore_into_history` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_conversation_attachment_route_contracts.rs:206:5` assertion `left == right` failed left: 200 right: 409 |
 | [B5-delete](#b5-delete) | explicit delete no longer refuses an attached upload | `workspace_conversation_attachment_route_contracts::referenced_uploads_survive_deletion_and_cleanup_racing_a_send` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_conversation_attachment_route_contracts.rs:748:5` assertion `left == right` failed left: 200 right: 409 |
@@ -78,14 +78,14 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [B6-dedupe](#b6-dedupe) | a resend no longer finds its original acceptance | `conversation_event_normalization_contracts::a_duplicate_send_returns_the_original_acceptance_and_starts_no_second_turn` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_event_normalization_contracts.rs:4982:9` assertion `left == right` failed: accepted left: None right: Some("turn-b21e82f4781f4899ade3663e60f59024") |
-| [B6-dedupe](#b6-dedupe) | a resend no longer finds its original acceptance | `native_live_turn_contracts::a_resent_mid_turn_message_is_delivered_once` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `native_live_turn_contracts.rs:209:18` called `Result::unwrap_err()` on an `Ok` value: (None, TurnAcceptance { revision: 8, user_turn_id: "turn-steer1", assistant_turn_id: Some("turn-3248c4 |
+| [B6-dedupe](#b6-dedupe) | a resend no longer finds its original acceptance | `conversation_event_normalization_contracts::a_duplicate_send_returns_the_original_acceptance_and_starts_no_second_turn` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_event_normalization_contracts.rs:4982:9` assertion `left == right` failed: accepted left: None right: Some("turn-0ccb40f8f06e4ca1a30b01909b1aa3f3") |
+| [B6-dedupe](#b6-dedupe) | a resend no longer finds its original acceptance | `native_live_turn_contracts::a_resent_mid_turn_message_is_delivered_once` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `native_live_turn_contracts.rs:209:18` called `Result::unwrap_err()` on an `Ok` value: (None, TurnAcceptance { revision: 8, user_turn_id: "turn-steer1", assistant_turn_id: Some("turn-ca9a81 |
 
 ## (a) A corrupt attachment row never causes deletion
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [a-row](#a-row) | an unparsable attachment row is skipped instead of failing the load | `conversation_commit_contracts::a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_commit_contracts.rs:1648:10` a corrupt row fails the prune: ["att-dc2434b82cd61d91ace6d612df0d226e", "att-5cf198dea000360f9751c4665f798add"] |
+| [a-row](#a-row) | an unparsable attachment row is skipped instead of failing the load | `conversation_commit_contracts::a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_commit_contracts.rs:1648:10` a corrupt row fails the prune: ["att-7d830434445857dce3b6b198afd52439", "att-2a4a49a9b46830be2ed51fd047fffb29"] |
 
 ## (b) Received::Lagged through SSE reaches summary catch-up
 
@@ -97,7 +97,7 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [c-gap](#c-gap) | catch-up reports no placeholder changes | `workspace_live_sse_contracts::a_role_summary_change_during_a_disconnect_arrives_on_reconnect` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_live_sse_contracts.rs:2124:5` assertion `left == right` failed: {"cursor":null,"payload":{"from_revision":"1","generation":"f8084604-c474-4bce-ab64-21ce5a022d6e","rows":[],"waterma |
+| [c-gap](#c-gap) | catch-up reports no placeholder changes | `workspace_live_sse_contracts::a_role_summary_change_during_a_disconnect_arrives_on_reconnect` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `workspace_live_sse_contracts.rs:2124:5` assertion `left == right` failed: {"cursor":null,"payload":{"from_revision":"1","generation":"fc711b73-6ce5-4b51-a9be-1ed4bf8ea46d","rows":[],"waterma |
 | [c-open](#c-open) | opening a chat drops the summary scope from the connection | `workspace_live_sse_contracts::opening_a_chat_while_holding_a_summary_cursor_serves_both_scopes` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE (own deadline) | `workspace_live_sse_contracts.rs:3732:9` no live envelope |
 
 ## (d) A failed sync_trace publishes nothing
@@ -110,7 +110,7 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [e-version](#e-version) | the version check is removed | `conversation_commit_contracts::a_conversation_with_an_unsupported_settings_schema_version_does_not_load` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_commit_contracts.rs:1741:14` an unsupported version fails: Some(Object {"chat_mode": String("chat"), "conversation_handle": String("autumn-spring"), "conversation_id": String("con |
+| [e-version](#e-version) | the version check is removed | `conversation_commit_contracts::a_conversation_with_an_unsupported_settings_schema_version_does_not_load` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `conversation_commit_contracts.rs:1741:14` an unsupported version fails: Some(Object {"chat_mode": String("chat"), "conversation_handle": String("mossy-prairie"), "conversation_id": String("con |
 
 ## (f) A saved routing-error branch record is fatal on resume (same breaks as item 1, crash rows)
 
@@ -123,7 +123,7 @@ Classification is computed by `harness/prove.py` from the log: BEHAVIOURAL_FAILU
 
 | id | break | test that failed | baseline | mutated | classification | failed at, and message |
 |---|---|---|---|---|---|---|
-| [P1-help](#p1-help) | serve --help runs runtime initialization, which writes the bundled library, before printing usage | `server_product_shell_process::subcommand_help_writes_nothing` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `server_product_shell_process.rs:133:9` assertion `left == right` failed: ["serve", "--help"] wrote files left: ["/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmpKRDvMU/spark-home"] rig |
+| [P1-help](#p1-help) | serve --help runs runtime initialization, which writes the bundled library, before printing usage | `server_product_shell_process::subcommand_help_writes_nothing` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `server_product_shell_process.rs:133:9` assertion `left == right` failed: ["serve", "--help"] wrote files left: ["/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmp980FPU/spark-home"] rig |
 | [P4-never](#p4-never) | prepare_integration always says the target has not moved | `resource_contracts::merge_change_skips_validation_only_when_the_target_is_the_merge_base` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `resource_contracts.rs:923:9` assertion `left == right` failed left: String("false") right: "true" |
 | [P4-always](#p4-always) | prepare_integration always says the target moved | `resource_contracts::merge_change_skips_validation_only_when_the_target_is_the_merge_base` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `resource_contracts.rs:923:9` assertion `left == right` failed left: String("true") right: "false" |
 | [L-lock](#l-lock) | the executor keeps the launch copy of the lock | `routing_model_contracts::a_finished_run_keeps_the_lock_state_taken_after_launch` | passed, exit 0 | exit 101 | BEHAVIOURAL_FAILURE | `routing_model_contracts.rs:2151:5` assertion `left == right` failed left: "queued" right: "holding" |
@@ -160,9 +160,11 @@ Load results: `artifacts/critical-behaviour-proofs/root-causes/before-b7d98a8b/`
 Evidence paths in the table are under `artifacts/critical-behaviour-proofs/`.
 
 Found outside the list:
-- External cancel never reached a running subflow child, including custom-launched ones (product bug, fixed in `manager_loop.rs`): `mutations/B4-child/`, `C-inline/`, `C-forward/`, `C-settle/`.
+- Seeing a stop marked a subflow invocation interrupted, so an independent child failure read as a cancellation and a blocked sibling could hide it (product bug, fixed by `stop_signaled` in `handlers.rs` and `manager_loop.rs`): `I-watch`, `I-loop`, `I-canceled` below.
+- External cancel never reached a running subflow child, including custom-launched ones (product bug, fixed in `manager_loop.rs`): `B4-child`, `C-inline`, `C-forward`, `C-settle` below.
 - `request_user_input_live_request…` raced turn completion (test race): `root-causes/earlier-reproductions/base-two-copies-copy2.log`.
 - `thread_list_feed_flips_running…` hung forever when the running state coalesced away (test): `root-causes/earlier-reproductions/thread_list_feed_hang.sample.txt`.
+- `local_environment_exec_command_captures_streams…` and `…_inherit_none…` failed once during a smoke-and-suite overlap (test limit): `with_options(.., 50, 50, ..)` clamps their `timeout_ms: Some(1_000)` to 50 ms, so a delayed shell was stopped before printing. It did not recur under the stress driver (24/24 before the fix too), so the failing log plus a deterministic demonstration are the evidence: `root-causes/earlier-reproductions/overlap-local-environment-failure.log`, `root-causes/experiments/local-env-clamp.diff` and `.log` (a 0.2 s delay gives the same `left: ""`). After: `root-causes/after-local-env/summary.txt`.
 - ui:smoke profile CRUD: the save took 8.4 s against a 5 s expect, because it re-checks every flow in every project (`validate_profile_candidate`): `root-causes/experiments/smoke-profile-save-timeline.txt`.
 
 ## Reported answers
@@ -178,7 +180,7 @@ Behaviour: No route fails: fresh
 
 Break: unknown decision falls back to the first declared route
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_undeclared_decision_fails_the_run_with_the_declared_set`
 
@@ -216,7 +218,7 @@ Behaviour: No route fails: completed-visit resume
 
 Break: a stored completed visit with no route re-executes instead of failing
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact flow_definition_typed_runtime_contracts::resume_of_an_undeclared_completed_visit_fails_without_reexecution`
 
@@ -252,7 +254,7 @@ Behaviour: No route fails: parallel branch
 
 Break: a branch routing error is recorded as a tolerable runtime error
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::routing_errors_in_a_branch_are_fatal_even_when_tolerated`
 
@@ -290,7 +292,7 @@ Behaviour: No route fails: crash after branch status write; (f)
 
 Break: a saved error record no longer stops the fork on resume
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_saved_routing_error_branch_is_fatal_on_resume`
 
@@ -326,7 +328,7 @@ Behaviour: No route fails: crash after branch status write; (f)
 
 Break: a tolerant fork tolerates any saved error regardless of kind
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_saved_routing_error_branch_is_fatal_on_resume`
 
@@ -364,7 +366,7 @@ Behaviour: Success only at a success exit
 
 Break: a failure exit reports outcome success
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::reaching_a_failure_exit_completes_the_run_with_its_declared_result`
 
@@ -403,7 +405,7 @@ Behaviour: Success only at a success exit
 
 Break: a failed run is written as completed
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_undeclared_decision_fails_the_run_with_the_declared_set`
 
@@ -443,7 +445,7 @@ Behaviour: Success only at a success exit
 
 Break: a branch reaching a success exit is accepted before its join
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_unvalidated_success_exit_branch_cannot_end_the_owner_successfully`
 
@@ -481,7 +483,7 @@ Behaviour: Visit limit fails
 
 Break: the visit limit is never enforced
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_decision_selecting_an_exhausted_target_fails_without_another_route`
 
@@ -519,7 +521,7 @@ Behaviour: Visit limit never takes another decision
 
 Break: an exhausted target falls back to another available route
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_decision_selecting_an_exhausted_target_fails_without_another_route`
 
@@ -558,7 +560,7 @@ Behaviour: Cancellation stops every tool
 
 Break: stopping a tool kills only the shell, not its process group
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::canceling_a_branch_tool_stops_its_descendants_promptly routing_model_contracts::a_tool_timeout_stops_its_descendants`
 
@@ -587,13 +589,13 @@ index 970ebda..dd88195 100644
 `routing_model_contracts::canceling_a_branch_tool_stops_its_descendants_promptly` failed at `crates/attractor-runtime/tests/contracts/routing_model_contracts.rs:2071:5`:
 
 ```text
-120.687003709s
+120.715866125s
 ```
 
 `routing_model_contracts::a_tool_timeout_stops_its_descendants` failed at `crates/attractor-runtime/tests/contracts/routing_model_contracts.rs:2094:5`:
 
 ```text
-120.635741917s
+120.658197042s
 ```
 
 ### B4-external
@@ -602,7 +604,7 @@ Behaviour: External cancellation stops tools
 
 Break: a branch tool ignores a persisted cancel request
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::external_cancellation_stops_branch_tools_that_never_return_on_their_own`
 
@@ -638,7 +640,7 @@ Behaviour: Sibling cancellation stops tools
 
 Break: a branch tool ignores its fork raising cancellation
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_tool_interrupted_by_its_fork_is_canceled_not_failed`
 
@@ -678,7 +680,7 @@ Behaviour: Cancellation stops subflow children
 
 Break: a canceled fork never requests its child subflow cancel
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_blocked_sibling_cancels_a_waiting_child_and_settles_it routing_model_contracts::a_fatal_sibling_cancels_a_waiting_child_and_fails_the_owner routing_model_contracts::external_cancellation_stops_a_subflow_child routing_model_contracts::external_cancellation_stops_a_subflow_child_in_a_fork_branch`
 
@@ -732,7 +734,7 @@ Behaviour: Custom-launched child: blocking launcher
 
 Break: the launcher runs outside the cancel watcher
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::external_cancellation_stops_custom_launched_children routing_model_contracts::sibling_cancellation_stops_custom_launched_children`
 
@@ -774,7 +776,7 @@ Behaviour: Custom-launched child: observed child
 
 Break: an observed child is never asked to cancel
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::external_cancellation_stops_custom_launched_children routing_model_contracts::sibling_cancellation_stops_custom_launched_children`
 
@@ -820,7 +822,7 @@ Behaviour: Custom-launched child: settlement
 
 Break: the parent returns right after asking the child to cancel
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::external_cancellation_stops_custom_launched_children routing_model_contracts::sibling_cancellation_stops_custom_launched_children`
 
@@ -866,7 +868,7 @@ Behaviour: Independent child errors: blocking launcher
 
 Break: seeing a stop in the child watcher marks the invocation interrupted again
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_independent_child_failure_after_sibling_cancellation_stays_an_error`
 
@@ -904,7 +906,7 @@ Behaviour: Independent child errors: observed child
 
 Break: seeing a stop in the observation loop marks the invocation interrupted again
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_independent_child_failure_after_sibling_cancellation_stays_an_error`
 
@@ -942,7 +944,7 @@ Behaviour: Child canceled by its fork is a cancellation
 
 Break: a child settled canceled no longer marks the invocation interrupted
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_blocked_sibling_cancels_a_waiting_child_and_settles_it`
 
@@ -983,7 +985,7 @@ Behaviour: Independent errors are not cancellations
 
 Break: any error after the fork raised cancel is recorded as canceled
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::an_independent_fatal_sibling_error_after_blocked_fails_the_owner`
 
@@ -1021,7 +1023,7 @@ Behaviour: Referenced attachment never deleted
 
 Break: prune selects attached uploads as well as drafts
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-http --test contracts -- --exact workspace_conversation_attachment_route_contracts::draft_removal_abandoned_cleanup_and_conversation_deletion_remove_uploads workspace_conversation_attachment_route_contracts::referenced_uploads_survive_deletion_and_cleanup_racing_a_send`
 
@@ -1050,8 +1052,8 @@ index 088ae97..ac99efe 100644
 
 ```text
 assertion `left == right` failed
-  left: ["att-b60b6634c9211e1b1cfcab0f7d7c59a0", "att-b9df84984574d8ca3c1e63bfbf15f73a", "att-interrupted"]
- right: ["att-b9df84984574d8ca3c1e63bfbf15f73a", "att-interrupted"]
+  left: ["att-3f1c71d9dc377f0a865b679ea6d77bfb", "att-9eda45dd7f0cef2eb9d208c06b9b911f", "att-interrupted"]
+ right: ["att-9eda45dd7f0cef2eb9d208c06b9b911f", "att-interrupted"]
 ```
 
 `workspace_conversation_attachment_route_contracts::referenced_uploads_survive_deletion_and_cleanup_racing_a_send` failed at `crates/spark-http/tests/contracts/workspace_conversation_attachment_route_contracts.rs:752:5`:
@@ -1067,7 +1069,7 @@ Behaviour: Referenced attachment never deleted
 
 Break: explicit delete no longer refuses an attached upload
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-http --test contracts -- --exact workspace_conversation_attachment_route_contracts::attachments_upload_send_download_and_restore_into_history workspace_conversation_attachment_route_contracts::referenced_uploads_survive_deletion_and_cleanup_racing_a_send`
 
@@ -1113,7 +1115,7 @@ Behaviour: Referenced attachment never deleted
 
 Break: cleanup skips the live-reference recheck behind the barrier
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-storage --test contracts -- --exact conversation_commit_contracts::a_directory_with_a_live_reference_survives_the_prune`
 
@@ -1150,7 +1152,7 @@ Behaviour: Resend creates no second turn or delivery
 
 Break: a resend no longer finds its original acceptance
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-workspace --test process_contracts -- --exact conversation_event_normalization_contracts::a_duplicate_send_returns_the_original_acceptance_and_starts_no_second_turn native_live_turn_contracts::a_resent_mid_turn_message_is_delivered_once`
 
@@ -1183,13 +1185,13 @@ index 45632ce..7598f3f 100644
 ```text
 assertion `left == right` failed: accepted
   left: None
- right: Some("turn-b21e82f4781f4899ade3663e60f59024")
+ right: Some("turn-0ccb40f8f06e4ca1a30b01909b1aa3f3")
 ```
 
 `native_live_turn_contracts::a_resent_mid_turn_message_is_delivered_once` failed at `crates/spark-workspace/tests/process_contracts/native_live_turn_contracts.rs:209:18`:
 
 ```text
-called `Result::unwrap_err()` on an `Ok` value: (None, TurnAcceptance { revision: 8, user_turn_id: "turn-steer1", assistant_turn_id: Some("turn-3248c443260c44b89f7cff6d9eb028ee"), status: "accepted", changes: ChangeBatch { from_revision: 6, watermark: 8, rows: [EntityRow { kind: Conversation, conversation_id: "native-resend", id: "native-resend", collection: None, turn_id: None, position: None, order: None, revision: 8, deleted: false, payload: Some(Object {"created_at": String("2026-11-04T07:30:50Z"), "handle": String("autumn-trail"), "launched_run_ids": Array [], "metadata": Object {"chat_mode": String("chat"), "conversation_handle": String("autumn-trail"), "conversation_id": String("nativ
+called `Result::unwrap_err()` on an `Ok` value: (None, TurnAcceptance { revision: 8, user_turn_id: "turn-steer1", assistant_turn_id: Some("turn-ca9a813fbc0943b3baff75f65e9c4ec9"), status: "accepted", changes: ChangeBatch { from_revision: 6, watermark: 8, rows: [EntityRow { kind: Conversation, conversation_id: "native-resend", id: "native-resend", collection: None, turn_id: None, position: None, order: None, revision: 8, deleted: false, payload: Some(Object {"created_at": String("2026-11-04T08:40:21Z"), "handle": String("polished-beacon"), "launched_run_ids": Array [], "metadata": Object {"chat_mode": String("chat"), "conversation_handle": String("polished-beacon"), "conversation_id": String(
 ```
 
 ### a-row
@@ -1198,7 +1200,7 @@ Behaviour: (a) Corrupt attachment row never causes deletion
 
 Break: an unparsable attachment row is skipped instead of failing the load
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-storage --test contracts -- --exact conversation_commit_contracts::a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing`
 
@@ -1226,7 +1228,7 @@ index 838930a..d522059 100644
 `conversation_commit_contracts::a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing` failed at `crates/spark-storage/tests/contracts/conversation_commit_contracts.rs:1648:10`:
 
 ```text
-a corrupt row fails the prune: ["att-dc2434b82cd61d91ace6d612df0d226e", "att-5cf198dea000360f9751c4665f798add"]
+a corrupt row fails the prune: ["att-7d830434445857dce3b6b198afd52439", "att-2a4a49a9b46830be2ed51fd047fffb29"]
 ```
 
 ### b-lag
@@ -1235,7 +1237,7 @@ Behaviour: (b) Lagged reaches summary catch-up
 
 Break: a lagged stream resyncs but does not catch up
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-http --lib -- --exact live_queue_tests::a_lagged_stream_catches_up_on_every_summary_change`
 
@@ -1271,7 +1273,7 @@ Behaviour: (c) Role change during a disconnect
 
 Break: catch-up reports no placeholder changes
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-http --test process_contracts -- --exact workspace_live_sse_contracts::a_role_summary_change_during_a_disconnect_arrives_on_reconnect`
 
@@ -1298,7 +1300,7 @@ index 838930a..f7a2583 100644
 `workspace_live_sse_contracts::a_role_summary_change_during_a_disconnect_arrives_on_reconnect` failed at `crates/spark-http/tests/process_contracts/workspace_live_sse_contracts.rs:2124:5`:
 
 ```text
-assertion `left == right` failed: {"cursor":null,"payload":{"from_revision":"1","generation":"f8084604-c474-4bce-ab64-21ce5a022d6e","rows":[],"watermark":"2"},"project_path":"/private/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmpi0uvSN/project","resource":{"id":null,"kind":"conversations"},"type":"conversations.changes"}
+assertion `left == right` failed: {"cursor":null,"payload":{"from_revision":"1","generation":"fc711b73-6ce5-4b51-a9be-1ed4bf8ea46d","rows":[],"watermark":"2"},"project_path":"/private/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmpY9sJrd/project","resource":{"id":null,"kind":"conversations"},"type":"conversations.changes"}
   left: None
  right: Some("stopped")
 ```
@@ -1309,7 +1311,7 @@ Behaviour: (c) Open a chat holding a summary cursor
 
 Break: opening a chat drops the summary scope from the connection
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-http --test process_contracts -- --exact workspace_live_sse_contracts::opening_a_chat_while_holding_a_summary_cursor_serves_both_scopes`
 
@@ -1345,7 +1347,7 @@ Behaviour: (d) Failed trace sync publishes nothing
 
 Break: a failed trace sync is ignored and the commit publishes
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-storage --test contracts -- --exact conversation_commit_contracts::a_failed_trace_sync_publishes_nothing`
 
@@ -1372,7 +1374,7 @@ index 3c00be4..5da7223 100644
 `conversation_commit_contracts::a_failed_trace_sync_publishes_nothing` failed at `crates/spark-storage/tests/contracts/conversation_commit_contracts.rs:1801:5`:
 
 ```text
-Ok(ConversationCommit { revision: 2, changes: ChangeBatch { from_revision: 1, watermark: 2, rows: [EntityRow { kind: Conversation, conversation_id: "conversation-trace-sync", id: "conversation-trace-sync", collection: None, turn_id: None, position: None, order: None, revision: 2, deleted: false, payload: Some(Object {"created_at": String("2026-11-04T07:34:49Z"), "handle": String("mellow-grain"), "launched_run_ids": Array [], "metadata": Object {"chat_mode": String("chat"), "conversation_handle": String("mellow-grain"), "conversation_id": String("conversation-trace-sync"), "created_at": String("2026-11-04T07:34:49Z"), "llm_profile": Null, "model": Null, "model_settings": Null, "project_path":
+Ok(ConversationCommit { revision: 2, changes: ChangeBatch { from_revision: 1, watermark: 2, rows: [EntityRow { kind: Conversation, conversation_id: "conversation-trace-sync", id: "conversation-trace-sync", collection: None, turn_id: None, position: None, order: None, revision: 2, deleted: false, payload: Some(Object {"created_at": String("2026-11-04T08:44:32Z"), "handle": String("polished-lily"), "launched_run_ids": Array [], "metadata": Object {"chat_mode": String("chat"), "conversation_handle": String("polished-lily"), "conversation_id": String("conversation-trace-sync"), "created_at": String("2026-11-04T08:44:32Z"), "llm_profile": Null, "model": Null, "model_settings": Null, "project_path
 ```
 
 ### e-version
@@ -1381,7 +1383,7 @@ Behaviour: (e) settings_schema_version validated
 
 Break: the version check is removed
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-storage --test contracts -- --exact conversation_commit_contracts::a_conversation_with_an_unsupported_settings_schema_version_does_not_load`
 
@@ -1408,7 +1410,7 @@ index 838930a..f1db93a 100644
 `conversation_commit_contracts::a_conversation_with_an_unsupported_settings_schema_version_does_not_load` failed at `crates/spark-storage/tests/contracts/conversation_commit_contracts.rs:1741:14`:
 
 ```text
-an unsupported version fails: Some(Object {"chat_mode": String("chat"), "conversation_handle": String("autumn-spring"), "conversation_id": String("conversation-settings-version"), "created_at": String("2026-11-04T07:34:52Z"), "event_log": Array [], "flow_launches": Array [], "flow_run_requests": Array [], "llm_profile": Null, "model": Null, "model_settings": Null, "project_path": String("/projects/settings-version"), "proposed_plans": Array [], "provider": String("codex"), "reasoning_effort": Null, "revision": Number(1), "run_recoveries": Array [], "schema_version": Number(5), "segments": Array [], "settings_schema_version": Number(2), "title": String("Hello"), "turns": Array [Object {"conte
+an unsupported version fails: Some(Object {"chat_mode": String("chat"), "conversation_handle": String("mossy-prairie"), "conversation_id": String("conversation-settings-version"), "created_at": String("2026-11-04T08:44:36Z"), "event_log": Array [], "flow_launches": Array [], "flow_run_requests": Array [], "llm_profile": Null, "model": Null, "model_settings": Null, "project_path": String("/projects/settings-version"), "proposed_plans": Array [], "provider": String("codex"), "reasoning_effort": Null, "revision": Number(1), "run_recoveries": Array [], "schema_version": Number(5), "segments": Array [], "settings_schema_version": Number(2), "title": String("Hello"), "turns": Array [Object {"conte
 ```
 
 ### P1-help
@@ -1417,7 +1419,7 @@ Behaviour: Part 1: help writes nothing
 
 Break: serve --help runs runtime initialization, which writes the bundled library, before printing usage
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-server --test process_contracts -- --exact server_product_shell_process::subcommand_help_writes_nothing`
 
@@ -1445,7 +1447,7 @@ index b3b6545..a53e370 100644
 
 ```text
 assertion `left == right` failed: ["serve", "--help"] wrote files
-  left: ["/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmpKRDvMU/spark-home"]
+  left: ["/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/.tmp980FPU/spark-home"]
  right: []
 ```
 
@@ -1455,7 +1457,7 @@ Behaviour: Part 4: validate when target moved
 
 Break: prepare_integration always says the target has not moved
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-assets --test contracts -- --exact resource_contracts::merge_change_skips_validation_only_when_the_target_is_the_merge_base`
 
@@ -1492,7 +1494,7 @@ Behaviour: Part 4: skip only when target is merge base
 
 Break: prepare_integration always says the target moved
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p spark-assets --test contracts -- --exact resource_contracts::merge_change_skips_validation_only_when_the_target_is_the_merge_base`
 
@@ -1530,7 +1532,7 @@ Behaviour: Product fix: finished run keeps its lock
 
 Break: the executor keeps the launch copy of the lock
 
-Source: commit `f489039e4786477db07da643b5a128c1d7fe8f7a`, tree `daa1a604703665b65cb4bc9c6eb3c3609589f542`
+Source: commit `b67f8cb570a07348a106019b50ea2af4c5d9c064`, tree `2f08140e068bc1b83cf8c822aa14559a28f4535b`
 
 Command: `cargo test --all-features -p attractor-runtime --test contracts -- --exact routing_model_contracts::a_finished_run_keeps_the_lock_state_taken_after_launch`
 
