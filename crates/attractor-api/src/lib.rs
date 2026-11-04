@@ -1753,6 +1753,7 @@ impl AttractorApiService {
             .clone()
             .unwrap_or_else(|| unified_llm_adapter::DISPLAY_MODEL_PLACEHOLDER.to_string());
         let selected_reasoning_effort = resolve_launch_reasoning_effort(
+            &flow,
             request.reasoning_effort.as_deref(),
             &requested_context,
         )
@@ -3526,6 +3527,7 @@ fn resolve_launch_profile(
 }
 
 fn resolve_launch_reasoning_effort(
+    flow: &FlowDefinition,
     requested: Option<&str>,
     launch_context: &ContextMap,
 ) -> Option<String> {
@@ -3536,6 +3538,7 @@ fn resolve_launch_reasoning_effort(
                 unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
             )
         })
+        .or_else(|| trimmed_option(flow.defaults.reasoning_effort.as_deref()))
         .map(|value| value.to_lowercase())
 }
 
