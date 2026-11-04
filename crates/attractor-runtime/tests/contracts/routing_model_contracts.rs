@@ -2693,6 +2693,134 @@ fn sibling_cancellation_stops_custom_launched_children() {
     }
 }
 
+/// A custom launcher whose child fails on its own account once its fork has
+/// asked it to cancel: blocking until then, or detached and reported running.
+fn with_child_failing_after_cancel(
+    mut runner: RuntimeHandlerRunner,
+    runs: PathBuf,
+    root: PathBuf,
+    detached: bool,
+    kind: FailureKind,
+) -> RuntimeHandlerRunner {
+    runner.set_child_run_launcher(move |request| {
+        let store = RunStore::for_runs_dir(runs.clone());
+        let child_id = request.child_run_id.clone();
+        let mut record = RunRecord::new(&child_id, root.to_string_lossy());
+        record.parent_run_id = Some(request.parent_run_id.clone());
+        record.parent_node_id = Some(request.parent_node_id.clone());
+        attractor_runtime::prepare_fresh_run(
+            &store,
+            &record,
+            &request.child_flow,
+            None,
+            None,
+            &LaunchContext::empty(),
+            &ContextMap::new(),
+        )
+        .unwrap();
+        store
+            .update_run_record(&child_id, |record| record.status = "waiting".to_string())
+            .unwrap();
+        let id = child_id.clone();
+        let fail = move || {
+            while store
+                .read_run_bundle(&id)
+                .unwrap()
+                .unwrap()
+                .record
+                .unwrap()
+                .status
+                != "cancel_requested"
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            store
+                .update_run_record(&id, |record| {
+                    record.status = "failed".to_string();
+                    record.last_error = "child disk full".to_string();
+                    record.failure_kind = Some(kind);
+                })
+                .unwrap();
+        };
+        let status = if detached {
+            std::thread::spawn(fail);
+            "running"
+        } else {
+            fail();
+            "failed"
+        };
+        attractor_runtime::ChildRunResult {
+            run_id: child_id,
+            status: status.to_string(),
+            failure_reason: if detached {
+                String::new()
+            } else {
+                "child disk full".to_string()
+            },
+            failure_kind: (!detached).then_some(kind),
+            ..Default::default()
+        }
+    });
+    runner
+}
+
+/// A blocked sibling must not turn a child's independent failure into a
+/// cancellation: the error survives, and a fatal one still fails the owner.
+#[test]
+fn an_independent_child_failure_after_sibling_cancellation_stays_an_error() {
+    for detached in [false, true] {
+        for (tolerate, kind, owner_fails) in [
+            (false, FailureKind::Runtime, true),
+            (true, FailureKind::Routing, true),
+            (true, FailureKind::Runtime, false),
+        ] {
+            let case = format!("detached {detached} tolerate {tolerate} {kind:?}");
+            let temp = tempfile::tempdir().unwrap();
+            write_gate_child(temp.path());
+            let root = temp.path().to_path_buf();
+            let runs = root.join("runs");
+            let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
+            let runner =
+                with_child_failing_after_cancel(runner, runs.clone(), root.clone(), detached, kind);
+            let result = settled(move || {
+                run_parent(&root, gated_child_fork(tolerate), runner, ContextMap::new())
+            });
+            assert_eq!(count(&calls, "synth"), 0, "{case}");
+            assert_eq!(gated_child_record(&runs).status, "failed", "{case}");
+            if owner_fails {
+                assert_eq!(result.status, "failed", "{case}");
+                assert_eq!(result.failure_kind, Some(kind), "{case}");
+                assert!(
+                    result.failure_reason.contains("child disk full"),
+                    "{case}: {}",
+                    result.failure_reason
+                );
+            } else {
+                // Tolerated, so the sibling's failure exit ends the owner.
+                assert_eq!(
+                    result.status, "completed",
+                    "{case}: {}",
+                    result.failure_reason
+                );
+                assert_eq!(
+                    result.outcome_reason_code.as_deref(),
+                    Some("blocked"),
+                    "{case}"
+                );
+                let branch = &result.context["parallel.results"][0];
+                assert_eq!(branch["status"], json!("error"), "{case}: {branch}");
+                assert!(
+                    branch["error"]["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("child disk full"),
+                    "{case}: {branch}"
+                );
+            }
+        }
+    }
+}
+
 const GATED_CHILD_ENV: &str = "SPARK_GATED_CHILD_INTERRUPT_DIR";
 
 #[test]

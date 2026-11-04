@@ -384,14 +384,21 @@ impl HandlerRuntime {
             .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
     }
 
-    /// Whether the owning fork or the user canceled this invocation; a
-    /// positive answer marks the invocation interrupted.
-    pub(crate) fn stop_requested(&self) -> bool {
-        let stop = self.canceled_by_owner()
+    /// Whether the owning fork or the user asked this invocation to stop.
+    /// This is not evidence it was interrupted: work it merely observes, such
+    /// as a child run, can still end on its own account.
+    pub(crate) fn stop_signaled(&self) -> bool {
+        self.canceled_by_owner()
             || self
                 .run_paths
                 .as_ref()
-                .is_some_and(|paths| run_record_cancel_requested(paths));
+                .is_some_and(|paths| run_record_cancel_requested(paths))
+    }
+
+    /// For a caller that stops its work when told to: a positive answer marks
+    /// the invocation interrupted.
+    pub(crate) fn stop_requested(&self) -> bool {
+        let stop = self.stop_signaled();
         if stop {
             self.interrupted.store(true, Ordering::SeqCst);
         }

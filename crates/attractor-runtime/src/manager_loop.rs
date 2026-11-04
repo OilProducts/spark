@@ -157,7 +157,7 @@ pub(crate) fn execute_manager_loop(
                 &context,
             ));
         }
-        if runtime.stop_requested() {
+        if runtime.stop_signaled() {
             observing = false;
             let stopping_since = *stopping_since.get_or_insert_with(Instant::now);
             if !cancel_forwarded {
@@ -170,6 +170,9 @@ pub(crate) fn execute_manager_loop(
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
+            runtime
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(Outcome::error(
                 FailureKind::Runtime,
                 "Canceled while its child ran",
@@ -649,9 +652,9 @@ fn request_child_cancel(runtime: &HandlerRuntime, context: &ContextMap) -> bool 
 
 /// Runs a child invocation. If the owning fork or the user cancels this
 /// invocation while the child runs, the child's cancellation is requested
-/// through the run controls and the child settles before this returns; the
-/// invocation is then marked interrupted, so a branch records cancellation,
-/// not an error.
+/// through the run controls and the child settles before this returns. The
+/// child's own result then decides: only a canceled child marks the invocation
+/// interrupted, so its independent failure stays an error.
 fn watch_owner_cancel<T>(
     runtime: &HandlerRuntime,
     store: &RunStore,
@@ -664,7 +667,7 @@ fn watch_owner_cancel<T>(
         scope.spawn(|| {
             while !done.load(Ordering::SeqCst) {
                 // The child's record may not exist yet; retry until accepted.
-                if runtime.stop_requested()
+                if runtime.stop_signaled()
                     && crate::controls::RuntimeControls::new(store.clone())
                         .request_cancel(child_run_id)
                         .is_ok()
@@ -1436,6 +1439,13 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
             format!("child {child_run_id} failed: {failure_reason}"),
             Some(false),
         ));
+    }
+    // The child settled canceled. When this invocation asked for that, its
+    // branch records cancellation rather than an error.
+    if runtime.stop_signaled() {
+        runtime
+            .interrupted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     Some(Outcome::error(
         FailureKind::Runtime,
