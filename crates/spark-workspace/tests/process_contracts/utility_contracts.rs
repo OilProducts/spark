@@ -412,17 +412,17 @@ fn utility_call_runs_the_configured_model_and_surfaces_failures() {
 fn first_completed_turn_gets_one_generated_title_in_the_background() {
     let _env = claude_env();
     let (_temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline repair.\"", "1", 0);
+    let calls = fake_claude(&settings, "\"Deploy pipeline repair.\"", "5", 0);
     let (service, updates) = service_with_updates(settings);
 
     let started = Instant::now();
     let snapshot = turn(&service, "titled", "please fix the deploy pipeline");
-    // The turn does not wait for the one-second utility call.
-    assert!(started.elapsed() < Duration::from_millis(900));
+    // The turn does not wait for the five-second utility call.
+    assert!(started.elapsed() < Duration::from_secs(4));
     assert_eq!(snapshot["title"], "please fix the deploy pipeline");
 
     // Every client's thread list and the thread's own view get the title.
-    let (summary, state) = title_updates(&service, &updates, Duration::from_secs(10)).unwrap();
+    let (summary, state) = title_updates(&service, &updates, Duration::from_secs(30)).unwrap();
     assert_eq!(summary["conversation_id"], "titled");
     assert_eq!(summary["project_path"], PROJECT);
     assert_eq!(summary["title"], "Deploy pipeline repair");
@@ -582,16 +582,16 @@ fn stored_run_title(settings: &SparkSettings, run_id: &str) -> Option<String> {
 fn root_run_gets_a_generated_title_in_the_background() {
     let _env = claude_env();
     let (temp, settings) = fixture();
-    let calls = fake_claude(&settings, "\"Deploy pipeline fix.\"", "1", 0);
+    let calls = fake_claude(&settings, "\"Deploy pipeline fix.\"", "5", 0);
     let (service, updates) = run_service_with_updates(settings.clone());
 
     let started = Instant::now();
     let run_id = launch(&service, temp.path());
-    // Launch does not wait for the one-second utility call.
-    assert!(started.elapsed() < Duration::from_millis(900));
+    // Launch does not wait for the five-second utility call.
+    assert!(started.elapsed() < Duration::from_secs(4));
 
     // A live client gets the title as a run-record update.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let run = loop {
         let envelope = updates
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))

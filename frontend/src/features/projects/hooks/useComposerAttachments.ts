@@ -4,6 +4,7 @@ import {
     deleteConversationAttachmentValidated,
     uploadConversationAttachmentValidated,
 } from '@/lib/workspaceClient'
+import { randomHexId } from '@/lib/utils'
 import { useStore } from '@/store'
 import { extractApiErrorMessage } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
@@ -100,7 +101,7 @@ export function useComposerAttachments({
             } else {
                 total += file.size
                 accepted.push({
-                    localId: crypto.randomUUID(),
+                    localId: randomHexId(),
                     projectPath: activeProjectPath,
                     file,
                     previewUrl: PREVIEWABLE_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
