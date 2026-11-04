@@ -246,7 +246,9 @@ impl Signals {
             .append(true)
             .open(self.path("calls.log"))
             .unwrap();
-        writeln!(log, "{node}").unwrap();
+        // One write: tools append here too, and `writeln!` writes the line and
+        // its newline separately, so a tool's line could land between them.
+        log.write_all(format!("{node}\n").as_bytes()).unwrap();
     }
 
     fn calls(&self, node: &str) -> usize {
