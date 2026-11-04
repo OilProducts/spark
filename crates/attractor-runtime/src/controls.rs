@@ -809,6 +809,10 @@ impl RuntimeControls {
         })
     }
 
+    /// Finalizes a run with no executor as canceled. The request is durable
+    /// first and the terminal state is published last, once everything the run
+    /// left behind has settled: a cleanup that dies midway stays recoverable,
+    /// and whoever sees the terminal state sees nothing still running.
     pub fn mark_canceled(
         &self,
         run_id: &str,
@@ -818,6 +822,16 @@ impl RuntimeControls {
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
+        {
+            let _lock = crate::records::lock_run_record(&bundle.paths)?;
+            let mut record = self
+                .store
+                .read_run_record(&bundle.paths)?
+                .ok_or(RuntimeControlError::UnknownPipeline)?;
+            mark_record_cancel_requested(&mut record);
+            self.store.write_run_record(&bundle.paths, &record)?;
+        }
+        self.settle_orphaned_work(&bundle.paths, run_id, last_error)?;
         let _lock = crate::records::lock_run_record(&bundle.paths)?;
         let mut record = self
             .store
@@ -845,6 +859,44 @@ impl RuntimeControls {
             pipeline_id: run_id.to_string(),
             run_id: run_id.to_string(),
         })
+    }
+
+    /// Settles what a canceled run's dead executor left behind: its tool
+    /// processes, its unsettled branches and its child runs. Safe to repeat,
+    /// and an error means it must be: something may be unsettled.
+    pub(crate) fn settle_orphaned_work(
+        &self,
+        paths: &crate::paths::RunRootPaths,
+        run_id: &str,
+        last_error: &str,
+    ) -> ControlResult<()> {
+        crate::handlers::stop_orphaned_tools(paths).map_err(|error| {
+            RuntimeControlError::Conflict(format!("settlement incomplete: {error}"))
+        })?;
+        crate::handlers::cancel_unsettled_branches(paths).map_err(|error| {
+            RuntimeControlError::Conflict(format!("settlement incomplete: {error}"))
+        })?;
+        self.cancel_orphaned_children(run_id, last_error)
+    }
+
+    /// Cancels every unfinished child of a run, and their descendants. Only
+    /// for a run whose executor is gone or runs no node: children execute
+    /// inside their parent's node, so none of these has an executor left.
+    pub(crate) fn cancel_orphaned_children(
+        &self,
+        run_id: &str,
+        last_error: &str,
+    ) -> ControlResult<()> {
+        for record in self.store.list_run_records()? {
+            let finished = matches!(
+                crate::records::normalize_run_status(&record.status).as_str(),
+                "completed" | "failed" | "canceled"
+            ) && !crate::manager_loop::restart_marked_record(&record);
+            if record.parent_run_id.as_deref() == Some(run_id) && !finished {
+                self.mark_canceled(&record.run_id, last_error)?;
+            }
+        }
+        Ok(())
     }
 }
 

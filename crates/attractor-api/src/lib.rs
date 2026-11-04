@@ -1129,11 +1129,17 @@ impl AttractorApiService {
                     }
                 }
                 "cancel_requested" => {
-                    let _ = RuntimeControls::new(store.clone()).mark_canceled(
+                    // A failed settlement stays cancel_requested for the next
+                    // recovery or cancel to redo.
+                    match RuntimeControls::new(store.clone()).mark_canceled(
                         run_id,
                         "canceled with no executor attached (interrupted by an earlier restart)",
-                    );
-                    canceled.push(run_id.to_string());
+                    ) {
+                        Ok(_) => canceled.push(run_id.to_string()),
+                        Err(error) => {
+                            failed.push(json!({"run_id": run_id, "error": error.to_string()}))
+                        }
+                    }
                 }
                 _ => {}
             }

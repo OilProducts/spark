@@ -780,6 +780,784 @@ fn cancel_finalizes_an_orphaned_run_immediately() {
     );
 }
 
+const ORPHAN_RUN: &str = "run-orphan-processes";
+const ORPHAN_LIFE_ENV: &str = "SPARK_RECOVERY_ORPHAN_LIFE";
+const ORPHAN_ROOT_ENV: &str = "SPARK_RECOVERY_ORPHAN_ROOT";
+const ORPHAN_CHILD_ENV: &str = "SPARK_RECOVERY_ORPHAN_CHILD";
+const BOUNDARY_EXIT_ENV: &str = "SPARK_RECOVERY_BOUNDARY_EXIT";
+const TOLERATE_ENV: &str = "SPARK_RECOVERY_TOLERATE";
+const ORPHAN_CRASH_CODE: i32 = 7;
+const ORPHAN_DEADLINE: Duration = Duration::from_secs(60);
+
+fn orphan_wait(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + ORPHAN_DEADLINE;
+    while Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+/// A tool that announces itself and holds, surviving TERM so that only a KILL
+/// ends it: a cancellation that dies after telling it to stop leaves it running.
+fn orphan_tool(root: &Path, signal: &str, next: &str) -> Value {
+    let p = |name: &str| root.join(name).display().to_string();
+    json!({"kind": "tool", "config": {"kind": "tool", "exit_codes": {"0": "done"},
+        "command": format!(
+            "exec 2>/dev/null; trap \"touch '{term}'\" TERM; ps -o pgid= -p $$ | tr -d ' ' >> '{pids}'; \
+             touch '{signal}'; i=0; while [ $i -lt 2400 ]; do sleep 0.05; i=$((i+1)); done",
+            term = p("term-seen"),
+            pids = p("pids"),
+            signal = p(signal),
+        )},
+        "routes": {"done": {"to": next, "description": "Continue."}}})
+}
+
+fn orphan_step(root: &Path, next: &str) -> Value {
+    json!({"kind": "tool", "config": {"kind": "tool", "exit_codes": {"0": "done"},
+        "command": format!("echo pre >> '{}'", root.join("calls").display())},
+        "routes": {"done": {"to": next, "description": "Continue."}}})
+}
+
+fn orphan_flow(root: &Path, in_child: bool) -> FlowDefinition {
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let exit = json!({"kind": "exit", "config": {"kind": "exit",
+        "result": {"name": "completed", "outcome": "success"}}});
+    let work = if in_child { "sub" } else { "work" };
+    let mut nodes = json!({
+        "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel",
+            "branches": ["pre", "sib"], "join": "join"}},
+        "pre": orphan_step(root, work),
+        "sib": orphan_tool(root, "sib-started", "join"),
+        "join": {"kind": "fan_in", "config": {"kind": "fan_in"}, "routes": {"next": to("done")}},
+        "done": exit.clone(),
+    });
+    nodes[work] = if in_child {
+        json!({"kind": "subflow", "manager": {"poll_interval": "0s"},
+            "config": {"kind": "subflow", "flow_ref": "child", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": to("join")}})
+    } else {
+        orphan_tool(root, "work-started", "join")
+    };
+    let flow: FlowDefinition = serde_json::from_value(
+        json!({"schema_version": "2", "id": "orphan_processes", "nodes": nodes}),
+    )
+    .expect("flow JSON");
+    attractor_dsl::validated_flow(flow).expect("valid flow")
+}
+
+fn write_orphan_child_flow(root: &Path) {
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "child", "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("work")}},
+            "work": orphan_tool(root, "work-started", "cdone"),
+            "cdone": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "completed", "outcome": "success"}}},
+        }
+    }))
+    .expect("child flow JSON");
+    attractor_dsl::write_flow_dir(&root.join("flows/child"), &flow).expect("write child flow");
+}
+
+/// Child process entry point: the executor's first life, killed once both
+/// branches' tools run; or a cancellation through the route, killed once a tool
+/// has been told to stop. A no-op in the ordinary test run.
+#[test]
+fn orphan_processes_life() {
+    let Ok(life) = std::env::var(ORPHAN_LIFE_ENV) else {
+        return;
+    };
+    let root = std::path::PathBuf::from(std::env::var(ORPHAN_ROOT_ENV).unwrap());
+    let settings = settings(&root);
+    let crash_on = |signals: &'static [&'static str]| {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            if orphan_wait(|| signals.iter().all(|signal| root.join(signal).exists())) {
+                std::process::exit(ORPHAN_CRASH_CODE);
+            }
+        });
+    };
+    if life == "accepted" {
+        let conductor = root.clone();
+        std::thread::spawn(move || hold_sibling_record_then_crash(&conductor));
+        let flow = accepted_flow(&root, std::env::var(TOLERATE_ENV).as_deref() == Ok("true"));
+        let _ = attractor_runtime::PipelineExecutor::new(RuntimeHandlerRunner::new()).execute(
+            attractor_runtime::ExecuteRunRequest {
+                store: RunStore::for_settings(&settings),
+                record: attractor_core::RunRecord::new(
+                    ORPHAN_RUN,
+                    root.join("project").to_string_lossy(),
+                ),
+                flow_definition_json: Some(flow.to_canonical_json_string()),
+                flow,
+                launch_context: attractor_core::LaunchContext::empty(),
+                runtime_context: attractor_core::ContextMap::new(),
+                max_steps: None,
+                start: Default::default(),
+            },
+        );
+        panic!("the executor should have crashed");
+    }
+    if life == "boundary" {
+        let conductor = root.clone();
+        std::thread::spawn(move || hold_record_publication_then_crash(&conductor));
+        let exit_code = std::env::var(BOUNDARY_EXIT_ENV).unwrap();
+        let _ = attractor_runtime::PipelineExecutor::new(RuntimeHandlerRunner::new()).execute(
+            attractor_runtime::ExecuteRunRequest {
+                store: RunStore::for_settings(&settings),
+                record: attractor_core::RunRecord::new(
+                    ORPHAN_RUN,
+                    root.join("project").to_string_lossy(),
+                ),
+                flow_definition_json: Some(
+                    boundary_flow(&root, &exit_code).to_canonical_json_string(),
+                ),
+                flow: boundary_flow(&root, &exit_code),
+                launch_context: attractor_core::LaunchContext::empty(),
+                runtime_context: attractor_core::ContextMap::new(),
+                max_steps: None,
+                start: Default::default(),
+            },
+        );
+        panic!("the executor should have crashed");
+    }
+    if life == "executor" {
+        crash_on(&["work-started", "sib-started"]);
+        let in_child = std::env::var(ORPHAN_CHILD_ENV).is_ok();
+        let store = RunStore::for_settings(&settings);
+        let _ = attractor_runtime::PipelineExecutor::new(RuntimeHandlerRunner::new()).execute(
+            attractor_runtime::ExecuteRunRequest {
+                store,
+                record: attractor_core::RunRecord::new(
+                    ORPHAN_RUN,
+                    root.join("project").to_string_lossy(),
+                ),
+                flow_definition_json: Some(orphan_flow(&root, in_child).to_canonical_json_string()),
+                flow: orphan_flow(&root, in_child),
+                launch_context: attractor_core::LaunchContext::empty(),
+                runtime_context: attractor_core::ContextMap::from([(
+                    "internal.bundled_root".to_string(),
+                    json!(root.to_string_lossy()),
+                )]),
+                max_steps: None,
+                start: Default::default(),
+            },
+        );
+        panic!("the executor should have crashed");
+    }
+    crash_on(&["term-seen"]);
+    let response = AttractorApiService::new(settings).cancel_pipeline_route(ORPHAN_RUN);
+    panic!(
+        "the cancellation should have died mid-cleanup: {:?}",
+        response.body
+    );
+}
+
+/// `start -> fork[pre -> work, sib] -> join -> done`, where `work` goes on to the
+/// join or to a failure exit by its exit code, once released.
+fn boundary_flow(root: &Path, exit_code: &str) -> FlowDefinition {
+    let p = |name: &str| root.join(name).display().to_string();
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let exit = |name: &str, outcome: &str| {
+        json!({"kind": "exit", "config": {"kind": "exit",
+        "result": {"name": name, "outcome": outcome}}})
+    };
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "boundary", "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("fork")}},
+            "fork": {"kind": "parallel", "config": {"kind": "parallel",
+                "branches": ["pre", "sib"], "join": "join"}},
+            "pre": orphan_step(root, "work"),
+            "work": {"kind": "tool", "config": {"kind": "tool",
+                "exit_codes": {"0": "done", "1": "blocked"},
+                "command": format!(
+                    "echo work >> '{calls}'; touch '{started}'; i=0; \
+                     while [ ! -f '{release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; \
+                     exit {exit_code}",
+                    calls = p("calls"),
+                    started = p("work-started"),
+                    release = p("release"),
+                )},
+                "routes": {"done": to("join"), "blocked": to("failed")}},
+            "sib": orphan_tool(root, "sib-started", "join"),
+            "join": {"kind": "fan_in", "config": {"kind": "fan_in"}, "routes": {"next": to("done")}},
+            "done": exit("completed", "success"),
+            "failed": exit("blocked", "failure"),
+        }
+    }))
+    .expect("flow JSON");
+    attractor_dsl::validated_flow(flow).expect("valid flow")
+}
+
+fn boundary_branches(root: &Path) -> Option<std::path::PathBuf> {
+    let paths = RunStore::for_settings(&settings(root))
+        .find_run_root(ORPHAN_RUN)
+        .ok()??;
+    Some(paths.logs_dir().join("fork/executions/1-0/branches"))
+}
+
+/// Runs in the first life. A FIFO where the fork writes the branch's record holds
+/// that write open with no reader, which is exactly after the branch saved its
+/// progress at its boundary and before anything published. The process dies there.
+fn hold_record_publication_then_crash(root: &Path) {
+    let both_started =
+        orphan_wait(|| root.join("work-started").exists() && root.join("sib-started").exists());
+    assert!(both_started);
+    let branches = boundary_branches(root).unwrap();
+    let hold = std::process::Command::new("mkfifo")
+        .arg(branches.join("0.json.tmp"))
+        .status()
+        .unwrap();
+    assert!(hold.success());
+    std::fs::write(root.join("release"), "").unwrap();
+    let progress = branches.join("0.progress.json");
+    let at_boundary = orphan_wait(|| {
+        std::fs::read_to_string(&progress)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|progress| matches!(progress["current"].as_str(), Some("join" | "failed")))
+    });
+    assert!(at_boundary);
+    std::process::exit(ORPHAN_CRASH_CODE);
+}
+
+/// `start -> fork[pre -> work, sib] -> join -> done`. `work` holds; `sib`, released,
+/// exits selecting itself, which has no visits left.
+fn accepted_flow(root: &Path, tolerate: bool) -> FlowDefinition {
+    let p = |name: &str| root.join(name).display().to_string();
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "accepted", "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("fork")}},
+            "fork": {"kind": "parallel", "config": {"kind": "parallel",
+                "branches": ["pre", "sib"], "join": "join",
+                "tolerate_branch_execution_errors": tolerate}},
+            "pre": orphan_step(root, "work"),
+            "work": orphan_tool(root, "work-started", "join"),
+            "sib": {"kind": "tool", "runtime": {"max_visits": 1},
+                "config": {"kind": "tool", "exit_codes": {"0": "again", "1": "done"},
+                "command": format!(
+                    "echo sib >> '{calls}'; i=0; \
+                     while [ ! -f '{release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done",
+                    calls = p("calls"),
+                    release = p("release"),
+                )},
+                "routes": {"again": to("sib"), "done": to("join")}},
+            "join": {"kind": "fan_in", "config": {"kind": "fan_in"}, "routes": {"next": to("done")}},
+            "done": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "completed", "outcome": "success"}}},
+        }
+    }))
+    .expect("flow JSON");
+    attractor_dsl::validated_flow(flow).expect("valid flow")
+}
+
+/// Runs in the first life: `sib`'s accepted result becomes durable with its
+/// record's publication held open by a FIFO, and the process dies there.
+fn hold_sibling_record_then_crash(root: &Path) {
+    assert!(orphan_wait(|| root.join("work-started").exists()));
+    let branches = boundary_branches(root).unwrap();
+    assert!(orphan_wait(|| branches.join("1.progress.json").exists()));
+    let hold = std::process::Command::new("mkfifo")
+        .arg(branches.join("1.json.tmp"))
+        .status()
+        .unwrap();
+    assert!(hold.success());
+    std::fs::write(root.join("release"), "").unwrap();
+    let accepted = orphan_wait(|| {
+        std::fs::read_to_string(branches.join("1.progress.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|progress| progress["accepted"]["decision"] == json!("again"))
+    });
+    assert!(accepted);
+    std::process::exit(ORPHAN_CRASH_CODE);
+}
+
+/// The client's cancel of a crashed run keeps a branch's routing error that was
+/// decided by a result accepted before the crash, while the run itself is canceled.
+#[test]
+fn canceling_a_crashed_run_through_the_route_keeps_an_accepted_routing_error() {
+    for tolerate in [false, true] {
+        let name = format!("tolerate={tolerate}");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let settings = settings(&root);
+        std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+        std::fs::create_dir_all(root.join("project")).expect("workdir");
+        run_orphan_life_with(&root, "accepted", &[(TOLERATE_ENV, &tolerate.to_string())]);
+
+        let branches = boundary_branches(&root).unwrap();
+        assert!(!branches.join("1.json").exists(), "{name}: published");
+        std::fs::remove_file(branches.join("1.json.tmp")).unwrap();
+        let response = AttractorApiService::new(settings.clone()).cancel_pipeline_route(ORPHAN_RUN);
+        assert_eq!(response.status_code, 200, "{name}: {:?}", response.body);
+        assert_eq!(
+            response.body["status"],
+            json!("canceled"),
+            "{name}: {:?}",
+            response.body
+        );
+
+        let branch = |index: usize| -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(branches.join(format!("{index}.json"))).unwrap(),
+            )
+            .unwrap()
+        };
+        let sib = branch(1);
+        assert_eq!(sib["status"], json!("error"), "{name}: {sib}");
+        assert_eq!(sib["error"]["kind"], json!("routing"), "{name}: {sib}");
+        assert!(
+            sib["error"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("visit_limit_reached"),
+            "{name}: {sib}"
+        );
+        assert!(sib.get("canceled_at").is_none(), "{name}: {sib}");
+        assert_eq!(branch(0)["status"], json!("canceled"), "{name}");
+
+        let store = RunStore::for_settings(&settings);
+        let paths = store.find_run_root(ORPHAN_RUN).unwrap().unwrap();
+        let result = store.read_result(&paths).unwrap().expect("result");
+        assert_eq!(result.status, "canceled", "{name}");
+        for group in std::fs::read_to_string(root.join("pids")).unwrap().lines() {
+            assert!(
+                !orphan_group_running(group),
+                "{name}: group {group} still runs"
+            );
+        }
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(
+            calls.lines().filter(|line| *line == "sib").count(),
+            1,
+            "{name}: the accepted invocation ran again"
+        );
+        assert!(
+            !store.read_raw_events(&paths).unwrap().iter().any(|event| {
+                event.event_type == "StageStarted"
+                    && event.payload.get("node_id") == Some(&json!("join"))
+            }),
+            "{name}: the join ran"
+        );
+    }
+}
+
+/// How a crashed run with a branch at its boundary, and no record for it, ends.
+#[derive(Debug, Clone, Copy)]
+enum BoundaryRecovery {
+    /// A client's cancel, finalized here since no executor is attached.
+    CancelRoute,
+    /// A cancel request on record, picked up by resuming the run.
+    ResumeAfterRequest,
+}
+
+/// A branch that reached its join or a failure exit has ended, so settling it
+/// after a crash keeps that, with its evidence, even though the run as a whole is
+/// canceled. Nothing runs again and the join stays unexecuted.
+#[test]
+fn a_branch_at_its_boundary_keeps_its_result_when_a_crashed_run_is_canceled() {
+    for (exit_code, boundary, status) in [
+        ("0", "join", "completed"),
+        ("1", "failed", "terminal_result"),
+    ] {
+        for recovery in [
+            BoundaryRecovery::CancelRoute,
+            BoundaryRecovery::ResumeAfterRequest,
+        ] {
+            let name = format!("{boundary} {recovery:?}");
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().to_path_buf();
+            let settings = settings(&root);
+            std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+            std::fs::create_dir_all(root.join("project")).expect("workdir");
+            run_orphan_life_with(&root, "boundary", &[(BOUNDARY_EXIT_ENV, exit_code)]);
+
+            // The boundary: progress saved, no record, nothing published.
+            let store = RunStore::for_settings(&settings);
+            let paths = store.find_run_root(ORPHAN_RUN).unwrap().unwrap();
+            let branches = boundary_branches(&root).unwrap();
+            assert!(!branches.join("0.json").exists(), "{name}: published");
+            let saved: Value = serde_json::from_str(
+                &std::fs::read_to_string(branches.join("0.progress.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(saved["current"], json!(boundary), "{name}");
+            assert_eq!(
+                store.read_run_record(&paths).unwrap().unwrap().status,
+                "running",
+                "{name}"
+            );
+            // The hold was the test's; recovery writes the record normally.
+            std::fs::remove_file(branches.join("0.json.tmp")).unwrap();
+
+            let observer = {
+                let (store, paths, root, branches) =
+                    (store.clone(), paths.clone(), root.clone(), branches.clone());
+                std::thread::spawn(move || {
+                    let saw_terminal = orphan_wait(|| {
+                        store.read_run_record(&paths).unwrap().unwrap().status == "canceled"
+                    });
+                    (
+                        saw_terminal,
+                        branches.join("0.json").exists(),
+                        branches.join("1.json").exists(),
+                        std::fs::read_to_string(root.join("pids"))
+                            .unwrap()
+                            .lines()
+                            .all(|group| !orphan_group_running(group)),
+                    )
+                })
+            };
+            match recovery {
+                BoundaryRecovery::CancelRoute => {
+                    let response = AttractorApiService::new(settings.clone())
+                        .cancel_pipeline_route(ORPHAN_RUN);
+                    assert_eq!(response.status_code, 200, "{name}: {:?}", response.body);
+                    assert_eq!(response.body["status"], json!("canceled"), "{name}");
+                }
+                BoundaryRecovery::ResumeAfterRequest => {
+                    attractor_runtime::RuntimeControls::new(store.clone())
+                        .request_cancel(ORPHAN_RUN)
+                        .unwrap();
+                    let bundle = store.read_run_bundle(ORPHAN_RUN).unwrap().unwrap();
+                    // As production resumes: the executor polls the record for controls.
+                    let control = attractor_runtime::disk_execution_control(bundle.paths.clone());
+                    let result = attractor_runtime::PipelineExecutor::with_control(
+                        RuntimeHandlerRunner::new(),
+                        control,
+                    )
+                    .execute(attractor_runtime::ExecuteRunRequest {
+                        store: store.clone(),
+                        record: bundle.record.unwrap(),
+                        flow: boundary_flow(&root, exit_code),
+                        flow_definition_json: None,
+                        launch_context: attractor_core::LaunchContext::empty(),
+                        runtime_context: attractor_core::ContextMap::new(),
+                        max_steps: None,
+                        start: attractor_runtime::ExecutionStart::Resume {
+                            paths: bundle.paths,
+                            checkpoint: bundle.checkpoint.unwrap(),
+                        },
+                    })
+                    .unwrap();
+                    assert_eq!(
+                        result.status, "canceled",
+                        "{name}: {}",
+                        result.failure_reason
+                    );
+                    assert_eq!(result.failure_reason, "aborted_by_user", "{name}");
+                }
+            }
+            assert_eq!(observer.join().unwrap(), (true, true, true, true), "{name}");
+
+            // The branch keeps how it ended and everything it saved.
+            let branch = |index: usize| -> Value {
+                serde_json::from_str(
+                    &std::fs::read_to_string(branches.join(format!("{index}.json"))).unwrap(),
+                )
+                .unwrap()
+            };
+            let affected = branch(0);
+            assert_eq!(affected["status"], json!(status), "{name}: {affected}");
+            assert_eq!(affected["id"], json!("pre"), "{name}: {affected}");
+            assert!(affected.get("canceled_at").is_none(), "{name}: {affected}");
+            assert!(affected.get("error").is_none(), "{name}: {affected}");
+            assert_eq!(
+                affected["route_trace"],
+                json!(["pre", "work", boundary]),
+                "{name}: {affected}"
+            );
+            assert_eq!(
+                affected["visits"], saved["visits"],
+                "{name}: visits changed"
+            );
+            assert_eq!(affected["visits"]["work"], json!(1), "{name}: {affected}");
+            assert_eq!(
+                affected["context"], saved["context"],
+                "{name}: context changed"
+            );
+            assert_eq!(affected["decisions"], saved["decisions"], "{name}");
+            if boundary == "failed" {
+                let terminal = &affected["terminal"];
+                assert_eq!(terminal["exit_id"], json!("failed"), "{name}: {affected}");
+                assert_eq!(terminal["result"]["name"], json!("blocked"), "{name}");
+                assert_eq!(terminal["result"]["outcome"], json!("failure"), "{name}");
+                assert_eq!(terminal["branch"], json!("pre"), "{name}");
+                assert_eq!(terminal["branch_index"], json!(0), "{name}");
+                assert_eq!(terminal["node"], json!("work"), "{name}");
+                assert_eq!(terminal["decision"], json!("blocked"), "{name}");
+                assert_eq!(terminal["notes"], saved["last"][2], "{name}");
+            } else {
+                assert!(affected.get("terminal").is_none(), "{name}: {affected}");
+            }
+            assert_eq!(affected["notes"], saved["last"][2], "{name}: {affected}");
+
+            // External cancellation still decides the run, and everything settled.
+            let sibling = branch(1);
+            assert_eq!(sibling["status"], json!("canceled"), "{name}: {sibling}");
+            let record = store.read_run_record(&paths).unwrap().unwrap();
+            assert_eq!(record.status, "canceled", "{name}");
+            let result = store.read_result(&paths).unwrap().expect("result");
+            assert_eq!(result.status, "canceled", "{name}");
+            let events = store.read_raw_events(&paths).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "runtime"
+                        && event.payload.get("status") == Some(&json!("canceled")))
+                    .count(),
+                1,
+                "{name}"
+            );
+            assert!(
+                !events.iter().any(|event| event.event_type == "StageStarted"
+                    && event.payload.get("node_id") == Some(&json!("join"))),
+                "{name}: the join ran"
+            );
+            let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+            assert_eq!(
+                calls.lines().filter(|line| *line == "pre").count(),
+                1,
+                "{name}: pre ran again"
+            );
+            assert_eq!(
+                calls.lines().filter(|line| *line == "work").count(),
+                1,
+                "{name}: work ran again"
+            );
+            let tools = paths.root.join("tool-processes");
+            let owned = std::fs::read_dir(tools)
+                .map(|entries| entries.count())
+                .unwrap_or(0);
+            assert_eq!(owned, 0, "{name}: ownership left behind");
+        }
+    }
+}
+
+fn run_orphan_life(root: &Path, life: &str, in_child: bool) {
+    if in_child {
+        run_orphan_life_with(root, life, &[(ORPHAN_CHILD_ENV, "1")]);
+    } else {
+        run_orphan_life_with(root, life, &[]);
+    }
+}
+
+fn run_orphan_life_with(root: &Path, life: &str, envs: &[(&str, &str)]) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "run_recovery_contracts::orphan_processes_life",
+            "--nocapture",
+        ])
+        .env(ORPHAN_LIFE_ENV, life)
+        .env(ORPHAN_ROOT_ENV, root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.envs(envs.iter().copied());
+    let mut process = command.spawn().unwrap();
+    let mut status = None;
+    orphan_wait(|| {
+        status = process.try_wait().unwrap();
+        status.is_some()
+    });
+    if status.is_none() {
+        let _ = process.kill();
+        let _ = process.wait();
+    }
+    assert_eq!(
+        status.and_then(|status| status.code()),
+        Some(ORPHAN_CRASH_CODE),
+        "{life} must die at its crash point"
+    );
+}
+
+fn orphan_group_running(group: &str) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(group) && fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+    })
+}
+
+/// A run whose executor crashed, canceled through the route as a client would:
+/// a cancellation crashing mid-cleanup publishes nothing, the same route finishes
+/// it, the first sight of the terminal state finds its processes, branches and
+/// child settled, and repeating the route changes nothing.
+#[test]
+fn canceling_a_crashed_run_through_the_route_settles_before_it_publishes() {
+    for in_child in [false, true] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let settings = settings(&root);
+        std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+        std::fs::create_dir_all(root.join("project")).expect("workdir");
+        if in_child {
+            write_orphan_child_flow(&root);
+        }
+        run_orphan_life(&root, "executor", in_child);
+
+        let store = RunStore::for_settings(&settings);
+        let paths = store.find_run_root(ORPHAN_RUN).unwrap().unwrap();
+        let groups = || -> Vec<String> {
+            std::fs::read_to_string(root.join("pids"))
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(groups().len(), 2, "both tools started");
+        let status = || store.read_run_record(&paths).unwrap().unwrap().status;
+        assert_eq!(status(), "running", "the crash published nothing");
+
+        // Cancellation crashes with a tool told to stop.
+        run_orphan_life(&root, "cancel", in_child);
+        assert_eq!(status(), "cancel_requested", "durable, not terminal");
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").state,
+            "pending"
+        );
+        let canceled_events = || {
+            store
+                .read_raw_events(&paths)
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload.get("status") == Some(&json!("canceled")))
+                .count()
+        };
+        assert_eq!(canceled_events(), 0);
+        assert!(
+            groups().iter().any(|group| orphan_group_running(group)),
+            "the crash left a tool running for the retry to stop"
+        );
+
+        let child_records = || {
+            store
+                .list_run_records()
+                .unwrap()
+                .into_iter()
+                .filter(|record| record.parent_run_id.as_deref() == Some(ORPHAN_RUN))
+                .collect::<Vec<_>>()
+        };
+        let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+
+        // The first sight of the terminal state finds everything settled, with
+        // no further wait for any of it.
+        let observer = {
+            let (store, paths, root, branches) =
+                (store.clone(), paths.clone(), root.clone(), branches.clone());
+            std::thread::spawn(move || {
+                let saw_terminal = orphan_wait(|| {
+                    store.read_run_record(&paths).unwrap().unwrap().status == "canceled"
+                });
+                let tools_stopped = std::fs::read_to_string(root.join("pids"))
+                    .unwrap()
+                    .lines()
+                    .all(|group| !orphan_group_running(group));
+                let children_settled = store
+                    .list_run_records()
+                    .unwrap()
+                    .iter()
+                    .filter(|record| record.parent_run_id.as_deref() == Some(ORPHAN_RUN))
+                    .all(|record| record.status == "canceled");
+                (
+                    saw_terminal,
+                    tools_stopped,
+                    children_settled,
+                    branches.join("0.json").exists(),
+                    branches.join("1.json").exists(),
+                )
+            })
+        };
+        let response = AttractorApiService::new(settings.clone()).cancel_pipeline_route(ORPHAN_RUN);
+        assert_eq!(response.status_code, 200, "{:?}", response.body);
+        assert_eq!(
+            response.body["status"],
+            json!("canceled"),
+            "{:?}",
+            response.body
+        );
+        assert_eq!(observer.join().unwrap(), (true, true, true, true, true));
+
+        // Each branch's evidence, the child and the published result.
+        let branch = |index: usize| -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(branches.join(format!("{index}.json"))).unwrap(),
+            )
+            .unwrap()
+        };
+        let work = if in_child { "sub" } else { "work" };
+        let affected = branch(0);
+        assert_eq!(affected["status"], json!("canceled"), "{affected}");
+        assert_eq!(affected["canceled_at"], json!(work), "{affected}");
+        assert_eq!(affected["route_trace"], json!(["pre", work]), "{affected}");
+        assert_eq!(affected["visits"]["pre"], json!(1), "{affected}");
+        assert!(
+            affected["context"]["context.tool.exit_code"].is_number(),
+            "{affected}"
+        );
+        assert!(affected.get("error").is_none(), "{affected}");
+        let sibling = branch(1);
+        assert_eq!(sibling["status"], json!("canceled"), "{sibling}");
+        assert_eq!(sibling["route_trace"], json!(["sib"]), "{sibling}");
+        assert_eq!(child_records().len(), usize::from(in_child));
+        for child in child_records() {
+            let child_paths = store.find_run_root(&child.run_id).unwrap().unwrap();
+            assert_eq!(child.status, "canceled");
+            assert_eq!(
+                store
+                    .read_result(&child_paths)
+                    .unwrap()
+                    .expect("child result")
+                    .status,
+                "canceled"
+            );
+        }
+        let record = store.read_run_record(&paths).unwrap().unwrap();
+        assert_eq!(record.status, "canceled");
+        assert!(
+            record.last_error.contains("no executor attached"),
+            "{}",
+            record.last_error
+        );
+        let result = store.read_result(&paths).unwrap().expect("result");
+        assert_eq!(
+            (result.status.as_str(), result.state.as_str()),
+            ("canceled", "error")
+        );
+        assert_eq!(canceled_events(), 1);
+
+        // Repeating the cancellation changes nothing.
+        let repeated = AttractorApiService::new(settings.clone()).cancel_pipeline_route(ORPHAN_RUN);
+        assert_eq!(repeated.status_code, 200, "{:?}", repeated.body);
+        assert_ne!(
+            repeated.body["status"],
+            json!("cancel_requested"),
+            "{:?}",
+            repeated.body
+        );
+        assert_eq!(status(), "canceled");
+        assert_eq!(canceled_events(), 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "the finished step ran once"
+        );
+    }
+}
+
 #[test]
 fn startup_recovery_resumes_unanswered_gate_back_into_waiting() {
     let temp = tempfile::tempdir().expect("tempdir");

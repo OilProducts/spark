@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1412,8 +1412,56 @@ impl RuntimeHandlerRunner {
             }
         };
 
+        // Tools and their hooks stop when their fork or the user cancels, at the
+        // root and in a child as in a branch; the run record is read at most
+        // every 250 ms. A stop of the invocation's own work marks it interrupted;
+        // a stop of a post-hook does not, since the tool's result already stands.
+        let mut last_check = Instant::now();
+        let mut stop_check = |marks_interrupted: bool| {
+            if runtime.canceled_by_owner() {
+                if marks_interrupted {
+                    runtime.interrupted.store(true, Ordering::SeqCst);
+                }
+                return true;
+            }
+            if last_check.elapsed() < Duration::from_millis(250) {
+                return false;
+            }
+            last_check = Instant::now();
+            if marks_interrupted {
+                runtime.stop_requested()
+            } else {
+                runtime.stop_signaled()
+            }
+        };
+        let report_cleanup = |problem: &str| {
+            let _ = self.emit(
+                &runtime,
+                crate::events::log_event(
+                    &runtime.run_id,
+                    &format!(
+                        "[System] Tool at {} is not settled yet, retrying: {problem}",
+                        runtime.node_id
+                    ),
+                ),
+            );
+        };
+
         if let Some(pre_hook) = resolve_hook_command(&runtime, "tool.hooks.pre") {
-            let pre_hook_result = run_hook(&pre_hook, "pre", &runtime, &command, &cwd);
+            let pre_hook_result = run_hook(
+                &pre_hook,
+                "pre",
+                &runtime,
+                &command,
+                &cwd,
+                &mut || stop_check(true),
+                &report_cleanup,
+            );
+            // A stop that ended the hook is no hook failure.
+            if pre_hook_result.interrupted {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(tool_stopped_outcome(""));
+            }
             record_hook_failure(&runtime, &pre_hook, "pre", &pre_hook_result)?;
             if pre_hook_result.exit_code != 0 {
                 write_tool_output_if_available(&runtime, "")?;
@@ -1426,33 +1474,24 @@ impl RuntimeHandlerRunner {
                     )
                 });
             }
+            // The hook succeeded, and a stop since then starts no tool. Only here:
+            // a hook that failed on its own keeps that error whatever came after.
+            if runtime.stop_requested() {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(tool_stopped_outcome(""));
+            }
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
-        // Branch tools stop when their fork or the user cancels; the run
-        // record is read at most every 250 ms.
-        let mut last_check = Instant::now();
-        let mut stop_check = || {
-            if runtime.canceled_by_owner() {
-                runtime.interrupted.store(true, Ordering::SeqCst);
-                return true;
-            }
-            if last_check.elapsed() < Duration::from_millis(250) {
-                return false;
-            }
-            last_check = Instant::now();
-            runtime.stop_requested()
-        };
-        let spawned = run_shell_command(
+        let spawned = run_owned_shell_command(
+            &runtime,
             &command,
             &cwd,
             timeout,
             tool_env,
             None,
-            runtime
-                .cancel
-                .is_some()
-                .then_some(&mut stop_check as &mut dyn FnMut() -> bool),
+            &mut || stop_check(true),
+            &report_cleanup,
         );
         let command_output = match spawned {
             Ok(output) => output,
@@ -1471,14 +1510,7 @@ impl RuntimeHandlerRunner {
         write_tool_output_if_available(&runtime, &command_output.stdout)?;
 
         let mut outcome = if command_output.interrupted {
-            Outcome {
-                context_updates: tool_context_updates(command_output.stdout.trim(), -1),
-                ..Outcome::error(
-                    FailureKind::Runtime,
-                    "tool command stopped by cancellation",
-                    Some(false),
-                )
-            }
+            tool_stopped_outcome(command_output.stdout.trim())
         } else if command_output.timed_out {
             Outcome {
                 context_updates: tool_context_updates(command_output.stdout.trim(), -1),
@@ -1492,9 +1524,23 @@ impl RuntimeHandlerRunner {
             tool_decision_outcome(&runtime, &command_output)
         };
 
-        if let Some(post_hook) = resolve_hook_command(&runtime, "tool.hooks.post") {
-            let post_hook_result = run_hook(&post_hook, "post", &runtime, &command, &cwd);
-            record_hook_failure(&runtime, &post_hook, "post", &post_hook_result)?;
+        // A stop means no further work, and a hook it stops did not fail. Either
+        // way the tool's own result stands: completed or its own error.
+        if let Some(post_hook) = resolve_hook_command(&runtime, "tool.hooks.post")
+            .filter(|_| !command_output.interrupted && !runtime.stop_signaled())
+        {
+            let post_hook_result = run_hook(
+                &post_hook,
+                "post",
+                &runtime,
+                &command,
+                &cwd,
+                &mut || stop_check(false),
+                &report_cleanup,
+            );
+            if !post_hook_result.interrupted {
+                record_hook_failure(&runtime, &post_hook, "post", &post_hook_result)?;
+            }
         }
 
         if let Some(reason) = capture_declared_artifacts(
@@ -1886,10 +1932,22 @@ impl RuntimeHandlerRunner {
                     .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             })
             .collect::<Vec<_>>();
-        let stopped = records
-            .iter()
-            .flatten()
-            .any(|record| record_stops_fork(record, tolerate));
+        // A fork stopped before this entry settles what it left behind: its
+        // children have no executor any more, and each unsettled branch keeps
+        // its saved evidence but runs nothing. A user's cancel counts too: it
+        // can land after the resume's own check of the record.
+        let stopped = run_cancel_requested(&runtime)
+            || records
+                .iter()
+                .flatten()
+                .any(|record| record_stops_fork(record, tolerate));
+        if let Some(paths) = runtime.run_paths.as_ref().filter(|_| stopped) {
+            crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
+                paths.runs_dir.clone(),
+            ))
+            .cancel_orphaned_children(&runtime.run_id, "aborted_by_user")
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+        }
         let cancel = Arc::new(AtomicBool::new(stopped));
         self.emit(
             &runtime,
@@ -1897,8 +1955,13 @@ impl RuntimeHandlerRunner {
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
 
+        let started = |index: usize| {
+            state_dir
+                .as_ref()
+                .is_some_and(|dir| branch_progress_path(dir, index).exists())
+        };
         let pending = (0..branches.len())
-            .filter(|index| records[*index].is_none() && !stopped)
+            .filter(|index| records[*index].is_none() && (!stopped || started(*index)))
             .collect::<Vec<_>>();
         let max_parallel = (max_parallel.unwrap_or(4) as usize).clamp(1, branches.len().max(1));
         let (tx, rx) = mpsc::channel::<(usize, BranchCompletion)>();
@@ -1961,18 +2024,11 @@ impl RuntimeHandlerRunner {
                 // Persist first: a terminal result or fatal error is durable
                 // before the fork cancels its siblings.
                 if let Some(dir) = state_dir.as_ref() {
-                    fs::create_dir_all(dir)
-                        .and_then(|_| {
-                            fs::write(
-                                dir.join(format!("{index}.json")),
-                                serde_json::to_vec_pretty(&record).unwrap_or_default(),
-                            )
-                        })
-                        .map_err(|error| {
-                            // Settle the siblings before failing the fork.
-                            cancel.store(true, Ordering::SeqCst);
-                            RuntimeNodeError::terminal(error.to_string())
-                        })?;
+                    write_branch_record(dir, index, &record).map_err(|error| {
+                        // Settle the siblings before failing the fork.
+                        cancel.store(true, Ordering::SeqCst);
+                        RuntimeNodeError::terminal(error.to_string())
+                    })?;
                 }
                 if record_stops_fork(&record, tolerate) {
                     cancel.store(true, Ordering::SeqCst);
@@ -2193,46 +2249,31 @@ impl RuntimeHandlerRunner {
             }};
         }
         loop {
-            if current == join {
-                return record!("completed", json!({}));
+            if let Some((status, extra)) =
+                branch_boundary(flow, &current, join, &last, entry, index)
+            {
+                return record!(status, extra);
             }
-            if is_exit_node(flow, &current) {
-                // Validation forbids success exits in branches; a branch can
-                // never end its owner successfully before the join.
-                if flow
-                    .exit_result(&current)
-                    .is_some_and(|result| result.outcome == attractor_core::ExitOutcome::Success)
-                {
-                    return record!(
+            // An accepted result goes first: it decided this branch's next step
+            // before the stop, and consuming it runs nothing.
+            if accepted.is_none()
+                && (cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime))
+            {
+                // A child that failed on its own before this stop stays the
+                // branch's error, though a crash kept the branch from seeing it.
+                return match runtime.run_paths.as_ref().map_or(Ok(None), |paths| {
+                    crate::manager_loop::recorded_child_failure(paths, &current)
+                }) {
+                    Ok(None) => record!("canceled", json!({"canceled_at": current})),
+                    Ok(Some((kind, reason))) => {
+                        let attempts = retries.get(&current).copied().unwrap_or(0) + 1;
+                        record!("error", error_value(&current, kind, &reason, attempts))
+                    }
+                    Err(error) => record!(
                         "error",
-                        error_value(
-                            &current,
-                            FailureKind::Routing,
-                            &format!("branch reached success exit {current} before its join"),
-                            0
-                        )
-                    );
-                }
-                let Some(result) = flow.exit_result(&current).cloned() else {
-                    return record!(
-                        "error",
-                        error_value(&current, FailureKind::Routing, "exit declares no result", 0)
-                    );
+                        error_value(&current, FailureKind::Runtime, &error.to_string(), 0)
+                    ),
                 };
-                let (node, decision, notes) = last.clone().unwrap_or_default();
-                let terminal = BranchTerminal {
-                    exit_id: current.clone(),
-                    result,
-                    branch: entry.to_string(),
-                    branch_index: index,
-                    node,
-                    decision,
-                    notes,
-                };
-                return record!("terminal_result", json!({ "terminal": terminal }));
-            }
-            if cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime) {
-                return record!("canceled", json!({"canceled_at": current}));
             }
             let Some(node) = flow.nodes.get(&current).cloned() else {
                 return record!(
@@ -2353,9 +2394,14 @@ impl RuntimeHandlerRunner {
                         })
                     );
                 }
+                // A stop ends the branch's retries, not its own error: the
+                // error stays a recorded error rather than a cancellation.
                 let retries_so_far = retries.get(&current).copied().unwrap_or(0);
                 let policy = retry_policy_for_outcome(flow, &current, &outcome);
-                if should_retry_attempt(&outcome, retries_so_far, &policy) {
+                if should_retry_attempt(&outcome, retries_so_far, &policy)
+                    && !cancel.load(Ordering::SeqCst)
+                    && !run_cancel_requested(runtime)
+                {
                     retries.insert(current.clone(), retries_so_far + 1);
                     if let Err(error) = save_progress!(None, None) {
                         return record!(
@@ -2400,19 +2446,15 @@ impl RuntimeHandlerRunner {
                     )
                 }
             };
-            decisions.push(json!({
-                "node": current,
-                "decision": transition.decision,
-                "target": transition.target,
-            }));
-            last = Some((
-                current.clone(),
-                transition.decision.clone(),
-                outcome.notes.clone(),
-            ));
-            *visits.entry(transition.target.clone()).or_default() += 1;
-            trace.push(transition.target.clone());
-            current = transition.target;
+            record_transition(
+                transition,
+                &outcome.notes,
+                &mut current,
+                &mut visits,
+                &mut trace,
+                &mut decisions,
+                &mut last,
+            );
             if let Err(error) = save_progress!(None, None) {
                 return record!(
                     "error",
@@ -2770,6 +2812,8 @@ fn run_hook(
     runtime: &HandlerRuntime,
     tool_command: &str,
     cwd: &Path,
+    stop: &mut dyn FnMut() -> bool,
+    report_cleanup: &dyn Fn(&str),
 ) -> ShellOutput {
     let payload = json!({
         "hook_phase": hook_phase,
@@ -2789,15 +2833,23 @@ fn run_hook(
         "ATTRACTOR_TOOL_COMMAND".to_string(),
         tool_command.to_string(),
     );
-    run_shell_command(command, cwd, None, env, Some(payload.to_string()), None).unwrap_or_else(
-        |error| ShellOutput {
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: error.to_string(),
-            timed_out: false,
-            interrupted: false,
-        },
+    run_owned_shell_command(
+        runtime,
+        command,
+        cwd,
+        None,
+        env,
+        Some(payload.to_string()),
+        stop,
+        report_cleanup,
     )
+    .unwrap_or_else(|error| ShellOutput {
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: error.to_string(),
+        timed_out: false,
+        interrupted: false,
+    })
 }
 
 fn record_hook_failure(
@@ -2824,6 +2876,17 @@ fn record_hook_failure(
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
     }
     Ok(())
+}
+
+fn tool_stopped_outcome(output: &str) -> Outcome {
+    Outcome {
+        context_updates: tool_context_updates(output, -1),
+        ..Outcome::error(
+            FailureKind::Runtime,
+            "tool command stopped by cancellation",
+            Some(false),
+        )
+    }
 }
 
 fn pre_hook_failure_reason(command: &str, result: &ShellOutput) -> String {
@@ -2926,9 +2989,49 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
         .unwrap_or_else(|| "tool command timed out".to_string())
 }
 
+/// Runs a tool's or hook's command under durable ownership, stoppable by `stop`.
+/// With no durable owner it could outlive a crash undiscoverably, so it does not
+/// start. The owner goes only once the command has ended and settled.
+#[allow(clippy::too_many_arguments)]
+fn run_owned_shell_command(
+    runtime: &HandlerRuntime,
+    command: &str,
+    cwd: &Path,
+    timeout: Option<Duration>,
+    env: BTreeMap<String, String>,
+    stdin_text: Option<String>,
+    stop: &mut dyn FnMut() -> bool,
+    report_cleanup: &dyn Fn(&str),
+) -> std::io::Result<ShellOutput> {
+    let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
+    runtime
+        .run_paths
+        .as_ref()
+        .map_or(Ok(None), ToolOwner::start)
+        .and_then(|owner| {
+            run_shell_command(
+                command,
+                cwd,
+                timeout,
+                env,
+                stdin_text,
+                can_stop.then_some(stop),
+                owner.as_ref().map(|owner| (owner, report_cleanup)),
+            )
+        })
+}
+
 /// Runs `command`, draining stdout and stderr concurrently so a chatty
-/// command never blocks on a full pipe, and kills it at `timeout` or when
-/// `stop` answers true.
+/// command never blocks on a full pipe, and kills it, with its descendants, at
+/// `timeout` or when `stop` answers true. The command ends when its shell has
+/// exited and its output has closed, so a descendant still holding the output
+/// keeps it running and stoppable. The shell stays unreaped until then, which
+/// keeps its group's ID from being reused when no `owner` holds it. An `owner`
+/// supplies the output, so a stop finds whoever still holds it, and a stop does
+/// not return until that has settled, however long a failing discovery takes:
+/// the owner's record and everything above this wait, so nothing is published,
+/// and a crash meanwhile leaves the record for recovery. Its problems go to the
+/// given report.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
@@ -2936,70 +3039,501 @@ fn run_shell_command(
     env: BTreeMap<String, String>,
     stdin_text: Option<String>,
     mut stop: Option<&mut dyn FnMut() -> bool>,
+    owner: Option<(&ToolOwner, &dyn Fn(&str))>,
 ) -> std::io::Result<ShellOutput> {
     let mut command_line = Command::new("sh");
     // Its own process group, so a timeout or cancellation stops every
     // descendant, not just the shell.
     spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
+    #[cfg(unix)]
+    if let Some((owner, _)) = owner {
+        use std::os::unix::process::CommandExt;
+        command_line.process_group(owner.group as i32);
+    }
+    let script = match owner {
+        Some((owner, _)) => format!("{}\n{command}", owner.open_marker_command()),
+        None => command.to_string(),
+    };
+    // An unlinked file, not a pipe: nothing to write as the command runs, so a
+    // command that never reads its input cannot block its own stop or output.
+    let stdin = match stdin_text {
+        Some(text) => {
+            let mut file = tempfile::tempfile()?;
+            file.write_all(text.as_bytes())?;
+            file.rewind()?;
+            Stdio::from(file)
+        }
+        None => Stdio::null(),
+    };
+    let (out_reader, out_writer, err_reader, err_writer) = match owner {
+        Some((owner, _)) => {
+            let (out_reader, out_writer) = owner.open_output("out")?;
+            let (err_reader, err_writer) = owner.open_output("err")?;
+            (
+                Some(out_reader),
+                Stdio::from(out_writer),
+                Some(err_reader),
+                Stdio::from(err_writer),
+            )
+        }
+        None => (None, Stdio::piped(), None, Stdio::piped()),
+    };
     let mut child = command_line
         .arg("-c")
-        .arg(command)
+        .arg(script)
         .current_dir(cwd)
         .envs(env)
-        .stdin(if stdin_text.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdin(stdin)
+        .stdout(out_writer)
+        .stderr(err_writer)
         .spawn()?;
-
-    if let Some(stdin_text) = stdin_text {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(stdin_text.as_bytes());
-        }
-    }
+    // It keeps its copies of the write ends, which would hold the output open.
+    drop(command_line);
 
     if timeout.is_none() && stop.is_none() {
         let output = child.wait_with_output()?;
         return Ok(shell_output_from_process(output, false, false));
     }
 
-    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+    let drain = |mut pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = bytes.clone();
+        let reader = thread::spawn(move || {
+            let mut chunk = [0_u8; 8192];
+            while let Some(read) = pipe
+                .as_mut()
+                .and_then(|pipe| pipe.read(&mut chunk).ok())
+                .filter(|read| *read > 0)
+            {
+                if let Ok(mut bytes) = sink.lock() {
+                    bytes.extend_from_slice(&chunk[..read]);
+                }
             }
-            bytes
-        })
+        });
+        (reader, bytes)
     };
-    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
-    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    let (stdout_reader, stdout) = drain(
+        out_reader
+            .map(|file| Box::new(file) as _)
+            .or_else(|| child.stdout.take().map(|pipe| Box::new(pipe) as _)),
+    );
+    let (stderr_reader, stderr) = drain(
+        err_reader
+            .map(|file| Box::new(file) as _)
+            .or_else(|| child.stderr.take().map(|pipe| Box::new(pipe) as _)),
+    );
+    let drained = || stdout_reader.is_finished() && stderr_reader.is_finished();
     let started_at = Instant::now();
     let (status, timed_out, interrupted) = loop {
-        if let Some(status) = child.try_wait()? {
-            break (status, false, false);
+        if drained() {
+            if let Some(status) = child.try_wait()? {
+                break (status, false, false);
+            }
         }
         let timed_out = timeout.is_some_and(|timeout| started_at.elapsed() >= timeout);
         let interrupted = !timed_out && stop.as_mut().is_some_and(|stop| stop());
         if timed_out || interrupted {
-            spark_agent_adapter::local_environment::terminate_process_group(
-                child.id(),
-                Some(&mut child),
-            );
+            // An owner's group is signaled only while its anchor proves the ID.
+            let group = match owner {
+                Some((owner, _)) => owner.live_group().ok().flatten(),
+                None => Some(child.id()),
+            };
+            if let Some(group) = group {
+                spark_agent_adapter::local_environment::terminate_process_group(
+                    group,
+                    Some(&mut child),
+                );
+            }
             let _ = child.kill();
-            break (child.wait()?, timed_out, interrupted);
+            let status = child.wait();
+            let output_closed = || {
+                let deadline = Instant::now() + OUTPUT_CLOSE_GRACE;
+                while !drained() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                drained()
+            };
+            if let Some((owner, report)) = owner {
+                let marks = tool_marks(&owner.marker);
+                let mut reported = None;
+                let mut retrying = false;
+                // Asked afresh on every attempt: once the anchor has gone, the ID
+                // may be anyone's, and only the marks still lead to the tool.
+                while let Err(error) = owner.live_group().and_then(|group| {
+                    if let Some(group) = group.filter(|_| retrying) {
+                        spark_agent_adapter::local_environment::terminate_process_group(
+                            group, None,
+                        );
+                    }
+                    settle_tool(group, &marks)?;
+                    output_closed()
+                        .then_some(())
+                        .ok_or_else(|| std::io::Error::other("its output is still held open"))
+                }) {
+                    let problem = error.to_string();
+                    if reported.as_ref() != Some(&problem) {
+                        report(&problem);
+                        reported = Some(problem);
+                    }
+                    std::thread::sleep(TOOL_SETTLE_RETRY);
+                    retrying = true;
+                }
+            } else if !output_closed() {
+                // No owner means nothing durable to retry from (no run root).
+                if let Ok(mut stderr) = stderr.lock() {
+                    stderr.extend_from_slice(
+                        b"\ntool cleanup incomplete: a descendant still holds its output\n",
+                    );
+                }
+            }
+            let status = status?;
+            break (status, timed_out, interrupted);
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    let collect = |bytes: Arc<std::sync::Mutex<Vec<u8>>>| {
+        bytes
+            .lock()
+            .map(|mut bytes| std::mem::take(&mut *bytes))
+            .unwrap_or_default()
+    };
     let output = std::process::Output {
         status,
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: collect(stdout),
+        stderr: collect(stderr),
     };
     Ok(shell_output_from_process(output, timed_out, interrupted))
+}
+
+/// A process's start time, which tells it from a later process reusing its pid.
+/// None when no such process exists; an error when `ps` itself cannot run.
+fn process_started_at(pid: u32) -> std::io::Result<Option<String>> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()?;
+    let started_at = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((output.status.success() && !started_at.is_empty()).then_some(started_at))
+}
+
+/// Holds a tool's process group until the executor answers (the tool ended).
+/// If the executor dies (end of input) or the group is told to stop (TERM), it
+/// instead stays until no one else is left in the group, so it proves the
+/// group's identity for as long as there is a group to stop, and an unresumed
+/// run leaves nothing. Its own helpers are its children; no tool process is.
+const TOOL_ANCHOR_SCRIPT: &str = "pause=1; trap 'pause=0.05' TERM; exec 3<&0; \
+    ( read _ <&3 ) & wait $! && exit 0; \
+    while ps -A -o pgid=,ppid=,pid= | awk -v me=$$ \
+    '$1 == me && $2 != me && $3 != me { found = 1 } END { exit !found }'; do sleep $pause; done";
+
+/// A running tool's durable ownership, on record in its run root before the
+/// tool spawns and until it ends, so an entry that exists while no executor
+/// owns the run marks what a dead executor left behind, at any point in the
+/// tool's life. The tool joins the group of an anchor process, whose pid and
+/// start time on record prove the group is still this tool's. Each tool
+/// process also inherits the record open on descriptor 9, and writes its output
+/// to FIFOs beside it, so holding any of them identifies a descendant that left
+/// the group, even after a crash.
+// ponytail: Windows has no owner, and no recovery finds its tools. A descendant
+// that leaves the group and closes all of these is a daemon no process table
+// can tie to its tool; only then does one run on.
+struct ToolOwner {
+    group: u32,
+    started_at: String,
+    marker: PathBuf,
+    release: Option<std::process::ChildStdin>,
+    anchor: Option<thread::JoinHandle<()>>,
+}
+
+impl ToolOwner {
+    /// None only where tools have no owner at all (not unix). An error means
+    /// no durable ownership could be established, so the tool must not start.
+    fn start(paths: &RunRootPaths) -> std::io::Result<Option<Self>> {
+        if cfg!(not(unix)) {
+            return Ok(None);
+        }
+        let failed = |error: std::io::Error| {
+            std::io::Error::other(format!("tool ownership could not be recorded: {error}"))
+        };
+        let mut command = Command::new("sh");
+        spark_agent_adapter::local_environment::configure_process_group(&mut command);
+        let mut anchor = command
+            .args(["-c", TOOL_ANCHOR_SCRIPT])
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(failed)?;
+        let group = anchor.id();
+        let marker = paths.root.join(TOOL_PROCESSES_DIR).join(group.to_string());
+        let release = anchor.stdin.take();
+        let [_, out, err] = tool_marks(&marker);
+        let recorded = (|| {
+            let started_at = process_started_at(group)?
+                .ok_or_else(|| std::io::Error::other("ps cannot see the anchor process"))?;
+            fs::create_dir_all(paths.root.join(TOOL_PROCESSES_DIR))?;
+            if !Command::new("mkfifo")
+                .args([&out, &err])
+                .status()?
+                .success()
+            {
+                return Err(std::io::Error::other("mkfifo failed"));
+            }
+            write_atomically(&marker, started_at.as_bytes())?;
+            Ok(started_at)
+        })();
+        let started_at = match recorded {
+            Ok(started_at) => started_at,
+            Err(error) => {
+                let _ = fs::remove_file(&out);
+                let _ = fs::remove_file(&err);
+                drop(release);
+                let _ = anchor.kill();
+                let _ = anchor.wait();
+                return Err(failed(error));
+            }
+        };
+        Ok(Some(Self {
+            group,
+            started_at,
+            marker,
+            release,
+            anchor: Some(thread::spawn(move || {
+                let _ = anchor.wait();
+            })),
+        }))
+    }
+
+    /// The group's ID while the anchor on record still holds it. Once the anchor
+    /// is gone the group is empty, and its ID may be reused by anyone's.
+    fn live_group(&self) -> std::io::Result<Option<u32>> {
+        let current = process_started_at(self.group)?;
+        Ok((current.as_deref() == Some(self.started_at.as_str())).then_some(self.group))
+    }
+
+    fn open_marker_command(&self) -> String {
+        let marker = self.marker.to_string_lossy().replace('\'', "'\\''");
+        format!("exec 9<'{marker}'")
+    }
+
+    /// The read and write ends of one of the tool's output FIFOs. Opening it
+    /// read-write first means neither of the others waits for its peer. The
+    /// child gets a write-only end, so a dead reader still means a broken pipe.
+    fn open_output(&self, extension: &str) -> std::io::Result<(fs::File, fs::File)> {
+        let fifo = self.marker.with_extension(extension);
+        let _rendezvous = fs::File::options().read(true).write(true).open(&fifo)?;
+        let reader = fs::File::open(&fifo)?;
+        let writer = fs::File::options().write(true).open(&fifo)?;
+        Ok((reader, writer))
+    }
+}
+
+impl Drop for ToolOwner {
+    /// The tool ended: nothing of it is an orphan, and any daemon it started
+    /// on purpose stays.
+    fn drop(&mut self) {
+        let [marker, out, err] = tool_marks(&self.marker);
+        let _ = fs::remove_file(out);
+        let _ = fs::remove_file(err);
+        let _ = fs::remove_file(marker);
+        if let Some(mut release) = self.release.take() {
+            let _ = release.write_all(b"\n");
+        }
+        if let Some(anchor) = self.anchor.take() {
+            let _ = anchor.join();
+        }
+    }
+}
+
+/// What a tool's processes inherit: its record and its output FIFOs.
+fn tool_marks(record: &Path) -> [PathBuf; 3] {
+    [
+        record.to_path_buf(),
+        record.with_extension("out"),
+        record.with_extension("err"),
+    ]
+}
+
+/// Every other process holding one of `marks`, on any descriptor. Holding one
+/// proves a process descends from the tool.
+fn mark_holders(marks: &[PathBuf]) -> std::io::Result<Vec<u32>> {
+    let marks = marks
+        .iter()
+        .filter_map(|mark| fs::canonicalize(mark).ok())
+        .collect::<Vec<_>>();
+    if marks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut holders = if Path::new("/proc/self/fd").exists() {
+        let mut holders = Vec::new();
+        for entry in fs::read_dir("/proc")? {
+            let Ok(pid) = entry?.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            // Another user's process cannot be listed, and cannot be the tool's.
+            let held = fs::read_dir(format!("/proc/{pid}/fd"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|fd| fs::read_link(fd.path()).ok())
+                .any(|target| marks.contains(&target));
+            if held {
+                holders.push(pid);
+            }
+        }
+        holders
+    } else {
+        // Scans the user's processes: macOS `lsof` does not match a FIFO by path.
+        let owner = owner_uid(&marks[0])?;
+        let output = Command::new("lsof")
+            .args(["-w", "-F", "pn", "-u", &owner])
+            .output()?;
+        if output.stdout.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "lsof listed no processes: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let (mut holders, mut pid) = (Vec::new(), None);
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(field) = line.strip_prefix('p') {
+                pid = field.parse::<u32>().ok();
+            } else if let Some(name) = line.strip_prefix('n') {
+                if marks.iter().any(|mark| mark.as_os_str() == name) {
+                    holders.extend(pid);
+                }
+            }
+        }
+        holders
+    };
+    holders.retain(|pid| *pid != std::process::id());
+    holders.sort_unstable();
+    holders.dedup();
+    Ok(holders)
+}
+
+#[cfg(unix)]
+fn owner_uid(path: &Path) -> std::io::Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(fs::metadata(path)?.uid().to_string())
+}
+
+#[cfg(not(unix))]
+fn owner_uid(_path: &Path) -> std::io::Result<String> {
+    Err(std::io::Error::other(
+        "tool owners need a unix process table",
+    ))
+}
+
+/// Each process's group, with whether it has not yet exited.
+fn process_groups() -> std::io::Result<Vec<(u32, u32, bool)>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,pgid=,stat="])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("ps could not list processes"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let group = fields.next()?.parse().ok()?;
+            Some((pid, group, !fields.next()?.starts_with('Z')))
+        })
+        .collect())
+}
+
+/// With `group` told to stop, stops each group holding a tool's `marks`, then
+/// waits for all of them to end. An error means something may still run. Holders
+/// are looked for again in case one forked past the last look.
+fn settle_tool(group: Option<u32>, marks: &[PathBuf]) -> std::io::Result<()> {
+    let own_group = |processes: &[(u32, u32, bool)]| {
+        processes
+            .iter()
+            .find(|(pid, ..)| *pid == std::process::id())
+            .map(|(_, group, _)| *group)
+    };
+    let mut stopped = group.into_iter().collect::<Vec<u32>>();
+    for _ in 0..3 {
+        let holders = mark_holders(marks)?;
+        if holders.is_empty() {
+            break;
+        }
+        let processes = process_groups()?;
+        let mut groups = processes
+            .iter()
+            .filter(|(pid, ..)| holders.contains(pid))
+            .map(|(_, group, _)| *group)
+            .filter(|group| Some(*group) != own_group(&processes))
+            .collect::<Vec<u32>>();
+        groups.sort_unstable();
+        groups.dedup();
+        for group in groups {
+            spark_agent_adapter::local_environment::terminate_process_group(group, None);
+            stopped.push(group);
+        }
+    }
+    let deadline = Instant::now() + TOOL_SETTLE_DEADLINE;
+    loop {
+        let running = process_groups()?
+            .iter()
+            .any(|(_, group, running)| *running && stopped.contains(group));
+        let holders = mark_holders(marks)?;
+        if !running && holders.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(format!(
+                "tool processes still run: groups {stopped:?}, holders {holders:?}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Removes a file that may already be gone.
+fn remove_settled(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Stops every tool a dead executor of this run left running. A record goes
+/// only once its tool has ended, so an error, or a recovery that dies here,
+/// leaves it to be redone.
+pub(crate) fn stop_orphaned_tools(paths: &RunRootPaths) -> std::io::Result<()> {
+    let dir = paths.root.join(TOOL_PROCESSES_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?.collect::<std::io::Result<Vec<_>>>()?,
+    };
+    let (records, leftovers): (Vec<_>, Vec<_>) = entries
+        .iter()
+        .partition(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok());
+    for entry in records {
+        let group = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let recorded = fs::read_to_string(entry.path())?;
+        let mut owned = None;
+        if let Some(group) = group {
+            if process_started_at(group)?.as_deref() == Some(recorded.as_str()) {
+                spark_agent_adapter::local_environment::terminate_process_group(group, None);
+                owned = Some(group);
+            }
+        }
+        let marks = tool_marks(&entry.path());
+        settle_tool(owned, &marks)?;
+        remove_settled(&marks[1])?;
+        remove_settled(&marks[2])?;
+        remove_settled(&marks[0])?;
+    }
+    // FIFOs and temp files of a tool that crashed before it was on record, or
+    // of a record that went above.
+    for entry in leftovers {
+        remove_settled(&entry.path())?;
+    }
+    Ok(())
 }
 
 fn shell_output_from_process(
@@ -3017,6 +3551,10 @@ fn shell_output_from_process(
 }
 
 const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
+const TOOL_PROCESSES_DIR: &str = "tool-processes";
+const OUTPUT_CLOSE_GRACE: Duration = Duration::from_secs(1);
+const TOOL_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+const TOOL_SETTLE_RETRY: Duration = Duration::from_millis(200);
 
 enum HumanGateWaitResult {
     Answered(Choice, String),
@@ -3195,19 +3733,159 @@ fn read_branch_progress(path: &Path) -> Option<BranchProgress> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// Writes through a rename: a crash leaves the old file or the whole new one.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, bytes)?;
+    fs::rename(&temp, path)
+}
+
 fn write_branch_progress(
     path: &Path,
     progress: &BranchProgress,
 ) -> std::result::Result<(), String> {
-    let write = || -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
+    write_atomically(path, &serde_json::to_vec(progress).unwrap_or_default())
+        .map_err(|error| format!("could not save branch progress: {error}"))
+}
+
+fn write_branch_record(dir: &Path, index: usize, record: &Value) -> std::io::Result<()> {
+    write_atomically(
+        &dir.join(format!("{index}.json")),
+        &serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
+}
+
+/// Settles the branches of a run with no executor left: each branch that had
+/// started and has no record gets one from its saved progress. Any
+/// failure is returned, so the caller publishes nothing and can redo this.
+pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result<()> {
+    let store = crate::RunStore::for_runs_dir(paths.runs_dir.clone());
+    let children = |dir: PathBuf| -> std::io::Result<Vec<PathBuf>> {
+        match fs::read_dir(dir) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(Vec::new())
+            }
+            entries => entries?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect(),
         }
-        let temp = path.with_extension("json.tmp");
-        fs::write(&temp, serde_json::to_vec(progress).unwrap_or_default())?;
-        fs::rename(&temp, path)
     };
-    write().map_err(|error| format!("could not save branch progress: {error}"))
+    for node in children(paths.logs_dir())? {
+        for execution in children(node.join("executions"))? {
+            let dir = execution.join("branches");
+            for path in children(dir.clone())? {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let Some(index) = name
+                    .strip_suffix(".progress.json")
+                    .and_then(|index| index.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                if dir.join(format!("{index}.json")).exists() {
+                    continue;
+                }
+                let mut progress: BranchProgress =
+                    serde_json::from_str(&fs::read_to_string(&path)?).map_err(|error| {
+                        std::io::Error::other(format!("{}: {error}", path.display()))
+                    })?;
+                let flow = store
+                    .read_graph_source(paths)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?
+                    .ok_or_else(|| {
+                        std::io::Error::other("the run's flow definition is unavailable")
+                    })?;
+                let fork = node.file_name().unwrap_or_default().to_string_lossy();
+                let Some(NodeConfig::Parallel { join, .. }) = flow
+                    .nodes
+                    .get(fork.as_ref())
+                    .and_then(|node| node.config.as_ref())
+                else {
+                    return Err(std::io::Error::other(format!(
+                        "{fork} is not a fork of the run's flow"
+                    )));
+                };
+                let entry = progress.trace.first().cloned().unwrap_or_default();
+                // An accepted result decided the branch's next step, as it would
+                // have live: a route it cannot take is its own routing error.
+                let mut routing_failure = None;
+                if let Some(outcome) = progress.accepted.take() {
+                    match select_transition(&flow, &progress.current, &outcome, &progress.visits) {
+                        Ok(transition) => record_transition(
+                            transition,
+                            &outcome.notes,
+                            &mut progress.current,
+                            &mut progress.visits,
+                            &mut progress.trace,
+                            &mut progress.decisions,
+                            &mut progress.last,
+                        ),
+                        Err(reason) => routing_failure = Some(reason),
+                    }
+                }
+                // A branch that reached its join or an exit has ended, whatever
+                // came after. A child that failed on its own stays this branch's
+                // error. Only the run as a whole is canceled.
+                let boundary = branch_boundary(
+                    &flow,
+                    &progress.current,
+                    join,
+                    &progress.last,
+                    &entry,
+                    index,
+                );
+                let (status, extra) = match (routing_failure, boundary) {
+                    (Some(reason), _) => (
+                        "error",
+                        error_value(&progress.current, FailureKind::Routing, &reason, 1),
+                    ),
+                    (None, Some(boundary)) => boundary,
+                    (None, None) => {
+                        match crate::manager_loop::recorded_child_failure(paths, &progress.current)
+                            .map_err(|error| std::io::Error::other(error.to_string()))?
+                        {
+                            Some((kind, reason)) => {
+                                let attempts = progress
+                                    .retries
+                                    .get(&progress.current)
+                                    .copied()
+                                    .unwrap_or(0)
+                                    + 1;
+                                (
+                                    "error",
+                                    error_value(&progress.current, kind, &reason, attempts),
+                                )
+                            }
+                            None => ("canceled", json!({"canceled_at": progress.current})),
+                        }
+                    }
+                };
+                let mut record = json!({
+                    "id": entry,
+                    "index": index,
+                    "status": status,
+                    "started": true,
+                    "context": progress.context,
+                    "route_trace": progress.trace,
+                    "decisions": progress.decisions,
+                    "visits": progress.visits,
+                    "notes": progress.last.as_ref().map(|(_, _, notes)| notes.clone()).unwrap_or_default(),
+                });
+                if let (Some(fields), Value::Object(extra)) = (record.as_object_mut(), extra) {
+                    fields.extend(extra);
+                }
+                write_branch_record(&dir, index, &record)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The branch node of the fork at `fork_id` (stage/attempt) whose invocation
@@ -3285,6 +3963,77 @@ fn record_stops_fork(record: &Value, tolerate: bool) -> bool {
         "error" => !record_tolerated(record, tolerate),
         _ => false,
     }
+}
+
+/// Moves a branch along a selected transition.
+fn record_transition(
+    transition: crate::routing::Transition,
+    notes: &str,
+    current: &mut String,
+    visits: &mut BTreeMap<String, u64>,
+    trace: &mut Vec<String>,
+    decisions: &mut Vec<Value>,
+    last: &mut Option<(String, String, String)>,
+) {
+    decisions.push(json!({
+        "node": current,
+        "decision": transition.decision,
+        "target": transition.target,
+    }));
+    *last = Some((
+        current.clone(),
+        transition.decision.clone(),
+        notes.to_string(),
+    ));
+    *visits.entry(transition.target.clone()).or_default() += 1;
+    trace.push(transition.target.clone());
+    *current = transition.target;
+}
+
+/// How a branch standing at `current` has ended, if it has: at its join, or at
+/// an exit. Decided by where it stands alone, so a stop cannot change it, and
+/// settling a branch from its saved progress reaches the same answer.
+fn branch_boundary(
+    flow: &FlowDefinition,
+    current: &str,
+    join: &str,
+    last: &Option<(String, String, String)>,
+    entry: &str,
+    index: usize,
+) -> Option<(&'static str, Value)> {
+    if current == join {
+        return Some(("completed", json!({})));
+    }
+    if !is_exit_node(flow, current) {
+        return None;
+    }
+    // Validation forbids success exits in branches; a branch can never end its
+    // owner successfully before the join.
+    let error = |reason: &str| {
+        Some((
+            "error",
+            error_value(current, FailureKind::Routing, reason, 0),
+        ))
+    };
+    let Some(result) = flow.exit_result(current).cloned() else {
+        return error("exit declares no result");
+    };
+    if result.outcome == attractor_core::ExitOutcome::Success {
+        return error(&format!(
+            "branch reached success exit {current} before its join"
+        ));
+    }
+    let (node, decision, notes) = last.clone().unwrap_or_default();
+    let terminal = BranchTerminal {
+        exit_id: current.to_string(),
+        result,
+        branch: entry.to_string(),
+        branch_index: index,
+        node,
+        decision,
+        notes,
+    };
+    Some(("terminal_result", json!({ "terminal": terminal })))
 }
 
 fn error_value(node: &str, kind: FailureKind, reason: &str, attempts: u64) -> Value {
