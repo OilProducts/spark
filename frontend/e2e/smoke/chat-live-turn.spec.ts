@@ -6,7 +6,7 @@ import { conversationBatch, conversationRow, conversationRowOf, liveFrame, summa
 
 // The smoke server runs chat turns on the fake Codex app-server in gated mode
 // (see scripts/run-rust-smoke-server.mjs); this test opens its gates.
-const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
+const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', `.tmp-ui-smoke-${process.env.SPARK_UI_SMOKE_PORT}`)
 const openGate = (name: string) => {
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
     writeFileSync(path.join(tmpRoot, 'gates', name), '')

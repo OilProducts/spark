@@ -2,7 +2,7 @@
 type: Flow
 id: merge_change
 title: Merge Change
-description: Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating only when conflicts require resolution.
+description: Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating whenever conflicts were resolved or the target moved past the merge base, and skipping validation only when the merged tree is the source tree already tested.
 execution_lock:
   scope: project
   key: software-development-integration
@@ -28,4 +28,4 @@ metadata:
     launcher: true
 ---
 
-Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating only when conflicts require resolution.
+Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating whenever conflicts were resolved or the target moved past the merge base, and skipping validation only when the merged tree is the source tree already tested.

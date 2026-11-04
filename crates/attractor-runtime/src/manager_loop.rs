@@ -156,17 +156,10 @@ pub(crate) fn execute_manager_loop(
                 &context,
             ));
         }
-        if runtime
-            .cancel
-            .as_ref()
-            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
-        {
-            runtime
-                .interrupted
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+        if runtime.stop_requested() {
             return Ok(Outcome::error(
                 FailureKind::Runtime,
-                "Branch canceled by its fork while its child ran",
+                "Canceled while its child ran",
                 Some(false),
             ));
         }
@@ -616,10 +609,11 @@ fn child_control(
     }
 }
 
-/// Runs a child invocation. If the owning fork cancels this branch while
-/// the child runs, the child's cancellation is requested through the run
-/// controls and the child settles before this returns; the invocation is
-/// then marked interrupted, so the branch records cancellation, not an error.
+/// Runs a child invocation. If the owning fork or the user cancels this
+/// invocation while the child runs, the child's cancellation is requested
+/// through the run controls and the child settles before this returns; the
+/// invocation is then marked interrupted, so a branch records cancellation,
+/// not an error.
 fn watch_owner_cancel<T>(
     runtime: &HandlerRuntime,
     store: &RunStore,
@@ -627,20 +621,16 @@ fn watch_owner_cancel<T>(
     run: impl FnOnce() -> T,
 ) -> T {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let Some(cancel) = runtime.cancel.clone() else {
-        return run();
-    };
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while !done.load(Ordering::SeqCst) {
                 // The child's record may not exist yet; retry until accepted.
-                if cancel.load(Ordering::SeqCst)
+                if runtime.stop_requested()
                     && crate::controls::RuntimeControls::new(store.clone())
                         .request_cancel(child_run_id)
                         .is_ok()
                 {
-                    runtime.interrupted.store(true, Ordering::SeqCst);
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(50));

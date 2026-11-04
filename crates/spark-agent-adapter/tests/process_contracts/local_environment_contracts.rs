@@ -86,7 +86,9 @@ fn local_environment_resolves_paths_and_handles_file_directory_lifecycle() {
 
 #[test]
 fn local_environment_exec_command_captures_streams_timeout_and_filters_environment() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let old_password = std::env::var_os("Unit_Test_PaSsWoRd");
     let old_visible = std::env::var_os("UNIT_TEST_VISIBLE");
@@ -167,7 +169,9 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
 
 #[test]
 fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keeps_explicit_vars() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let old_password = std::env::var_os("Unit_Test_PaSsWoRd");
     let old_visible = std::env::var_os("UNIT_TEST_VISIBLE");
@@ -231,7 +235,9 @@ fn local_environment_exec_command_uses_bash_on_unix() {
 #[test]
 fn local_environment_exec_command_kills_child_that_survives_sigterm() {
     // The command inherits PATH, which other tests swap out under this lock.
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let marker = tempdir.path().join("survived.txt");
     let environment = LocalExecutionEnvironment::with_options(

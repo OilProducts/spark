@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -100,6 +101,39 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
     assert!(!api_missing.body_text().contains("process ui"));
 }
 
+/// Help prints and exits: it never writes to the Spark home it inherited,
+/// and never reaches a command's own side effects.
+#[test]
+fn subcommand_help_writes_nothing() {
+    for (args, usage) in [
+        (vec!["serve", "--help"], "usage: spark-server serve"),
+        (vec!["serve", "-h"], "usage: spark-server serve"),
+        (vec!["init", "--help"], "usage: spark-server init"),
+        (
+            vec!["service", "install", "--help"],
+            "usage: spark-server service",
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let spark_home = temp.path().join("spark-home");
+        let output = Command::new(env!("CARGO_BIN_EXE_spark-server"))
+            .args(&args)
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &spark_home)
+            .current_dir(temp.path())
+            .output()
+            .expect("run spark-server");
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+        assert!(stdout.starts_with(usage), "{args:?}: {stdout}");
+        let written = fs::read_dir(temp.path())
+            .expect("list temp")
+            .map(|entry| entry.expect("entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(written, Vec::<PathBuf>::new(), "{args:?} wrote files");
+    }
+}
+
 /// One server per Spark home: a second process on the same home fails
 /// before serving, an independent home is unaffected, and the home opens
 /// again once its server is gone.
@@ -112,7 +146,6 @@ fn a_second_serve_process_on_one_home_exits_before_serving() {
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     let first = RunningServer::start(temp.path(), &ui_dir);
 
-    let port = free_tcp_port();
     let mut second = Command::new(env!("CARGO_BIN_EXE_spark-server"))
         .env("HOME", temp.path())
         .args([
@@ -120,18 +153,18 @@ fn a_second_serve_process_on_one_home_exits_before_serving() {
             "--host",
             "127.0.0.1",
             "--port",
-            &port.to_string(),
+            "0",
             "--data-dir",
             &temp.path().join("spark-home").to_string_lossy(),
             "--ui-dir",
             &ui_dir.to_string_lossy(),
         ])
         .current_dir(repo_root())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn second server");
-    let status = (0..200)
+    let status = (0..3600)
         .find_map(|_| {
             let status = second.try_wait().expect("poll second server");
             if status.is_none() {
@@ -156,7 +189,15 @@ fn a_second_serve_process_on_one_home_exits_before_serving() {
             && stderr.contains("Another Spark server"),
         "{stderr}"
     );
-    assert!(try_http_get(port, "/").is_err());
+    // It exited without ever announcing an address to serve on.
+    let mut stdout = String::new();
+    second
+        .stdout
+        .take()
+        .expect("stdout")
+        .read_to_string(&mut stdout)
+        .expect("read stdout");
+    assert_eq!(stdout, "");
     assert_eq!(http_get(first.port, "/").status, 200);
 
     let independent = RunningServer::start(other.path(), &ui_dir);
@@ -373,7 +414,7 @@ fn gate_flow() -> Value {
 }
 
 fn wait_for_tree(data_dir: &Path, ready: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-    for _ in 0..200 {
+    for _ in 0..3600 {
         let records = run_records(data_dir);
         if ready(&records) {
             return records;
@@ -422,9 +463,7 @@ impl RunningServer {
     }
 
     fn start_with(root: &Path, ui_dir: &Path, configure: impl FnOnce(&mut Command)) -> Self {
-        let port = free_tcp_port();
         let data_dir = root.join("spark-home");
-        let port_text = port.to_string();
         let data_dir_text = data_dir.to_string_lossy().into_owned();
         let ui_dir_text = ui_dir.to_string_lossy().into_owned();
         let mut command = Command::new(env!("CARGO_BIN_EXE_spark-server"));
@@ -437,7 +476,7 @@ impl RunningServer {
                 "--host",
                 "127.0.0.1",
                 "--port",
-                port_text.as_str(),
+                "0",
                 "--data-dir",
                 data_dir_text.as_str(),
                 "--ui-dir",
@@ -449,23 +488,28 @@ impl RunningServer {
             .spawn()
             .expect("spawn spark-server serve");
 
-        for _ in 0..100 {
-            if let Some(status) = child.try_wait().expect("poll spark-server") {
+        // The server binds a free port and prints it once it can serve.
+        let stdout = BufReader::new(child.stdout.take().expect("server stdout"));
+        let (address, printed) = mpsc::channel();
+        thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                if let Some(port) = line.rsplit(':').next().and_then(|port| port.parse().ok()) {
+                    let _ = address.send(port);
+                }
+            }
+        });
+        match printed.recv_timeout(Duration::from_secs(180)) {
+            Ok(port) => Self { child, port },
+            Err(error) => {
+                let _ = child.kill();
+                let status = child.wait().expect("reap spark-server");
                 let mut stderr = String::new();
                 if let Some(mut stream) = child.stderr.take() {
                     let _ = stream.read_to_string(&mut stderr);
                 }
-                panic!("spark-server exited early with {status}: {stderr}");
-            }
-            match try_http_get(port, "/") {
-                Ok(response) if response.status == 200 => return Self { child, port },
-                _ => thread::sleep(Duration::from_millis(50)),
+                panic!("spark-server did not start ({error}, {status}): {stderr}");
             }
         }
-
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("spark-server did not become ready on port {port}");
     }
 
     fn stop(&mut self) {
@@ -508,7 +552,7 @@ fn http_json(port: u16, method: &str, path: &str, body: &Value) -> HttpResponse 
     let body = serde_json::to_vec(body).expect("json body");
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(60)))
         .expect("read timeout");
     write!(
         stream,
@@ -524,7 +568,7 @@ fn http_json(port: u16, method: &str, path: &str, body: &Value) -> HttpResponse 
 
 fn try_http_get(port: u16, path: &str) -> std::io::Result<HttpResponse> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
@@ -597,14 +641,6 @@ fn decode_chunked_body(raw_body: &[u8]) -> Vec<u8> {
         cursor += size + 2;
     }
     decoded
-}
-
-fn free_tcp_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind free port")
-        .local_addr()
-        .expect("local address")
-        .port()
 }
 
 fn repo_root() -> PathBuf {

@@ -422,6 +422,11 @@ where
             &paths,
             pipeline_started_event(&run_id, &flow.id, &current_node, resumed),
         )?;
+        // The lock was taken after this record was built, and terminal writes
+        // persist this copy: it must not put a queued state back on disk.
+        if let Some(disk) = store.read_run_record(&paths)? {
+            record.execution_lock = disk.execution_lock;
+        }
         if !resumed {
             save_checkpoint_event(
                 &store,

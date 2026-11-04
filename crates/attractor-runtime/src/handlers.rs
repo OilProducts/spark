@@ -386,7 +386,7 @@ impl HandlerRuntime {
 
     /// Whether the owning fork or the user canceled this invocation; a
     /// positive answer marks the invocation interrupted.
-    fn stop_requested(&self) -> bool {
+    pub(crate) fn stop_requested(&self) -> bool {
         let stop = self.canceled_by_owner()
             || self
                 .run_paths

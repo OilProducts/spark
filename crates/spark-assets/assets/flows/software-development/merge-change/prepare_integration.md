@@ -13,6 +13,7 @@ config:
     context.integration.source_commit: source_commit
     context.integration.target_branch: target_branch
     context.integration.target_commit: target_commit
+    context.integration.target_moved: target_moved
 contracts:
   writes_context:
   - context.integration.path
@@ -20,6 +21,7 @@ contracts:
   - context.integration.target_commit
   - context.integration.source_commit
   - context.integration.conflict_count
+  - context.integration.target_moved
 routes:
   next:
     to: check_conflicts
@@ -39,6 +41,12 @@ if [ "$target_branch" = "HEAD" ]; then
 fi
 target_commit=$(git rev-parse HEAD)
 source_commit=$(git rev-parse --verify "${SPARK_SOURCE_REF}^{commit}")
+# The merged tree is the one already tested only when the target has not moved
+# past the source branch's merge base.
+target_moved=true
+if [ "$(git merge-base "$target_commit" "$source_commit" || true)" = "$target_commit" ]; then
+  target_moved=false
+fi
 repo_root=$(git rev-parse --show-toplevel)
 # Worktrees live under <repo>/.spark/state, never inside .git: tooling
 # such as Vite refuses to serve or resolve paths matching **/.git/**. The
@@ -71,6 +79,6 @@ case "$conflicts" in
     exit 1
     ;;
 esac
-printf '{"path":"%s","target_branch":"%s","target_commit":"%s","source_commit":"%s","conflict_count":%s}' \
-  "$worktree" "$target_branch" "$target_commit" "$source_commit" "$conflicts"
+printf '{"path":"%s","target_branch":"%s","target_commit":"%s","source_commit":"%s","conflict_count":%s,"target_moved":"%s"}' \
+  "$worktree" "$target_branch" "$target_commit" "$source_commit" "$conflicts" "$target_moved"
 ```

@@ -24,7 +24,9 @@ struct EnvVarGuard {
 
 #[test]
 fn claude_code_chat_dispatch_resumes_then_retries_once_fresh() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -59,7 +61,9 @@ fn claude_code_chat_dispatch_resumes_then_retries_once_fresh() {
 
 #[test]
 fn claude_code_pins_instructions_on_every_spawn_as_a_system_prompt_file() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -92,7 +96,9 @@ fn claude_code_pins_instructions_on_every_spawn_as_a_system_prompt_file() {
 
 #[test]
 fn claude_code_rebuilds_the_system_prompt_on_fresh_and_resumed_spawns() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -162,7 +168,9 @@ fn agent_request(project_path: &std::path::Path) -> AgentTurnRequest {
 
 #[test]
 fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -292,7 +300,9 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
 
 #[test]
 fn claude_code_backend_passes_the_requested_effort_to_the_cli() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -314,7 +324,9 @@ fn claude_code_backend_passes_the_requested_effort_to_the_cli() {
 
 #[test]
 fn claude_code_tool_calls_emit_canonical_payloads_through_completion() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "tool-payloads");
@@ -373,7 +385,9 @@ fn claude_code_tool_calls_emit_canonical_payloads_through_completion() {
 
 #[test]
 fn claude_code_multi_block_completions_consume_partial_ids_in_order() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "multi-block");
@@ -406,7 +420,9 @@ fn claude_code_multi_block_completions_consume_partial_ids_in_order() {
 
 #[test]
 fn claude_code_completions_mint_ids_without_partial_events() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "no-partials");
@@ -438,7 +454,9 @@ fn claude_code_completions_mint_ids_without_partial_events() {
 
 #[test]
 fn claude_code_result_only_and_empty_result_contracts() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
 
@@ -471,7 +489,9 @@ fn claude_code_result_only_and_empty_result_contracts() {
 
 #[test]
 fn claude_code_usage_is_the_per_model_delta_of_cumulative_model_usage() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
@@ -520,7 +540,9 @@ fn claude_code_usage_is_the_per_model_delta_of_cumulative_model_usage() {
 
 #[test]
 fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
@@ -585,7 +607,9 @@ fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() 
 
 #[test]
 fn codergen_rejects_an_unrepresentable_timeout_before_starting_the_agent() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -612,7 +636,9 @@ fn codergen_rejects_an_unrepresentable_timeout_before_starting_the_agent() {
 
 #[test]
 fn claude_code_model_discovery_queries_catalog_over_stdio_and_maps_default_to_blank() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -651,7 +677,9 @@ fn claude_code_model_discovery_queries_catalog_over_stdio_and_maps_default_to_bl
 #[test]
 #[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
 fn real_claude_code_cli_completes_a_text_only_turn() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _mode_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_PERMISSION_MODE", "default");
 
@@ -678,7 +706,9 @@ fn real_claude_code_cli_completes_a_text_only_turn() {
 #[test]
 #[ignore = "requires an installed, logged-in claude CLI"]
 fn real_claude_code_cli_lists_models_over_control_protocol() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let models = list_available_claude_code_models().expect("real model catalog");
     assert!(!models.is_empty(), "empty model catalog from real CLI");
 }
@@ -688,7 +718,9 @@ fn real_claude_code_cli_lists_models_over_control_protocol() {
 #[test]
 #[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
 fn real_claude_code_background_task_holds_the_turn_and_stop_ends_it() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let prompt = "Use the Bash tool with run_in_background set to true to run `sleep 20 && echo BUILD_DONE`. \
         Then reply STARTED and end your turn without waiting. When the background task completes, reply FINISHED.";
@@ -736,7 +768,9 @@ fn real_claude_code_background_task_holds_the_turn_and_stop_ends_it() {
 
 #[test]
 fn claude_code_error_result_surfaces_as_backend_error() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "error");
@@ -765,7 +799,9 @@ fn claude_code_error_result_surfaces_as_backend_error() {
 
 #[test]
 fn captured_native_configuration_controls_actual_claude_launch() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("args.log");
     let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
@@ -807,7 +843,9 @@ fn answer_request(
 
 #[test]
 fn claude_code_question_round_trip_routes_answers_and_rejects_dead_requests() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question");
@@ -876,7 +914,9 @@ fn claude_code_question_round_trip_routes_answers_and_rejects_dead_requests() {
 
 #[test]
 fn claude_code_interrupt_completes_normally_and_matches_receipt_ids() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     for mode in [
@@ -926,7 +966,9 @@ fn claude_code_interrupt_completes_normally_and_matches_receipt_ids() {
 
 #[test]
 fn claude_code_control_answers_every_request_despite_malformed_traffic() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     // The fake asserts each answer it is owed before finishing the turn.
@@ -961,7 +1003,9 @@ fn claude_code_control_answers_every_request_despite_malformed_traffic() {
 
 #[test]
 fn claude_code_init_fallback_denies_an_outstanding_question() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-before-init");
@@ -978,7 +1022,9 @@ fn claude_code_init_fallback_denies_an_outstanding_question() {
 
 #[test]
 fn claude_code_question_without_a_handler_is_denied() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-denied");
@@ -1005,7 +1051,9 @@ fn claude_code_question_without_a_handler_is_denied() {
 
 #[test]
 fn claude_code_plan_mode_turn_submits_exit_plan_mode_as_the_plan() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("args.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1057,7 +1105,9 @@ fn claude_code_plan_mode_turn_submits_exit_plan_mode_as_the_plan() {
 
 #[test]
 fn claude_code_background_task_holds_the_turn_until_its_follow_up_result() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("claude.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1102,7 +1152,9 @@ fn claude_code_background_task_holds_the_turn_until_its_follow_up_result() {
 
 #[test]
 fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "background-interrupt");
@@ -1144,7 +1196,9 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
 
 #[test]
 fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "queued-interrupt");
@@ -1178,7 +1232,9 @@ fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() 
 
 #[test]
 fn claude_code_message_sent_mid_turn_folds_in_and_holds_the_turn_until_delivered() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("claude.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1229,7 +1285,9 @@ fn claude_code_message_sent_mid_turn_folds_in_and_holds_the_turn_until_delivered
 
 #[test]
 fn claude_code_reports_a_mid_turn_message_the_stopped_turn_never_used() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "mid-turn-stop");
@@ -1272,7 +1330,9 @@ fn claude_code_reports_a_mid_turn_message_the_stopped_turn_never_used() {
 
 #[test]
 fn claude_code_crash_after_init_resumes_the_session_once() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     // crash-orphan leaves a descendant holding stdout and stderr open;
     // crash-chatty-orphan's descendant also keeps writing to stdout.
@@ -1308,7 +1368,9 @@ fn claude_code_crash_after_init_resumes_the_session_once() {
 
 #[test]
 fn claude_code_interrupt_does_not_hide_api_failures_and_process_death_expires_questions() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     for mode in ["interrupt-error", "dead-question-exit"] {
@@ -1442,7 +1504,9 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
 
 #[test]
 fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("claude-config");
     std::fs::create_dir_all(&config_dir).unwrap();
@@ -1482,7 +1546,9 @@ fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
 
 #[test]
 fn default_claude_config_dir_is_spark_owned_and_needs_its_own_sign_in() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let spark_home = temp.path().join("spark-home");
     let config_dir = spark_home.join("runtime/claude");
@@ -1522,7 +1588,9 @@ fn default_claude_config_dir_is_spark_owned_and_needs_its_own_sign_in() {
 
 #[test]
 fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
@@ -1541,7 +1609,9 @@ fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
 fn claude_code_sends_images_as_base64_blocks_and_files_as_references() {
     use base64::Engine as _;
 
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1675,7 +1745,9 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
 
 #[test]
 fn claude_code_decision_envelope_node_passes_its_schema_and_decides_from_the_structured_result() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1724,7 +1796,9 @@ fn claude_code_decision_envelope_node_passes_its_schema_and_decides_from_the_str
 
 #[test]
 fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1798,7 +1872,9 @@ fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
 
 #[test]
 fn claude_code_envelope_repairs_stop_at_the_limit_when_retries_stay_exhausted() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1844,7 +1920,9 @@ fn claude_code_envelope_repairs_stop_at_the_limit_when_retries_stay_exhausted() 
 #[test]
 #[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
 fn real_claude_code_decision_envelope_node_returns_a_schema_valid_decision() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _mode_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_PERMISSION_MODE", "default");
     let mut request = envelope_node_request(temp.path(), Some("decision_envelope"));
@@ -1868,7 +1946,9 @@ fn real_claude_code_decision_envelope_node_returns_a_schema_valid_decision() {
 
 #[test]
 fn claude_code_status_frames_become_compaction_and_warnings_and_the_turn_records_context_usage() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("claude-args.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
@@ -1922,7 +2002,9 @@ fn claude_code_status_frames_become_compaction_and_warnings_and_the_turn_records
 
 #[test]
 fn claude_code_subagent_frames_nest_under_the_spawning_call() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "subagent");
@@ -1998,7 +2080,9 @@ fn claude_code_subagent_frames_nest_under_the_spawning_call() {
 
 #[test]
 fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("claude-args.log");
     let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());

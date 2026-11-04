@@ -129,7 +129,7 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await page.unrouteAll({ behavior: 'wait' })
 })
 
-const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
+const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', `.tmp-ui-smoke-${process.env.SPARK_UI_SMOKE_PORT}`)
 const smokeFlow = {
     schema_version: '2',
     id: 'overview-live-smoke',

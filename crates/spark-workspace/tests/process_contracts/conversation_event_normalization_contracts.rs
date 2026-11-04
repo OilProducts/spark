@@ -478,7 +478,9 @@ fn a_prepared_turn_resumed_after_project_deletion_starts_no_provider_work() {
 
 #[test]
 fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
-    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let _env_lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
@@ -1901,7 +1903,9 @@ fn claude_code_live_text_completions_update_delta_segments_in_place() {
 #[test]
 fn claude_code_result_only_follow_up_keeps_the_earlier_result_text() {
     use std::os::unix::fs::PermissionsExt;
-    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let _env_lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for (subtype, is_error) in [("success", false), ("error_during_execution", true)] {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = settings(temp.path());
@@ -2289,7 +2293,8 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
 #[test]
 fn request_user_input_live_request_is_answerable_before_original_turn_finishes() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let backend = BlockingRequestInputBackend::new();
+    // The answer alone must not finish the turn: "before it finishes" is held.
+    let backend = BlockingRequestInputBackend::holding_turn_after_answer();
     let service =
         crate::conversations_with_backend(settings(temp.path()), Arc::new(backend.clone()));
     let (prepared, _) = service
@@ -2376,6 +2381,7 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
         .expect("assistant turn");
     assert_eq!(assistant_turn["status"], "streaming");
 
+    backend.release_turn();
     turn_handle
         .join()
         .expect("turn thread")
@@ -2601,6 +2607,8 @@ struct BlockingRequestInputBackend {
     answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
     request_emitted: Arc<(Mutex<bool>, Condvar)>,
     answer_delivered: Arc<(Mutex<bool>, Condvar)>,
+    /// Open unless a test holds the turn running past its answer.
+    turn_released: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl BlockingRequestInputBackend {
@@ -2610,14 +2618,27 @@ impl BlockingRequestInputBackend {
             answer_requests: Arc::new(Mutex::new(Vec::new())),
             request_emitted: Arc::new((Mutex::new(false), Condvar::new())),
             answer_delivered: Arc::new((Mutex::new(false), Condvar::new())),
+            turn_released: Arc::new((Mutex::new(true), Condvar::new())),
         }
+    }
+
+    fn holding_turn_after_answer() -> Self {
+        let backend = Self::new();
+        *backend.turn_released.0.lock().expect("turn released") = false;
+        backend
+    }
+
+    fn release_turn(&self) {
+        let (lock, cvar) = &*self.turn_released;
+        *lock.lock().expect("turn released") = true;
+        cvar.notify_all();
     }
 
     fn wait_for_request(&self) {
         let (lock, cvar) = &*self.request_emitted;
         let emitted = lock.lock().expect("request emitted");
         let (emitted, timeout) = cvar
-            .wait_timeout_while(emitted, Duration::from_secs(5), |emitted| !*emitted)
+            .wait_timeout_while(emitted, Duration::from_secs(120), |emitted| !*emitted)
             .expect("request emitted wait");
         assert!(*emitted, "request-user-input event was not emitted");
         assert!(
@@ -2653,7 +2674,7 @@ impl AgentTurnBackend for BlockingRequestInputBackend {
         let (lock, cvar) = &*self.answer_delivered;
         let delivered = lock.lock().expect("answer delivered");
         let (delivered, timeout) = cvar
-            .wait_timeout_while(delivered, Duration::from_secs(5), |delivered| !*delivered)
+            .wait_timeout_while(delivered, Duration::from_secs(120), |delivered| !*delivered)
             .expect("answer delivered wait");
         if !*delivered || timeout.timed_out() {
             return Err(AgentError {
@@ -2661,6 +2682,15 @@ impl AgentTurnBackend for BlockingRequestInputBackend {
                 retryable: false,
                 raw: None,
             });
+        }
+        drop(delivered);
+        {
+            let (lock, cvar) = &*self.turn_released;
+            let released = lock.lock().expect("turn released");
+            drop(
+                cvar.wait_timeout_while(released, Duration::from_secs(120), |released| !*released)
+                    .expect("turn released wait"),
+            );
         }
         if let Some(sink) = event_sink.as_ref() {
             sink(request_user_input_event_with("input-2", "decision-2"));
@@ -3652,7 +3682,9 @@ fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
 
 #[test]
 fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -3783,7 +3815,9 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
 
 #[test]
 fn claude_chat_turns_on_one_session_each_report_their_own_usage_delta() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -3833,7 +3867,9 @@ fn claude_chat_turns_on_one_session_each_report_their_own_usage_delta() {
 
 #[test]
 fn claude_plan_mode_turn_creates_a_pending_review_proposed_plan() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -3877,7 +3913,9 @@ fn claude_plan_mode_turn_creates_a_pending_review_proposed_plan() {
 
 #[test]
 fn claude_stream_interrupt_error_result_completes_shortened_turn() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -3989,7 +4027,9 @@ fn assert_retry_succeeds(
 
 #[test]
 fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -4026,7 +4066,9 @@ fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
 fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
     use spark_workspace::inbox::{install_runtime, InboxRuntime};
 
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let project = temp
         .path()
@@ -4356,13 +4398,16 @@ fn claude_turn_with_mid_turn_send(
     let running = service.clone();
     let handle = std::thread::spawn(move || {
         running.complete_started_turn_with_progress_payloads(prepared.unwrap(), move |payload| {
-            if payload["type"] == "stream_delta" {
+            let streaming_text = live_segments(std::slice::from_ref(&payload))
+                .iter()
+                .any(|segment| segment["kind"] == "assistant_message");
+            live.lock().unwrap().push(payload);
+            if streaming_text {
                 let _ = streaming.send(());
             }
-            live.lock().unwrap().push(payload);
         })
     });
-    streamed.recv_timeout(Duration::from_secs(10)).unwrap();
+    streamed.recv_timeout(Duration::from_secs(120)).unwrap();
     let (none, sent) = service
         .send_turn("mid-turn", request("Also check the docs."))
         .expect("no 409 while the turn streams");
@@ -4409,7 +4454,9 @@ fn user_message_segment(snapshot: &Value) -> Value {
 
 #[test]
 fn a_send_while_a_claude_turn_streams_is_delivered_into_that_turn() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let (sent, completed, _) =
         claude_turn_with_mid_turn_send(temp.path(), "mid-turn-message", false);
@@ -4452,7 +4499,9 @@ fn a_send_while_a_claude_turn_streams_is_delivered_into_that_turn() {
 
 #[test]
 fn a_message_the_stopped_claude_turn_never_read_is_shown_not_sent() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let (_, completed, _) = claude_turn_with_mid_turn_send(temp.path(), "mid-turn-stop", true);
 
@@ -4463,7 +4512,9 @@ fn a_message_the_stopped_claude_turn_never_read_is_shown_not_sent() {
 
 #[test]
 fn output_streamed_the_moment_a_message_is_accepted_follows_it_live_and_persisted() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let (_, completed, payloads) =
         claude_turn_with_mid_turn_send(temp.path(), "mid-turn-continue", false);

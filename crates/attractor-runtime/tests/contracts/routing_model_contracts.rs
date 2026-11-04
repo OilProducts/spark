@@ -223,6 +223,9 @@ fn an_undeclared_decision_fails_the_run_with_the_declared_set() {
         let (runner, calls) = scripted_runner(answers, false);
         let run = execute(review_loop(5), runner, None);
         assert_eq!(run.result.status, "failed", "{decision}");
+        // The persisted record, which every reader uses, never claims success.
+        assert_eq!(run.record().status, "failed", "{decision}");
+        assert_eq!(run.record().outcome, None, "{decision}");
         let reason = &run.record().last_error;
         assert!(reason.starts_with("no_matching_route"), "{reason}");
         assert!(
@@ -765,6 +768,60 @@ fn a_blocked_branch_cancels_and_settles_running_siblings() {
     let results = fork_results(&run);
     assert_eq!(results[1]["status"], json!("canceled"));
     assert_eq!(results[1]["started"], json!(true));
+}
+
+/// A branch's routing error saved before a crash, with the fork's own status
+/// never written: resuming stays fatal, even in a tolerant fork, relaunches
+/// nothing and never reaches the join.
+#[test]
+fn a_saved_routing_error_branch_is_fatal_on_resume() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let workdir = temp.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let flow = fork_flow(true);
+    let paths = attractor_runtime::prepare_fresh_run(
+        &store,
+        &RunRecord::new("run-contract", workdir.to_string_lossy()),
+        &flow,
+        None,
+        None,
+        &LaunchContext::empty(),
+        &ContextMap::new(),
+    )
+    .unwrap();
+    let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+    std::fs::create_dir_all(&branches).unwrap();
+    std::fs::write(
+        branches.join("0.json"),
+        serde_json::to_vec(&json!({
+            "id": "a", "index": 0, "status": "error", "started": true, "context": {},
+            "error": {"node": "a", "kind": "routing", "tolerable": false,
+                "reason": "no_matching_route: node \"a\" returned decision \"approve\"", "attempts": 1}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (runner, calls) = scripted_runner(
+        script(&[
+            ("b", vec![finding("from b")]),
+            ("synth", vec![completed("done")]),
+        ]),
+        false,
+    );
+    let run = execute_in(temp, flow, runner, Some(ExecutionStart::Prepared { paths }));
+    assert_eq!(run.result.status, "failed");
+    assert!(
+        run.record().last_error.contains("no_matching_route"),
+        "{}",
+        run.record().last_error
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "{:?}",
+        calls.lock().unwrap()
+    );
+    assert_eq!(fork_results(&run)[0]["error"]["kind"], json!("routing"));
 }
 
 #[test]
@@ -1917,38 +1974,78 @@ fn every_fork_round_keeps_its_own_branch_execution_evidence() {
     }
 }
 
-/// A tool whose descendant would write `effect` after a delay.
-fn nested_effect_command(effect: &Path) -> String {
+/// How long a stopped tool's descendant would run on. A stop that waited for
+/// it, or left it holding the tool's output, misses `SETTLE_WITHIN`.
+const DESCENDANT_SLEEP_SECS: u64 = 120;
+const SETTLE_WITHIN: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// A tool whose descendant records its pid and writes `<name>.effect` after
+/// its sleep; the tool itself outlives the descendant by printing afterwards.
+fn nested_effect_command(root: &Path, name: &str) -> String {
+    let (pid, effect) = (
+        root.join(format!("{name}.pid")),
+        root.join(format!("{name}.effect")),
+    );
     format!(
-        "sh -c 'sleep 8; echo effect > \"{}\"'; echo done",
+        "sh -c 'echo $$ > \"{}\"; sleep {DESCENDANT_SLEEP_SECS}; echo effect > \"{}\"'; echo done",
+        pid.display(),
         effect.display()
     )
+}
+
+/// The recorded descendant is gone, so it can never write its effect.
+fn assert_descendant_stopped(root: &Path, name: &str) {
+    let effect = root.join(format!("{name}.effect"));
+    // A shell still starting when the stop landed never ran the descendant.
+    let Ok(pid) = std::fs::read_to_string(root.join(format!("{name}.pid"))) else {
+        assert!(!effect.exists(), "descendant {name} wrote its effect");
+        return;
+    };
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let deadline = std::time::Instant::now() + SETTLE_WITHIN;
+    while alive() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant {name} still running"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(!effect.exists(), "descendant {name} wrote its effect");
 }
 
 #[test]
 fn canceling_a_branch_tool_stops_its_descendants_promptly() {
     let temp = tempfile::tempdir().unwrap();
-    let effect = temp.path().join("effect");
+    let root = temp.path().to_path_buf();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let canceler = store.clone();
+    let cancel_root = root.clone();
     std::thread::spawn(move || {
+        // Both branch tools have started their descendants.
         let paths = loop {
             if let Some(paths) = canceler.find_run_root("run-contract").ok().flatten() {
-                let branches = paths.logs_dir().join("fork/executions/1-0/branches");
-                if (0..2).all(|index| branches.join(format!("{index}.progress.json")).exists()) {
+                if ["a", "b"]
+                    .iter()
+                    .all(|name| cancel_root.join(format!("{name}.pid")).exists())
+                {
                     break paths;
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        std::thread::sleep(std::time::Duration::from_millis(200));
         let mut record = attractor_runtime::read_run_record(&paths).unwrap().unwrap();
         attractor_runtime::mark_record_cancel_requested(&mut record);
         attractor_runtime::write_run_record(&paths, &record).unwrap();
     });
     let control_store = store.clone();
     let (runner, _calls) = scripted_runner(script(&[("synth", vec![completed("done")])]), false);
-    let command = nested_effect_command(&effect);
     let started = std::time::Instant::now();
     let result = PipelineExecutor::with_control(runner, move || {
         let paths = control_store.find_run_root("run-contract").ok().flatten()?;
@@ -1959,7 +2056,10 @@ fn canceling_a_branch_tool_stops_its_descendants_promptly() {
     .execute(ExecuteRunRequest {
         store: store.clone(),
         record: RunRecord::new("run-contract", temp.path().to_string_lossy()),
-        flow: tool_fork_flow(&command, &command),
+        flow: tool_fork_flow(
+            &nested_effect_command(&root, "a"),
+            &nested_effect_command(&root, "b"),
+        ),
         flow_definition_json: None,
         launch_context: LaunchContext::empty(),
         runtime_context: ContextMap::new(),
@@ -1968,26 +2068,22 @@ fn canceling_a_branch_tool_stops_its_descendants_promptly() {
     })
     .unwrap();
     assert_eq!(result.status, "canceled");
-    // Settled well before the descendant's own 8 s sleep would end.
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(6),
-        "{:?}",
-        started.elapsed()
-    );
-    std::thread::sleep(std::time::Duration::from_secs(9).saturating_sub(started.elapsed()));
-    assert!(!effect.exists(), "a canceled descendant wrote its effect");
+    assert!(started.elapsed() < SETTLE_WITHIN, "{:?}", started.elapsed());
+    assert_descendant_stopped(&root, "a");
+    assert_descendant_stopped(&root, "b");
 }
 
 #[test]
 fn a_tool_timeout_stops_its_descendants() {
     let temp = tempfile::tempdir().unwrap();
-    let effect = temp.path().join("effect");
+    let root = temp.path().to_path_buf();
+    // Long enough for the descendant to start and record its pid under load.
     let mut flow = tool_flow(
-        json!({"command": nested_effect_command(&effect), "exit_codes": {"0": "passed", "1": "rejected"}}),
+        json!({"command": nested_effect_command(&root, "tool"), "exit_codes": {"0": "passed", "1": "rejected"}}),
         json!({"passed": route("after"), "rejected": route("repair")}),
     );
     flow.nodes.get_mut("check").unwrap().runtime = Some(attractor_core::NodeRuntimeConfig {
-        timeout: Some("300ms".to_string()),
+        timeout: Some("5s".to_string()),
         ..Default::default()
     });
     let (runner, _calls) = scripted_runner(script(&[]), false);
@@ -1995,13 +2091,64 @@ fn a_tool_timeout_stops_its_descendants() {
     let run = execute_in(temp, flow, runner, None);
     assert_eq!(run.result.status, "failed");
     assert!(run.record().last_error.contains("timed out"));
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(6),
-        "{:?}",
-        started.elapsed()
+    assert!(started.elapsed() < SETTLE_WITHIN, "{:?}", started.elapsed());
+    assert_descendant_stopped(&root, "tool");
+}
+
+/// A run takes its execution lock after its launch record is built. The
+/// terminal write must keep the lock's real state, not put back the launch
+/// copy's queued one.
+#[test]
+fn a_finished_run_keeps_the_lock_state_taken_after_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let lock = |state: &str| attractor_core::RunExecutionLock {
+        identity: "project:p:integration".to_string(),
+        scope: "project".to_string(),
+        key: "integration".to_string(),
+        conflict_policy: "queue".to_string(),
+        state: state.to_string(),
+        queue_position: None,
+    };
+    let mut record = RunRecord::new("run-contract", temp.path().to_string_lossy());
+    record.execution_lock = Some(lock("queued"));
+    let flow = tool_flow(
+        json!({"command": "exit 0", "exit_codes": {"0": "passed", "1": "rejected"}}),
+        json!({"passed": route("after"), "rejected": route("repair")}),
     );
-    std::thread::sleep(std::time::Duration::from_secs(9).saturating_sub(started.elapsed()));
-    assert!(!effect.exists(), "a timed-out descendant wrote its effect");
+    let context = LaunchContext::empty();
+    let paths = attractor_runtime::prepare_fresh_run(
+        &store,
+        &record,
+        &flow,
+        None,
+        None,
+        &context,
+        &ContextMap::new(),
+    )
+    .unwrap();
+    store
+        .update_run_record("run-contract", |disk| {
+            disk.execution_lock = Some(lock("holding"));
+        })
+        .unwrap();
+    let (runner, _calls) = scripted_runner(script(&[("after", vec![completed("done")])]), false);
+    PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            flow,
+            flow_definition_json: None,
+            launch_context: context,
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: ExecutionStart::Prepared {
+                paths: paths.clone(),
+            },
+        })
+        .unwrap();
+    let saved = store.read_run_record(&paths).unwrap().unwrap();
+    assert_eq!(saved.execution_lock.unwrap().state, "holding");
 }
 
 /// A child whose `work` agent loops onto itself past its single visit
@@ -2204,6 +2351,18 @@ fn gated_child_fork(tolerate: bool) -> FlowDefinition {
     }))
 }
 
+/// Runs a parent whose child waits on a human gate only a cancellation ends:
+/// a fork that never cancels its child fails here instead of waiting forever.
+fn settled<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(run());
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(120))
+        .expect("the fork settled its waiting child")
+}
+
 fn gated_runner(
     runs: PathBuf,
     b_answer: Outcome,
@@ -2252,12 +2411,9 @@ fn a_blocked_sibling_cancels_a_waiting_child_and_settles_it() {
     write_gate_child(temp.path());
     let runs = temp.path().join("runs");
     let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
-    let result = run_parent(
-        temp.path(),
-        gated_child_fork(false),
-        runner,
-        ContextMap::new(),
-    );
+    let root = temp.path().to_path_buf();
+    let result =
+        settled(move || run_parent(&root, gated_child_fork(false), runner, ContextMap::new()));
     assert_eq!(result.status, "completed", "{}", result.failure_reason);
     assert_eq!(result.outcome.as_deref(), Some("failure"));
     assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
@@ -2273,12 +2429,9 @@ fn a_fatal_sibling_cancels_a_waiting_child_and_fails_the_owner() {
     let runs = temp.path().join("runs");
     let fatal = Outcome::error(FailureKind::Routing, "child result unmapped", Some(false));
     let (runner, calls) = gated_runner(runs.clone(), fatal, false);
-    let result = run_parent(
-        temp.path(),
-        gated_child_fork(true),
-        runner,
-        ContextMap::new(),
-    );
+    let root = temp.path().to_path_buf();
+    let result =
+        settled(move || run_parent(&root, gated_child_fork(true), runner, ContextMap::new()));
     assert_eq!(result.status, "failed");
     assert_eq!(result.failure_kind, Some(FailureKind::Routing));
     assert!(
@@ -2289,6 +2442,76 @@ fn a_fatal_sibling_cancels_a_waiting_child_and_fails_the_owner() {
     assert!(!result.route_trace.contains(&"join".to_string()));
     assert_eq!(count(&calls, "synth"), 0);
     assert_eq!(gated_child_record(&runs).status, "canceled");
+}
+
+/// A parent canceled from outside while its child waits on a gate nothing
+/// answers: the cancel reaches the child, which settles, and the parent ends
+/// canceled instead of waiting on it.
+fn assert_external_cancel_stops_child(flow: FlowDefinition) {
+    let temp = tempfile::tempdir().unwrap();
+    write_gate_child(temp.path());
+    let root = temp.path().to_path_buf();
+    let runs = root.join("runs");
+    let store = RunStore::for_runs_dir(runs.clone());
+    let canceler = store.clone();
+    std::thread::spawn(move || {
+        while !canceler
+            .list_run_records()
+            .unwrap_or_default()
+            .iter()
+            .any(|record| {
+                record.parent_node_id.as_deref() == Some("sub") && record.status == "waiting"
+            })
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        attractor_runtime::RuntimeControls::new(canceler)
+            .request_cancel("run-parent")
+            .unwrap();
+    });
+    let (runner, calls) = gated_runner(runs.clone(), completed("done"), false);
+    let result = settled(move || {
+        let control_store = store.clone();
+        PipelineExecutor::with_control(runner, move || {
+            let paths = control_store.find_run_root("run-parent").ok().flatten()?;
+            let record = control_store.read_run_record(&paths).ok().flatten()?;
+            (record.status == "cancel_requested")
+                .then_some(attractor_runtime::ExecutionControlAction::Cancel)
+        })
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-parent", root.to_string_lossy()),
+            flow,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::from([(
+                "internal.bundled_root".to_string(),
+                json!(root.to_string_lossy()),
+            )]),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .unwrap()
+    });
+    assert_eq!(result.status, "canceled", "{}", result.failure_reason);
+    assert_eq!(gated_child_record(&runs).status, "canceled");
+    assert_eq!(count(&calls, "synth"), 0);
+}
+
+#[test]
+fn external_cancellation_stops_a_subflow_child() {
+    assert_external_cancel_stops_child(parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("sub")}},
+        "sub": {"kind": "subflow", "manager": {"poll_interval": "0s"},
+            "config": {"kind": "subflow", "flow_ref": "gated", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": route("done")}},
+        "done": exit("completed", "success"),
+    })));
+}
+
+#[test]
+fn external_cancellation_stops_a_subflow_child_in_a_fork_branch() {
+    assert_external_cancel_stops_child(gated_child_fork(false));
 }
 
 const GATED_CHILD_ENV: &str = "SPARK_GATED_CHILD_INTERRUPT_DIR";

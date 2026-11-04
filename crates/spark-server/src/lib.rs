@@ -45,6 +45,35 @@ const TOP_LEVEL_HELP: &str = concat!(
     "  -h, --help            show this help message and exit\n",
 );
 
+const SERVE_HELP: &str = concat!(
+    "usage: spark-server serve [-h] [--host HOST] [--port PORT] [--data-dir DATA_DIR]\n",
+    "                          [--ui-dir UI_DIR] [--reload] [--debug-codex-jsonrpc]\n",
+    "\n",
+    "Start the Spark API server. On start it prints the address it listens on;\n",
+    "--port 0 picks a free port.\n",
+    "\n",
+    "options:\n",
+    "  -h, --help  show this help message and exit\n",
+);
+
+const INIT_HELP: &str = concat!(
+    "usage: spark-server init [-h] [--data-dir DATA_DIR]\n",
+    "\n",
+    "Initialize Spark runtime directories and seed packaged flows.\n",
+    "\n",
+    "options:\n",
+    "  -h, --help  show this help message and exit\n",
+);
+
+const SERVICE_HELP: &str = concat!(
+    "usage: spark-server service [-h] {install,remove,status} ...\n",
+    "\n",
+    "Manage the installed Spark user service.\n",
+    "\n",
+    "options:\n",
+    "  -h, --help  show this help message and exit\n",
+);
+
 const WORKER_RUN_NODE_HELP: &str = concat!(
     "usage: spark-server worker run-node [-h]\n",
     "\n",
@@ -176,6 +205,15 @@ where
 fn run_server_shell(args: &[String], env: &impl Environment) -> CommandOutput {
     if args.is_empty() || is_help_arg(&args[0]) {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
+    }
+    // Help never reaches a command's setup, which writes to the Spark home.
+    if args[1..].iter().any(|arg| is_help_arg(arg)) {
+        match args[0].as_str() {
+            "serve" => return CommandOutput::stdout(0, SERVE_HELP),
+            "init" => return CommandOutput::stdout(0, INIT_HELP),
+            "service" => return CommandOutput::stdout(0, SERVICE_HELP),
+            _ => {}
+        }
     }
 
     match args[0].as_str() {
@@ -815,20 +853,31 @@ fn run_serve_process(
         let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
             .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+        // `--port 0` binds a free port; everything after this uses the real one.
+        let port = listener
+            .local_addr()
+            .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?
+            .port();
+        let mut settings = config.settings;
+        settings.connections.server_port = Some(port);
+        if config.port == 0 {
+            settings.connections.client_api_base_url =
+                Some(format!("http://{}:{port}", config.host));
+        }
         let _ = spark_agent_adapter::configure_codex_api_base_url(format!(
             "http://{}:{}",
-            config.host, config.port
+            config.host, port
         ));
-        let client = rust_llm_client_from_settings(&config.settings);
+        let client = rust_llm_client_from_settings(&settings);
         // Fails before serving, e.g. when another server holds this home.
-        let app = spark_http::build_app_with_rust_llm_client(config.settings, client).map_err(
-            |error| {
+        let app =
+            spark_http::build_app_with_rust_llm_client(settings, client).map_err(|error| {
                 CommandOutput::stderr(
                     EXIT_GENERAL_FAILURE,
                     format!("Unable to initialize Spark server: {error}\n"),
                 )
-            },
-        )?;
+            })?;
+        println!("Spark server listening on http://{}:{port}", config.host);
         axum_serve(listener, app).await
     })
 }
@@ -893,7 +942,6 @@ fn parse_init_args(args: &[String]) -> std::result::Result<InitArgs, String> {
             "--data-dir" => {
                 parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?);
             }
-            value if is_help_arg(value) => return Ok(parsed),
             unknown => return Err(format!("unrecognized arguments: {unknown}")),
         }
     }
@@ -924,7 +972,6 @@ fn parse_serve_args(args: &[String]) -> std::result::Result<ServeArgs, String> {
                 parsed.debug_codex_jsonrpc = true;
                 index += 1;
             }
-            value if is_help_arg(value) => return Ok(parsed),
             unknown => return Err(format!("unrecognized arguments: {unknown}")),
         }
     }
@@ -949,7 +996,6 @@ fn parse_service_install_args(args: &[String]) -> std::result::Result<ServiceIns
                     .parse::<u16>()
                     .map_err(|_| format!("argument --port: invalid int value: '{value}'"))?;
             }
-            value if is_help_arg(value) => return Ok(parsed),
             unknown => return Err(format!("unrecognized arguments: {unknown}")),
         }
     }

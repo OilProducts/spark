@@ -1,5 +1,7 @@
 #[path = "../../../crates/spark-http/tests/contracts/isolated_home.rs"]
 mod isolated_home;
+#[path = "../../../crates/test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 use isolated_home::isolate_home;
 
 use std::fs;

@@ -275,7 +275,9 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
 
 #[test]
 fn codergen_backend_routes_codex_selector_through_app_server() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -367,7 +369,9 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
 
 #[test]
 fn codex_pre_turn_failures_do_not_create_initial_context() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _runtime_guard = EnvVarGuard::set(
@@ -407,7 +411,9 @@ fn codex_pre_turn_failures_do_not_create_initial_context() {
 
 #[test]
 fn codex_capture_precedes_turn_transport_and_survives_provider_failure() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let capture_path = temp.path().join("initial-context.txt");
@@ -451,7 +457,9 @@ fn codex_capture_precedes_turn_transport_and_survives_provider_failure() {
 
 #[test]
 fn codex_capture_failure_returns_artifact_error_without_turn_transport() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let capture_path = temp.path().join("initial-context.txt");
@@ -488,7 +496,9 @@ fn codex_capture_failure_returns_artifact_error_without_turn_transport() {
 
 #[test]
 fn codex_retry_contract_repair_and_resume_preserve_first_capture() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let capture_path = temp.path().join("initial-context.txt");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -1738,7 +1748,9 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
 
 #[test]
 fn agent_turn_backend_starts_codex_workspace_chat_threads_as_durable() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -2346,7 +2358,9 @@ fn codergen_backend_routes_provider_profile_selector_through_openai_compatible()
 
 #[test]
 fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -2425,7 +2439,9 @@ fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
 
 #[test]
 fn codergen_backend_delivers_child_intervention_to_codex_app_server_turn() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -4232,7 +4248,9 @@ fn logged_codex_requests(log_path: &Path, method: &str) -> Vec<Value> {
 
 #[test]
 fn codex_session_nodes_keep_a_resumable_thread_and_restart_one_that_fails_to_resume() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let capture_path = temp.path().join("initial-context.txt");

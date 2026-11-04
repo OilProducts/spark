@@ -1424,7 +1424,21 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
     fs::create_dir_all(&project_path).expect("project");
     let conversation_id = "conversation-running";
     seed_conversation(&settings, &project_path, conversation_id);
-    let app = crate::store_app(settings, Arc::new(StaticAgentTurnBackend::new("Finished.")));
+    // Held open until the feed shows it running: a turn that finishes first
+    // reaches the feed as one row with `running` already cleared.
+    let (open_gate, gate) = std::sync::mpsc::channel();
+    let app = crate::store_app(
+        settings,
+        Arc::new(GatedStreamingBackend {
+            before: Vec::new(),
+            after: Vec::new(),
+            output: AgentTurnOutput {
+                final_assistant_text: Some("Finished.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+            gate: std::sync::Mutex::new(gate),
+        }),
+    );
     let live = request(
         app.clone(),
         "GET",
@@ -1452,7 +1466,7 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
 
     // The summary reports running when the turn starts and clears when it ends.
     let mut started = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
         assert!(tokio::time::Instant::now() < deadline, "started: {started}");
         let envelope = next_envelope(&mut live_stream).await;
@@ -1469,7 +1483,10 @@ async fn thread_list_feed_flips_running_across_an_http_turn() {
             continue;
         };
         match row["payload"]["running"].as_bool().expect("running") {
-            true => started = true,
+            true => {
+                started = true;
+                let _ = open_gate.send(());
+            }
             false if started => break,
             false => {}
         }
@@ -2055,6 +2072,188 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     summary_state(&mut live_stream, "idle").await;
 }
 
+/// The Coordinator has no conversation before its first message, so its
+/// thread-list row is a placeholder until then.
+fn coordinator_app(settings: &SparkSettings) -> axum::Router {
+    crate::store_app(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::new("On it.")),
+    )
+}
+
+fn coordinator_state(envelope: &Value) -> Option<String> {
+    carried(std::slice::from_ref(envelope), "conversation")
+        .into_iter()
+        .find(|conversation| conversation["standing_role"]["name"] == "coordinator")
+        .and_then(|conversation| {
+            conversation["standing_role"]["state"]
+                .as_str()
+                .map(str::to_string)
+        })
+}
+
+/// A role's summary change made while nobody is connected reaches a client
+/// reconnecting with the cursor it held, for a placeholder row and a real one.
+#[tokio::test]
+async fn a_role_summary_change_during_a_disconnect_arrives_on_reconnect() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    seed_conversation(&settings, &project_path, "conversation-first");
+    let app = coordinator_app(&settings);
+    let (generation, held) = store_cursor(&settings);
+    let control = format!(
+        "/workspace/api/roles/coordinator/stop?project_path={}",
+        url_encode(&project)
+    );
+    let stopped = request(app.clone(), "POST", &control, None).await;
+    assert_eq!(stopped.status(), StatusCode::OK);
+    assert_eq!(json_body(stopped).await["state"], "stopped");
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_path), Some((&generation, held))),
+        None,
+    )
+    .await;
+    let mut stream = live.into_body().into_data_stream();
+    let envelope = next_of_type(&mut stream, "conversations.changes").await;
+    assert_eq!(
+        coordinator_state(&envelope).as_deref(),
+        Some("stopped"),
+        "{envelope}"
+    );
+    // The change is behind the cursor it reports, so a later reconnect has no gap.
+    let next_cursor = watermark(&envelope);
+    assert!(next_cursor > held);
+    drop(stream);
+
+    let (generation, held) = store_cursor(&settings);
+    let touched =
+        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
+    touched
+        .touch_conversation(
+            "conversation-first",
+            &registered_path(&settings, &project_path),
+        )
+        .expect("touch");
+    let live = request(
+        app,
+        "GET",
+        &summaries_live_uri(Some(&project_path), Some((&generation, held))),
+        None,
+    )
+    .await;
+    let mut stream = live.into_body().into_data_stream();
+    let envelope = next_of_type(&mut stream, "conversations.changes").await;
+    assert_eq!(
+        rows_with_id(std::slice::from_ref(&envelope), "conversation-first").len(),
+        1,
+        "{envelope}"
+    );
+}
+
+/// ponytail: the known ceiling of `placeholder_touches`: they live for the
+/// process, so a placeholder's change made in the gap and followed by a
+/// restart is not in the catch-up. The row stays stale for that client until
+/// its next change or a fresh snapshot, which is current.
+#[tokio::test]
+async fn a_placeholder_change_before_a_restart_is_missing_from_catch_up_but_not_from_a_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    let app = coordinator_app(&settings);
+    let (generation, held) = store_cursor(&settings);
+    let control = format!(
+        "/workspace/api/roles/coordinator/stop?project_path={}",
+        url_encode(&project)
+    );
+    let stopped = request(app.clone(), "POST", &control, None).await;
+    assert_eq!(stopped.status(), StatusCode::OK);
+    drop(app);
+
+    let restarted = coordinator_app(&settings);
+    let live = request(
+        restarted.clone(),
+        "GET",
+        &summaries_live_uri(Some(&project_path), Some((&generation, held))),
+        None,
+    )
+    .await;
+    let mut stream = live.into_body().into_data_stream();
+    let caught_up = next_of_type(&mut stream, "conversations.changes").await;
+    assert_eq!(coordinator_state(&caught_up), None, "{caught_up}");
+
+    let live = request(
+        restarted,
+        "GET",
+        &summaries_live_uri(Some(&project_path), None),
+        None,
+    )
+    .await;
+    let mut stream = live.into_body().into_data_stream();
+    let snapshot = next_of_type(&mut stream, "conversations.snapshot").await;
+    assert_eq!(
+        coordinator_state(&snapshot).as_deref(),
+        Some("stopped"),
+        "{snapshot}"
+    );
+}
+
+/// Opening a chat on a connection that already holds a summary cursor serves
+/// both scopes: the chat's window, the summary rows after the cursor and,
+/// from then on, later changes in each.
+#[tokio::test]
+async fn opening_a_chat_while_holding_a_summary_cursor_serves_both_scopes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-open");
+    let app = crate::store_app_default(settings.clone());
+    let (generation, held) = store_cursor(&settings);
+    seed_conversation(&settings, &project_path, "conversation-new");
+
+    let uri = format!(
+        "{}&include_conversations=true&conversations_project_path={}&conversations_generation={generation}&conversations_revision={held}",
+        conversation_live_uri("conversation-open", &project_path, None),
+        url_encode(&project_path.to_string_lossy()),
+    );
+    let live = request(app, "GET", &uri, None).await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+    let window = next_envelope(&mut stream).await;
+    assert_eq!(window["type"], "conversation.window", "{window}");
+    assert_eq!(window["resource"]["id"], "conversation-open");
+    let changes = next_envelope(&mut stream).await;
+    assert_eq!(changes["type"], "conversations.changes", "{changes}");
+    assert_eq!(
+        rows_with_id(std::slice::from_ref(&changes), "conversation-new").len(),
+        1,
+        "{changes}"
+    );
+    assert!(
+        rows_with_id(std::slice::from_ref(&changes), "conversation-open").is_empty(),
+        "behind the cursor: {changes}"
+    );
+
+    // A later turn in the open chat reaches it and the thread list.
+    append_turn(&settings, &project_path, "conversation-open", "turn-later");
+    let (mut chat, mut summary) = (false, false);
+    while !(chat && summary) {
+        let envelope = next_envelope(&mut stream).await;
+        chat |= envelope["type"] == "conversation.changes"
+            && !rows_with_id(std::slice::from_ref(&envelope), "turn-later").is_empty();
+        summary |= envelope["type"] == "conversations.changes"
+            && !rows_with_id(std::slice::from_ref(&envelope), "conversation-open").is_empty();
+    }
+}
+
 #[tokio::test]
 async fn live_route_streams_source_activation_trigger_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -2443,7 +2642,7 @@ async fn next_sse_chunk(stream: &mut axum::body::BodyDataStream) -> String {
     // stream legitimately produces no frames, and a loaded test host can
     // stretch any gap. Callers bound overall progress with their own
     // deadlines.
-    let chunk = tokio::time::timeout(Duration::from_secs(20), stream.next())
+    let chunk = tokio::time::timeout(Duration::from_secs(60), stream.next())
         .await
         .expect("timely SSE frame")
         .expect("SSE stream item")
@@ -3527,7 +3726,10 @@ fn carried_artifacts(envelopes: &[Value], collection: &str) -> Vec<Value> {
 
 /// The next data envelope, skipping keepalives.
 async fn next_envelope(stream: &mut axum::body::BodyDataStream) -> Value {
+    // Keepalives alone must not let a quiet feed wait forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
+        assert!(tokio::time::Instant::now() < deadline, "no live envelope");
         let chunk = next_sse_chunk(stream).await;
         if !chunk.starts_with(':') {
             return sse_data_json(&chunk);

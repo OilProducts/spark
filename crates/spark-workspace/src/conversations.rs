@@ -1677,6 +1677,8 @@ impl WorkspaceConversationService {
                     current.filter(|segment| segment["status"] == "delivery_pending")
                 {
                     set_string_value(&mut segment, "status", "complete");
+                    // The running turn may have placed it since this read; keep its order.
+                    segment["order"] = json!(ORDER_UNASSIGNED);
                     outcome.push(segment_mutation_from_value(&segment)?);
                 }
                 "accepted"
@@ -5436,8 +5438,7 @@ impl LiveConversationTurnState {
                 None => self.pending_payloads.push(payload.clone()),
             }
         }
-        // The running turn is its conversation's only writer, so it commits
-        // each finished segment itself: a client opening the conversation
+        // The running turn commits each finished segment itself: a client opening the conversation
         // mid-turn sees everything done so far, and a crash loses at most the
         // segment in progress. Pending user input must survive a restart too.
         if (matches!(

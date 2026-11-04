@@ -1052,6 +1052,131 @@ mod live_queue_tests {
         assert_eq!(lagged as usize + received, total);
     }
 
+    /// End to end through the live route: a stream whose queue overflowed
+    /// loses no summary change. With commit notices silenced, only the lag
+    /// itself can make it catch up, and it does so straight after its resync.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lagged_stream_catches_up_on_every_summary_change() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        // Home's setup writes under HOME; nothing else in this binary reads it.
+        std::env::set_var("HOME", temp.path());
+        let settings = live_lag_settings(temp.path());
+        let project = temp.path().join("project").to_string_lossy().into_owned();
+        let backend =
+            spark_workspace::WorkspaceConversationService::default_agent_turn_backend(&settings);
+        let (app, hub) = build_app_with_live_hub(
+            settings,
+            attractor_api::default_runtime_handler_runner_factory(),
+            backend,
+        )
+        .unwrap();
+        let store = hub.conversation_store().unwrap();
+        let repository = spark_storage::ConversationRepository::new(store.clone());
+        let commit = |id: &str| {
+            repository
+                .commit_conversation(
+                    id,
+                    &project,
+                    0,
+                    vec![
+                        spark_storage::conversation::ConversationMutation::TurnUpserted {
+                            turn: serde_json::from_value(json!({
+                                "id": "turn-1", "role": "user", "kind": "message",
+                                "content": "Hello", "status": "complete",
+                                "timestamp": "2026-01-01T00:00:00Z",
+                            }))
+                            .unwrap(),
+                        },
+                    ],
+                )
+                .unwrap();
+        };
+        commit("chat-before");
+        store.set_commit_listener(Arc::new(|_| {}));
+
+        let uri = format!(
+            "/workspace/api/live/events?include_settings=true&include_conversations=true&conversations_project_path={}",
+            project.replace('/', "%2F")
+        );
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        // Unread: its initial state is taken, and its heartbeat has not started.
+        let mut stream = response.into_body().into_data_stream();
+        commit("chat-during-the-lag");
+        for _ in 0..=SUBSCRIBER_QUEUE_ENVELOPES {
+            hub.publish_settings_change("workspace", "agents", None, json!("1"));
+        }
+
+        let mut next_frame = async || -> Value {
+            let frame = tokio::time::timeout(Duration::from_secs(120), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let frame = String::from_utf8(frame.to_vec()).unwrap();
+            let data = frame
+                .strip_prefix("data: ")
+                .unwrap_or_else(|| panic!("not an event: {frame}"));
+            serde_json::from_str(data.trim()).unwrap()
+        };
+        let snapshot = next_frame().await;
+        assert_eq!(snapshot["type"], "conversations.snapshot", "{snapshot}");
+        let ids = |envelope: &Value| -> Vec<String> {
+            envelope["payload"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(
+            ids(&snapshot).contains(&"chat-before".to_string()),
+            "{snapshot}"
+        );
+        assert!(
+            !ids(&snapshot).contains(&"chat-during-the-lag".to_string()),
+            "{snapshot}"
+        );
+        let resync = next_frame().await;
+        assert_eq!(resync["type"], "resync_required", "{resync}");
+        let changes = next_frame().await;
+        assert_eq!(changes["type"], "conversations.changes", "{changes}");
+        assert_eq!(ids(&changes), ["chat-during-the-lag"]);
+    }
+
+    fn live_lag_settings(root: &std::path::Path) -> SparkSettings {
+        let data = root.join("data");
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        SparkSettings {
+            startup_sources: Default::default(),
+            connections: Default::default(),
+            providers: Default::default(),
+            agents: Default::default(),
+            project_root: root.to_path_buf(),
+            data_dir: data.clone(),
+            config_dir: data.join("config"),
+            runtime_dir: data.join("runtime"),
+            logs_dir: data.join("logs"),
+            workspace_dir: data.join("workspace"),
+            projects_dir: data.join("workspace/projects"),
+            attractor_dir: data.join("attractor"),
+            runs_dir: data.join("attractor/runs"),
+            ui_dir: None,
+            project_roots: vec![root.to_path_buf()],
+        }
+    }
+
     /// A full queue drops transient token frames before durable ones, and
     /// drops an incoming token frame rather than overflowing.
     #[test]

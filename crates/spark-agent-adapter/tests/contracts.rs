@@ -1,5 +1,7 @@
 #[path = "contracts/agent_event_contracts.rs"]
 mod agent_event_contracts;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 #[path = "contracts/prompt_context_contracts.rs"]
 mod prompt_context_contracts;
 #[path = "contracts/provider_profile_contracts.rs"]

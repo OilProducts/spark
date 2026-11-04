@@ -716,13 +716,27 @@ const CHECK_CONFLICTS: &str = "software-development/merge-change/check_conflicts
 const CHECK_CONFLICTS_ROUTES: &[(&str, &str, &str)] = &[
     (
         "clean",
-        "finish_merge",
+        "check_target_moved",
         "Integration preparation completed and the staged merge has zero unresolved conflicts.",
     ),
     (
         "conflicts",
         "resolve_conflicts",
         "Integration preparation completed and the staged merge contains unresolved conflicts.",
+    ),
+];
+
+const CHECK_TARGET_MOVED: &str = "software-development/merge-change/check_target_moved";
+const CHECK_TARGET_MOVED_ROUTES: &[(&str, &str, &str)] = &[
+    (
+        "tested",
+        "finish_merge",
+        "The target commit is the merge base, so the merged tree is the source tree already tested.",
+    ),
+    (
+        "untested",
+        "validate",
+        "The target moved past the merge base, so the merged tree has never been tested.",
     ),
 ];
 
@@ -893,6 +907,23 @@ fn schedule() -> BTreeMap<&'static str, BTreeMap<&'static str, Expected>> {
             ],
         },
     );
+    add(
+        CHECK_TARGET_MOVED,
+        Expected {
+            kind: "switch",
+            routes: unlabeled(CHECK_TARGET_MOVED_ROUTES),
+            fields: vec![
+                (
+                    "/contracts/reads_context",
+                    json!(["context.integration.target_moved"]),
+                ),
+                ("/contracts/writes_context", Value::Null),
+                ("/config/on", json!("context.integration.target_moved")),
+                ("/config/cases", json!({"false": "tested"})),
+                ("/config/otherwise", json!("untested")),
+            ],
+        },
+    );
     for (flow, fork, branches, join, next, tolerate) in FORKS {
         let mut fields = vec![
             ("/config/branches", json!(branches)),
@@ -1019,7 +1050,7 @@ fn schedule_inventory_matches_the_design_counts() {
             ("parallel", 4),
             ("start", 20),
             ("subflow", 2),
-            ("switch", 1),
+            ("switch", 2),
             ("tool", 27),
         ])
     );
