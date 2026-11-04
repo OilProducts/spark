@@ -72,6 +72,201 @@ fn process_flow_validate_dir_observes_stdout_json() {
 }
 
 #[test]
+fn process_flow_validate_dir_exit_code_follows_the_report() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let valid_dir = temp.path().join("valid");
+    crate::write_flow_json(&valid_dir, valid_flow());
+    let invalid_dir = temp.path().join("invalid");
+    let mut invalid = valid_flow();
+    invalid["nodes"]
+        .as_object_mut()
+        .expect("nodes")
+        .remove("start");
+    crate::write_flow_json(&invalid_dir, invalid);
+
+    let validate = |dir: &PathBuf, extra: &[&str]| {
+        Command::new(spark_bin())
+            .args(["flow", "validate", "--dir"])
+            .arg(dir)
+            .args(extra)
+            .env_clear()
+            .env("HOME", temp.path())
+            .output()
+            .expect("run spark")
+    };
+
+    let output = validate(&invalid_dir, &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("validation JSON");
+    assert_eq!(payload["name"], "invalid");
+    assert_eq!(payload["status"], "validation_error");
+    assert_eq!(payload["diagnostics"][0]["severity"], "error");
+
+    let output = validate(&invalid_dir, &["--text"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(text.contains("Status: validation_error\n"), "{text}");
+    assert!(text.contains("- ERROR start_node: "), "{text}");
+
+    let output = validate(&valid_dir, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("validation JSON");
+    assert_eq!(payload["status"], "ok");
+
+    let output = validate(&valid_dir, &["--text"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(text.contains("Status: ok\n"), "{text}");
+
+    let output = validate(&temp.path().join("missing"), &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Flow directory not found"));
+}
+
+/// `--dir` cannot report a warning: its payload marks every diagnostic an error
+/// and the loader keeps only error rules. A flow that trips only a warning rule
+/// therefore validates clean; the stub test below covers a reported warning.
+#[test]
+fn process_flow_validate_dir_warning_only_flow_exits_zero() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let flow_dir = temp.path().join("warning-only");
+    let mut flow = valid_flow();
+    let task = &mut flow["nodes"]["task"];
+    task.as_object_mut().expect("task").remove("label");
+    task["config"]["prompt"] = Value::from("");
+    crate::write_flow_json(&flow_dir, flow);
+
+    let graph = attractor_dsl::read_flow_dir(&flow_dir)
+        .expect("flow loads")
+        .to_runtime_dot_graph();
+    let rules = attractor_dsl::validate_graph(&graph)
+        .into_iter()
+        .map(|d| (d.rule_id, d.severity))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rules,
+        [(
+            "prompt_on_llm_nodes".to_string(),
+            attractor_dsl::DiagnosticSeverity::Warning
+        )]
+    );
+
+    for (extra, status) in [
+        (&[][..], "\"status\": \"ok\""),
+        (&["--text"][..], "Status: ok\n"),
+    ] {
+        let output = Command::new(spark_bin())
+            .args(["flow", "validate", "--dir"])
+            .arg(&flow_dir)
+            .args(extra)
+            .env_clear()
+            .env("HOME", temp.path())
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(status),
+            "{output:?}"
+        );
+    }
+}
+
+#[test]
+fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
+    let error = r#"{"severity":"error","rule_id":"start_node","message":"No start.","line":0}"#;
+    let warning = r#"{"severity":"warning","rule_id":"style","message":"Odd style.","line":0}"#;
+    let cases = [
+        (
+            format!(
+                r#"{{"status":"validation_error","diagnostics":[{error}],"errors":[{error}]}}"#
+            ),
+            1,
+            "- ERROR start_node: No start.",
+        ),
+        (
+            r#"{"status":"validation_error","diagnostics":[],"errors":[]}"#.to_string(),
+            1,
+            "Status: validation_error",
+        ),
+        (
+            format!(r#"{{"status":"ok","diagnostics":[{warning},{error}],"errors":[]}}"#),
+            1,
+            "- ERROR start_node: No start.",
+        ),
+        (
+            format!(r#"{{"status":"ok","diagnostics":[{warning}],"errors":[]}}"#),
+            0,
+            "- WARNING style: Odd style.",
+        ),
+        (
+            r#"{"status":"ok","diagnostics":[],"errors":[]}"#.to_string(),
+            0,
+            "Status: ok",
+        ),
+    ];
+    let validate = |body: &str, text: bool| {
+        let (base_url, _requests) = serve_once(HttpResponse::json(200, body));
+        let mut command = Command::new(spark_bin());
+        command.args(["flow", "validate", "--flow", "team/work", "--base-url"]);
+        command.arg(base_url).env_clear();
+        if text {
+            command.arg("--text");
+        }
+        command.output().expect("run spark")
+    };
+    for (body, exit_code, line) in &cases {
+        let output = validate(body, false);
+        assert_eq!(output.status.code(), Some(*exit_code), "{body}: {output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).expect("validation JSON"),
+            serde_json::from_str::<Value>(body).expect("body JSON"),
+        );
+
+        let output = validate(body, true);
+        assert_eq!(output.status.code(), Some(*exit_code), "{body}: {output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let text = String::from_utf8(output.stdout).expect("stdout utf8");
+        assert!(text.contains(line), "{text}");
+    }
+
+    let (base_url, _requests) =
+        serve_once(HttpResponse::json(404, r#"{"detail":"Unknown flow."}"#));
+    let output = Command::new(spark_bin())
+        .args(["flow", "validate", "--flow", "team/work", "--base-url"])
+        .arg(base_url)
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+
+    // The flow name `validate` is not the validate route.
+    let (base_url, requests) = serve_once(HttpResponse::json(
+        200,
+        r#"{"name":"validate","status":"validation_error"}"#,
+    ));
+    let output = Command::new(spark_bin())
+        .args(["flow", "describe", "--flow", "validate", "--base-url"])
+        .arg(base_url)
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("describe request")
+            .path,
+        "/workspace/api/flows/validate"
+    );
+}
+
+#[test]
 fn process_flow_validate_dir_resolves_referenced_roles() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
@@ -88,8 +283,11 @@ fn process_flow_validate_dir_resolves_referenced_roles() {
             .env("SPARK_HOME", &home)
             .output()
             .expect("run spark");
-        assert_eq!(output.status.code(), Some(0));
-        serde_json::from_slice(&output.stdout).expect("stdout is validation JSON")
+        let payload: Value =
+            serde_json::from_slice(&output.stdout).expect("stdout is validation JSON");
+        let expected = if payload["status"] == "ok" { 0 } else { 1 };
+        assert_eq!(output.status.code(), Some(expected));
+        payload
     };
 
     let missing = validate();
@@ -628,10 +826,10 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     let flow_dir = flow_dir.to_string_lossy().to_string();
 
     let status = |output: &std::process::Output| {
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
         serde_json::from_slice::<Value>(&output.stdout).expect("validation JSON")["status"].clone()
     };
     let missing = spark(&["flow", "validate", "--dir", &flow_dir]);
+    assert_eq!(missing.status.code(), Some(1), "{missing:?}");
     assert_eq!(status(&missing), "validation_error");
     assert!(String::from_utf8_lossy(&missing.stdout).contains("unknown role 'reviewer'"));
 
@@ -642,6 +840,7 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     )
     .expect("role");
     let valid = spark(&["flow", "validate", "--dir", &flow_dir]);
+    assert_eq!(valid.status.code(), Some(0), "{valid:?}");
     assert_eq!(status(&valid), "ok");
 
     for removed in ["accept", "promote"] {
@@ -869,7 +1068,7 @@ fn process_flow_validate_dir_reports_why_a_flow_failed_to_load() {
             .env("HOME", temp.path())
             .output()
             .expect("run spark");
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
         String::from_utf8(output.stdout).expect("stdout utf8")
     };
     // Schema 1 nodes list their routes, which do not parse as schema 2.
