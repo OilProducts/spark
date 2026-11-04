@@ -862,13 +862,16 @@ pub fn parallel_branch_completed_event(
     )
 }
 
-/// A node a parallel branch starts; branch nodes emit no stage events.
+/// A node a parallel branch starts; branch nodes emit no stage events, so
+/// `stage_index` and `attempt` name the invocation's execution.
 pub fn parallel_branch_node_started_event(
     run_id: impl Into<String>,
     node_id: impl Into<String>,
     branch: impl Into<String>,
     index: usize,
     branch_node_id: impl Into<String>,
+    stage_index: u64,
+    attempt: u64,
 ) -> RawRuntimeEvent {
     let node_id = node_id.into();
     event_with_payload(
@@ -879,16 +882,21 @@ pub fn parallel_branch_node_started_event(
             ("branch", json!(branch.into())),
             ("index", json!(index)),
             ("branch_node_id", json!(branch_node_id.into())),
+            ("stage_index", json!(stage_index)),
+            ("attempt", json!(attempt)),
         ],
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn parallel_branch_node_completed_event(
     run_id: impl Into<String>,
     node_id: impl Into<String>,
     branch: impl Into<String>,
     index: usize,
     branch_node_id: impl Into<String>,
+    stage_index: u64,
+    attempt: u64,
     outcome: impl Into<String>,
 ) -> RawRuntimeEvent {
     let node_id = node_id.into();
@@ -900,6 +908,8 @@ pub fn parallel_branch_node_completed_event(
             ("branch", json!(branch.into())),
             ("index", json!(index)),
             ("branch_node_id", json!(branch_node_id.into())),
+            ("stage_index", json!(stage_index)),
+            ("attempt", json!(attempt)),
             ("outcome", json!(outcome.into())),
         ],
     )

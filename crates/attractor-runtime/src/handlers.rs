@@ -2292,6 +2292,24 @@ impl RuntimeHandlerRunner {
             // its number on resume.
             // ponytail: one million invocations per branch per fork attempt.
             let attempt = runtime.attempt * BRANCH_INVOCATIONS_PER_ATTEMPT + invocations;
+            // Replaying an accepted result runs nothing: its events name the
+            // finished invocation, which the saved progress already counted.
+            let event_attempt = if accepted.is_some() {
+                let Some(finished) = invocations.checked_sub(1) else {
+                    return record!(
+                        "error",
+                        error_value(
+                            &current,
+                            FailureKind::Runtime,
+                            "accepted branch progress has no finished invocation",
+                            0
+                        )
+                    );
+                };
+                runtime.attempt * BRANCH_INVOCATIONS_PER_ATTEMPT + finished
+            } else {
+                attempt
+            };
             let _ = context.set("current_node", json!(current.clone()));
             let outgoing_edges = outgoing_routing_edges(flow, &current).unwrap_or_default();
             let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current, &node);
@@ -2323,6 +2341,8 @@ impl RuntimeHandlerRunner {
                     entry,
                     index,
                     &current,
+                    runtime.stage_index,
+                    event_attempt,
                 ),
             );
             // An invocation accepted before an interruption is never run
@@ -2361,6 +2381,8 @@ impl RuntimeHandlerRunner {
                     entry,
                     index,
                     &current,
+                    runtime.stage_index,
+                    event_attempt,
                     raw.status.to_string(),
                 ),
             );

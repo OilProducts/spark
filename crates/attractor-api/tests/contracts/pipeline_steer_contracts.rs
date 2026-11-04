@@ -939,6 +939,8 @@ fn steer_rejects_unsteerable_parallel_agent_nodes() {
                     branch,
                     index,
                     branch,
+                    1,
+                    0,
                 ),
             )
             .unwrap();

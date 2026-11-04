@@ -405,9 +405,9 @@ function RunVisitView({
         .filter((part): part is string => part !== null)
         .join(' · ')
     const filesDir = `logs/${visit.nodeId}/executions/${visit.stageIndex}-${visit.attempt}/`
-    const files = visit.parentKey === null
-        ? VISIT_FILES.flatMap((name) => artifactEntries.filter((entry) => entry.path === filesDir + name))
-        : []
+    const files = visit.executionIdentity === null
+        ? []
+        : VISIT_FILES.flatMap((name) => artifactEntries.filter((entry) => entry.path === filesDir + name))
     const contextKeyButton = (key: string) => (
         <button
             type="button"
@@ -529,34 +529,30 @@ function RunVisitView({
                 </Well>
             ) : null}
 
-            {visit.parentKey === null || (flowNode && flowNode.readsContext.length > 0) ? (
-                <section className="flex flex-col gap-2">
-                    {visit.parentKey === null ? (
-                        <details data-testid="run-visit-instructions" className="group">
-                            <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 text-sm [&::-webkit-details-marker]:hidden">
-                                <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-                                <span className="shrink-0 font-semibold text-foreground">Instructions</span>
-                                {prompt ? (
-                                    <span data-testid="run-visit-instructions-preview" className="min-w-0 truncate text-muted-foreground group-open:hidden">
-                                        {prompt.replace(/\s+/g, ' ').slice(0, 180)}{prompt.length > 180 ? '…' : ''}
-                                    </span>
-                                ) : null}
-                            </summary>
-                            <div className="mt-2 max-h-96 max-w-[72ch] overflow-y-auto whitespace-pre-wrap break-words pl-5.5 text-sm leading-6 text-foreground/90">
-                                {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
-                            </div>
-                        </details>
-                    ) : null}
-                    {flowNode && flowNode.readsContext.length > 0 ? (
-                        <p data-testid="run-visit-reads" className={cn('flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground', visit.parentKey === null && 'pl-5.5')}>
-                            Reads
-                            {flowNode.readsContext.map((key) => (
-                                <span key={key}>{contextKeyButton(key)}</span>
-                            ))}
-                        </p>
-                    ) : null}
-                </section>
-            ) : null}
+            <section className="flex flex-col gap-2">
+                <details data-testid="run-visit-instructions" className="group">
+                    <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 text-sm [&::-webkit-details-marker]:hidden">
+                        <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                        <span className="shrink-0 font-semibold text-foreground">Instructions</span>
+                        {prompt ? (
+                            <span data-testid="run-visit-instructions-preview" className="min-w-0 truncate text-muted-foreground group-open:hidden">
+                                {prompt.replace(/\s+/g, ' ').slice(0, 180)}{prompt.length > 180 ? '…' : ''}
+                            </span>
+                        ) : null}
+                    </summary>
+                    <div className="mt-2 max-h-96 max-w-[72ch] overflow-y-auto whitespace-pre-wrap break-words pl-5.5 text-sm leading-6 text-foreground/90">
+                        {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
+                    </div>
+                </details>
+                {flowNode && flowNode.readsContext.length > 0 ? (
+                    <p data-testid="run-visit-reads" className="flex flex-wrap items-center gap-1.5 pl-5.5 text-xs text-muted-foreground">
+                        Reads
+                        {flowNode.readsContext.map((key) => (
+                            <span key={key}>{contextKeyButton(key)}</span>
+                        ))}
+                    </p>
+                ) : null}
+            </section>
 
             <section data-testid="run-visit-work" className="flex flex-col gap-3">
                 <SectionHeading
@@ -605,7 +601,7 @@ function RunVisitView({
                         className="max-w-[80ch]"
                     />
                 )}
-                {visit.kind === 'agent_task' && visit.outcome === 'running' ? (
+                {visit.kind === 'agent_task' && visit.outcome === 'running' && visit.executionIdentity !== null ? (
                     <LiveThinkingIndicator
                         thinkingKey={visitKey(visit.runId, visit.nodeId, visit.stageIndex, visit.attempt)}
                         testId="run-visit-thinking"
