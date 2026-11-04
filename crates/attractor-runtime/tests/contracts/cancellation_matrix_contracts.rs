@@ -26,8 +26,8 @@
 //! runs, an agent or a tool, because the two stop through different paths, and
 //! each tool also runs detached: its shell and a middle process exit while a
 //! last descendant holds its output, so only the process group is left to stop.
-//! A branch tool runs once more with a descendant that leaves the group, so
-//! only the record it inherited is left to find it by.
+//! A branch tool runs once more with a descendant that leaves the group and
+//! closes the record it inherited, so only its output is left to find it by.
 //!
 //! Deliberately not asserted, because the design does not decide them: a
 //! child whose own routing failure lands after its cancellation was requested
@@ -55,6 +55,8 @@ const DEADLINE: Duration = Duration::from_secs(60);
 const CRASH_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_CASE";
 const CRASH_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_DIR";
 const CANCEL_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_DIR";
+const CANCEL_EXPECTS_ERROR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_EXPECTS_ERROR";
+const AT_REGISTRATION_ENV: &str = "SPARK_CANCELLATION_MATRIX_AT_REGISTRATION";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,7 +70,8 @@ enum Running {
     Tool,
     /// A tool whose shell exits while a descendant runs on, holding its output.
     DetachedTool,
-    /// A tool whose shell exits while a descendant in its own group runs on.
+    /// A tool whose shell exits while a descendant in its own group runs on,
+    /// holding only its output.
     LeftGroupTool,
     Agent,
     ChildAgent,
@@ -480,7 +483,7 @@ fn detached_work_tool(signals: &Signals, next: &str) -> Value {
     )
 }
 
-/// A `work` tool whose descendant leaves the group for its own, keeps the
+/// A `work` tool whose descendant leaves the group for its own, closes the
 /// record it inherited, and outlives the shell. `set -m` needs a shell with job
 /// control; elsewhere the row runs as the in-group one.
 fn left_group_work_tool(signals: &Signals, next: &str) -> Value {
@@ -488,8 +491,8 @@ fn left_group_work_tool(signals: &Signals, next: &str) -> Value {
     tool(
         format!(
             "set -m; echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; \
-             ( {survive}; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; {hold} ) & \
-             echo $! >> '{pids}'; exit 0",
+             ( {survive}; exec 9<&-; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; \
+             {hold} ) & echo $! >> '{pids}'; exit 0",
             calls = p("calls.log"),
             pids = p("pids"),
             survive = survive_term(signals),
@@ -630,15 +633,31 @@ fn crash_case_first_life() {
         .find(|case| case.name() == name)
         .expect("known case");
     let conductor_signals = signals.clone();
-    std::thread::spawn(move || conduct(case, conductor_signals));
+    if std::env::var(AT_REGISTRATION_ENV).is_ok() {
+        std::thread::spawn(move || {
+            if wait_for(|| conductor_signals.raised("at-registration")) {
+                std::process::exit(CRASH_EXIT_CODE);
+            }
+        });
+    } else {
+        std::thread::spawn(move || conduct(case, conductor_signals));
+    }
     let _ = executor(runner(case, &signals), &signals.store())
         .execute(fresh_request(flow(case, &signals), &signals));
     panic!("the first life should have crashed");
 }
 
 fn run_first_life_until_crash(case: Case, signals: &Signals) {
+    run_first_life(
+        case,
+        signals,
+        Command::new(std::env::current_exe().unwrap()),
+    );
+}
+
+fn run_first_life(case: Case, signals: &Signals, mut command: Command) {
     signals.raise("hold");
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut child = command
         .args([
             "--exact",
             "routing_model_contracts::cancellation_matrix_contracts::crash_case_first_life",
@@ -708,25 +727,56 @@ fn run_crash_then_resume(case: Case, signals: &Signals) -> PipelineExecutionResu
     bounded(&case.name(), move || resume(runner, flow, store))
 }
 
-fn group_alive(pid: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("kill -0 -- -{pid} 2>/dev/null"))
-        .status()
-        .unwrap()
-        .success()
+/// Whether a process in this group has not yet exited.
+fn group_running(group: &str) -> bool {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(group) && fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+    })
 }
 
-/// Every process a tool started stopped: the group is gone, or, for a tool
-/// the case released, finished.
-fn assert_processes_stopped(signals: &Signals, name: &str) {
-    let pids = std::fs::read_to_string(signals.path("pids")).unwrap_or_default();
-    for pid in pids.lines() {
+fn tool_groups(signals: &Signals) -> Vec<String> {
+    std::fs::read_to_string(signals.path("pids"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every process a tool started stopped. A stopped tool is gone when the run
+/// returns; a tool the case released finishes as its output closes.
+fn assert_processes_stopped(signals: &Signals, name: &str, stopped: bool) {
+    for group in tool_groups(signals) {
         assert!(
-            wait_for(|| !group_alive(pid)),
-            "{name}: tool process group {pid} still runs"
+            if stopped {
+                !group_running(&group)
+            } else {
+                wait_for(|| !group_running(&group))
+            },
+            "{name}: tool process group {group} still runs"
         );
     }
+}
+
+/// Every ownership entry under the case's run roots, children included.
+fn tool_ownership_entries(signals: &Signals) -> Vec<PathBuf> {
+    fn walk(dir: &std::path::Path, entries: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, entries);
+            } else if dir.ends_with("tool-processes") {
+                entries.push(path);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    walk(&signals.path("runs"), &mut entries);
+    entries
 }
 
 fn verify(case: Case, signals: &Signals, result: &PipelineExecutionResult) {
@@ -775,14 +825,19 @@ fn verify(case: Case, signals: &Signals, result: &PipelineExecutionResult) {
     }
 
     // Every process and child stopped and settled; one child, never relaunched.
-    assert_processes_stopped(signals, &name);
+    let affected_stopped = case.stops_fork() && case.timing != Timing::AlreadyFinished;
+    assert_processes_stopped(signals, &name, affected_stopped);
+    assert_eq!(
+        tool_ownership_entries(signals),
+        Vec::<PathBuf>::new(),
+        "{name}"
+    );
     let children = store
         .list_run_records()
         .unwrap()
         .into_iter()
         .filter(|child| child.parent_run_id.as_deref() == Some(RUN))
         .collect::<Vec<_>>();
-    let affected_stopped = case.stops_fork() && case.timing != Timing::AlreadyFinished;
     if case.running.is_child() {
         assert_eq!(children.len(), 1, "{name}: {children:?}");
         assert_eq!(
@@ -1104,12 +1159,6 @@ fn an_independent_error_during_a_stop_stays_an_error() {
     }
 }
 
-/// The process group the case's first tool reported.
-fn group_of_tool(signals: &Signals) -> String {
-    let pids = std::fs::read_to_string(signals.path("pids")).unwrap_or_default();
-    pids.lines().next().expect("tool group").to_string()
-}
-
 fn in_new_case_dir(case: Case) -> (tempfile::TempDir, Signals) {
     let temp = tempfile::tempdir().unwrap();
     let signals = Signals {
@@ -1141,6 +1190,12 @@ fn cancellation_of_a_crashed_run_dies_midway() {
     let signals = Signals {
         dir: PathBuf::from(dir),
     };
+    if std::env::var(CANCEL_EXPECTS_ERROR_ENV).is_ok() {
+        RuntimeControls::new(signals.store())
+            .mark_canceled(RUN, "no executor")
+            .expect_err("settlement with no process tools must fail");
+        std::process::exit(CRASH_EXIT_CODE);
+    }
     let watcher = signals.clone();
     std::thread::spawn(move || {
         if wait_for(|| watcher.raised("term-seen")) {
@@ -1156,12 +1211,16 @@ fn cancellation_of_a_crashed_run_dies_midway() {
 /// none and can be redone through the same API.
 #[test]
 fn orphan_cancellation_publishes_its_end_last_and_survives_a_crash() {
-    for running in [Running::Tool, Running::DetachedTool, Running::ChildTool] {
+    for running in [
+        Running::Tool,
+        Running::DetachedTool,
+        Running::LeftGroupTool,
+        Running::ChildTool,
+    ] {
         let case = crashed_running_case(running);
         let name = case.name();
         let (_temp, signals) = in_new_case_dir(case);
         run_first_life_until_crash(case, &signals);
-        let group = group_of_tool(&signals);
         let store = signals.store();
         let paths = store.find_run_root(RUN).unwrap().unwrap();
         let controls = RuntimeControls::new(store.clone());
@@ -1214,15 +1273,21 @@ fn orphan_cancellation_publishes_its_end_last_and_survives_a_crash() {
                 .count()
         };
         assert_eq!(canceled_events(), 0, "{name}: event before settlement");
-        assert!(group_alive(&group), "{name}: the tool should still run");
+        assert!(
+            tool_groups(&signals)
+                .iter()
+                .any(|group| group_running(group)),
+            "{name}: the tool should still run"
+        );
 
-        // The first sight of the terminal state must find everything settled.
+        // The first sight of the terminal state must find everything settled,
+        // with no further wait for any of it.
         let observer_signals = signals.clone();
-        let observer_group = group.clone();
         let observer = std::thread::spawn(move || {
             let store = observer_signals.store();
             let paths = store.find_run_root(RUN).unwrap().unwrap();
-            wait_for(|| store.read_run_record(&paths).unwrap().unwrap().status == "canceled");
+            let saw_terminal =
+                wait_for(|| store.read_run_record(&paths).unwrap().unwrap().status == "canceled");
             let children_settled = store
                 .list_run_records()
                 .unwrap()
@@ -1230,9 +1295,13 @@ fn orphan_cancellation_publishes_its_end_last_and_survives_a_crash() {
                 .filter(|record| record.parent_run_id.as_deref() == Some(RUN))
                 .all(|record| record.status == "canceled");
             (
+                saw_terminal,
                 observer_signals.branch_settled(0),
                 children_settled,
-                wait_for(|| !group_alive(&observer_group)),
+                tool_groups(&observer_signals)
+                    .iter()
+                    .all(|group| !group_running(group)),
+                tool_ownership_entries(&observer_signals).is_empty(),
             )
         });
         let redone = bounded(&name, move || {
@@ -1241,7 +1310,11 @@ fn orphan_cancellation_publishes_its_end_last_and_survives_a_crash() {
                 .unwrap()
         });
         assert_eq!(redone.status, "canceled", "{name}");
-        assert_eq!(observer.join().unwrap(), (true, true, true), "{name}");
+        assert_eq!(
+            observer.join().unwrap(),
+            (true, true, true, true, true),
+            "{name}"
+        );
         assert_eq!(canceled_events(), 1, "{name}");
         assert_eq!(
             store.read_result(&paths).unwrap().expect("result").status,
@@ -1258,28 +1331,272 @@ fn an_unresumed_crash_leaves_nothing_once_its_tool_ends() {
     let case = crashed_running_case(Running::DetachedTool);
     let (_temp, signals) = in_new_case_dir(case);
     run_first_life_until_crash(case, &signals);
-    let group = group_of_tool(&signals);
-    assert!(group_alive(&group), "the tool should still run");
+    let group = tool_groups(&signals).remove(0);
+    assert!(group_running(&group), "the tool should still run");
     signals.raise("release");
     assert!(
-        wait_for(|| !group_alive(&group)),
+        wait_for(|| !group_running(&group)),
         "group {group} still runs"
     );
 }
 
+#[cfg(unix)]
+fn set_mode(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// How the first orphan cancellation of a crashed run fails.
+#[derive(Debug, Clone, Copy)]
+enum SettlementFailure {
+    /// A canceled branch record cannot be written.
+    BranchRecord,
+    /// The ownership records cannot be listed.
+    ToolRecords,
+    /// The tool stops, but its ownership record cannot go.
+    ToolRecordRemoval,
+    /// The process table cannot be read: no `ps` or `lsof` on PATH.
+    ProcessDiscovery,
+}
+
+/// A settlement that fails publishes nothing and keeps what a retry needs; the
+/// same API then finishes it.
+#[cfg(unix)]
+#[test]
+fn a_failed_orphan_settlement_publishes_nothing_and_can_be_redone() {
+    for failure in [
+        SettlementFailure::BranchRecord,
+        SettlementFailure::ToolRecords,
+        SettlementFailure::ToolRecordRemoval,
+        SettlementFailure::ProcessDiscovery,
+    ] {
+        let case = crashed_running_case(Running::Tool);
+        let (_temp, signals) = in_new_case_dir(case);
+        run_first_life_until_crash(case, &signals);
+        let store = signals.store();
+        let paths = store.find_run_root(RUN).unwrap().unwrap();
+        let controls = RuntimeControls::new(store.clone());
+        let branches = signals.branches_dir().unwrap();
+        let tools = paths.root.join("tool-processes");
+        let group = tool_groups(&signals).remove(0);
+        match failure {
+            SettlementFailure::BranchRecord => {
+                set_mode(&branches, 0o555);
+                let error = controls.mark_canceled(RUN, "no executor");
+                set_mode(&branches, 0o755);
+                assert!(error.is_err(), "{failure:?}");
+            }
+            SettlementFailure::ToolRecords => {
+                set_mode(&tools, 0o000);
+                let error = controls.mark_canceled(RUN, "no executor");
+                set_mode(&tools, 0o755);
+                assert!(error.is_err(), "{failure:?}");
+            }
+            SettlementFailure::ToolRecordRemoval => {
+                set_mode(&tools, 0o555);
+                let error = controls.mark_canceled(RUN, "no executor");
+                set_mode(&tools, 0o755);
+                assert!(error.is_err(), "{failure:?}");
+            }
+            SettlementFailure::ProcessDiscovery => {
+                let status = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "routing_model_contracts::cancellation_matrix_contracts::cancellation_of_a_crashed_run_dies_midway",
+                        "--nocapture",
+                    ])
+                    .env(CANCEL_DIR_ENV, &signals.dir)
+                    .env(CANCEL_EXPECTS_ERROR_ENV, "1")
+                    .env("PATH", signals.path("no-tools-here"))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap();
+                assert_eq!(status.code(), Some(CRASH_EXIT_CODE), "{failure:?}");
+            }
+        }
+
+        // Nothing terminal, and durable state a retry can work from.
+        assert_eq!(
+            store.read_run_record(&paths).unwrap().unwrap().status,
+            "cancel_requested",
+            "{failure:?}"
+        );
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").state,
+            "pending",
+            "{failure:?}"
+        );
+        let canceled_events = || {
+            store
+                .read_raw_events(&paths)
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload.get("status") == Some(&json!("canceled")))
+                .count()
+        };
+        assert_eq!(canceled_events(), 0, "{failure:?}");
+        match failure {
+            SettlementFailure::BranchRecord => {
+                assert!(!signals.branch_settled(0), "{failure:?}");
+            }
+            SettlementFailure::ToolRecords | SettlementFailure::ProcessDiscovery => {
+                assert!(group_running(&group), "{failure:?}: nothing stopped it");
+                assert!(tools.join(&group).exists(), "{failure:?}: its record went");
+            }
+            SettlementFailure::ToolRecordRemoval => {
+                assert!(!group_running(&group), "{failure:?}: it was told to stop");
+                assert!(!tool_ownership_entries(&signals).is_empty(), "{failure:?}");
+            }
+        }
+
+        let redone = bounded(&format!("{failure:?}"), {
+            let store = store.clone();
+            move || {
+                RuntimeControls::new(store)
+                    .mark_canceled(RUN, "no executor")
+                    .unwrap()
+            }
+        });
+        assert_eq!(redone.status, "canceled", "{failure:?}");
+        assert!(!group_running(&group), "{failure:?}");
+        assert!(signals.branch_settled(0), "{failure:?}");
+        assert_eq!(
+            tool_ownership_entries(&signals),
+            Vec::<PathBuf>::new(),
+            "{failure:?}"
+        );
+        assert_eq!(canceled_events(), 1, "{failure:?}");
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").status,
+            "canceled",
+            "{failure:?}"
+        );
+    }
+}
+
+/// A `ps` that holds the runtime where it reads a new anchor's identity, before
+/// the record exists and before the tool may spawn, once `armed` has been
+/// logged. Everything else goes to the real one.
+fn write_registration_gate(signals: &Signals, armed: &str) -> PathBuf {
+    let bin = signals.path("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let gate = bin.join("ps");
+    let p = |name: &str| signals.path(name).display().to_string();
+    std::fs::write(
+        &gate,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = '-o lstart=' ] && grep -qx '{armed}' '{calls}' 2>/dev/null; then\n\
+             echo \"$4\" > '{anchor}.tmp'; mv '{anchor}.tmp' '{anchor}'; touch '{at}'\n\
+             i=0; while [ ! -f '{gate_release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done\n\
+             exit 1\nfi\nexec /bin/ps \"$@\"\n",
+            calls = p("calls.log"),
+            anchor = p("anchor"),
+            at = p("at-registration"),
+            gate_release = p("gate-release"),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    set_mode(&gate, 0o755);
+    bin
+}
+
+/// A crash in the window before a tool's first record: the executor has started
+/// the anchor and nothing else. No tool ran, the anchor leaves on its own, and a
+/// resume runs the tool once without repeating finished steps.
+#[test]
+fn a_crash_before_a_tool_is_registered_leaves_nothing_and_resumes() {
+    for (running, armed) in [(Running::Tool, "pre"), (Running::ChildTool, "cpre")] {
+        let case = crashed_running_case(running);
+        let name = case.name();
+        let (_temp, signals) = in_new_case_dir(case);
+        let bin = write_registration_gate(&signals, armed);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.env(AT_REGISTRATION_ENV, "1").env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        run_first_life(case, &signals, command);
+
+        assert!(signals.raised("at-registration"), "{name}");
+        assert_eq!(signals.calls("work"), 0, "{name}: the tool must not start");
+        assert_eq!(
+            tool_ownership_entries(&signals),
+            Vec::<PathBuf>::new(),
+            "{name}: no record yet"
+        );
+        signals.raise("gate-release");
+        let anchor = std::fs::read_to_string(signals.path("anchor")).unwrap();
+        let anchor = anchor.trim();
+        assert!(
+            wait_for(|| !group_running(anchor)),
+            "{name}: anchor {anchor} outlived its executor"
+        );
+
+        signals.raise("trigger");
+        let release = signals.clone();
+        std::thread::spawn(move || {
+            if wait_for(|| release.calls("work") == 1) {
+                release.raise("release");
+            }
+        });
+        let (runner, store) = (runner(case, &signals), signals.store());
+        let flow = flow(case, &signals);
+        let result = bounded(&name, move || resume(runner, flow, store));
+        assert_eq!(
+            result.status, "completed",
+            "{name}: {}",
+            result.failure_reason
+        );
+        assert_eq!(result.outcome.as_deref(), Some("success"), "{name}");
+        assert_eq!(signals.calls("pre"), 1, "{name}: pre ran again");
+        assert_eq!(
+            signals.calls("cpre"),
+            usize::from(running.is_child()),
+            "{name}: cpre ran again"
+        );
+        assert_eq!(signals.calls("work"), 1, "{name}: work invocations");
+        assert_eq!(signals.calls("work-finished"), 1, "{name}");
+        assert_eq!(signals.calls("synth"), 1, "{name}: synth invocations");
+        assert_eq!(
+            tool_ownership_entries(&signals),
+            Vec::<PathBuf>::new(),
+            "{name}"
+        );
+    }
+}
+
+/// What a tool's surviving descendant still holds of what the runtime gave it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Holds {
+    Everything,
+    OnlyOutput,
+    OnlyRecord,
+}
+
 /// A tool's deadline and cancellation still work once its shell has exited, and
-/// the runtime stops a descendant that left the group before it returns. `set
-/// -m` gives a background job its own group where the shell supports it;
-/// elsewhere that row runs as the in-group one. A descendant that also closes
-/// the inherited record cannot be identified: it must not hold settlement, but
-/// nothing stops it, so only this test's cleanup does.
+/// the runtime stops a descendant that left the group, by whatever it still
+/// holds, and settles the output before it returns. `set -m` gives a background
+/// job its own group where the shell supports it; elsewhere that row runs as the
+/// in-group one. A record-only descendant redirected its output, so its shell
+/// stays: with the shell gone and the output closed the tool has simply ended,
+/// and a daemon it started on purpose stays.
 #[test]
 fn a_tool_settles_when_a_descendant_outlives_its_shell() {
-    for (deadline, left_group, unidentifiable) in [
-        (true, false, false),
-        (true, true, false),
-        (false, true, false),
-        (false, true, true),
+    for (deadline, left_group, holds) in [
+        (true, false, Holds::Everything),
+        (true, true, Holds::Everything),
+        (false, true, Holds::Everything),
+        (true, true, Holds::OnlyOutput),
+        (false, true, Holds::OnlyOutput),
+        (true, true, Holds::OnlyRecord),
+        (false, true, Holds::OnlyRecord),
     ] {
         let case = Case {
             fork: Fork::Strict,
@@ -1287,18 +1604,29 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
             stop: Stop::External,
             timing: Timing::MidExecution,
         };
-        let name =
-            format!("deadline={deadline} left_group={left_group} unidentifiable={unidentifiable}");
+        let name = format!("deadline={deadline} left_group={left_group} holds={holds:?}");
         let (_temp, signals) = in_new_case_dir(case);
         let p = |name: &str| signals.path(name).display().to_string();
+        let (drop_handles, await_shell, shell_tail) = match holds {
+            Holds::Everything => (
+                "",
+                "while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; ",
+                "exit 0",
+            ),
+            Holds::OnlyOutput => (
+                "exec 9<&-; ",
+                "while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; ",
+                "exit 0",
+            ),
+            Holds::OnlyRecord => ("exec >/dev/null 2>&1; ", "", "while :; do sleep 0.05; done"),
+        };
         // Longer than every wait here, so a settlement that needs it to end
         // on its own fails the case.
         let command = format!(
             "{job_control}\
-             ( {close}while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
-             exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
+             ( {drop_handles}{await_shell}touch '{started}'; \
+             exec sleep {seconds} ) & echo $! >> '{holder}'; {shell_tail}",
             job_control = if left_group { "set -m; " } else { "" },
-            close = if unidentifiable { "exec 9<&-; " } else { "" },
             started = p("started"),
             holder = p("holder"),
             seconds = DEADLINE.as_secs() * 2,
@@ -1319,13 +1647,15 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
                 }
             });
         }
-        let holder_alive = |pid: &str| {
-            Command::new("kill")
-                .args(["-0", pid])
-                .stderr(Stdio::null())
-                .status()
-                .unwrap()
-                .success()
+        // Asked once, right after the run returns: stopping it is the runtime's
+        // job, not a later one's.
+        let holder_running = |pid: &str| {
+            let output = Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&output.stdout);
+            !stat.trim().is_empty() && !stat.trim().starts_with('Z')
         };
         let (runner, store) = (runner(case, &signals), signals.store());
         let request = fresh_request(flow, &signals);
@@ -1349,21 +1679,16 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
             }
             let holders = std::fs::read_to_string(signals.path("holder")).unwrap();
             assert!(!holders.is_empty(), "{name}");
-            for pid in holders.lines().filter(|_| !unidentifiable) {
-                assert!(
-                    wait_for(|| !holder_alive(pid)),
-                    "{name}: descendant {pid} still runs"
-                );
+            for pid in holders.lines() {
+                assert!(!holder_running(pid), "{name}: descendant {pid} still runs");
             }
         }));
-        // Nothing is left to kill after a passing identifiable case.
-        if outcome.is_err() || unidentifiable {
+        // Protection for a failed case only: nothing is left after a passing one.
+        if let Err(payload) = outcome {
             let holders = std::fs::read_to_string(signals.path("holder")).unwrap_or_default();
             for pid in holders.lines() {
                 let _ = Command::new("kill").args(["-9", pid]).status();
             }
-        }
-        if let Err(payload) = outcome {
             std::panic::resume_unwind(payload);
         }
     }

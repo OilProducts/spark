@@ -292,7 +292,11 @@ where
                 paths.ensure_exists()?;
                 // A resume means the previous executor is gone. Whatever it
                 // left running stops here; a rerun needs a clean slate.
-                crate::handlers::stop_orphaned_tools(&paths);
+                crate::handlers::stop_orphaned_tools(&paths).map_err(|error| {
+                    RuntimeStorageError::InvalidRuntimeGraph {
+                        reason: format!("could not stop the previous executor's tools: {error}"),
+                    }
+                })?;
                 if store
                     .read_run_record(&paths)?
                     .is_some_and(|record| record.status == "cancel_requested")

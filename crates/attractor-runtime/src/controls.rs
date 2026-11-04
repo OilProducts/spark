@@ -862,15 +862,20 @@ impl RuntimeControls {
     }
 
     /// Settles what a canceled run's dead executor left behind: its tool
-    /// processes, its unsettled branches and its child runs. Safe to repeat.
+    /// processes, its unsettled branches and its child runs. Safe to repeat,
+    /// and an error means it must be: something may be unsettled.
     pub(crate) fn settle_orphaned_work(
         &self,
         paths: &crate::paths::RunRootPaths,
         run_id: &str,
         last_error: &str,
     ) -> ControlResult<()> {
-        crate::handlers::stop_orphaned_tools(paths);
-        crate::handlers::cancel_unsettled_branches(paths);
+        crate::handlers::stop_orphaned_tools(paths).map_err(|error| {
+            RuntimeControlError::Conflict(format!("settlement incomplete: {error}"))
+        })?;
+        crate::handlers::cancel_unsettled_branches(paths).map_err(|error| {
+            RuntimeControlError::Conflict(format!("settlement incomplete: {error}"))
+        })?;
         self.cancel_orphaned_children(run_id, last_error)
     }
 

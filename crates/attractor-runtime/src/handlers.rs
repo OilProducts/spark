@@ -2954,7 +2954,8 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
 /// `timeout` or when `stop` answers true. The command ends when its shell has
 /// exited and its output has closed, so a descendant still holding the output
 /// keeps it running and stoppable. The shell stays unreaped until then, which
-/// keeps its group's ID from being reused when no `owner` holds it.
+/// keeps its group's ID from being reused when no `owner` holds it. An `owner`
+/// supplies the output, so a stop finds whoever still holds it.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
@@ -2977,6 +2978,19 @@ fn run_shell_command(
         Some(owner) => format!("{}\n{command}", owner.open_marker_command()),
         None => command.to_string(),
     };
+    let (out_reader, out_writer, err_reader, err_writer) = match owner {
+        Some(owner) => {
+            let (out_reader, out_writer) = owner.open_output("out")?;
+            let (err_reader, err_writer) = owner.open_output("err")?;
+            (
+                Some(out_reader),
+                Stdio::from(out_writer),
+                Some(err_reader),
+                Stdio::from(err_writer),
+            )
+        }
+        None => (None, Stdio::piped(), None, Stdio::piped()),
+    };
     let mut child = command_line
         .arg("-c")
         .arg(script)
@@ -2987,9 +3001,11 @@ fn run_shell_command(
         } else {
             Stdio::null()
         })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(out_writer)
+        .stderr(err_writer)
         .spawn()?;
+    // It keeps its copies of the write ends, which would hold the output open.
+    drop(command_line);
 
     if let Some(stdin_text) = stdin_text {
         if let Some(mut stdin) = child.stdin.take() {
@@ -3019,8 +3035,16 @@ fn run_shell_command(
         });
         (reader, bytes)
     };
-    let (stdout_reader, stdout) = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
-    let (stderr_reader, stderr) = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    let (stdout_reader, stdout) = drain(
+        out_reader
+            .map(|file| Box::new(file) as _)
+            .or_else(|| child.stdout.take().map(|pipe| Box::new(pipe) as _)),
+    );
+    let (stderr_reader, stderr) = drain(
+        err_reader
+            .map(|file| Box::new(file) as _)
+            .or_else(|| child.stderr.take().map(|pipe| Box::new(pipe) as _)),
+    );
     let drained = || stdout_reader.is_finished() && stderr_reader.is_finished();
     let started_at = Instant::now();
     let (status, timed_out, interrupted) = loop {
@@ -3036,16 +3060,26 @@ fn run_shell_command(
                 owner.map_or(child.id(), |owner| owner.group),
                 Some(&mut child),
             );
-            if let Some(owner) = owner {
-                stop_marker_holders(&owner.marker);
-            }
+            let settled =
+                owner.map(|owner| settle_tool(Some(owner.group), &tool_marks(&owner.marker)));
             let _ = child.kill();
             let status = child.wait()?;
-            // ponytail: a descendant that left the group and closed the marker
-            // cannot be identified; it must not hold this settlement forever.
-            let deadline = Instant::now() + UNIDENTIFIED_OUTPUT_GRACE;
+            // With every holder stopped the output closes at once. This bound
+            // only matters when a holder could not be found or stopped.
+            let deadline = Instant::now() + OUTPUT_CLOSE_GRACE;
             while !drained() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut problem = settled
+                .and_then(|settled| settled.err())
+                .map(|error| error.to_string());
+            if !drained() {
+                problem.get_or_insert_with(|| "a descendant still holds its output".to_string());
+            }
+            if let (Some(problem), Ok(mut stderr)) = (problem, stderr.lock()) {
+                stderr.extend_from_slice(
+                    format!("\ntool cleanup incomplete: {problem}\n").as_bytes(),
+                );
             }
             break (status, timed_out, interrupted);
         }
@@ -3066,13 +3100,13 @@ fn run_shell_command(
 }
 
 /// A process's start time, which tells it from a later process reusing its pid.
-fn process_started_at(pid: u32) -> Option<String> {
+/// None when no such process exists; an error when `ps` itself cannot run.
+fn process_started_at(pid: u32) -> std::io::Result<Option<String>> {
     let output = Command::new("ps")
         .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+        .output()?;
     let started_at = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (output.status.success() && !started_at.is_empty()).then_some(started_at)
+    Ok((output.status.success() && !started_at.is_empty()).then_some(started_at))
 }
 
 /// Holds a tool's process group until the executor answers (the tool ended).
@@ -3090,10 +3124,13 @@ const TOOL_ANCHOR_SCRIPT: &str = "pause=1; trap 'pause=0.05' TERM; exec 3<&0; \
 /// owns the run marks what a dead executor left behind, at any point in the
 /// tool's life. The tool joins the group of an anchor process, whose pid and
 /// start time on record prove the group is still this tool's. Each tool
-/// process also inherits the record open on descriptor 9, which identifies a
-/// descendant that left the group.
-// ponytail: without `ps` (Windows, minimal images), or with a run root it cannot
-// write, a tool has no owner, and no recovery finds it.
+/// process also inherits the record open on descriptor 9, and writes its output
+/// to FIFOs beside it, so holding any of them identifies a descendant that left
+/// the group, even after a crash.
+// ponytail: without `ps` and `mkfifo` (Windows, minimal images), or with a run
+// root it cannot write, a tool has no owner, and no recovery finds it. A
+// descendant that leaves the group and closes all of these is a daemon no
+// process table can tie to its tool; only then does one run on.
 struct ToolOwner {
     group: u32,
     marker: PathBuf,
@@ -3119,9 +3156,21 @@ impl ToolOwner {
         let group = anchor.id();
         let marker = paths.root.join(TOOL_PROCESSES_DIR).join(group.to_string());
         let release = anchor.stdin.take();
+        let [_, out, err] = tool_marks(&marker);
         let recorded = process_started_at(group)
-            .is_some_and(|started_at| write_atomically(&marker, started_at.as_bytes()).is_ok());
+            .ok()
+            .flatten()
+            .is_some_and(|started_at| {
+                fs::create_dir_all(paths.root.join(TOOL_PROCESSES_DIR)).is_ok()
+                    && Command::new("mkfifo")
+                        .args([&out, &err])
+                        .status()
+                        .is_ok_and(|status| status.success())
+                    && write_atomically(&marker, started_at.as_bytes()).is_ok()
+            });
         if !recorded {
+            let _ = fs::remove_file(&out);
+            let _ = fs::remove_file(&err);
             drop(release);
             let _ = anchor.kill();
             let _ = anchor.wait();
@@ -3141,13 +3190,27 @@ impl ToolOwner {
         let marker = self.marker.to_string_lossy().replace('\'', "'\\''");
         format!("exec 9<'{marker}'")
     }
+
+    /// The read and write ends of one of the tool's output FIFOs. Opening it
+    /// read-write first means neither of the others waits for its peer. The
+    /// child gets a write-only end, so a dead reader still means a broken pipe.
+    fn open_output(&self, extension: &str) -> std::io::Result<(fs::File, fs::File)> {
+        let fifo = self.marker.with_extension(extension);
+        let _rendezvous = fs::File::options().read(true).write(true).open(&fifo)?;
+        let reader = fs::File::open(&fifo)?;
+        let writer = fs::File::options().write(true).open(&fifo)?;
+        Ok((reader, writer))
+    }
 }
 
 impl Drop for ToolOwner {
     /// The tool ended: nothing of it is an orphan, and any daemon it started
     /// on purpose stays.
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.marker);
+        let [marker, out, err] = tool_marks(&self.marker);
+        let _ = fs::remove_file(out);
+        let _ = fs::remove_file(err);
+        let _ = fs::remove_file(marker);
         if let Some(mut release) = self.release.take() {
             let _ = release.write_all(b"\n");
         }
@@ -3157,77 +3220,195 @@ impl Drop for ToolOwner {
     }
 }
 
-/// The processes holding a tool's record open as its marker descriptor.
-fn marker_holders(marker: &Path) -> Vec<u32> {
-    if Path::new("/proc/self/fd").exists() {
-        let marker = fs::canonicalize(marker).ok();
-        return fs::read_dir("/proc")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| {
-                let pid = entry.file_name().to_string_lossy().parse().ok()?;
-                let held = fs::read_link(entry.path().join("fd/9")).ok();
-                (held.is_some() && held == marker).then_some(pid)
-            })
-            .collect();
-    }
-    let Ok(output) = Command::new("lsof")
-        .args(["-w", "-t", "-a", "-d", "9"])
-        .arg(marker)
-        .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|pid| pid.trim().parse().ok())
-        .collect()
+/// What a tool's processes inherit: its record and its output FIFOs.
+fn tool_marks(record: &Path) -> [PathBuf; 3] {
+    [
+        record.to_path_buf(),
+        record.with_extension("out"),
+        record.with_extension("err"),
+    ]
 }
 
-/// Stops each group holding a marker. Holding it proves a process descends
-/// from the tool, and holders are looked for again in case one forked past
-/// the last look.
-fn stop_marker_holders(marker: &Path) {
-    for _ in 0..3 {
-        let holders = marker_holders(marker);
-        if holders.is_empty() {
-            return;
+/// Every other process holding one of `marks`, on any descriptor. Holding one
+/// proves a process descends from the tool.
+fn mark_holders(marks: &[PathBuf]) -> std::io::Result<Vec<u32>> {
+    let marks = marks
+        .iter()
+        .filter_map(|mark| fs::canonicalize(mark).ok())
+        .collect::<Vec<_>>();
+    if marks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut holders = if Path::new("/proc/self/fd").exists() {
+        let mut holders = Vec::new();
+        for entry in fs::read_dir("/proc")? {
+            let Ok(pid) = entry?.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            // Another user's process cannot be listed, and cannot be the tool's.
+            let held = fs::read_dir(format!("/proc/{pid}/fd"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|fd| fs::read_link(fd.path()).ok())
+                .any(|target| marks.contains(&target));
+            if held {
+                holders.push(pid);
+            }
         }
-        let mut groups = holders
+        holders
+    } else {
+        // Scans the user's processes: macOS `lsof` does not match a FIFO by path.
+        let owner = owner_uid(&marks[0])?;
+        let output = Command::new("lsof")
+            .args(["-w", "-F", "pn", "-u", &owner])
+            .output()?;
+        if output.stdout.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "lsof listed no processes: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let (mut holders, mut pid) = (Vec::new(), None);
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(field) = line.strip_prefix('p') {
+                pid = field.parse::<u32>().ok();
+            } else if let Some(name) = line.strip_prefix('n') {
+                if marks.iter().any(|mark| mark.as_os_str() == name) {
+                    holders.extend(pid);
+                }
+            }
+        }
+        holders
+    };
+    holders.retain(|pid| *pid != std::process::id());
+    holders.sort_unstable();
+    holders.dedup();
+    Ok(holders)
+}
+
+#[cfg(unix)]
+fn owner_uid(path: &Path) -> std::io::Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(fs::metadata(path)?.uid().to_string())
+}
+
+#[cfg(not(unix))]
+fn owner_uid(_path: &Path) -> std::io::Result<String> {
+    Err(std::io::Error::other(
+        "tool owners need a unix process table",
+    ))
+}
+
+/// Each process's group, with whether it has not yet exited.
+fn process_groups() -> std::io::Result<Vec<(u32, u32, bool)>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,pgid=,stat="])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("ps could not list processes"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let group = fields.next()?.parse().ok()?;
+            Some((pid, group, !fields.next()?.starts_with('Z')))
+        })
+        .collect())
+}
+
+/// With `group` told to stop, stops each group holding a tool's `marks`, then
+/// waits for all of them to end. An error means something may still run. Holders
+/// are looked for again in case one forked past the last look.
+fn settle_tool(group: Option<u32>, marks: &[PathBuf]) -> std::io::Result<()> {
+    let own_group = |processes: &[(u32, u32, bool)]| {
+        processes
             .iter()
-            .filter_map(|pid| {
-                let output = Command::new("ps")
-                    .args(["-o", "pgid=", "-p", &pid.to_string()])
-                    .output()
-                    .ok()?;
-                String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-            })
+            .find(|(pid, ..)| *pid == std::process::id())
+            .map(|(_, group, _)| *group)
+    };
+    let mut stopped = group.into_iter().collect::<Vec<u32>>();
+    for _ in 0..3 {
+        let holders = mark_holders(marks)?;
+        if holders.is_empty() {
+            break;
+        }
+        let processes = process_groups()?;
+        let mut groups = processes
+            .iter()
+            .filter(|(pid, ..)| holders.contains(pid))
+            .map(|(_, group, _)| *group)
+            .filter(|group| Some(*group) != own_group(&processes))
             .collect::<Vec<u32>>();
         groups.sort_unstable();
         groups.dedup();
         for group in groups {
             spark_agent_adapter::local_environment::terminate_process_group(group, None);
+            stopped.push(group);
         }
+    }
+    let deadline = Instant::now() + TOOL_SETTLE_DEADLINE;
+    loop {
+        let running = process_groups()?
+            .iter()
+            .any(|(_, group, running)| *running && stopped.contains(group));
+        let holders = mark_holders(marks)?;
+        if !running && holders.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(format!(
+                "tool processes still run: groups {stopped:?}, holders {holders:?}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Removes a file that may already be gone.
+fn remove_settled(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
     }
 }
 
 /// Stops every tool a dead executor of this run left running. A record goes
-/// only once its tool is stopped, so a recovery that dies here can be redone.
-pub(crate) fn stop_orphaned_tools(paths: &RunRootPaths) {
-    let Ok(entries) = fs::read_dir(paths.root.join(TOOL_PROCESSES_DIR)) else {
-        return;
+/// only once its tool has ended, so an error, or a recovery that dies here,
+/// leaves it to be redone.
+pub(crate) fn stop_orphaned_tools(paths: &RunRootPaths) -> std::io::Result<()> {
+    let dir = paths.root.join(TOOL_PROCESSES_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?.collect::<std::io::Result<Vec<_>>>()?,
     };
-    for entry in entries.flatten() {
-        if let Ok(group) = entry.file_name().to_string_lossy().parse::<u32>() {
-            let recorded = fs::read_to_string(entry.path()).ok();
-            if recorded.is_some() && process_started_at(group) == recorded {
+    let (records, leftovers): (Vec<_>, Vec<_>) = entries
+        .iter()
+        .partition(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok());
+    for entry in records {
+        let group = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let recorded = fs::read_to_string(entry.path())?;
+        let mut owned = None;
+        if let Some(group) = group {
+            if process_started_at(group)?.as_deref() == Some(recorded.as_str()) {
                 spark_agent_adapter::local_environment::terminate_process_group(group, None);
+                owned = Some(group);
             }
-            stop_marker_holders(&entry.path());
         }
-        let _ = fs::remove_file(entry.path());
+        let marks = tool_marks(&entry.path());
+        settle_tool(owned, &marks)?;
+        remove_settled(&marks[1])?;
+        remove_settled(&marks[2])?;
+        remove_settled(&marks[0])?;
     }
+    // FIFOs and temp files of a tool that crashed before it was on record, or
+    // of a record that went above.
+    for entry in leftovers {
+        remove_settled(&entry.path())?;
+    }
+    Ok(())
 }
 
 fn shell_output_from_process(
@@ -3246,7 +3427,8 @@ fn shell_output_from_process(
 
 const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
 const TOOL_PROCESSES_DIR: &str = "tool-processes";
-const UNIDENTIFIED_OUTPUT_GRACE: Duration = Duration::from_secs(1);
+const OUTPUT_CLOSE_GRACE: Duration = Duration::from_secs(1);
+const TOOL_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
 
 enum HumanGateWaitResult {
     Answered(Choice, String),
@@ -3451,18 +3633,28 @@ fn write_branch_record(dir: &Path, index: usize, record: &Value) -> std::io::Res
 }
 
 /// Settles the branches of a run with no executor left: each branch that had
-/// started and has no record gets a canceled one from its saved progress.
-pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) {
-    let children = |dir: PathBuf| {
-        fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
+/// started and has no record gets a canceled one from its saved progress. Any
+/// failure is returned, so the caller publishes nothing and can redo this.
+pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result<()> {
+    let children = |dir: PathBuf| -> std::io::Result<Vec<PathBuf>> {
+        match fs::read_dir(dir) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(Vec::new())
+            }
+            entries => entries?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect(),
+        }
     };
-    for executions in children(paths.logs_dir()).map(|node| node.join("executions")) {
-        for dir in children(executions).map(|execution| execution.join("branches")) {
-            for path in children(dir.clone()) {
+    for node in children(paths.logs_dir())? {
+        for execution in children(node.join("executions"))? {
+            let dir = execution.join("branches");
+            for path in children(dir.clone())? {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let Some(index) = name
                     .strip_suffix(".progress.json")
@@ -3473,10 +3665,11 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) {
                 if dir.join(format!("{index}.json")).exists() {
                     continue;
                 }
-                let Some(progress) = read_branch_progress(&path) else {
-                    continue;
-                };
-                let _ = write_branch_record(
+                let progress: BranchProgress = serde_json::from_str(&fs::read_to_string(&path)?)
+                    .map_err(|error| {
+                        std::io::Error::other(format!("{}: {error}", path.display()))
+                    })?;
+                write_branch_record(
                     &dir,
                     index,
                     &json!({
@@ -3490,10 +3683,11 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) {
                         "visits": progress.visits,
                         "canceled_at": progress.current,
                     }),
-                );
+                )?;
             }
         }
     }
+    Ok(())
 }
 
 /// The branch node of the fork at `fork_id` (stage/attempt) whose invocation
