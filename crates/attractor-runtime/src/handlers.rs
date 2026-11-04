@@ -2288,7 +2288,21 @@ impl RuntimeHandlerRunner {
                 return record!("terminal_result", json!({ "terminal": terminal }));
             }
             if cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime) {
-                return record!("canceled", json!({"canceled_at": current}));
+                // A child that failed on its own before this stop stays the
+                // branch's error, though a crash kept the branch from seeing it.
+                return match runtime.run_paths.as_ref().map_or(Ok(None), |paths| {
+                    crate::manager_loop::recorded_child_failure(paths, &current)
+                }) {
+                    Ok(None) => record!("canceled", json!({"canceled_at": current})),
+                    Ok(Some((kind, reason))) => {
+                        let attempts = retries.get(&current).copied().unwrap_or(0) + 1;
+                        record!("error", error_value(&current, kind, &reason, attempts))
+                    }
+                    Err(error) => record!(
+                        "error",
+                        error_value(&current, FailureKind::Runtime, &error.to_string(), 0)
+                    ),
+                };
             }
             let Some(node) = flow.nodes.get(&current).cloned() else {
                 return record!(
@@ -3814,21 +3828,42 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result
                     .map_err(|error| {
                         std::io::Error::other(format!("{}: {error}", path.display()))
                     })?;
-                write_branch_record(
-                    &dir,
-                    index,
-                    &json!({
-                        "id": progress.trace.first(),
-                        "index": index,
-                        "status": "canceled",
-                        "started": true,
-                        "context": progress.context,
-                        "route_trace": progress.trace,
-                        "decisions": progress.decisions,
-                        "visits": progress.visits,
-                        "canceled_at": progress.current,
-                    }),
-                )?;
+                let child_failure =
+                    crate::manager_loop::recorded_child_failure(paths, &progress.current)
+                        .map_err(|error| std::io::Error::other(error.to_string()))?;
+                let mut record = json!({
+                    "id": progress.trace.first(),
+                    "index": index,
+                    "status": "canceled",
+                    "started": true,
+                    "context": progress.context,
+                    "route_trace": progress.trace,
+                    "decisions": progress.decisions,
+                    "visits": progress.visits,
+                    "canceled_at": progress.current,
+                });
+                // A child that failed on its own stays this branch's error; only
+                // the run as a whole is canceled.
+                if let (Some(fields), Some((kind, reason))) =
+                    (record.as_object_mut(), child_failure)
+                {
+                    fields.remove("canceled_at");
+                    fields.insert("status".to_string(), json!("error"));
+                    if let Value::Object(error) = error_value(
+                        &progress.current,
+                        kind,
+                        &reason,
+                        progress
+                            .retries
+                            .get(&progress.current)
+                            .copied()
+                            .unwrap_or(0)
+                            + 1,
+                    ) {
+                        fields.extend(error);
+                    }
+                }
+                write_branch_record(&dir, index, &record)?;
             }
         }
     }

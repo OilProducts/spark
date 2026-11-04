@@ -294,30 +294,8 @@ fn autostart_child_pipeline(
     if linked_child_run_id.is_empty() {
         if let Some(parent_paths) = runtime.run_paths.as_ref() {
             let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
-            let checkpoint_at = store
-                .read_run_bundle(&runtime.run_id)
-                .ok()
-                .flatten()
-                .and_then(|bundle| bundle.checkpoint)
-                .map(|checkpoint| checkpoint.timestamp)
-                .unwrap_or_default();
-            let acknowledged = store
-                .read_raw_events(parent_paths)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|event| {
-                    event.event_type == "ChildRunCompleted"
-                        && !checkpoint_at.is_empty()
-                        && event.emitted_at <= checkpoint_at
-                })
-                .filter_map(|event| {
-                    event
-                        .payload
-                        .get("child_run_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .collect::<BTreeSet<_>>();
+            let acknowledged =
+                acknowledged_children(&store, parent_paths, &runtime.run_id).unwrap_or_default();
             let candidates = store
                 .list_child_run_bundles(&runtime.run_id)
                 .unwrap_or_default()
@@ -556,6 +534,73 @@ fn autostart_child_pipeline(
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
     Ok(None)
+}
+
+/// The children a run's checkpoint has already consumed.
+fn acknowledged_children(
+    store: &RunStore,
+    parent_paths: &crate::paths::RunRootPaths,
+    run_id: &str,
+) -> crate::error::Result<BTreeSet<String>> {
+    let checkpoint_at = store
+        .read_run_bundle(run_id)?
+        .and_then(|bundle| bundle.checkpoint)
+        .map(|checkpoint| checkpoint.timestamp)
+        .unwrap_or_default();
+    Ok(store
+        .read_raw_events(parent_paths)?
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "ChildRunCompleted"
+                && !checkpoint_at.is_empty()
+                && event.emitted_at <= checkpoint_at
+        })
+        .filter_map(|event| {
+            event
+                .payload
+                .get("child_run_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect())
+}
+
+/// The failure a node's child already recorded on its own, if its parent has not
+/// consumed it yet. Settling a stopped branch must not mistake this for a
+/// cancellation just because no one observed it before the stop.
+pub(crate) fn recorded_child_failure(
+    parent_paths: &crate::paths::RunRootPaths,
+    node_id: &str,
+) -> crate::error::Result<Option<(FailureKind, String)>> {
+    let run_id = &parent_paths.run_id;
+    let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
+    let acknowledged = acknowledged_children(&store, parent_paths, run_id)?;
+    Ok(store
+        .list_child_run_bundles(run_id)?
+        .into_iter()
+        .filter_map(|bundle| bundle.record)
+        .filter(|record| {
+            record.parent_node_id.as_deref() == Some(node_id)
+                && !acknowledged.contains(&record.run_id)
+                && crate::records::normalize_run_status(&record.status) == "failed"
+                && !restart_marked_record(record)
+        })
+        .max_by_key(|record| record.child_invocation_index)
+        .map(|record| {
+            (
+                record.failure_kind.unwrap_or(FailureKind::Runtime),
+                child_failed_reason(&record.run_id, &record.last_error),
+            )
+        }))
+}
+
+fn child_failed_reason(child_run_id: &str, reason: &str) -> String {
+    let reason = if reason.is_empty() {
+        "Child failed"
+    } else {
+        reason
+    };
+    format!("child {child_run_id} failed: {reason}")
 }
 
 /// Why a terminal linked child must not be adopted on this entry, if so:
@@ -1423,11 +1468,7 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
         });
     }
     if child_status == "failed" {
-        let failure_reason = non_empty(context_string(
-            context,
-            "context.stack.child.failure_reason",
-        ))
-        .unwrap_or_else(|| "Child failed".to_string());
+        let failure_reason = context_string(context, "context.stack.child.failure_reason");
         // The child's own error class carries over: a child routing or
         // visit-budget failure stays fatal inside a tolerant fork.
         let kind = context
@@ -1436,7 +1477,7 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
             .unwrap_or(FailureKind::Runtime);
         return Some(Outcome::error(
             kind,
-            format!("child {child_run_id} failed: {failure_reason}"),
+            child_failed_reason(&child_run_id, &failure_reason),
             Some(false),
         ));
     }

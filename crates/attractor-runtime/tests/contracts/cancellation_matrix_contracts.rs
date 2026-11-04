@@ -60,6 +60,8 @@ const AT_REGISTRATION_ENV: &str = "SPARK_CANCELLATION_MATRIX_AT_REGISTRATION";
 const ISOLATED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_DIR";
 const ISOLATED_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_CASE";
 const HOOK_PHASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_HOOK_PHASE";
+const FAILED_CHILD_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_DIR";
+const FAILED_CHILD_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_CASE";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -355,6 +357,12 @@ impl spark_agent_adapter::CodergenBackend for Backend {
     ) -> Result<CodergenBackendOutput, CodergenError> {
         self.signals.log_call(&request.node_id);
         match request.node_id.as_str() {
+            "work" if self.signals.raised("child-fails-routing") => {
+                Self::answer("again", "the child selected an exhausted target")
+            }
+            "work" if self.signals.raised("child-fails-provider") => {
+                Err(CodergenError::Backend("child provider down".to_string()))
+            }
             "work" => {
                 self.signals.raise("started");
                 if self.signals.raised("own-error") {
@@ -2426,6 +2434,330 @@ fn a_cleanup_never_signals_a_group_id_its_anchor_no_longer_holds() {
             }
             std::panic::resume_unwind(payload);
         }
+    }
+}
+
+/// Child process entry point: a child really fails on its own, then its parent
+/// is held from observing that while the stop lands, and the process dies. A
+/// no-op in the ordinary test run.
+#[test]
+fn failed_child_first_life() {
+    let Ok(dir) = std::env::var(FAILED_CHILD_DIR_ENV) else {
+        return;
+    };
+    let signals = Signals {
+        dir: PathBuf::from(dir),
+    };
+    let name = std::env::var(FAILED_CHILD_CASE_ENV).unwrap();
+    let case = cases(Timing::CrashThenResume)
+        .into_iter()
+        .find(|case| case.name() == name)
+        .expect("known case");
+    let mut parent_runner = runner(case, &signals);
+    let launcher_signals = signals.clone();
+    parent_runner.set_child_run_launcher(move |request| {
+        let signals = launcher_signals.clone();
+        let store = signals.store();
+        let mut record = RunRecord::new(&request.child_run_id, signals.dir.to_string_lossy());
+        record.parent_run_id = Some(request.parent_run_id.clone());
+        record.parent_node_id = Some(request.parent_node_id.clone());
+        let result = PipelineExecutor::new(runner(case, &signals))
+            .execute(ExecuteRunRequest {
+                store,
+                record,
+                flow: request.child_flow.clone(),
+                flow_definition_json: None,
+                launch_context: LaunchContext::empty(),
+                runtime_context: ContextMap::new(),
+                max_steps: None,
+                start: Default::default(),
+            })
+            .expect("child");
+        assert_eq!(result.status, "failed", "{}", result.failure_reason);
+        signals.raise("child-failed");
+        // The hold: this invocation never sees the result. Bounded, so a crash
+        // that never comes fails the case instead of hanging it.
+        wait_for(|| false);
+        panic!("the first life should have crashed");
+    });
+    let conductor = signals.clone();
+    std::thread::spawn(move || {
+        if !wait_for(|| conductor.raised("child-failed")) {
+            return;
+        }
+        conductor.raise("trigger");
+        if case.stop == Stop::External {
+            request_external_cancel(&conductor);
+        }
+        if wait_for(|| conductor.branch_settled(1)) {
+            std::process::exit(CRASH_EXIT_CODE);
+        }
+    });
+    let _ = executor(parent_runner, &signals.store())
+        .execute(fresh_request(flow(case, &signals), &signals));
+    panic!("the first life should have crashed");
+}
+
+/// How a run with a durably failed, unobserved child is finished after a crash.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FinishedBy {
+    Resume,
+    OrphanCancel,
+}
+
+/// A child that failed on its own before a stop stays its branch's error when a
+/// crash kept the parent from observing it, so it keeps its precedence over a
+/// sibling's blocked result. External cancellation still decides the run.
+#[test]
+fn a_childs_recorded_failure_survives_a_crash_before_its_branch_settled() {
+    let routing = "child-fails-routing";
+    let provider = "child-fails-provider";
+    for (fork, stop, failure, finished_by, status, kind) in [
+        (
+            Fork::Strict,
+            Stop::Blocked,
+            routing,
+            FinishedBy::Resume,
+            "failed",
+            Some(FailureKind::Routing),
+        ),
+        (
+            Fork::Tolerant,
+            Stop::Blocked,
+            routing,
+            FinishedBy::Resume,
+            "failed",
+            Some(FailureKind::Routing),
+        ),
+        (
+            Fork::Strict,
+            Stop::Blocked,
+            provider,
+            FinishedBy::Resume,
+            "failed",
+            Some(FailureKind::Runtime),
+        ),
+        // Tolerable in a tolerant fork: kept as evidence, and blocked decides.
+        (
+            Fork::Tolerant,
+            Stop::Blocked,
+            provider,
+            FinishedBy::Resume,
+            "completed",
+            None,
+        ),
+        (
+            Fork::Strict,
+            Stop::External,
+            routing,
+            FinishedBy::Resume,
+            "canceled",
+            None,
+        ),
+        (
+            Fork::Tolerant,
+            Stop::External,
+            routing,
+            FinishedBy::Resume,
+            "canceled",
+            None,
+        ),
+        (
+            Fork::Strict,
+            Stop::External,
+            routing,
+            FinishedBy::OrphanCancel,
+            "canceled",
+            None,
+        ),
+    ] {
+        let case = Case {
+            fork,
+            running: Running::ChildAgent,
+            stop,
+            timing: Timing::CrashThenResume,
+        };
+        let name = format!("{} {failure} {finished_by:?}", case.name());
+        let temp = tempfile::tempdir().unwrap();
+        let signals = Signals {
+            dir: temp.path().to_path_buf(),
+        };
+        let child = parse_flow(json!({
+            "start": {"kind": "start", "routes": {"next": route("cpre")}},
+            "cpre": step_tool(&signals, "cpre", "work"),
+            "work": {"kind": "agent_task", "contracts": {"response": "decision_envelope"},
+                "runtime": {"max_visits": 1},
+                "routes": {"done": route("cdone"), "again": route("work"), "blocked": route("cfailed")}},
+            "cdone": exit("completed", "success"),
+            "cfailed": exit("blocked", "failure"),
+        }));
+        attractor_dsl::write_flow_dir(&signals.dir.join("flows/child"), &child).unwrap();
+        let mut parent = flow(case, &signals);
+        if let Some(attractor_core::NodeConfig::Subflow { results, .. }) =
+            parent.nodes.get_mut("sub").unwrap().config.as_mut()
+        {
+            results.insert("blocked".to_string(), "child_completed".to_string());
+        }
+        signals.raise(failure);
+
+        let status_code = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "routing_model_contracts::cancellation_matrix_contracts::failed_child_first_life",
+                "--nocapture",
+            ])
+            .env(FAILED_CHILD_DIR_ENV, &signals.dir)
+            .env(FAILED_CHILD_CASE_ENV, case.name())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|mut first_life| {
+                let mut exit = None;
+                wait_for(|| {
+                    exit = first_life.try_wait().unwrap();
+                    exit.is_some()
+                });
+                if exit.is_none() {
+                    first_life.kill()?;
+                    first_life.wait()?;
+                }
+                Ok(exit.and_then(|exit| exit.code()))
+            })
+            .unwrap();
+        assert_eq!(status_code, Some(CRASH_EXIT_CODE), "{name}: first life");
+
+        // The boundary: failed durably and settled nothing, with the stop on record.
+        let store = signals.store();
+        let children = || {
+            store
+                .list_run_records()
+                .unwrap()
+                .into_iter()
+                .filter(|record| record.parent_run_id.as_deref() == Some(RUN))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(children().len(), 1, "{name}");
+        let child_run = children().remove(0);
+        assert_eq!(
+            child_run.status, "failed",
+            "{name}: the child's failure is durable"
+        );
+        assert!(
+            !signals.branch_settled(0),
+            "{name}: the branch settled too early"
+        );
+        assert!(
+            signals.branch_settled(1),
+            "{name}: the sibling's result is durable"
+        );
+        let work_calls = signals.calls("work");
+
+        let (result_status, reason, result_kind, result_name) = match finished_by {
+            FinishedBy::Resume => {
+                let (runner, flow, store) = (runner(case, &signals), parent, signals.store());
+                let result = bounded(&name, move || resume(runner, flow, store));
+                (
+                    result.status,
+                    result.failure_reason,
+                    result.failure_kind,
+                    result.outcome_reason_code,
+                )
+            }
+            FinishedBy::OrphanCancel => {
+                let controls = RuntimeControls::new(signals.store());
+                let status = bounded(&name, move || {
+                    controls
+                        .mark_canceled(RUN, "aborted_by_user")
+                        .unwrap()
+                        .status
+                });
+                (status, "aborted_by_user".to_string(), None, None)
+            }
+        };
+        assert_eq!(result_status, status, "{name}: {reason}");
+        assert_eq!(result_kind, kind, "{name}: {reason}");
+        match (status, stop) {
+            ("failed", _) => {
+                assert!(
+                    reason.starts_with("branch pre (index 0) failed at sub: "),
+                    "{name}: {reason}"
+                );
+                assert!(reason.contains(&child_run.run_id), "{name}: {reason}");
+                assert_eq!(result_name, None, "{name}");
+            }
+            ("completed", _) => assert_eq!(result_name.as_deref(), Some("blocked"), "{name}"),
+            _ => assert_eq!(reason, "aborted_by_user", "{name}"),
+        }
+
+        // The branch's own error and evidence, the child unchanged, nothing rerun.
+        let affected = signals.branch_record(0);
+        assert_eq!(affected["status"], json!("error"), "{name}: {affected}");
+        assert!(affected.get("canceled_at").is_none(), "{name}: {affected}");
+        let expected_kind = if failure == routing {
+            "routing"
+        } else {
+            "runtime"
+        };
+        assert_eq!(
+            affected["error"]["kind"],
+            json!(expected_kind),
+            "{name}: {affected}"
+        );
+        assert_eq!(
+            affected["error"]["node"],
+            json!("sub"),
+            "{name}: {affected}"
+        );
+        assert_eq!(
+            affected["error"]["tolerable"],
+            json!(failure == provider),
+            "{name}: {affected}"
+        );
+        assert!(
+            affected["error"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(&child_run.run_id),
+            "{name}: {affected}"
+        );
+        assert_eq!(
+            affected["route_trace"],
+            json!(["pre", "sub"]),
+            "{name}: {affected}"
+        );
+        assert_eq!(affected["visits"]["pre"], json!(1), "{name}: {affected}");
+        assert_eq!(affected["visits"]["sub"], json!(1), "{name}: {affected}");
+        assert!(
+            affected["context"]["context.tool.exit_code"].is_number(),
+            "{name}: {affected}"
+        );
+        assert_eq!(
+            signals.branch_record(1)["status"],
+            json!(if stop == Stop::Blocked {
+                "terminal_result"
+            } else {
+                "canceled"
+            }),
+            "{name}"
+        );
+        assert_eq!(children().len(), 1, "{name}: a new child was launched");
+        assert_eq!(children().remove(0).status, "failed", "{name}");
+        assert_eq!(signals.calls("pre"), 1, "{name}: pre ran again");
+        assert_eq!(signals.calls("cpre"), 1, "{name}: cpre ran again");
+        assert_eq!(
+            signals.calls("work"),
+            work_calls,
+            "{name}: the child ran again"
+        );
+        assert_eq!(signals.calls("synth"), 0, "{name}: joined");
+        let paths = store.find_run_root(RUN).unwrap().unwrap();
+        assert!(
+            !store.read_raw_events(&paths).unwrap().iter().any(|event| {
+                event.event_type == "StageStarted"
+                    && event.payload.get("node_id") == Some(&json!("join"))
+            }),
+            "{name}: the join ran"
+        );
     }
 }
 
