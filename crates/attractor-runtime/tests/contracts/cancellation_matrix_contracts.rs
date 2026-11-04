@@ -1607,9 +1607,21 @@ impl HookPhase {
 /// with a descendant in its own group that holds the hook's output. The hook
 /// raises `started`, so the case's trigger fires while it runs.
 fn hooked_flow(case: Case, signals: &Signals, phase: HookPhase) -> FlowDefinition {
+    hooked_flow_with(case, signals, phase, "", "")
+}
+
+/// `hooked_flow` with text appended to the tool's command, which reaches the
+/// hook on its input, and commands the hook runs first.
+fn hooked_flow_with(
+    case: Case,
+    signals: &Signals,
+    phase: HookPhase,
+    command_tail: &str,
+    hook_head: &str,
+) -> FlowDefinition {
     let p = |name: &str| signals.path(name).display().to_string();
     let hook = format!(
-        "[ \"$ATTRACTOR_TOOL_NODE_ID\" = work ] || exit 0; \
+        "[ \"$ATTRACTOR_TOOL_NODE_ID\" = work ] || exit 0; {hook_head}\
          {survive}; set -m; {RECORD_GROUP} >> '{pids}'; \
          ( {survive}; {hold} ) & echo $! >> '{pids}'; {hold}",
         survive = survive_term(signals),
@@ -1624,7 +1636,7 @@ fn hooked_flow(case: Case, signals: &Signals, phase: HookPhase) -> FlowDefinitio
     );
     let mut flow = flow(case, signals);
     let command = format!(
-        "echo work >> '{calls}'; echo work-finished >> '{calls}'",
+        "echo work >> '{calls}'; echo work-finished >> '{calls}'{command_tail}",
         calls = p("calls.log"),
     );
     // A hook is declared on the flow, and the guard above picks the `work` tool.
@@ -1743,6 +1755,67 @@ fn a_stop_reaches_a_running_tool_hook_and_settles_it() {
                     "{name}: {failures:?} at {:?}",
                     paths.root
                 );
+            }
+        }
+    }
+}
+
+/// A hook's input is the whole tool command, larger than any pipe buffer. A hook
+/// that never reads it cannot block a stop or its own output, and one that does
+/// gets all of it.
+#[test]
+fn a_large_hook_payload_cannot_block_a_stop_and_arrives_whole() {
+    let tail = format!(" # {}", "x".repeat(100_000));
+    for phase in [HookPhase::Pre, HookPhase::Post] {
+        for running in [Running::Tool, Running::ChildTool] {
+            for stop in [Stop::External, Stop::Blocked] {
+                for reads in [false, true] {
+                    let case = Case {
+                        fork: Fork::Strict,
+                        running,
+                        stop,
+                        timing: Timing::MidExecution,
+                    };
+                    let name = format!("{phase:?}/{} reads={reads}", case.name());
+                    let (_temp, signals) = in_new_case_dir(case);
+                    let head = if reads {
+                        format!("cat > '{}'; ", signals.path("payload").display())
+                    } else {
+                        String::new()
+                    };
+                    let flow = hooked_flow_with(case, &signals, phase, &tail, &head);
+                    let conductor = signals.clone();
+                    std::thread::spawn(move || conduct(case, conductor));
+                    let (runner, store) = (runner(case, &signals), signals.store());
+                    let request = fresh_request(flow, &signals);
+                    let result = bounded(&name, move || {
+                        executor(runner, &store).execute(request).expect("execute")
+                    });
+                    assert_eq!(
+                        result.status,
+                        expected(case).status,
+                        "{name}: {}",
+                        result.failure_reason
+                    );
+                    assert_processes_stopped(&signals, &name, true);
+                    assert_eq!(
+                        tool_ownership_entries(&signals),
+                        Vec::<PathBuf>::new(),
+                        "{name}"
+                    );
+                    if reads {
+                        let payload: Value = serde_json::from_str(
+                            &std::fs::read_to_string(signals.path("payload")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(payload["hook_phase"], json!(phase.env()), "{name}");
+                        assert_eq!(payload["node_id"], json!("work"), "{name}");
+                        assert!(
+                            payload["tool_command"].as_str().unwrap().ends_with(&tail),
+                            "{name}: the payload was cut"
+                        );
+                    }
+                }
             }
         }
     }

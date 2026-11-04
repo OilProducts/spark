@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -3068,6 +3068,17 @@ fn run_shell_command(
         Some((owner, _)) => format!("{}\n{command}", owner.open_marker_command()),
         None => command.to_string(),
     };
+    // An unlinked file, not a pipe: nothing to write as the command runs, so a
+    // command that never reads its input cannot block its own stop or output.
+    let stdin = match stdin_text {
+        Some(text) => {
+            let mut file = tempfile::tempfile()?;
+            file.write_all(text.as_bytes())?;
+            file.rewind()?;
+            Stdio::from(file)
+        }
+        None => Stdio::null(),
+    };
     let (out_reader, out_writer, err_reader, err_writer) = match owner {
         Some((owner, _)) => {
             let (out_reader, out_writer) = owner.open_output("out")?;
@@ -3086,22 +3097,12 @@ fn run_shell_command(
         .arg(script)
         .current_dir(cwd)
         .envs(env)
-        .stdin(if stdin_text.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(stdin)
         .stdout(out_writer)
         .stderr(err_writer)
         .spawn()?;
     // It keeps its copies of the write ends, which would hold the output open.
     drop(command_line);
-
-    if let Some(stdin_text) = stdin_text {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(stdin_text.as_bytes());
-        }
-    }
 
     if timeout.is_none() && stop.is_none() {
         let output = child.wait_with_output()?;

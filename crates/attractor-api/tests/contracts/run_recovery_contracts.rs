@@ -780,6 +780,349 @@ fn cancel_finalizes_an_orphaned_run_immediately() {
     );
 }
 
+const ORPHAN_RUN: &str = "run-orphan-processes";
+const ORPHAN_LIFE_ENV: &str = "SPARK_RECOVERY_ORPHAN_LIFE";
+const ORPHAN_ROOT_ENV: &str = "SPARK_RECOVERY_ORPHAN_ROOT";
+const ORPHAN_CHILD_ENV: &str = "SPARK_RECOVERY_ORPHAN_CHILD";
+const ORPHAN_CRASH_CODE: i32 = 7;
+const ORPHAN_DEADLINE: Duration = Duration::from_secs(60);
+
+fn orphan_wait(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + ORPHAN_DEADLINE;
+    while Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+/// A tool that announces itself and holds, surviving TERM so that only a KILL
+/// ends it: a cancellation that dies after telling it to stop leaves it running.
+fn orphan_tool(root: &Path, signal: &str, next: &str) -> Value {
+    let p = |name: &str| root.join(name).display().to_string();
+    json!({"kind": "tool", "config": {"kind": "tool", "exit_codes": {"0": "done"},
+        "command": format!(
+            "exec 2>/dev/null; trap \"touch '{term}'\" TERM; ps -o pgid= -p $$ | tr -d ' ' >> '{pids}'; \
+             touch '{signal}'; i=0; while [ $i -lt 2400 ]; do sleep 0.05; i=$((i+1)); done",
+            term = p("term-seen"),
+            pids = p("pids"),
+            signal = p(signal),
+        )},
+        "routes": {"done": {"to": next, "description": "Continue."}}})
+}
+
+fn orphan_step(root: &Path, next: &str) -> Value {
+    json!({"kind": "tool", "config": {"kind": "tool", "exit_codes": {"0": "done"},
+        "command": format!("echo pre >> '{}'", root.join("calls").display())},
+        "routes": {"done": {"to": next, "description": "Continue."}}})
+}
+
+fn orphan_flow(root: &Path, in_child: bool) -> FlowDefinition {
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let exit = json!({"kind": "exit", "config": {"kind": "exit",
+        "result": {"name": "completed", "outcome": "success"}}});
+    let work = if in_child { "sub" } else { "work" };
+    let mut nodes = json!({
+        "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("fork")}},
+        "fork": {"kind": "parallel", "config": {"kind": "parallel",
+            "branches": ["pre", "sib"], "join": "join"}},
+        "pre": orphan_step(root, work),
+        "sib": orphan_tool(root, "sib-started", "join"),
+        "join": {"kind": "fan_in", "config": {"kind": "fan_in"}, "routes": {"next": to("done")}},
+        "done": exit.clone(),
+    });
+    nodes[work] = if in_child {
+        json!({"kind": "subflow", "manager": {"poll_interval": "0s"},
+            "config": {"kind": "subflow", "flow_ref": "child", "results": {"completed": "child_completed"}},
+            "routes": {"child_completed": to("join")}})
+    } else {
+        orphan_tool(root, "work-started", "join")
+    };
+    let flow: FlowDefinition = serde_json::from_value(
+        json!({"schema_version": "2", "id": "orphan_processes", "nodes": nodes}),
+    )
+    .expect("flow JSON");
+    attractor_dsl::validated_flow(flow).expect("valid flow")
+}
+
+fn write_orphan_child_flow(root: &Path) {
+    let to = |target: &str| json!({"to": target, "description": "Continue."});
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2", "id": "child", "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": to("work")}},
+            "work": orphan_tool(root, "work-started", "cdone"),
+            "cdone": {"kind": "exit", "config": {"kind": "exit",
+                "result": {"name": "completed", "outcome": "success"}}},
+        }
+    }))
+    .expect("child flow JSON");
+    attractor_dsl::write_flow_dir(&root.join("flows/child"), &flow).expect("write child flow");
+}
+
+/// Child process entry point: the executor's first life, killed once both
+/// branches' tools run; or a cancellation through the route, killed once a tool
+/// has been told to stop. A no-op in the ordinary test run.
+#[test]
+fn orphan_processes_life() {
+    let Ok(life) = std::env::var(ORPHAN_LIFE_ENV) else {
+        return;
+    };
+    let root = std::path::PathBuf::from(std::env::var(ORPHAN_ROOT_ENV).unwrap());
+    let settings = settings(&root);
+    let crash_on = |signals: &'static [&'static str]| {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            if orphan_wait(|| signals.iter().all(|signal| root.join(signal).exists())) {
+                std::process::exit(ORPHAN_CRASH_CODE);
+            }
+        });
+    };
+    if life == "executor" {
+        crash_on(&["work-started", "sib-started"]);
+        let in_child = std::env::var(ORPHAN_CHILD_ENV).is_ok();
+        let store = RunStore::for_settings(&settings);
+        let _ = attractor_runtime::PipelineExecutor::new(RuntimeHandlerRunner::new()).execute(
+            attractor_runtime::ExecuteRunRequest {
+                store,
+                record: attractor_core::RunRecord::new(
+                    ORPHAN_RUN,
+                    root.join("project").to_string_lossy(),
+                ),
+                flow: orphan_flow(&root, in_child),
+                flow_definition_json: None,
+                launch_context: attractor_core::LaunchContext::empty(),
+                runtime_context: attractor_core::ContextMap::from([(
+                    "internal.bundled_root".to_string(),
+                    json!(root.to_string_lossy()),
+                )]),
+                max_steps: None,
+                start: Default::default(),
+            },
+        );
+        panic!("the executor should have crashed");
+    }
+    crash_on(&["term-seen"]);
+    let response = AttractorApiService::new(settings).cancel_pipeline_route(ORPHAN_RUN);
+    panic!(
+        "the cancellation should have died mid-cleanup: {:?}",
+        response.body
+    );
+}
+
+fn run_orphan_life(root: &Path, life: &str, in_child: bool) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "run_recovery_contracts::orphan_processes_life",
+            "--nocapture",
+        ])
+        .env(ORPHAN_LIFE_ENV, life)
+        .env(ORPHAN_ROOT_ENV, root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if in_child {
+        command.env(ORPHAN_CHILD_ENV, "1");
+    }
+    let mut process = command.spawn().unwrap();
+    let mut status = None;
+    orphan_wait(|| {
+        status = process.try_wait().unwrap();
+        status.is_some()
+    });
+    if status.is_none() {
+        let _ = process.kill();
+        let _ = process.wait();
+    }
+    assert_eq!(
+        status.and_then(|status| status.code()),
+        Some(ORPHAN_CRASH_CODE),
+        "{life} must die at its crash point"
+    );
+}
+
+fn orphan_group_running(group: &str) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(group) && fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+    })
+}
+
+/// A run whose executor crashed, canceled through the route as a client would:
+/// a cancellation crashing mid-cleanup publishes nothing, the same route finishes
+/// it, the first sight of the terminal state finds its processes, branches and
+/// child settled, and repeating the route changes nothing.
+#[test]
+fn canceling_a_crashed_run_through_the_route_settles_before_it_publishes() {
+    for in_child in [false, true] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let settings = settings(&root);
+        std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+        std::fs::create_dir_all(root.join("project")).expect("workdir");
+        if in_child {
+            write_orphan_child_flow(&root);
+        }
+        run_orphan_life(&root, "executor", in_child);
+
+        let store = RunStore::for_settings(&settings);
+        let paths = store.find_run_root(ORPHAN_RUN).unwrap().unwrap();
+        let groups = || -> Vec<String> {
+            std::fs::read_to_string(root.join("pids"))
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(groups().len(), 2, "both tools started");
+        let status = || store.read_run_record(&paths).unwrap().unwrap().status;
+        assert_eq!(status(), "running", "the crash published nothing");
+
+        // Cancellation crashes with a tool told to stop.
+        run_orphan_life(&root, "cancel", in_child);
+        assert_eq!(status(), "cancel_requested", "durable, not terminal");
+        assert_eq!(
+            store.read_result(&paths).unwrap().expect("result").state,
+            "pending"
+        );
+        let canceled_events = || {
+            store
+                .read_raw_events(&paths)
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload.get("status") == Some(&json!("canceled")))
+                .count()
+        };
+        assert_eq!(canceled_events(), 0);
+        assert!(
+            groups().iter().any(|group| orphan_group_running(group)),
+            "the crash left a tool running for the retry to stop"
+        );
+
+        let child_records = || {
+            store
+                .list_run_records()
+                .unwrap()
+                .into_iter()
+                .filter(|record| record.parent_run_id.as_deref() == Some(ORPHAN_RUN))
+                .collect::<Vec<_>>()
+        };
+        let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+
+        // The first sight of the terminal state finds everything settled, with
+        // no further wait for any of it.
+        let observer = {
+            let (store, paths, root, branches) =
+                (store.clone(), paths.clone(), root.clone(), branches.clone());
+            std::thread::spawn(move || {
+                let saw_terminal = orphan_wait(|| {
+                    store.read_run_record(&paths).unwrap().unwrap().status == "canceled"
+                });
+                let tools_stopped = std::fs::read_to_string(root.join("pids"))
+                    .unwrap()
+                    .lines()
+                    .all(|group| !orphan_group_running(group));
+                let children_settled = store
+                    .list_run_records()
+                    .unwrap()
+                    .iter()
+                    .filter(|record| record.parent_run_id.as_deref() == Some(ORPHAN_RUN))
+                    .all(|record| record.status == "canceled");
+                (
+                    saw_terminal,
+                    tools_stopped,
+                    children_settled,
+                    branches.join("0.json").exists(),
+                    branches.join("1.json").exists(),
+                )
+            })
+        };
+        let response = AttractorApiService::new(settings.clone()).cancel_pipeline_route(ORPHAN_RUN);
+        assert_eq!(response.status_code, 200, "{:?}", response.body);
+        assert_eq!(
+            response.body["status"],
+            json!("canceled"),
+            "{:?}",
+            response.body
+        );
+        assert_eq!(observer.join().unwrap(), (true, true, true, true, true));
+
+        // Each branch's evidence, the child and the published result.
+        let branch = |index: usize| -> Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(branches.join(format!("{index}.json"))).unwrap(),
+            )
+            .unwrap()
+        };
+        let work = if in_child { "sub" } else { "work" };
+        let affected = branch(0);
+        assert_eq!(affected["status"], json!("canceled"), "{affected}");
+        assert_eq!(affected["canceled_at"], json!(work), "{affected}");
+        assert_eq!(affected["route_trace"], json!(["pre", work]), "{affected}");
+        assert_eq!(affected["visits"]["pre"], json!(1), "{affected}");
+        assert!(
+            affected["context"]["context.tool.exit_code"].is_number(),
+            "{affected}"
+        );
+        assert!(affected.get("error").is_none(), "{affected}");
+        let sibling = branch(1);
+        assert_eq!(sibling["status"], json!("canceled"), "{sibling}");
+        assert_eq!(sibling["route_trace"], json!(["sib"]), "{sibling}");
+        assert_eq!(child_records().len(), usize::from(in_child));
+        for child in child_records() {
+            let child_paths = store.find_run_root(&child.run_id).unwrap().unwrap();
+            assert_eq!(child.status, "canceled");
+            assert_eq!(
+                store
+                    .read_result(&child_paths)
+                    .unwrap()
+                    .expect("child result")
+                    .status,
+                "canceled"
+            );
+        }
+        let record = store.read_run_record(&paths).unwrap().unwrap();
+        assert_eq!(record.status, "canceled");
+        assert!(
+            record.last_error.contains("no executor attached"),
+            "{}",
+            record.last_error
+        );
+        let result = store.read_result(&paths).unwrap().expect("result");
+        assert_eq!(
+            (result.status.as_str(), result.state.as_str()),
+            ("canceled", "error")
+        );
+        assert_eq!(canceled_events(), 1);
+
+        // Repeating the cancellation changes nothing.
+        let repeated = AttractorApiService::new(settings.clone()).cancel_pipeline_route(ORPHAN_RUN);
+        assert_eq!(repeated.status_code, 200, "{:?}", repeated.body);
+        assert_ne!(
+            repeated.body["status"],
+            json!("cancel_requested"),
+            "{:?}",
+            repeated.body
+        );
+        assert_eq!(status(), "canceled");
+        assert_eq!(canceled_events(), 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "the finished step ran once"
+        );
+    }
+}
+
 #[test]
 fn startup_recovery_resumes_unanswered_gate_back_into_waiting() {
     let temp = tempfile::tempdir().expect("tempdir");
