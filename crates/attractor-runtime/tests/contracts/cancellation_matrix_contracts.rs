@@ -58,6 +58,7 @@ const CANCEL_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_DIR";
 const CANCEL_EXPECTS_ERROR_ENV: &str = "SPARK_CANCELLATION_MATRIX_CANCEL_EXPECTS_ERROR";
 const AT_REGISTRATION_ENV: &str = "SPARK_CANCELLATION_MATRIX_AT_REGISTRATION";
 const ISOLATED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ISOLATED_DIR";
+const HOOK_PHASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_HOOK_PHASE";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -645,8 +646,13 @@ fn crash_case_first_life() {
     } else {
         std::thread::spawn(move || conduct(case, conductor_signals));
     }
-    let _ = executor(runner(case, &signals), &signals.store())
-        .execute(fresh_request(flow(case, &signals), &signals));
+    let flow = match std::env::var(HOOK_PHASE_ENV).as_deref() {
+        Ok("pre") => hooked_flow(case, &signals, HookPhase::Pre),
+        Ok("post") => hooked_flow(case, &signals, HookPhase::Post),
+        _ => flow(case, &signals),
+    };
+    let _ =
+        executor(runner(case, &signals), &signals.store()).execute(fresh_request(flow, &signals));
     panic!("the first life should have crashed");
 }
 
@@ -1572,6 +1578,305 @@ fn a_crash_before_a_tool_is_registered_leaves_nothing_and_resumes() {
             Vec::<PathBuf>::new(),
             "{name}"
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HookPhase {
+    Pre,
+    Post,
+}
+
+impl HookPhase {
+    fn env(self) -> &'static str {
+        match self {
+            Self::Pre => "pre",
+            Self::Post => "post",
+        }
+    }
+
+    fn attr(self) -> &'static str {
+        match self {
+            Self::Pre => "tool.hooks.pre",
+            Self::Post => "tool.hooks.post",
+        }
+    }
+}
+
+/// The case's flow, its `work` tool finishing at once but for a hook that holds,
+/// with a descendant in its own group that holds the hook's output. The hook
+/// raises `started`, so the case's trigger fires while it runs.
+fn hooked_flow(case: Case, signals: &Signals, phase: HookPhase) -> FlowDefinition {
+    let p = |name: &str| signals.path(name).display().to_string();
+    let hook = format!(
+        "[ \"$ATTRACTOR_TOOL_NODE_ID\" = work ] || exit 0; \
+         {survive}; set -m; {RECORD_GROUP} >> '{pids}'; \
+         ( {survive}; {hold} ) & echo $! >> '{pids}'; {hold}",
+        survive = survive_term(signals),
+        pids = p("pids"),
+        hold = format!(
+            "echo hook >> '{calls}'; i=0; touch '{started}'; \
+             while [ ! -f '{release}' ] && [ $i -lt 1800 ]; do sleep 0.05; i=$((i+1)); done",
+            calls = p("calls.log"),
+            started = p("started"),
+            release = p("release"),
+        ),
+    );
+    let mut flow = flow(case, signals);
+    let command = format!(
+        "echo work >> '{calls}'; echo work-finished >> '{calls}'",
+        calls = p("calls.log"),
+    );
+    // A hook is declared on the flow, and the guard above picks the `work` tool.
+    let child_dir = signals.dir.join("flows/child");
+    if case.running.is_child() {
+        let mut child = attractor_dsl::read_flow_dir(&child_dir).unwrap();
+        child.nodes.insert(
+            "work".to_string(),
+            serde_json::from_value(tool(command, "cdone")).unwrap(),
+        );
+        child
+            .extensions
+            .insert(phase.attr().to_string(), json!(hook));
+        attractor_dsl::write_flow_dir(&child_dir, &child).unwrap();
+    } else {
+        flow.nodes.insert(
+            "work".to_string(),
+            serde_json::from_value(tool(command, "join")).unwrap(),
+        );
+        flow.extensions
+            .insert(phase.attr().to_string(), json!(hook));
+    }
+    flow
+}
+
+/// A stop reaches a tool's hook wherever the tool runs: the hook and what it
+/// started are gone when the run returns, the result follows the precedence
+/// rules, a stopped hook is not recorded as a failed one, and a stopped pre-hook
+/// starts no tool. A post-hook's tool already finished, so its result stands.
+#[test]
+fn a_stop_reaches_a_running_tool_hook_and_settles_it() {
+    for phase in [HookPhase::Pre, HookPhase::Post] {
+        for running in [Running::Tool, Running::ChildTool] {
+            for (fork, stop) in [
+                (Fork::Strict, Stop::External),
+                (Fork::Tolerant, Stop::External),
+                (Fork::Strict, Stop::Blocked),
+                (Fork::Tolerant, Stop::Fatal),
+                (Fork::Strict, Stop::Tolerable),
+            ] {
+                let case = Case {
+                    fork,
+                    running,
+                    stop,
+                    timing: Timing::MidExecution,
+                };
+                let name = format!("{phase:?}/{}", case.name());
+                let (_temp, signals) = in_new_case_dir(case);
+                let flow = hooked_flow(case, &signals, phase);
+                let conductor = signals.clone();
+                std::thread::spawn(move || conduct(case, conductor));
+                let (runner, store) = (runner(case, &signals), signals.store());
+                let request = fresh_request(flow, &signals);
+                let result = bounded(&name, move || {
+                    executor(runner, &store).execute(request).expect("execute")
+                });
+
+                let want = expected(case);
+                assert_eq!(
+                    result.status, want.status,
+                    "{name}: {}",
+                    result.failure_reason
+                );
+                assert_eq!(result.outcome.as_deref(), want.outcome, "{name}");
+                assert_eq!(result.failure_kind, want.kind, "{name}");
+                assert!(
+                    result.failure_reason.starts_with(want.reason),
+                    "{name}: {}",
+                    result.failure_reason
+                );
+                assert_processes_stopped(&signals, &name, true);
+                assert_eq!(
+                    tool_ownership_entries(&signals),
+                    Vec::<PathBuf>::new(),
+                    "{name}"
+                );
+                assert_eq!(signals.calls("synth"), 0, "{name}: joined after the stop");
+                let (work_calls, finished) = match phase {
+                    HookPhase::Pre => (0, 0),
+                    HookPhase::Post => (1, 1),
+                };
+                assert_eq!(
+                    signals.calls("work"),
+                    work_calls,
+                    "{name}: tool invocations"
+                );
+                assert_eq!(signals.calls("work-finished"), finished, "{name}");
+
+                let affected = signals.branch_record(0);
+                assert!(affected.get("error").is_none(), "{name}: {affected}");
+                if running.is_child() {
+                    assert_eq!(affected["status"], json!("canceled"), "{name}: {affected}");
+                } else if phase == HookPhase::Pre {
+                    assert_eq!(affected["status"], json!("canceled"), "{name}: {affected}");
+                    assert_eq!(affected["canceled_at"], json!("work"), "{name}");
+                } else {
+                    assert_eq!(affected["status"], json!("completed"), "{name}: {affected}");
+                }
+
+                let store = signals.store();
+                let paths = store.find_run_root(RUN).unwrap().unwrap();
+                let mut failures = Vec::new();
+                let mut dirs = vec![signals.path("runs")];
+                while let Some(dir) = dirs.pop() {
+                    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            dirs.push(path);
+                        } else if path.to_string_lossy().contains("hook") {
+                            failures.push(path);
+                        }
+                    }
+                }
+                assert!(
+                    failures.is_empty(),
+                    "{name}: {failures:?} at {:?}",
+                    paths.root
+                );
+            }
+        }
+    }
+}
+
+/// A tool that failed on its own keeps its error when a stop lands on its
+/// post-hook: the stop is the hook's, not the tool's.
+#[test]
+fn a_stopped_post_hook_leaves_the_tools_own_error_alone() {
+    for (fork, status, reason) in [
+        (Fork::Strict, "failed", "branch pre (index 0)"),
+        (Fork::Tolerant, "completed", ""),
+    ] {
+        let case = Case {
+            fork,
+            running: Running::Tool,
+            stop: Stop::Blocked,
+            timing: Timing::MidExecution,
+        };
+        let name = case.name();
+        let (_temp, signals) = in_new_case_dir(case);
+        let mut flow = hooked_flow(case, &signals, HookPhase::Post);
+        *flow.nodes.get_mut("work").unwrap() =
+            serde_json::from_value(tool("exit 3".to_string(), "join")).unwrap();
+        let conductor = signals.clone();
+        std::thread::spawn(move || conduct(case, conductor));
+        let (runner, store) = (runner(case, &signals), signals.store());
+        let request = fresh_request(flow, &signals);
+        let result = bounded(&name, move || {
+            executor(runner, &store).execute(request).expect("execute")
+        });
+        assert_eq!(result.status, status, "{name}: {}", result.failure_reason);
+        assert!(
+            result.failure_reason.starts_with(reason),
+            "{name}: {}",
+            result.failure_reason
+        );
+        assert_processes_stopped(&signals, &name, true);
+        let affected = signals.branch_record(0);
+        assert_eq!(affected["status"], json!("error"), "{name}: {affected}");
+        assert!(affected.get("canceled_at").is_none(), "{name}: {affected}");
+    }
+}
+
+/// A crash while a hook runs leaves it owned and running; both recovery paths
+/// stop it and whatever it started before anything terminal appears.
+#[test]
+fn a_crash_during_a_tool_hook_leaves_it_recoverable() {
+    for phase in [HookPhase::Pre, HookPhase::Post] {
+        for running in [Running::Tool, Running::ChildTool] {
+            for through_resume in [false, true] {
+                let case = Case {
+                    fork: Fork::Strict,
+                    running,
+                    stop: Stop::External,
+                    timing: Timing::CrashThenResume,
+                };
+                let name = format!("{phase:?}/{running:?} resume={through_resume}");
+                let (_temp, signals) = in_new_case_dir(case);
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command.env(HOOK_PHASE_ENV, phase.env());
+                // Builds the hooked child flow on disk for both lives.
+                let flow = hooked_flow(case, &signals, phase);
+                run_first_life(case, &signals, command);
+
+                let groups = tool_groups(&signals);
+                assert_eq!(groups.len(), 2, "{name}: the hook and its descendant");
+                assert!(
+                    groups.iter().all(|group| group_running(group)),
+                    "{name}: the crash must not have stopped the hook"
+                );
+                assert_eq!(
+                    tool_ownership_entries(&signals).len(),
+                    3,
+                    "{name}: its ownership"
+                );
+                let store = signals.store();
+                let paths = store.find_run_root(RUN).unwrap().unwrap();
+                assert_eq!(
+                    store.read_run_record(&paths).unwrap().unwrap().status,
+                    "cancel_requested",
+                    "{name}"
+                );
+
+                let observer = {
+                    let signals = signals.clone();
+                    std::thread::spawn(move || {
+                        let store = signals.store();
+                        let paths = store.find_run_root(RUN).unwrap().unwrap();
+                        let saw_terminal = wait_for(|| {
+                            store.read_run_record(&paths).unwrap().unwrap().status == "canceled"
+                        });
+                        (
+                            saw_terminal,
+                            tool_groups(&signals)
+                                .iter()
+                                .all(|group| !group_running(group)),
+                            tool_ownership_entries(&signals).is_empty(),
+                            signals.branch_settled(0),
+                        )
+                    })
+                };
+                if through_resume {
+                    let (runner, store) = (runner(case, &signals), signals.store());
+                    let result = bounded(&name, move || resume(runner, flow, store));
+                    assert_eq!(
+                        result.status, "canceled",
+                        "{name}: {}",
+                        result.failure_reason
+                    );
+                    assert_eq!(result.failure_reason, "aborted_by_user", "{name}");
+                } else {
+                    let store = signals.store();
+                    let status = bounded(&name, move || {
+                        RuntimeControls::new(store)
+                            .mark_canceled(RUN, "no executor")
+                            .unwrap()
+                    });
+                    assert_eq!(status.status, "canceled", "{name}");
+                }
+                assert_eq!(observer.join().unwrap(), (true, true, true, true), "{name}");
+                assert_eq!(signals.calls("synth"), 0, "{name}");
+                assert_eq!(
+                    signals.calls("work"),
+                    usize::from(phase == HookPhase::Post),
+                    "{name}: tool invocations"
+                );
+                assert_eq!(
+                    signals.calls("hook"),
+                    2,
+                    "{name}: hook and descendant started once"
+                );
+            }
+        }
     }
 }
 

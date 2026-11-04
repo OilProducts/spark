@@ -802,7 +802,7 @@ test('picker default persists workspace and project resets', async ({ page }, te
             await page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true }).click()
             await customModel(page, 'picker-reset-custom', scope)
             await scope.getByRole('button', { name: /^Save/ }).click()
-            await expect.poll(async () => (await read(scoped)).models.stored.model).toBe('picker-reset-custom')
+            await expect.poll(async () => (await read(scoped)).models.stored?.model).toBe('picker-reset-custom')
             const expected = scoped ? 'workspace-parent · Low' : 'Discovery default · Medium'
             await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText('picker-reset-custom · High')
             await openPicker(page, scope)

@@ -1412,8 +1412,57 @@ impl RuntimeHandlerRunner {
             }
         };
 
+        // Tools and their hooks stop when their fork or the user cancels, at the
+        // root and in a child as in a branch; the run record is read at most
+        // every 250 ms. A stop of the invocation's own work marks it interrupted;
+        // a stop of a post-hook does not, since the tool's result already stands.
+        let mut last_check = Instant::now();
+        let mut stop_check = |marks_interrupted: bool| {
+            if runtime.canceled_by_owner() {
+                if marks_interrupted {
+                    runtime.interrupted.store(true, Ordering::SeqCst);
+                }
+                return true;
+            }
+            if last_check.elapsed() < Duration::from_millis(250) {
+                return false;
+            }
+            last_check = Instant::now();
+            if marks_interrupted {
+                runtime.stop_requested()
+            } else {
+                runtime.stop_signaled()
+            }
+        };
+        let report_cleanup = |problem: &str| {
+            let _ = self.emit(
+                &runtime,
+                crate::events::log_event(
+                    &runtime.run_id,
+                    &format!(
+                        "[System] Tool at {} is not settled yet, retrying: {problem}",
+                        runtime.node_id
+                    ),
+                ),
+            );
+        };
+
         if let Some(pre_hook) = resolve_hook_command(&runtime, "tool.hooks.pre") {
-            let pre_hook_result = run_hook(&pre_hook, "pre", &runtime, &command, &cwd);
+            let pre_hook_result = run_hook(
+                &pre_hook,
+                "pre",
+                &runtime,
+                &command,
+                &cwd,
+                &mut || stop_check(true),
+                &report_cleanup,
+            );
+            // A stop, during the hook or just after it, is no hook failure, and
+            // no reason to start the tool.
+            if pre_hook_result.interrupted || runtime.stop_requested() {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(tool_stopped_outcome(""));
+            }
             record_hook_failure(&runtime, &pre_hook, "pre", &pre_hook_result)?;
             if pre_hook_result.exit_code != 0 {
                 write_tool_output_if_available(&runtime, "")?;
@@ -1429,52 +1478,16 @@ impl RuntimeHandlerRunner {
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
-        // Tools stop when their fork or the user cancels, at the root and in
-        // a child as in a branch; the run record is read at most every 250 ms.
-        let mut last_check = Instant::now();
-        let mut stop_check = || {
-            if runtime.canceled_by_owner() {
-                runtime.interrupted.store(true, Ordering::SeqCst);
-                return true;
-            }
-            if last_check.elapsed() < Duration::from_millis(250) {
-                return false;
-            }
-            last_check = Instant::now();
-            runtime.stop_requested()
-        };
-        let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
-        let report_cleanup = |problem: &str| {
-            let _ = self.emit(
-                &runtime,
-                crate::events::log_event(
-                    &runtime.run_id,
-                    &format!(
-                        "[System] Tool at {} is not settled yet, retrying: {problem}",
-                        runtime.node_id
-                    ),
-                ),
-            );
-        };
-        // A tool with no durable owner could outlive a crash undiscoverably, so
-        // it does not start. Dropped only once the tool has ended and settled.
-        let spawned = runtime
-            .run_paths
-            .as_ref()
-            .map_or(Ok(None), ToolOwner::start)
-            .and_then(|owner| {
-                run_shell_command(
-                    &command,
-                    &cwd,
-                    timeout,
-                    tool_env,
-                    None,
-                    can_stop.then_some(&mut stop_check as &mut dyn FnMut() -> bool),
-                    owner
-                        .as_ref()
-                        .map(|owner| (owner, &report_cleanup as &dyn Fn(&str))),
-                )
-            });
+        let spawned = run_owned_shell_command(
+            &runtime,
+            &command,
+            &cwd,
+            timeout,
+            tool_env,
+            None,
+            &mut || stop_check(true),
+            &report_cleanup,
+        );
         let command_output = match spawned {
             Ok(output) => output,
             Err(error) => {
@@ -1492,14 +1505,7 @@ impl RuntimeHandlerRunner {
         write_tool_output_if_available(&runtime, &command_output.stdout)?;
 
         let mut outcome = if command_output.interrupted {
-            Outcome {
-                context_updates: tool_context_updates(command_output.stdout.trim(), -1),
-                ..Outcome::error(
-                    FailureKind::Runtime,
-                    "tool command stopped by cancellation",
-                    Some(false),
-                )
-            }
+            tool_stopped_outcome(command_output.stdout.trim())
         } else if command_output.timed_out {
             Outcome {
                 context_updates: tool_context_updates(command_output.stdout.trim(), -1),
@@ -1513,9 +1519,23 @@ impl RuntimeHandlerRunner {
             tool_decision_outcome(&runtime, &command_output)
         };
 
-        if let Some(post_hook) = resolve_hook_command(&runtime, "tool.hooks.post") {
-            let post_hook_result = run_hook(&post_hook, "post", &runtime, &command, &cwd);
-            record_hook_failure(&runtime, &post_hook, "post", &post_hook_result)?;
+        // A stop means no further work, and a hook it stops did not fail. Either
+        // way the tool's own result stands: completed or its own error.
+        if let Some(post_hook) = resolve_hook_command(&runtime, "tool.hooks.post")
+            .filter(|_| !command_output.interrupted && !runtime.stop_signaled())
+        {
+            let post_hook_result = run_hook(
+                &post_hook,
+                "post",
+                &runtime,
+                &command,
+                &cwd,
+                &mut || stop_check(false),
+                &report_cleanup,
+            );
+            if !post_hook_result.interrupted {
+                record_hook_failure(&runtime, &post_hook, "post", &post_hook_result)?;
+            }
         }
 
         if let Some(reason) = capture_declared_artifacts(
@@ -2806,6 +2826,8 @@ fn run_hook(
     runtime: &HandlerRuntime,
     tool_command: &str,
     cwd: &Path,
+    stop: &mut dyn FnMut() -> bool,
+    report_cleanup: &dyn Fn(&str),
 ) -> ShellOutput {
     let payload = json!({
         "hook_phase": hook_phase,
@@ -2825,14 +2847,15 @@ fn run_hook(
         "ATTRACTOR_TOOL_COMMAND".to_string(),
         tool_command.to_string(),
     );
-    run_shell_command(
+    run_owned_shell_command(
+        runtime,
         command,
         cwd,
         None,
         env,
         Some(payload.to_string()),
-        None,
-        None,
+        stop,
+        report_cleanup,
     )
     .unwrap_or_else(|error| ShellOutput {
         exit_code: -1,
@@ -2867,6 +2890,17 @@ fn record_hook_failure(
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
     }
     Ok(())
+}
+
+fn tool_stopped_outcome(output: &str) -> Outcome {
+    Outcome {
+        context_updates: tool_context_updates(output, -1),
+        ..Outcome::error(
+            FailureKind::Runtime,
+            "tool command stopped by cancellation",
+            Some(false),
+        )
+    }
 }
 
 fn pre_hook_failure_reason(command: &str, result: &ShellOutput) -> String {
@@ -2967,6 +3001,38 @@ fn timeout_failure_reason(command: &str, timeout: Option<Duration>) -> String {
             )
         })
         .unwrap_or_else(|| "tool command timed out".to_string())
+}
+
+/// Runs a tool's or hook's command under durable ownership, stoppable by `stop`.
+/// With no durable owner it could outlive a crash undiscoverably, so it does not
+/// start. The owner goes only once the command has ended and settled.
+#[allow(clippy::too_many_arguments)]
+fn run_owned_shell_command(
+    runtime: &HandlerRuntime,
+    command: &str,
+    cwd: &Path,
+    timeout: Option<Duration>,
+    env: BTreeMap<String, String>,
+    stdin_text: Option<String>,
+    stop: &mut dyn FnMut() -> bool,
+    report_cleanup: &dyn Fn(&str),
+) -> std::io::Result<ShellOutput> {
+    let can_stop = runtime.cancel.is_some() || runtime.run_paths.is_some();
+    runtime
+        .run_paths
+        .as_ref()
+        .map_or(Ok(None), ToolOwner::start)
+        .and_then(|owner| {
+            run_shell_command(
+                command,
+                cwd,
+                timeout,
+                env,
+                stdin_text,
+                can_stop.then_some(stop),
+                owner.as_ref().map(|owner| (owner, report_cleanup)),
+            )
+        })
 }
 
 /// Runs `command`, draining stdout and stderr concurrently so a chatty
