@@ -74,6 +74,12 @@ export interface RunVisit {
     childRun: VisitChildRun | null
     /** The fan-out visit a parallel branch visit belongs to. */
     parentKey: string | null
+    /**
+     * The execution a parallel branch visit recorded, from its journal events. Null
+     * when none is known to be its own: its branch reported no node yet, or
+     * concurrent branches share the identity. Root visits use their stage and attempt.
+     */
+    executionIdentity?: { stageIndex: number; attempt: number } | null
 }
 
 export interface VisitModelInput {
@@ -114,6 +120,21 @@ interface BranchDraft extends VisitDraft {
     branchIndex: number
 }
 
+interface BranchInvocation {
+    nodeId: string
+    stageIndex: number
+    attempt: number
+}
+
+// The node invocation a branch node event names.
+const invocationOf = ({ payload }: TimelineEventEntry): BranchInvocation | null => {
+    const nodeId = asString(payload.branch_node_id)
+    const { stage_index: stageIndex, attempt } = payload
+    return nodeId && typeof stageIndex === 'number' && typeof attempt === 'number'
+        ? { nodeId, stageIndex, attempt }
+        : null
+}
+
 export function buildRunVisits({
     runId,
     runStatus,
@@ -126,21 +147,23 @@ export function buildRunVisits({
     const events = [...journal]
         .filter((event) => event.sourceScope === 'root')
         .sort((left, right) => left.sequence - right.sequence)
+    const nodeFields = (nodeId: string) => ({
+        nodeId,
+        label: flowNodes[nodeId]?.label || humanizeNodeId(nodeId),
+        kind: flowNodes[nodeId]?.kind ?? 'agent_task',
+    })
     const drafts = new Map<string, VisitDraft>()
     const draftFor = (nodeId: string, stageIndex: number, attempt: number, startSequence: number): VisitDraft => {
         const key = visitKey(runId, nodeId, stageIndex, attempt)
         let draft = drafts.get(key)
         if (!draft) {
-            const node = flowNodes[nodeId]
             draft = {
                 visit: {
+                    ...nodeFields(nodeId),
                     key,
                     runId,
-                    nodeId,
                     stageIndex,
                     attempt,
-                    label: node?.label || humanizeNodeId(nodeId),
-                    kind: node?.kind ?? 'agent_task',
                     number: 1,
                     count: 1,
                     startedAt: null,
@@ -170,12 +193,20 @@ export function buildRunVisits({
     const openByStage = new Map<string, VisitDraft>()
     const branchDrafts: BranchDraft[] = []
     for (const event of events) {
+        // An explicit retry is a new attempt, even of a stage a crash left open.
+        if (event.type === 'PipelineRetryStarted') {
+            openByStage.clear()
+        }
         const nodeId = event.nodeId
         const stageIndex = event.stageIndex ?? (typeof event.payload.index === 'number' ? event.payload.index : null)
         if ((event.type === 'StageStarted' || event.type === 'StageCompleted' || event.type === 'StageFailed')
             && nodeId && stageIndex !== null) {
             const stageKey = JSON.stringify([nodeId, stageIndex])
             if (event.type === 'StageStarted') {
+                // A resume starts the stage it interrupted again: the same attempt and visit.
+                if (openByStage.has(stageKey)) {
+                    continue
+                }
                 const attempt = startsByStage.get(stageKey) ?? 0
                 startsByStage.set(stageKey, attempt + 1)
                 const draft = draftFor(nodeId, stageIndex, attempt, event.sequence)
@@ -198,27 +229,14 @@ export function buildRunVisits({
         }
     }
 
-    for (const execution of executions) {
-        if (execution.run_id !== runId) {
-            continue
-        }
-        // An execution the journal never started is a visit only when its node is
-        // in the flow; runtime-internal executions (the post-run result summary)
-        // are not visits.
-        const key = visitKey(runId, execution.node_id, execution.stage_index, execution.attempt)
-        if (!drafts.has(key) && !flowNodes[execution.node_id]) {
-            continue
-        }
-        const draft = draftFor(execution.node_id, execution.stage_index, execution.attempt, Number.POSITIVE_INFINITY)
-        draft.visit.status = execution.status
-    }
-
-    const rootDrafts = [...drafts.values()].sort((left, right) => (
+    const byStageAndAttempt = (left: VisitDraft, right: VisitDraft) => (
         left.visit.stageIndex - right.visit.stageIndex || left.visit.attempt - right.visit.attempt
-    ))
+    )
+    // Only journal visits can have started child runs and branches.
+    const journalRoots = [...drafts.values()].sort(byStageAndAttempt)
     const latestRootVisitBefore = (nodeId: string | null, sequence: number): VisitDraft | null => {
         let match: VisitDraft | null = null
-        for (const draft of rootDrafts) {
+        for (const draft of journalRoots) {
             if (draft.visit.nodeId === nodeId && draft.startSequence <= sequence) {
                 match = draft
             }
@@ -226,38 +244,40 @@ export function buildRunVisits({
         return match
     }
 
-    const branchDraft = (parent: VisitDraft, key: string, nodeId: string, branchIndex: number, event: TimelineEventEntry): BranchDraft => {
-        const node = flowNodes[nodeId]
-        return {
-            visit: {
-                ...parent.visit,
-                key,
-                nodeId,
-                label: node?.label || humanizeNodeId(nodeId),
-                kind: node?.kind ?? 'agent_task',
-                startedAt: event.receivedAt,
-                endedAt: null,
-                status: null,
-                next: null,
-                childRun: null,
-                parentKey: parent.visit.key,
-            },
-            startSequence: event.sequence,
-            terminal: null,
-            journalReason: null,
-            journalDecision: null,
-            parent,
-            branchIndex,
-        }
+    const branchDraft = (parent: VisitDraft, key: string, nodeId: string, branchIndex: number, event: TimelineEventEntry): BranchDraft => ({
+        visit: {
+            ...parent.visit,
+            ...nodeFields(nodeId),
+            key,
+            startedAt: event.receivedAt,
+            endedAt: null,
+            status: null,
+            next: null,
+            childRun: null,
+            parentKey: parent.visit.key,
+            executionIdentity: null,
+        },
+        startSequence: event.sequence,
+        terminal: null,
+        journalReason: null,
+        journalDecision: null,
+        parent,
+        branchIndex,
+    })
+    // Each branch's visits, oldest first, by fan-out visit and branch index: a
+    // relaunch continues them; another visit of the fan-out has its own.
+    const branchVisits = new Map<string, BranchDraft[]>()
+    const branchVisitsKey = (parent: VisitDraft, branchIndex: unknown) => JSON.stringify([parent.visit.key, branchIndex])
+    const branchVisitsOf = (event: TimelineEventEntry): BranchDraft[] | undefined => {
+        const parent = latestRootVisitBefore(event.nodeId, event.sequence)
+        return parent ? branchVisits.get(branchVisitsKey(parent, event.payload.index)) : undefined
     }
-    // The branch's latest visit: the fan-out node and branch index match.
-    const latestBranchDraft = (event: TimelineEventEntry): BranchDraft | undefined => [...branchDrafts].reverse().find((candidate) => (
-        candidate.parent.visit.nodeId === event.nodeId && candidate.branchIndex === event.payload.index
-    ))
-    const openBranchDraft = (event: TimelineEventEntry): BranchDraft | undefined => {
-        const latest = latestBranchDraft(event)
-        return latest?.terminal === null ? latest : undefined
+    const identifyBranchDraft = ({ visit }: BranchDraft, { nodeId, stageIndex, attempt }: BranchInvocation) => {
+        Object.assign(visit, nodeFields(nodeId), { stageIndex, attempt, executionIdentity: { stageIndex, attempt } })
     }
+    const isInvocation = ({ visit }: BranchDraft, { nodeId, stageIndex, attempt }: BranchInvocation) => (
+        Boolean(visit.executionIdentity) && visit.nodeId === nodeId && visit.stageIndex === stageIndex && visit.attempt === attempt
+    )
     const closeBranchDraft = (draft: BranchDraft, event: TimelineEventEntry, terminal: NonNullable<VisitDraft['terminal']>) => {
         draft.visit.endedAt = event.receivedAt
         draft.terminal = terminal
@@ -280,7 +300,7 @@ export function buildRunVisits({
             }
         } else if (event.type === 'ChildRunCompleted') {
             const childRunId = asString(event.payload.child_run_id)
-            const parent = rootDrafts.find((draft) => draft.visit.childRun?.runId === childRunId)
+            const parent = journalRoots.find((draft) => draft.visit.childRun?.runId === childRunId)
             if (parent?.visit.childRun) {
                 parent.visit.childRun.endedAt = event.receivedAt
                 parent.visit.childRun.outcome = asString(event.payload.outcome)
@@ -291,32 +311,84 @@ export function buildRunVisits({
             const parent = latestRootVisitBefore(event.nodeId, event.sequence)
             if (branch && parent) {
                 const branchIndex = typeof event.payload.index === 'number' ? event.payload.index : branchDrafts.length
-                const key = JSON.stringify([runId, branch, parent.visit.stageIndex, parent.visit.attempt, 'branch', branchIndex])
-                branchDrafts.push(branchDraft(parent, key, branch, branchIndex, event))
+                // A relaunch after a resume changes nothing about the branch so far.
+                if (!branchVisits.has(branchVisitsKey(parent, branchIndex))) {
+                    const key = JSON.stringify([runId, branch, parent.visit.stageIndex, parent.visit.attempt, 'branch', branchIndex])
+                    const draft = branchDraft(parent, key, branch, branchIndex, event)
+                    branchDrafts.push(draft)
+                    branchVisits.set(branchVisitsKey(parent, branchIndex), [draft])
+                }
             }
         } else if (event.type === 'ParallelBranchNodeStarted') {
-            // Each later node a branch runs is a visit of its own.
-            const nodeId = asString(event.payload.branch_node_id)
-            const latest = latestBranchDraft(event)
-            if (nodeId && latest && !(latest.terminal === null && latest.visit.nodeId === nodeId)) {
-                if (latest.terminal === null) {
-                    closeBranchDraft(latest, event, 'completed')
+            // Each node invocation a branch runs is a visit of its own. The first confirms
+            // the visit the branch's start made; a replay names one the branch already has.
+            const invocation = invocationOf(event)
+            const visits = branchVisitsOf(event)
+            const latest = visits?.at(-1)
+            if (invocation && visits && latest) {
+                if (!latest.visit.executionIdentity) {
+                    identifyBranchDraft(latest, invocation)
+                } else if (!visits.some((draft) => isInvocation(draft, invocation))) {
+                    if (latest.terminal === null) {
+                        closeBranchDraft(latest, event, 'completed')
+                    }
+                    const { nodeId, stageIndex, attempt } = invocation
+                    const key = JSON.stringify([latest.parent.visit.key, 'branch', latest.branchIndex, nodeId, stageIndex, attempt])
+                    const draft = branchDraft(latest.parent, key, nodeId, latest.branchIndex, event)
+                    identifyBranchDraft(draft, invocation)
+                    branchDrafts.push(draft)
+                    visits.push(draft)
                 }
-                const key = JSON.stringify([runId, nodeId, latest.visit.stageIndex, latest.visit.attempt, 'branch', latest.branchIndex, event.sequence])
-                branchDrafts.push(branchDraft(latest.parent, key, nodeId, latest.branchIndex, event))
             }
         } else if (event.type === 'ParallelBranchNodeCompleted') {
-            const open = openBranchDraft(event)
-            if (open && open.visit.nodeId === event.payload.branch_node_id) {
-                closeBranchDraft(open, event, event.payload.outcome === 'error' ? 'error' : 'completed')
+            const invocation = invocationOf(event)
+            const draft = invocation && branchVisitsOf(event)?.find((candidate) => isInvocation(candidate, invocation))
+            if (draft && draft.terminal === null) {
+                closeBranchDraft(draft, event, event.payload.outcome === 'error' ? 'error' : 'completed')
             }
         } else if (event.type === 'ParallelBranchCompleted') {
-            const open = openBranchDraft(event)
-            if (open) {
-                closeBranchDraft(open, event, event.payload.success === false ? 'error' : 'completed')
+            const latest = branchVisitsOf(event)?.at(-1)
+            if (latest?.terminal === null) {
+                closeBranchDraft(latest, event, event.payload.success === false ? 'error' : 'completed')
             }
         }
     }
+
+    // ponytail: concurrent branches on one node share an execution under the existing storage
+    // scheme, so those visits stay journal-only; give each branch its own record to lift this.
+    const branchesByExecution = new Map<string, BranchDraft[]>()
+    for (const draft of branchDrafts) {
+        if (draft.visit.executionIdentity) {
+            const key = visitKey(runId, draft.visit.nodeId, draft.visit.stageIndex, draft.visit.attempt)
+            branchesByExecution.set(key, [...(branchesByExecution.get(key) ?? []), draft])
+        }
+    }
+    for (const sharing of branchesByExecution.values()) {
+        if (sharing.length > 1) {
+            sharing.forEach((draft) => { draft.visit.executionIdentity = null })
+        }
+    }
+
+    for (const execution of executions) {
+        if (execution.run_id !== runId) {
+            continue
+        }
+        const key = visitKey(runId, execution.node_id, execution.stage_index, execution.attempt)
+        const branches = branchesByExecution.get(key)
+        if (branches?.length === 1) {
+            branches[0].visit.status = execution.status
+            continue
+        }
+        // An execution the journal never started is a visit only when its node is
+        // in the flow; runtime-internal executions (the post-run result summary)
+        // are not visits.
+        if (!drafts.has(key) && !flowNodes[execution.node_id]) {
+            continue
+        }
+        const draft = draftFor(execution.node_id, execution.stage_index, execution.attempt, Number.POSITIVE_INFINITY)
+        draft.visit.status = execution.status
+    }
+    const rootDrafts = [...drafts.values()].sort(byStageAndAttempt)
 
     const runEnded = runStatus !== null && TERMINAL_RUN_STATUSES.has(runStatus)
     // A node stopped by cancel has no stage end of its own; it ends with the run.
@@ -478,7 +550,8 @@ export function visitToolResult(visit: RunVisit): { output: string | null; exitC
 }
 
 const isVisitSegment = (visit: RunVisit, item: { source_run_id?: string | null; run_id?: string; node_id: string | null; stage_index: number; attempt: number }) => (
-    (item.source_run_id ?? item.run_id) === visit.runId
+    visit.executionIdentity !== null
+    && (item.source_run_id ?? item.run_id) === visit.runId
     && item.node_id === visit.nodeId
     && item.stage_index === visit.stageIndex
     && item.attempt === visit.attempt
@@ -567,9 +640,6 @@ export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): Parallel
  * the visit's one execution.
  */
 export function visitTranscriptEntries(visit: RunVisit, segments: RunTranscriptSegment[]): ConversationTimelineEntry[] {
-    if (visit.parentKey) {
-        return []
-    }
     return segments
         .filter((segment) => isVisitSegment(visit, segment))
         .sort((left, right) => left.order - right.order)

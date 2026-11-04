@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use attractor_core::{ContextMap, FailureKind, FlowDefinition, LaunchContext, Outcome, RunRecord};
 use attractor_runtime::{
     ExecuteRunRequest, ExecutionStart, HandlerRuntime, PipelineExecutionResult, PipelineExecutor,
-    RunStore, RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_TOOL,
+    RunRootPaths, RunStore, RuntimeHandlerRunner, HANDLER_CODERGEN, HANDLER_TOOL,
 };
 use serde_json::{json, Value};
 
@@ -1613,6 +1613,214 @@ fn a_resumed_branch_never_reruns_an_accepted_side_effect() {
     // The visit counts were restored, not reset.
     assert_eq!(branch["visits"]["t1"], json!(1));
     assert_eq!(branch["visits"]["a2"], json!(1));
+    // t1's finished invocation is not named again; a2's interrupted one keeps its number.
+    assert_eq!(branch_node_identities(&store, "Started", "t1"), [(1, 0)]);
+    assert_eq!(branch_node_identities(&store, "Completed", "t1"), [(1, 0)]);
+    assert_eq!(
+        branch_node_identities(&store, "Started", "a2"),
+        [(1, 1), (1, 1)]
+    );
+    assert_eq!(branch_node_identities(&store, "Completed", "a2"), [(1, 1)]);
+}
+
+/// The stage and attempt `node`'s `ParallelBranchNode{event}` events name, in journal order.
+fn branch_node_identities(store: &RunStore, event: &str, node: &str) -> Vec<(u64, u64)> {
+    let paths = store.find_run_root("run-contract").unwrap().unwrap();
+    store
+        .read_raw_events(&paths)
+        .unwrap()
+        .into_iter()
+        .filter(|raw| {
+            raw.event_type == format!("ParallelBranchNode{event}")
+                && raw.payload["branch_node_id"] == json!(node)
+        })
+        .map(|raw| {
+            (
+                raw.payload["stage_index"].as_u64().unwrap(),
+                raw.payload["attempt"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// A fresh run of `fork_flow`, prepared with `a`'s saved progress so it resumes there.
+fn prepare_saved_progress(temp: &tempfile::TempDir, progress: Value) -> RunRootPaths {
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let workdir = temp.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let paths = attractor_runtime::prepare_fresh_run(
+        &store,
+        &RunRecord::new("run-contract", workdir.to_string_lossy()),
+        &fork_flow(false),
+        None,
+        None,
+        &LaunchContext::empty(),
+        &ContextMap::new(),
+    )
+    .unwrap();
+    let branches = paths.logs_dir().join("fork/executions/1-0/branches");
+    std::fs::create_dir_all(&branches).unwrap();
+    std::fs::write(
+        branches.join("0.progress.json"),
+        serde_json::to_vec(&progress).unwrap(),
+    )
+    .unwrap();
+    paths
+}
+
+/// `a`, accepted with `unfinished` before its transition ran; the transition loops back to `a`.
+fn accepted_progress(invocations: u64) -> Value {
+    json!({
+        "context": {}, "current": "a", "visits": {"a": 1}, "retries": {}, "trace": ["a"],
+        "decisions": [], "steps": 0, "invocations": invocations, "last": null, "started": "a",
+        "accepted": serde_json::to_value(completed("unfinished")).unwrap(),
+    })
+}
+
+#[test]
+fn replaying_an_accepted_result_names_the_invocation_that_produced_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = prepare_saved_progress(&temp, accepted_progress(3));
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let recorded = attempts.clone();
+    let answers = script(&[
+        ("a", vec![finding("from a")]),
+        ("b", vec![finding("from b")]),
+        ("synth", vec![completed("done")]),
+    ]);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = RuntimeHandlerRunner::new();
+    let handled = calls.clone();
+    runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
+        if runtime.node_id == "a" {
+            recorded.lock().unwrap().push(runtime.attempt);
+        }
+        Ok(answer(&answers, &handled, &runtime))
+    });
+    let run = execute_in(
+        temp,
+        fork_flow(false),
+        runner,
+        Some(ExecutionStart::Prepared { paths }),
+    );
+    assert_eq!(
+        run.result.status,
+        "completed",
+        "{}",
+        run.record().last_error
+    );
+    // The replay names invocation 2, which already finished; the next one ran as 3.
+    assert_eq!(
+        branch_node_identities(&run.store, "Started", "a"),
+        [(1, 2), (1, 3)]
+    );
+    assert_eq!(
+        branch_node_identities(&run.store, "Completed", "a"),
+        [(1, 2), (1, 3)]
+    );
+    assert_eq!(attempts.lock().unwrap().clone(), [3]);
+}
+
+#[test]
+fn accepted_progress_counting_no_invocation_is_the_branchs_runtime_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = prepare_saved_progress(&temp, accepted_progress(0));
+    let (runner, calls) = scripted_runner(
+        script(&[
+            ("a", vec![finding("from a")]),
+            ("b", vec![finding("from b")]),
+        ]),
+        false,
+    );
+    let run = execute_in(
+        temp,
+        fork_flow(false),
+        runner,
+        Some(ExecutionStart::Prepared { paths }),
+    );
+    assert_eq!(run.result.status, "failed");
+    assert_eq!(count(&calls, "a"), 0);
+    let error = &fork_results(&run)[0]["error"];
+    assert_eq!(error["kind"], json!("runtime"));
+    assert_eq!(error["node"], json!("a"));
+    assert!(error["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no finished invocation"));
+    assert_eq!(branch_node_identities(&run.store, "Started", "a"), []);
+    assert_eq!(branch_node_identities(&run.store, "Completed", "a"), []);
+}
+
+/// Each branch node event names the execution request that ran: its stage and
+/// attempt, across a branch's retries and a retried fork's attempts.
+#[test]
+fn branch_node_events_name_the_invocation_they_report() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let workdir = temp.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = requests.clone();
+    let answers = script(&[
+        (
+            "a",
+            vec![
+                Outcome::error(FailureKind::Runtime, "provider down", Some(true)),
+                finding("from a"),
+            ],
+        ),
+        ("b", vec![finding("from b")]),
+        ("synth", vec![completed("done")]),
+    ]);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = RuntimeHandlerRunner::new();
+    let handled = calls.clone();
+    runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
+        recorded.lock().unwrap().push((
+            runtime.node_id.clone(),
+            runtime.stage_index,
+            runtime.attempt,
+        ));
+        Ok(answer(&answers, &handled, &runtime))
+    });
+    // The fork's own attempt, as an explicit retry leaves it.
+    let bases = ContextMap::from([(
+        attractor_runtime::retry::EXECUTION_BASES_KEY.to_string(),
+        json!({"fork": 2}),
+    )]);
+    let result = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new("run-contract", workdir.to_string_lossy()),
+            flow: fork_flow(false),
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: bases,
+            max_steps: None,
+            start: Default::default(),
+        })
+        .unwrap();
+    assert_eq!(result.status, "completed");
+    let started = |node: &str| branch_node_identities(&store, "Started", node);
+    assert_eq!(started("a"), [(1, 2_000_000), (1, 2_000_001)]);
+    assert_eq!(
+        branch_node_identities(&store, "Completed", "a"),
+        started("a")
+    );
+    assert_eq!(started("b"), [(1, 2_000_000)]);
+    assert_eq!(
+        branch_node_identities(&store, "Completed", "b"),
+        started("b")
+    );
+    let requests = requests.lock().unwrap().clone();
+    for node in ["a", "b"] {
+        let executed = requests
+            .iter()
+            .filter(|request| request.0 == node)
+            .map(|request| (request.1, request.2))
+            .collect::<Vec<_>>();
+        assert_eq!(executed, started(node), "{node}");
+    }
 }
 
 #[test]

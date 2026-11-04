@@ -881,6 +881,153 @@ describe('RunsPanel', () => {
     expect(screen.queryByTestId('run-visit-view')).not.toBeInTheDocument()
   })
 
+  it('shows a parallel branch invocation once, nested under its fan-out, with what it recorded', async () => {
+    window.innerWidth = 1400
+    window.dispatchEvent(new Event('resize'))
+
+    const runId = 'run-fan-out'
+    const run = makeRun({ run_id: runId, flow_name: 'audit.dot', project_path: '/tmp/project-one' })
+    const branch = { node_id: 'audit', branch: 'lens', index: 0 }
+    const invocation = { ...branch, branch_node_id: 'lens', stage_index: 1, attempt: 0 }
+    const journal = [
+      { type: 'StageStarted', node_id: 'audit', index: 1 },
+      { type: 'ParallelBranchStarted', ...branch },
+      { type: 'ParallelBranchNodeStarted', ...invocation },
+      { type: 'ParallelBranchNodeCompleted', ...invocation, outcome: 'completed' },
+      { type: 'ParallelBranchCompleted', ...branch, success: true },
+      { type: 'StageCompleted', node_id: 'audit', index: 1, outcome: 'completed', decision: 'next' },
+      { type: 'StageStarted', node_id: 'report', index: 2 },
+      { type: 'StageCompleted', node_id: 'report', index: 2, outcome: 'completed', decision: 'done' },
+    ].map((payload, position) => makeJournalEntry(position + 1, payload, {
+      emitted_at: `2026-03-22T00:00:${String(position * 10).padStart(2, '0')}Z`,
+    }))
+    const lensFile = 'logs/lens/executions/1-0/status.json'
+    const segment = makeRunSegment({
+      id: 'segment-lens',
+      turn_id: 'lens-turn',
+      node_id: 'lens',
+      content: 'Lens findings recorded.',
+      latest_sequence: 3,
+    })
+
+    vi.mocked(global.fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.endsWith('/attractor/runs')) {
+        return jsonResponse({ runs: [run] })
+      }
+      if (url.endsWith(`/attractor/pipelines/${runId}`)) {
+        return jsonResponse({
+          ...run,
+          pipeline_id: runId,
+          completed_nodes: ['audit', 'report'],
+          progress: { current_node: 'report', completed_count: 2 },
+          executions: [
+            { run_id: runId, node_id: 'audit', stage_index: 1, attempt: 0, status: { status: 'completed', decision: 'next' } },
+            {
+              run_id: runId,
+              node_id: 'lens',
+              stage_index: 1,
+              attempt: 0,
+              status: { status: 'completed', decision: 'clean', notes: 'Lens is clean.', context_updates: { 'context.lens.result': 'clean' } },
+            },
+            { run_id: runId, node_id: 'report', stage_index: 2, attempt: 0, status: { status: 'completed', decision: 'done' } },
+          ],
+          child_runs: [],
+        })
+      }
+      const resource = url.match(new RegExp(`/attractor/pipelines/${runId}/([^/?#]+)`))?.[1]
+      if (resource === 'checkpoint') {
+        return jsonResponse({ pipeline_id: runId, checkpoint: { current_node: 'report', completed_nodes: ['audit', 'report'] } })
+      }
+      if (resource === 'context') {
+        return jsonResponse({ pipeline_id: runId, context: {} })
+      }
+      if (resource === 'artifacts') {
+        return jsonResponse({
+          pipeline_id: runId,
+          artifacts: [{ path: lensFile, size_bytes: 2, media_type: 'application/json', viewable: true }],
+        })
+      }
+      if (resource === 'graph-preview') {
+        return jsonResponse({
+          status: 'ok',
+          graph: { graph_attrs: {}, nodes: [], edges: [] },
+          diagnostics: [],
+          errors: [],
+          flow: {
+            nodes: {
+              audit: { kind: 'parallel', label: 'Audit' },
+              lens: { kind: 'agent_task', label: 'Lens' },
+              report: { kind: 'agent_task', label: 'Report' },
+            },
+          },
+        })
+      }
+      if (resource === 'questions') {
+        return jsonResponse({ pipeline_id: runId, questions: [] })
+      }
+      if (resource === 'journal') {
+        return jsonResponse(makeJournalPage(runId, [...journal].reverse()))
+      }
+      if (resource === 'executions') {
+        return jsonResponse({
+          records: url.includes('/executions/lens/1-0/transcript')
+            ? [
+              { type: 'turn_upsert', turn: { id: 'prompt', content: 'Audit through this lens.' } },
+              { type: 'segment_upsert', source_event_sequence: 3, segment },
+            ]
+            : [],
+        })
+      }
+      if (resource === 'result') {
+        return jsonResponse({ pipeline_id: runId, state: 'pending', markdown: null, source_path: null, updated_at: null })
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('run-history-row')).toHaveLength(1)
+    })
+    await user.click(screen.getAllByTestId('run-history-row')[0])
+
+    // One row per real visit: the branch's execution makes no second, top-level one.
+    await waitFor(() => {
+      expect(screen.getAllByTestId('run-visit-row').map((row) => row.getAttribute('data-node-id'))).toEqual(['audit', 'lens', 'report'])
+    })
+    expect(screen.getByTestId('run-visit-list')).toHaveTextContent('3 visits')
+    const lensRow = screen.getAllByTestId('run-visit-row')[1]
+    expect(lensRow).toHaveClass('pl-6')
+    expect(screen.getAllByTestId('run-visit-row')[0]).not.toHaveClass('pl-6')
+
+    await user.click(lensRow)
+    const view = within(screen.getByTestId('run-visit-view'))
+    expect(view.getByTestId('run-visit-view-title')).toHaveTextContent('Lens')
+    expect(view.getByTestId('run-visit-ended')).toHaveTextContent('Completed · 20s')
+    expect(view.getByTestId('run-visit-decision')).toHaveTextContent('clean')
+    expect(view.getByTestId('run-visit-reason')).toHaveTextContent('Lens is clean.')
+    expect(view.getByTestId('run-visit-write')).toHaveAttribute('data-key', 'context.lens.result')
+    expect(view.queryByTestId('run-visit-next')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(view.getByText('Lens findings recorded.')).toBeVisible()
+    })
+    expect(view.getByTestId('run-visit-instructions')).toHaveTextContent('Audit through this lens.')
+    await waitFor(() => {
+      expect(view.getByTestId('run-visit-file')).toHaveAttribute('data-path', lensFile)
+    })
+  })
+
   it('selects a run in place when clicking the card without leaving the runs tab', async () => {
     const primaryRun = makeRun({
       run_id: 'run-primary',
