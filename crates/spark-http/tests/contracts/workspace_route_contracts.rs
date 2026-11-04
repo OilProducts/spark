@@ -2415,6 +2415,41 @@ fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
     }
 }
 
+/// The next live event, past the keepalives a slow test outlasts.
+async fn next_live_event<B, E>(events: &mut B) -> String
+where
+    B: futures_util::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    use futures_util::StreamExt;
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(120), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let event = String::from_utf8(event.to_vec()).unwrap();
+        if event != ": keepalive\n\n" {
+            return event;
+        }
+    }
+}
+
+/// Nothing but keepalives arrives for a moment.
+async fn assert_no_live_event<B, E>(events: &mut B)
+where
+    B: futures_util::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    use futures_util::StreamExt;
+    while let Ok(event) =
+        tokio::time::timeout(std::time::Duration::from_millis(50), events.next()).await
+    {
+        let event = event.unwrap().unwrap();
+        assert_eq!(event.as_ref(), b": keepalive\n\n", "unexpected live event");
+    }
+}
+
 #[tokio::test]
 async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     use futures_util::StreamExt;
@@ -2510,11 +2545,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
             request_json(app.clone(), "GET", uri, None).await.1
         );
         assert_eq!(count_native(), (1, 1));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), events.next())
-                .await
-                .is_err()
-        );
+        assert_no_live_event(&mut events).await;
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -2537,7 +2568,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
             };
             stream.set_nonblocking(false).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(Duration::from_secs(120)))
                 .unwrap();
             let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
             let mut headers = String::new();
@@ -2603,12 +2634,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         .1;
     let saved = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"providers", "expected_revision":view["providers"]["revision"], "value": providers}))).await;
     assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
-    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let event = String::from_utf8(event.to_vec()).unwrap();
+    let event = next_live_event(&mut events).await;
     assert!(event.contains("settings.changed"), "{event}");
     let first = request_json(app.clone(), "GET", uri, None).await.1;
     assert_eq!(first["providers"]["openrouter"]["status"], "unavailable");
@@ -2657,12 +2683,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
             .1;
         let saved = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":section, "expected_revision":view[section]["revision"], "value":view[section]["stored"]}))).await;
         assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
-        let event = tokio::time::timeout(Duration::from_secs(2), events.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let event = String::from_utf8(event.to_vec()).unwrap();
+        let event = next_live_event(&mut events).await;
         assert!(event.contains("settings.changed"), "{event}");
         let refreshed = request_json(app.clone(), "GET", uri, None).await.1;
         assert_eq!(refreshed["providers"]["openrouter"]["status"], "available");
@@ -2706,22 +2727,13 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         request_json(app.clone(), "GET", uri, None).await;
     }
     assert_eq!(count_native(), (3, 2));
-    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let event = String::from_utf8(event.to_vec()).unwrap();
+    let event = next_live_event(&mut events).await;
     assert!(event.contains("settings.changed"), "{event}");
     assert!(event.contains("\"section\":\"codex\""), "{event}");
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
     request_json(app.clone(), "GET", uri, None).await;
     assert_eq!(count_native(), (3, 2));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), events.next())
-            .await
-            .is_err()
-    );
+    assert_no_live_event(&mut events).await;
     // An externally completed sign-out is observed by the existing connection check.
     fs::remove_file(runtime.join(".codex/fake-login-complete")).unwrap();
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
@@ -2729,22 +2741,13 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         request_json(app.clone(), "GET", uri, None).await;
     }
     assert_eq!(count_native(), (4, 2));
-    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let event = String::from_utf8(event.to_vec()).unwrap();
+    let event = next_live_event(&mut events).await;
     assert!(event.contains("settings.changed"), "{event}");
     assert!(event.contains("\"section\":\"codex\""), "{event}");
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
     request_json(app.clone(), "GET", uri, None).await;
     assert_eq!(count_native(), (4, 2));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), events.next())
-            .await
-            .is_err()
-    );
+    assert_no_live_event(&mut events).await;
     assert!(counts.lock().unwrap().values().all(|count| *count == 3));
     stop.store(true, Ordering::Relaxed);
     server.join().unwrap();

@@ -77,7 +77,9 @@ fn assert_answer(answer: Option<String>) {
 #[test]
 #[ignore = "runs the installed codex app-server against a signed-in account"]
 fn installed_codex_accepts_local_images_and_file_references() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
     let temp = tempfile::tempdir().expect("tempdir");
     let trace = temp.path().join("codex-trace.jsonl");
@@ -123,7 +125,9 @@ fn installed_codex_accepts_local_images_and_file_references() {
 #[test]
 #[ignore = "runs the installed claude CLI against a signed-in account"]
 fn installed_claude_code_accepts_image_blocks_and_file_references() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let output = RustLlmAgentTurnBackend::new(Client::new())
         .run_turn(request(temp.path(), "claude-code"))

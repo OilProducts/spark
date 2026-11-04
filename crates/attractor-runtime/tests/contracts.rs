@@ -4,6 +4,8 @@ mod explicit_retry_contracts;
 mod failure_reason_contracts;
 #[path = "contracts/flow_definition_typed_runtime_contracts.rs"]
 mod flow_definition_typed_runtime_contracts;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 #[path = "contracts/result_summary_contracts.rs"]
 mod result_summary_contracts;
 #[path = "contracts/routing_model_contracts.rs"]

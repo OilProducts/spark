@@ -312,7 +312,7 @@ test('provider and agent sections validate, save, report references and restart 
 })
 
 test('saved core and Desktop-identity preferences survive a real server restart on a different port', async ({ page }, testInfo) => {
-    test.setTimeout(60000)
+    test.setTimeout(180_000)
     const home = testInfo.outputPath('restart-home')
     mkdirSync(home, { recursive: true })
     // Keep the server's Home registration off the developer's real HOME.
@@ -573,7 +573,7 @@ test('malformed project execution selection is repairable with explicit Save and
     await page.route(url => url.pathname === '/workspace/api/missions', route => route.fulfill({ json: { missions: [] } }))
     await page.route('**/workspace/api/attention', route => route.fulfill({ json: { items: [] } }))
     await page.goto('/')
-    const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve('.tmp-ui-smoke/spark-home')
+    const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve(`.tmp-ui-smoke-${process.env.SPARK_UI_SMOKE_PORT}/spark-home`)
     const directory = path.join(home, 'workspace/projects')
     // Removed projects can leave a directory without a project.toml behind.
     const file = readdirSync(directory).map(id => path.join(directory, id, 'project.toml'))

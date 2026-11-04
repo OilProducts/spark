@@ -1060,6 +1060,7 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
         &settings.data_dir,
         &json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 1,
             "conversation_id": "conversation-resume",
             "project_path": project_path.to_string_lossy(),

@@ -4,6 +4,8 @@ mod adapter_contracts;
 mod catalog_contracts;
 #[path = "contracts/compatible_provider_parity_matrix.rs"]
 mod compatible_provider_parity_matrix;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 #[path = "contracts/llm_profile_contracts.rs"]
 mod llm_profile_contracts;
 #[path = "contracts/native_adapter_contracts.rs"]

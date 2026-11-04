@@ -1,3 +1,5 @@
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 use serde_json::{json, Value};
 use spark_common::settings::{resolve_settings_with_env, SettingsOverrides, SparkSettings};
 use spark_workspace::settings::{update_workspace_settings, workspace_settings};

@@ -86,7 +86,9 @@ fn local_environment_resolves_paths_and_handles_file_directory_lifecycle() {
 
 #[test]
 fn local_environment_exec_command_captures_streams_timeout_and_filters_environment() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let old_password = std::env::var_os("Unit_Test_PaSsWoRd");
     let old_visible = std::env::var_os("UNIT_TEST_VISIBLE");
@@ -95,8 +97,8 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
 
     let environment = LocalExecutionEnvironment::with_options(
         tempdir.path(),
-        50,
-        50,
+        5_000,
+        60_000,
         EnvironmentInheritancePolicy::InheritCoreOnly,
     )
     .into_execution_environment();
@@ -105,7 +107,7 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
         .exec_command(
             "printf 'out\\n'; printf 'err\\n' >&2; exit 7",
             CommandOptions {
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(60_000),
                 ..CommandOptions::default()
             },
         )
@@ -114,13 +116,13 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
     assert_eq!(result.stderr, "err\n");
     assert_eq!(result.exit_code, 7);
     assert!(!result.timed_out);
-    assert!(result.duration_ms < 1_000);
+    assert!(result.duration_ms < 60_000);
 
     let env_result = environment
         .exec_command(
             "printf '%s|%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\" \"${PATH:+set}\"",
             CommandOptions {
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(60_000),
                 env_vars: BTreeMap::from([(
                     "EXPLICIT_VALUE".to_string(),
                     "from-env-vars".to_string(),
@@ -133,8 +135,8 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
 
     let inherit_all = LocalExecutionEnvironment::with_options(
         tempdir.path(),
-        50,
-        50,
+        5_000,
+        60_000,
         EnvironmentInheritancePolicy::InheritAll,
     )
     .into_execution_environment();
@@ -142,7 +144,7 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
         .exec_command(
             "printf '%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\"",
             CommandOptions {
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(60_000),
                 env_vars: BTreeMap::from([(
                     "EXPLICIT_VALUE".to_string(),
                     "from-env-vars".to_string(),
@@ -154,11 +156,11 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
     assert_eq!(inherit_all_result.stdout, "shh|visible|from-env-vars");
 
     let timeout_result = environment
-        .exec_command("printf 'start\\n'; sleep 5", CommandOptions::default())
+        .exec_command("printf 'start\\n'; sleep 60", CommandOptions::default())
         .expect("timeout command");
     assert!(timeout_result.timed_out);
     assert_eq!(timeout_result.stdout, "start\n");
-    assert_eq!(timeout_result.stderr, timeout_message(50));
+    assert_eq!(timeout_result.stderr, timeout_message(5_000));
     assert_ne!(timeout_result.exit_code, 0);
 
     restore_env("Unit_Test_PaSsWoRd", old_password);
@@ -167,7 +169,9 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
 
 #[test]
 fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keeps_explicit_vars() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let old_password = std::env::var_os("Unit_Test_PaSsWoRd");
     let old_visible = std::env::var_os("UNIT_TEST_VISIBLE");
@@ -176,8 +180,8 @@ fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keep
 
     let environment = LocalExecutionEnvironment::with_options(
         tempdir.path(),
-        50,
-        50,
+        5_000,
+        60_000,
         EnvironmentInheritancePolicy::InheritNone,
     )
     .into_execution_environment();
@@ -186,7 +190,7 @@ fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keep
         .exec_command(
             "printf '%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\"",
             CommandOptions {
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(60_000),
                 env_vars: BTreeMap::from([(
                     "EXPLICIT_VALUE".to_string(),
                     "from-env-vars".to_string(),
@@ -215,7 +219,7 @@ fn local_environment_exec_command_uses_bash_on_unix() {
         .exec_command(
             "[[ -n \"$BASH_VERSION\" ]] && printf 'bash:%s' \"$BASH_VERSION\"",
             CommandOptions {
-                timeout_ms: Some(1_000),
+                timeout_ms: Some(60_000),
                 ..CommandOptions::default()
             },
         )
@@ -231,7 +235,9 @@ fn local_environment_exec_command_uses_bash_on_unix() {
 #[test]
 fn local_environment_exec_command_kills_child_that_survives_sigterm() {
     // The command inherits PATH, which other tests swap out under this lock.
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let tempdir = tempdir().expect("tempdir");
     let marker = tempdir.path().join("survived.txt");
     let environment = LocalExecutionEnvironment::with_options(

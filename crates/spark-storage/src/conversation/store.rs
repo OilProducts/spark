@@ -624,6 +624,12 @@ fn loaded_from_rows(
     };
     let mut meta: ConversationMeta = serde_json::from_value(stored.metadata)
         .map_err(|error| invalid(format!("Invalid conversation metadata: {error}")))?;
+    if meta.settings_schema_version != 1 {
+        return Err(invalid(format!(
+            "Conversation {conversation_id} has unsupported settings_schema_version {}",
+            meta.settings_schema_version
+        )));
+    }
     meta.conversation_id = conversation_id.to_string();
     meta.project_path = stored.project_path.clone();
     meta.conversation_handle = stored.handle;

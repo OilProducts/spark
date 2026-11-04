@@ -26,7 +26,8 @@ if (!existsSync(indexPath)) {
   process.exit(1)
 }
 
-const tmpRoot = path.join(frontendRoot, '.tmp-ui-smoke')
+// Per port, so concurrent smoke runs keep separate homes; the specs derive the same path.
+const tmpRoot = path.join(frontendRoot, `.tmp-ui-smoke-${port}`)
 const dataDir = path.join(tmpRoot, 'spark-home')
 // Home is a project: its definitions are $HOME/.spark/definitions, so the server gets its own HOME.
 const homeDir = path.join(tmpRoot, 'home')
@@ -73,6 +74,8 @@ const child = spawn(
       GIT_COMMITTER_NAME: 'Spark Smoke',
       GIT_COMMITTER_EMAIL: 'smoke@spark.invalid',
       SPARK_HOME: dataDir,
+      // An agent shell's value names the real server, never this one.
+      SPARK_API_BASE_URL: undefined,
       SPARK_UI_DIR: distDir,
       SPARK_CODEX_APP_SERVER_BIN: path.join(targetDir, 'debug', fakeCodex),
       SPARK_FAKE_CODEX_APP_SERVER_MODE: 'gated',

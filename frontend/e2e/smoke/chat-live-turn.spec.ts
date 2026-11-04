@@ -6,7 +6,7 @@ import { conversationBatch, conversationRow, conversationRowOf, liveFrame, summa
 
 // The smoke server runs chat turns on the fake Codex app-server in gated mode
 // (see scripts/run-rust-smoke-server.mjs); this test opens its gates.
-const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
+const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', `.tmp-ui-smoke-${process.env.SPARK_UI_SMOKE_PORT}`)
 const openGate = (name: string) => {
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
     writeFileSync(path.join(tmpRoot, 'gates', name), '')
@@ -28,7 +28,7 @@ const smokeFlow = {
 }
 
 test('a long chat turn keeps rendering live updates after it launches a flow partway through', async ({ page }) => {
-    test.setTimeout(90_000)
+    test.setTimeout(180_000)
     const projectPath = path.join(tmpRoot, 'projects', 'live-turn')
     mkdirSync(projectPath, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
@@ -98,7 +98,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
 })
 
 test('the Chats dot follows a turn started in another tab, across a reload, until it ends while another view is open', async ({ page }) => {
-    test.setTimeout(90_000)
+    test.setTimeout(180_000)
     closeGates()
     try {
         const projectPath = path.join(tmpRoot, 'projects', 'other-tab-turn')

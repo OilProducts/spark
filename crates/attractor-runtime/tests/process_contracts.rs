@@ -4,3 +4,5 @@ mod codergen_runtime_contracts;
 mod detached_execution_contracts;
 #[path = "process_contracts/human_gate_blocking_contracts.rs"]
 mod human_gate_blocking_contracts;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;

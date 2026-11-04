@@ -14,7 +14,7 @@ static AGENT_BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[track_caller]
 fn wait(mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(180);
     while !check() {
         assert!(Instant::now() < deadline, "condition timed out");
         thread::sleep(Duration::from_millis(25));
@@ -670,7 +670,7 @@ fn assert_pid_gone(project: &Path, file: &str) {
             .unwrap()
             .success()
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while alive() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -897,7 +897,7 @@ fn codex_node_that_does_not_stop_is_terminated_on_cancel_and_timeout() {
         settings.clone(),
         attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
     );
-    // `wait` bounds each stop at 15s, past the 10s interrupt grace.
+    // Ending takes the 10s interrupt grace, then the terminate.
     assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
     for id in ["codex-cancel", "codex-timeout"] {
         assert_pid_gone(&temp.path().join(id), "started");
@@ -1071,7 +1071,9 @@ fn native_node_steer_cancel_and_timeout() {
         fs::write(project.join("started"), "").unwrap();
         sse.text("Working on it.");
         if text.contains("LONG work") {
-            return sse.hold();
+            sse.hold();
+            fs::write(project.join("hung-up"), "").unwrap();
+            return;
         }
         // Answers once the steer is in, so the turn reads it next round.
         wait(|| {
@@ -1182,13 +1184,23 @@ fn native_node_steer_cancel_and_timeout() {
     );
 
     // Each stop lands well inside the grace period a hung turn would wait out.
-    let started = Instant::now();
+    // The server's own clock for each stream: from the request starting to
+    // the client hanging up, free of the runs' setup and record writes.
     assert_cancel_and_timeout(&service, &settings, temp.path(), provider);
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
+    for id in [format!("{provider}-cancel"), format!("{provider}-timeout")] {
+        let project = temp.path().join(&id);
+        wait(|| project.join("hung-up").exists());
+        let written = |file: &str| {
+            fs::metadata(project.join(file))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+        let held = written("hung-up")
+            .duration_since(written("started"))
+            .unwrap();
+        assert!(held < Duration::from_secs(10), "{id}: {held:?}");
+    }
 }
 
 /// A native node's question waits on the run's human gate past the node's

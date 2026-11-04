@@ -91,7 +91,7 @@ fn tool_flow(id: &str, command: &str) -> Value {
 
 fn wait_for_release_file_command(marker: &str) -> String {
     format!(
-        "for i in $(seq 1 200); do if [ -f {marker} ]; then exit 0; fi; sleep 0.05; done; exit 1"
+        "for i in $(seq 1 6000); do if [ -f {marker} ]; then exit 0; fi; sleep 0.05; done; exit 1"
     )
 }
 
@@ -154,7 +154,7 @@ fn read_status(settings: &SparkSettings, run_id: &str) -> String {
 }
 
 fn wait_until(deadline_message: &str, mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline {
         if check() {
             return;

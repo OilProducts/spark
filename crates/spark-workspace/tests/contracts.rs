@@ -2,6 +2,8 @@
 mod conversation_repository_contracts;
 #[path = "contracts/history_index_contracts.rs"]
 mod history_index_contracts;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 #[path = "contracts/mission_contracts.rs"]
 mod mission_contracts;
 #[path = "contracts/project_registry_contracts.rs"]

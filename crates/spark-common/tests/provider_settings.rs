@@ -1,3 +1,5 @@
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 use spark_common::provider_settings::{ProviderConnection, ProviderConnections};
 use std::collections::BTreeMap;
 

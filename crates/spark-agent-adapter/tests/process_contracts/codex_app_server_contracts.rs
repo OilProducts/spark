@@ -205,7 +205,9 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
 
 #[test]
 fn interrupt_stops_the_running_turn_as_a_normal_completion() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -258,7 +260,9 @@ fn interrupt_stops_the_running_turn_as_a_normal_completion() {
 
 #[test]
 fn send_message_reaches_turn_steer_on_the_running_turn() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -320,7 +324,9 @@ fn send_message_reaches_turn_steer_on_the_running_turn() {
 
 #[test]
 fn model_list_is_supported_and_matches_generated_schema_shape() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "model-list");
@@ -339,7 +345,9 @@ fn model_list_is_supported_and_matches_generated_schema_shape() {
 
 #[test]
 fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -404,7 +412,9 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
 
 #[test]
 fn pinned_instructions_reach_codex_as_developer_instructions_on_start_and_resume() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -469,7 +479,9 @@ fn pinned_instructions_reach_codex_as_developer_instructions_on_start_and_resume
 
 #[test]
 fn codex_app_server_trace_file_is_debug_only_and_uses_jsonl_records() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
@@ -544,7 +556,9 @@ fn request_user_input_response_shape_matches_generated_schema() {
 
 #[test]
 fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -647,7 +661,9 @@ fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
 
 #[test]
 fn interrupt_while_awaiting_request_user_input_stops_the_turn() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -731,7 +747,9 @@ fn interrupt_while_awaiting_request_user_input_stops_the_turn() {
 
 #[test]
 fn runtime_environment_prepends_first_party_tool_bin_to_path() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let original_path = format!(
         "/usr/local/bin{}{}",
@@ -761,7 +779,9 @@ fn runtime_environment_prepends_first_party_tool_bin_to_path() {
 
 #[test]
 fn runtime_environment_never_overwrites_an_existing_runtime_auth_file() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_root = temp.path().join("runtime-codex");
     let isolated_codex_home = runtime_root.join(".codex");
@@ -800,7 +820,9 @@ fn runtime_environment_never_overwrites_an_existing_runtime_auth_file() {
 
 #[test]
 fn runtime_environment_seeds_only_from_the_explicit_seed_dir_never_the_host_home() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_root = temp.path().join("runtime-codex");
     let host_codex_home = temp.path().join("host-codex-home");
@@ -1104,7 +1126,9 @@ fn app_server_tool_approval_requests_emit_normalized_tool_call_payloads() {
 
 #[test]
 fn fake_app_server_tool_trace_emits_normalized_frontend_renderable_tool_events() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let fixture_path = recorded_tool_notification_fixture_path();
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -1296,7 +1320,9 @@ fn fake_codex_app_server_bin() -> &'static str {
 fn codex_managed_login_reconnects_without_cloning_or_erasing_runtime_state() {
     use spark_agent_adapter::codex_app_server::auth::{CodexConnection, CodexLoginMethod};
     use spark_common::agent_settings::NativeAgentSettings;
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
     let log = temp.path().join("rpc.jsonl");
@@ -1388,7 +1414,9 @@ fn codex_managed_login_reconnects_without_cloning_or_erasing_runtime_state() {
 fn codex_managed_login_handles_cancellation_decline_and_process_exit() {
     use spark_agent_adapter::codex_app_server::auth::{CodexConnection, CodexLoginMethod};
     use spark_common::agent_settings::NativeAgentSettings;
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
     let log = temp.path().join("rpc.jsonl");
@@ -1448,7 +1476,9 @@ fn codex_managed_login_handles_cancellation_decline_and_process_exit() {
 
 #[test]
 fn codex_auth_failure_during_resume_does_not_invalidate_the_saved_thread() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
     let _bin = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -1559,7 +1589,9 @@ fn model_list_parses_across_payload_dialects() {
 
 #[test]
 fn list_available_codex_models_queries_the_local_app_server() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let models = spark_agent_adapter::list_available_codex_models().expect("model list");
     assert_eq!(models.len(), 1);
@@ -1575,7 +1607,9 @@ fn list_available_codex_models_queries_the_local_app_server() {
 
 #[test]
 fn captured_native_configuration_controls_actual_codex_launch_and_runtime_home() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = EnvVarGuard::set("HOME", temp.path());
     let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().join("empty-codex-home"));
@@ -1611,7 +1645,9 @@ fn workflow_native_tracing_uses_saved_settings_and_retains_captured_choice() {
     use spark_common::paths::ProcessEnvironment;
     use spark_storage::settings::read_execution_configuration;
 
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
@@ -1730,7 +1766,9 @@ fn test_attachment(
 
 #[test]
 fn turn_input_sends_images_as_local_images_and_other_files_as_references() {
-    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());

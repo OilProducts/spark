@@ -1587,6 +1587,254 @@ fn references_survive_collection_running_beside_commits() {
     assert_eq!(remaining, 1, "old versions are collected");
 }
 
+/// A conversation with an attached upload and an old draft, in a closed store.
+fn conversation_with_attachments(temp: &tempfile::TempDir, conversation: &str) -> Vec<String> {
+    let project_path = "/projects/corrupt-row";
+    let home = temp.path().join("spark-home");
+    ProjectRegistry::new(&home)
+        .ensure_project_paths(project_path)
+        .unwrap();
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    let sent = repo
+        .create_attachment(conversation, project_path, "sent.txt", b"sent")
+        .unwrap();
+    let draft = repo
+        .create_attachment(conversation, project_path, "draft.txt", b"draft")
+        .unwrap();
+    let mut turn = user_turn("turn-sent", "Here");
+    turn.extra
+        .insert("attachments".into(), json!([{"id": sent.id}]));
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted { turn }],
+    )
+    .unwrap();
+    vec![sent.id, draft.id]
+}
+
+/// A row that no longer parses must stop the prune: treating it as absent
+/// would leave its bytes looking like an orphan to delete.
+#[test]
+fn a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let conversation = "conversation-corrupt-row";
+    let project_path = "/projects/corrupt-row";
+    let ids = conversation_with_attachments(&temp, conversation);
+    let home = temp.path().join("spark-home");
+    let attachments = conversation_dir(&temp, project_path, conversation).join("attachments");
+    let raw = rusqlite::Connection::open(
+        home.join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    assert_eq!(
+        raw.execute(
+            "UPDATE attachments SET payload = '{\"corrupt\":true}' WHERE attachment_id = ?1",
+            [&ids[0]],
+        )
+        .unwrap(),
+        1
+    );
+    drop(raw);
+
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    let error = repo
+        .prune_attachments(
+            conversation,
+            project_path,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .expect_err("a corrupt row fails the prune");
+    assert!(error.to_string().contains(&ids[0]), "{error}");
+    for id in &ids {
+        assert!(
+            fs::read_dir(attachments.join(id)).unwrap().next().is_some(),
+            "{id} lost its bytes"
+        );
+    }
+}
+
+/// The row recheck behind the cleanup barrier: an old directory with no
+/// attachment row stays while anything still references bytes under it.
+#[test]
+fn a_directory_with_a_live_reference_survives_the_prune() {
+    let project_path = "/projects/live-reference";
+    let conversation = "conversation-live-reference";
+    let (temp, repo) = setup(project_path);
+    repo.commit_conversation(
+        conversation,
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted {
+            turn: user_turn("turn-user", "Hello"),
+        }],
+    )
+    .unwrap();
+    let attachments = conversation_dir(&temp, project_path, conversation).join("attachments");
+    let referenced = attachments.join("att-referenced");
+    let unreferenced = attachments.join("att-unreferenced");
+    for dir in [&referenced, &unreferenced] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("content"), "bytes").unwrap();
+    }
+    let blob = referenced
+        .join("content")
+        .strip_prefix(repo.store().home_dir())
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/");
+    repo.store()
+        .database()
+        .write(|tx| tx.put_blob_reference(conversation, "attachment", "att-other", &blob))
+        .unwrap();
+
+    let removed = repo
+        .prune_attachments(
+            conversation,
+            project_path,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .unwrap();
+    assert!(referenced.join("content").exists(), "{removed:?}");
+    assert!(!unreferenced.exists(), "{removed:?}");
+}
+
+/// A missing or unknown settings version fails loading, naming the conversation.
+#[test]
+fn a_conversation_with_an_unsupported_settings_schema_version_does_not_load() {
+    let project_path = "/projects/settings-version";
+    for (version, shown) in [("1 + 1", "2"), ("NULL", "0")] {
+        let (temp, repo) = setup(project_path);
+        let conversation = "conversation-settings-version";
+        repo.commit_conversation(
+            conversation,
+            project_path,
+            0,
+            vec![ConversationMutation::TurnUpserted {
+                turn: user_turn("turn-user", "Hello"),
+            }],
+        )
+        .unwrap();
+        drop(repo);
+        let home = temp.path().join("spark-home");
+        let raw = rusqlite::Connection::open(
+            home.join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+        )
+        .unwrap();
+        let updated = if version == "NULL" {
+            raw.execute(
+                "UPDATE conversations SET metadata = json_remove(metadata, '$.settings_schema_version')",
+                [],
+            )
+        } else {
+            raw.execute(
+                "UPDATE conversations SET metadata = json_set(metadata, '$.settings_schema_version', 2)",
+                [],
+            )
+        };
+        assert_eq!(updated.unwrap(), 1);
+        drop(raw);
+        let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+        let error = repo
+            .read_snapshot(conversation, None)
+            .expect_err("an unsupported version fails");
+        let message = error.to_string();
+        assert!(
+            message.contains(conversation)
+                && message.contains(&format!("settings_schema_version {shown}")),
+            "{message}"
+        );
+    }
+}
+
+/// The applied cursor may only cover durable trace records: a failed sync
+/// publishes nothing, and the retry after it does.
+#[cfg(unix)]
+#[test]
+fn a_failed_trace_sync_publishes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let project_path = "/projects/trace-sync";
+    let conversation = "conversation-trace-sync";
+    let (temp, repo) = setup(project_path);
+    let notices = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = notices.clone();
+    repo.store()
+        .set_commit_listener(std::sync::Arc::new(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+    let turn = || ConversationMutation::TurnUpserted {
+        turn: assistant_turn("turn-assistant", "streaming"),
+    };
+    repo.commit_conversation(conversation, project_path, 0, vec![turn()])
+        .unwrap();
+    let mut event = serde_json::from_value(
+        json!({"kind": "content_delta", "channel": "assistant", "message": "x"}),
+    )
+    .unwrap();
+    repo.append_provider_event(conversation, project_path, "turn-assistant", &mut event)
+        .unwrap();
+    let trace = conversation_dir(&temp, project_path, conversation)
+        .join(spark_storage::conversation::PROVIDER_TRACE_FILE_NAME);
+    let watermark = |repo: &ConversationRepository| {
+        repo.store()
+            .database()
+            .read(|read| Ok(read.watermark()))
+            .unwrap()
+    };
+    let (before_watermark, before_notices) = (
+        watermark(&repo),
+        notices.load(std::sync::atomic::Ordering::SeqCst),
+    );
+
+    fs::set_permissions(&trace, fs::Permissions::from_mode(0o000)).unwrap();
+    let failed = repo.commit_conversation_projecting(
+        conversation,
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted {
+            turn: assistant_turn("turn-assistant", "complete"),
+        }],
+        Some("turn-assistant"),
+    );
+    fs::set_permissions(&trace, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(watermark(&repo), before_watermark);
+    assert_eq!(
+        notices.load(std::sync::atomic::Ordering::SeqCst),
+        before_notices
+    );
+    assert_eq!(
+        snapshot(&repo, conversation)["turns"][0]["status"],
+        "streaming"
+    );
+    assert_eq!(
+        repo.unapplied_provider_events(conversation, project_path, "turn-assistant")
+            .unwrap()
+            .len(),
+        1
+    );
+
+    repo.commit_conversation_projecting(
+        conversation,
+        project_path,
+        0,
+        vec![ConversationMutation::TurnUpserted {
+            turn: assistant_turn("turn-assistant", "complete"),
+        }],
+        Some("turn-assistant"),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot(&repo, conversation)["turns"][0]["status"],
+        "complete"
+    );
+    assert!(repo
+        .unapplied_provider_events(conversation, project_path, "turn-assistant")
+        .unwrap()
+        .is_empty());
+}
+
 const CRASH_CHILD_ENV: &str = "SPARK_CONVERSATION_CRASH_CHILD_HOME";
 
 /// A process killed (aborted) in the middle of a SQL transaction, after

@@ -207,13 +207,14 @@ fn project_service_metadata_returns_null_git_fields_for_non_repo() {
     assert_eq!(metadata.commit, None);
 }
 
-/// Keeps chat-model tests hermetic: claude-code discovery fails fast and
-/// reports unavailable instead of probing an installed CLI.
+/// Keeps chat-model tests hermetic: agent discovery fails fast and reports
+/// unavailable instead of probing an installed CLI.
 fn pin_claude_code_bin_to_missing() {
     std::env::set_var(
         "SPARK_CLAUDE_CODE_BIN",
         "/nonexistent/claude-code-for-tests",
     );
+    std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", "/nonexistent/codex-for-tests");
 }
 
 #[test]
@@ -348,6 +349,7 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
         &settings.data_dir,
         &json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 1,
             "conversation_id": "conversation-invalid",
             "conversation_handle": "clear-cloud",

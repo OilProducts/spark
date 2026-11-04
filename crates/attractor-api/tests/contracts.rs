@@ -6,6 +6,8 @@ mod execution_placement_contracts;
 mod flow_crud_contracts;
 #[path = "contracts/flow_directory_contracts.rs"]
 mod flow_directory_contracts;
+#[path = "../../test-fixtures/isolated_spark_env.rs"]
+mod isolated_spark_env;
 #[path = "contracts/llm_profiles_contracts.rs"]
 mod llm_profiles_contracts;
 #[path = "contracts/pipeline_control_contracts.rs"]

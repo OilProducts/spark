@@ -89,6 +89,7 @@ pub(crate) fn execute_manager_loop(
     // never completion: past them the same invocation keeps waiting for the
     // child's terminal result.
     let mut observing = true;
+    let (mut stopping_since, mut cancel_forwarded) = (None, false);
     for cycle in 1.. {
         if cycle > max_cycles {
             observing = false;
@@ -156,17 +157,25 @@ pub(crate) fn execute_manager_loop(
                 &context,
             ));
         }
-        if runtime
-            .cancel
-            .as_ref()
-            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::SeqCst))
-        {
+        if runtime.stop_signaled() {
+            observing = false;
+            let stopping_since = *stopping_since.get_or_insert_with(Instant::now);
+            if !cancel_forwarded {
+                cancel_forwarded = request_child_cancel(&runtime, &context);
+            }
+            // The next cycle reads the child's terminal status and resolves it.
+            if stopping_since.elapsed() < CHILD_SETTLE_GRACE
+                && !context_string(&context, "context.stack.child.run_id").is_empty()
+            {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             runtime
                 .interrupted
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(Outcome::error(
                 FailureKind::Runtime,
-                "Branch canceled by its fork while its child ran",
+                "Canceled while its child ran",
                 Some(false),
             ));
         }
@@ -501,7 +510,15 @@ fn autostart_child_pipeline(
         root_run_id: root_run_id.clone(),
     };
     let child_result = if let Some(launcher) = runner.child_run_launcher() {
-        launcher(request)
+        // A launcher may run the child before returning; a stop reaches it
+        // through the run controls like any other child.
+        match runtime.run_paths.as_ref() {
+            Some(paths) => {
+                let store = RunStore::for_runs_dir(paths.runs_dir.clone());
+                watch_owner_cancel(runtime, &store, &child_run_id, || launcher(request))
+            }
+            None => launcher(request),
+        }
     } else {
         match launch_default_child_run(runner.clone(), runtime, request, child_flow_files) {
             Ok(result) => result,
@@ -616,10 +633,28 @@ fn child_control(
     }
 }
 
-/// Runs a child invocation. If the owning fork cancels this branch while
-/// the child runs, the child's cancellation is requested through the run
-/// controls and the child settles before this returns; the invocation is
-/// then marked interrupted, so the branch records cancellation, not an error.
+/// How long a stopped invocation waits for the child it observes to settle.
+// ponytail: a child whose executor died, or that no store knows, never settles;
+// past this its parent stops waiting, and the child is left to restart recovery.
+const CHILD_SETTLE_GRACE: Duration = Duration::from_secs(60);
+
+/// Asks the observed child to cancel; true once the request is accepted. The
+/// child's record may not exist yet, so a false answer is retried.
+fn request_child_cancel(runtime: &HandlerRuntime, context: &ContextMap) -> bool {
+    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let Some(paths) = runtime.run_paths.as_ref() else {
+        return false;
+    };
+    crate::controls::RuntimeControls::new(RunStore::for_runs_dir(paths.runs_dir.clone()))
+        .request_cancel(&child_run_id)
+        .is_ok()
+}
+
+/// Runs a child invocation. If the owning fork or the user cancels this
+/// invocation while the child runs, the child's cancellation is requested
+/// through the run controls and the child settles before this returns. The
+/// child's own result then decides: only a canceled child marks the invocation
+/// interrupted, so its independent failure stays an error.
 fn watch_owner_cancel<T>(
     runtime: &HandlerRuntime,
     store: &RunStore,
@@ -627,20 +662,16 @@ fn watch_owner_cancel<T>(
     run: impl FnOnce() -> T,
 ) -> T {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let Some(cancel) = runtime.cancel.clone() else {
-        return run();
-    };
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while !done.load(Ordering::SeqCst) {
                 // The child's record may not exist yet; retry until accepted.
-                if cancel.load(Ordering::SeqCst)
+                if runtime.stop_signaled()
                     && crate::controls::RuntimeControls::new(store.clone())
                         .request_cancel(child_run_id)
                         .is_ok()
                 {
-                    runtime.interrupted.store(true, Ordering::SeqCst);
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -1408,6 +1439,13 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
             format!("child {child_run_id} failed: {failure_reason}"),
             Some(false),
         ));
+    }
+    // The child settled canceled. When this invocation asked for that, its
+    // branch records cancellation rather than an error.
+    if runtime.stop_signaled() {
+        runtime
+            .interrupted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     Some(Outcome::error(
         FailureKind::Runtime,

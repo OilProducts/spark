@@ -813,7 +813,7 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
 }
 
 #[test]
-fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
+fn merge_change_skips_validation_only_when_the_target_is_the_merge_base() {
     let flow = bundled_flow("software-development/merge-change");
     // Preparation only publishes data; the check_conflicts switch routes on it.
     assert_eq!(
@@ -825,8 +825,10 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
     );
     for (from, decision, to) in [
         ("prepare_integration", "next", "check_conflicts"),
-        ("check_conflicts", "clean", "finish_merge"),
+        ("check_conflicts", "clean", "check_target_moved"),
         ("check_conflicts", "conflicts", "resolve_conflicts"),
+        ("check_target_moved", "tested", "finish_merge"),
+        ("check_target_moved", "untested", "validate"),
         ("resolve_conflicts", "done", "validate"),
         ("validate", "done", "finish_merge"),
     ] {
@@ -836,9 +838,19 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
     assert_eq!(switch["on"], json!("context.integration.conflict_count"));
     assert_eq!(switch["cases"], json!({"0": "clean"}));
     assert_eq!(switch["otherwise"], json!("conflicts"));
+    let moved = json!(flow.nodes["check_target_moved"].config);
+    assert_eq!(moved["on"], json!("context.integration.target_moved"));
+    assert_eq!(moved["cases"], json!({"false": "tested"}));
+    assert_eq!(moved["otherwise"], json!("untested"));
     let prepare = serde_json::to_value(&flow.nodes["prepare_integration"].config).unwrap();
     let finish = serde_json::to_value(&flow.nodes["finish_merge"].config).unwrap();
-    for scenario in ["clean", "conflict", "unrelated", "already-integrated"] {
+    for scenario in [
+        "clean",
+        "clean-target-moved",
+        "conflict",
+        "unrelated",
+        "already-integrated",
+    ] {
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path();
         seed_change_repository(repo);
@@ -860,6 +872,11 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
         if scenario == "conflict" {
             fs::write(repo.join("seed.txt"), "target").unwrap();
             run_git(repo, &["add", "seed.txt"]);
+            run_git(repo, &["commit", "-m", "target"]);
+        }
+        if scenario == "clean-target-moved" {
+            fs::write(repo.join("other.txt"), "target").unwrap();
+            run_git(repo, &["add", "other.txt"]);
             run_git(repo, &["commit", "-m", "target"]);
         }
         let output = Command::new("sh")
@@ -900,9 +917,14 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
         assert_eq!(String::from_utf8(status.stdout).unwrap(), "");
         assert_eq!(
             result["conflict_count"],
-            if scenario == "clean" { 0 } else { 1 }
+            if scenario == "conflict" { 1 } else { 0 }
         );
-        if scenario == "clean" {
+        // Only an unmoved target skips validation: the merged tree is the source's.
+        assert_eq!(
+            result["target_moved"],
+            if scenario == "clean" { "false" } else { "true" }
+        );
+        if scenario.starts_with("clean") {
             let output = Command::new("sh")
                 .arg("-ec")
                 .arg(finish["command"].as_str().unwrap())
