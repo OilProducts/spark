@@ -575,8 +575,8 @@ fn fresh_request(flow: FlowDefinition, signals: &Signals) -> ExecuteRunRequest {
     ExecuteRunRequest {
         store: signals.store(),
         record: RunRecord::new(RUN, signals.dir.to_string_lossy()),
+        flow_definition_json: Some(flow.to_canonical_json_string()),
         flow,
-        flow_definition_json: None,
         launch_context: LaunchContext::empty(),
         runtime_context: ContextMap::from([(
             "internal.bundled_root".to_string(),

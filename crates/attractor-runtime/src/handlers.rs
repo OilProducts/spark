@@ -2249,43 +2249,10 @@ impl RuntimeHandlerRunner {
             }};
         }
         loop {
-            if current == join {
-                return record!("completed", json!({}));
-            }
-            if is_exit_node(flow, &current) {
-                // Validation forbids success exits in branches; a branch can
-                // never end its owner successfully before the join.
-                if flow
-                    .exit_result(&current)
-                    .is_some_and(|result| result.outcome == attractor_core::ExitOutcome::Success)
-                {
-                    return record!(
-                        "error",
-                        error_value(
-                            &current,
-                            FailureKind::Routing,
-                            &format!("branch reached success exit {current} before its join"),
-                            0
-                        )
-                    );
-                }
-                let Some(result) = flow.exit_result(&current).cloned() else {
-                    return record!(
-                        "error",
-                        error_value(&current, FailureKind::Routing, "exit declares no result", 0)
-                    );
-                };
-                let (node, decision, notes) = last.clone().unwrap_or_default();
-                let terminal = BranchTerminal {
-                    exit_id: current.clone(),
-                    result,
-                    branch: entry.to_string(),
-                    branch_index: index,
-                    node,
-                    decision,
-                    notes,
-                };
-                return record!("terminal_result", json!({ "terminal": terminal }));
+            if let Some((status, extra)) =
+                branch_boundary(flow, &current, join, &last, entry, index)
+            {
+                return record!(status, extra);
             }
             if cancel.load(Ordering::SeqCst) || run_cancel_requested(runtime) {
                 // A child that failed on its own before this stop stays the
@@ -3792,9 +3759,10 @@ fn write_branch_record(dir: &Path, index: usize, record: &Value) -> std::io::Res
 }
 
 /// Settles the branches of a run with no executor left: each branch that had
-/// started and has no record gets a canceled one from its saved progress. Any
+/// started and has no record gets one from its saved progress. Any
 /// failure is returned, so the caller publishes nothing and can redo this.
 pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result<()> {
+    let store = crate::RunStore::for_runs_dir(paths.runs_dir.clone());
     let children = |dir: PathBuf| -> std::io::Result<Vec<PathBuf>> {
         match fs::read_dir(dir) {
             Err(error)
@@ -3828,40 +3796,68 @@ pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result
                     .map_err(|error| {
                         std::io::Error::other(format!("{}: {error}", path.display()))
                     })?;
-                let child_failure =
-                    crate::manager_loop::recorded_child_failure(paths, &progress.current)
-                        .map_err(|error| std::io::Error::other(error.to_string()))?;
+                let flow = store
+                    .read_graph_source(paths)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?
+                    .ok_or_else(|| {
+                        std::io::Error::other("the run's flow definition is unavailable")
+                    })?;
+                let fork = node.file_name().unwrap_or_default().to_string_lossy();
+                let Some(NodeConfig::Parallel { join, .. }) = flow
+                    .nodes
+                    .get(fork.as_ref())
+                    .and_then(|node| node.config.as_ref())
+                else {
+                    return Err(std::io::Error::other(format!(
+                        "{fork} is not a fork of the run's flow"
+                    )));
+                };
+                let entry = progress.trace.first().cloned().unwrap_or_default();
+                // A branch that reached its join or an exit has ended, whatever
+                // came after. A child that failed on its own stays this branch's
+                // error. Only the run as a whole is canceled.
+                let (status, extra) = match branch_boundary(
+                    &flow,
+                    &progress.current,
+                    join,
+                    &progress.last,
+                    &entry,
+                    index,
+                ) {
+                    Some(boundary) => boundary,
+                    None => {
+                        match crate::manager_loop::recorded_child_failure(paths, &progress.current)
+                            .map_err(|error| std::io::Error::other(error.to_string()))?
+                        {
+                            Some((kind, reason)) => {
+                                let attempts = progress
+                                    .retries
+                                    .get(&progress.current)
+                                    .copied()
+                                    .unwrap_or(0)
+                                    + 1;
+                                (
+                                    "error",
+                                    error_value(&progress.current, kind, &reason, attempts),
+                                )
+                            }
+                            None => ("canceled", json!({"canceled_at": progress.current})),
+                        }
+                    }
+                };
                 let mut record = json!({
-                    "id": progress.trace.first(),
+                    "id": entry,
                     "index": index,
-                    "status": "canceled",
+                    "status": status,
                     "started": true,
                     "context": progress.context,
                     "route_trace": progress.trace,
                     "decisions": progress.decisions,
                     "visits": progress.visits,
-                    "canceled_at": progress.current,
+                    "notes": progress.last.as_ref().map(|(_, _, notes)| notes.clone()).unwrap_or_default(),
                 });
-                // A child that failed on its own stays this branch's error; only
-                // the run as a whole is canceled.
-                if let (Some(fields), Some((kind, reason))) =
-                    (record.as_object_mut(), child_failure)
-                {
-                    fields.remove("canceled_at");
-                    fields.insert("status".to_string(), json!("error"));
-                    if let Value::Object(error) = error_value(
-                        &progress.current,
-                        kind,
-                        &reason,
-                        progress
-                            .retries
-                            .get(&progress.current)
-                            .copied()
-                            .unwrap_or(0)
-                            + 1,
-                    ) {
-                        fields.extend(error);
-                    }
+                if let (Some(fields), Value::Object(extra)) = (record.as_object_mut(), extra) {
+                    fields.extend(extra);
                 }
                 write_branch_record(&dir, index, &record)?;
             }
@@ -3945,6 +3941,52 @@ fn record_stops_fork(record: &Value, tolerate: bool) -> bool {
         "error" => !record_tolerated(record, tolerate),
         _ => false,
     }
+}
+
+/// How a branch standing at `current` has ended, if it has: at its join, or at
+/// an exit. Decided by where it stands alone, so a stop cannot change it, and
+/// settling a branch from its saved progress reaches the same answer.
+fn branch_boundary(
+    flow: &FlowDefinition,
+    current: &str,
+    join: &str,
+    last: &Option<(String, String, String)>,
+    entry: &str,
+    index: usize,
+) -> Option<(&'static str, Value)> {
+    if current == join {
+        return Some(("completed", json!({})));
+    }
+    if !is_exit_node(flow, current) {
+        return None;
+    }
+    // Validation forbids success exits in branches; a branch can never end its
+    // owner successfully before the join.
+    let error = |reason: &str| {
+        Some((
+            "error",
+            error_value(current, FailureKind::Routing, reason, 0),
+        ))
+    };
+    let Some(result) = flow.exit_result(current).cloned() else {
+        return error("exit declares no result");
+    };
+    if result.outcome == attractor_core::ExitOutcome::Success {
+        return error(&format!(
+            "branch reached success exit {current} before its join"
+        ));
+    }
+    let (node, decision, notes) = last.clone().unwrap_or_default();
+    let terminal = BranchTerminal {
+        exit_id: current.to_string(),
+        result,
+        branch: entry.to_string(),
+        branch_index: index,
+        node,
+        decision,
+        notes,
+    };
+    Some(("terminal_result", json!({ "terminal": terminal })))
 }
 
 fn error_value(node: &str, kind: FailureKind, reason: &str, attempts: u64) -> Value {
