@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
+import { dispatchConversationLiveEnvelope, type LiveEnvelope } from '@/features/workspace/services/liveEvents'
 import { useStore } from '@/store'
 import { TEST_GENERATION, conversationPage } from '@/test/conversationWire'
 import { useConversationStream } from '../useConversationStream'
@@ -125,28 +126,67 @@ it('a newer stream window, even from a new store generation, survives a page req
     expect(Object.keys(cache().conversationsById.chat.rows).some((key) => key.includes('turn-2'))).toBe(true)
 })
 
-it('shows live thinking from a transient delta and clears it when thinking ends, the turn settles or the chat closes', async () => {
+const ignoreSummaryFeed = { onSummarySnapshot: () => {}, onSummaryChanges: () => {}, onSummaryReset: () => {}, onConversationReset: () => {} }
+
+function liveThinking(payload: Record<string, unknown>) {
+    act(() => {
+        dispatchConversationLiveEnvelope({
+            type: 'conversation.stream_delta', project_path: '/p', resource: { kind: 'conversation', id: 'chat' },
+            payload: { type: 'stream_delta', conversation_id: 'chat', turn_id: 'turn-2', stream_sequence: 1, base_revision: 3, delta_kind: 'thinking', ...payload },
+        } as LiveEnvelope, ignoreSummaryFeed)
+    })
+}
+
+it('keeps silent thinking across leaving and reopening a chat, and clears thinking that ended meanwhile', async () => {
+    useLiveThinkingStore.getState().clear()
     fetchMock.mockImplementation(async () => json(200, conversationPage(chat)))
-    const { unmount } = openChat()
+    const key = conversationThinkingKey('chat')
+    const thinking = () => useLiveThinkingStore.getState().byKey[key]
+    const first = openChat()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    liveThinking({ active: true })
+    expect(thinking()).toBeDefined()
+    const { startedAt } = thinking()
+
+    first.unmount()
+    expect(thinking()).toMatchObject({ startedAt })
+    const reopened = openChat()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(thinking()).toMatchObject({ startedAt })
+
+    reopened.unmount()
+    liveThinking({ active: false })
+    openChat()
+    expect(thinking()).toBeUndefined()
+
+    // A new connection's restored thinking keeps the time it had already run.
+    useLiveThinkingStore.getState().clear()
+    const before = Date.now()
+    liveThinking({ active: true, estimated_tokens: 70, elapsed_ms: 60_000 })
+    expect(thinking().estimatedTokens).toBe(70)
+    expect(thinking().startedAt).toBeLessThanOrEqual(before - 60_000 + 1000)
+})
+
+it('shows live thinking from a transient delta and clears it when thinking ends or the turn settles', async () => {
+    useLiveThinkingStore.getState().clear()
+    fetchMock.mockImplementation(async () => json(200, conversationPage(chat)))
+    openChat()
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     await waitFor(() => expect(useStore.getState().homeConversationCache.conversationsById.chat?.turnsById['turn-1']?.status).toBe('complete'))
     const delta = (active: boolean, estimated_tokens?: number, stream_sequence = 1, turn_id = 'turn-2') => ({
-        type: 'stream_delta', conversation_id: 'chat', turn_id, stream_sequence, base_revision: 3,
-        delta_kind: 'thinking', active, estimated_tokens,
+        turn_id, stream_sequence, active, estimated_tokens,
     })
     const key = conversationThinkingKey('chat')
     const thinking = () => useLiveThinkingStore.getState().byKey[key]
-    live('conversation.stream_delta', delta(true))
+    liveThinking(delta(true))
     expect(thinking()).toMatchObject({ estimatedTokens: null, turnId: 'turn-2' })
     const { startedAt } = thinking()
-    live('conversation.stream_delta', delta(true, 400, 2))
+    liveThinking(delta(true, 400, 2))
     expect(thinking()).toMatchObject({ startedAt, estimatedTokens: 400 })
-    live('conversation.stream_delta', delta(false, 400, 3))
+    liveThinking(delta(false, 400, 3))
     expect(thinking()).toBeUndefined()
-    live('conversation.stream_delta', delta(true, 10, 4, 'turn-1'))
-    expect(thinking()).toBeUndefined()
-    live('conversation.stream_delta', delta(true, 10, 5))
-    expect(thinking()).toBeDefined()
-    unmount()
+    liveThinking(delta(true, 10, 4, 'turn-1'))
+    // The settled turn's check runs on the chat's next live event.
+    live('conversation.stream_delta', { type: 'stream_delta', conversation_id: 'chat', turn_id: 'turn-1', stream_sequence: 5, base_revision: 3, delta_kind: 'token_usage', token_usage: {} })
     expect(thinking()).toBeUndefined()
 })

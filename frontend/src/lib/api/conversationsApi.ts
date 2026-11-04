@@ -232,6 +232,7 @@ export interface ConversationStreamDeltaEventResponse {
     token_usage?: Record<string, unknown>
     active?: boolean
     estimated_tokens?: number | null
+    elapsed_ms?: number | null
 }
 
 /** Metadata and summary of a conversation; never its transcript. */
@@ -1014,7 +1015,7 @@ export function parseConversationStreamDeltaEventResponse(
     }
     if (record.delta_kind === 'thinking') {
         return typeof record.active === 'boolean'
-            ? { ...base, delta_kind: 'thinking', active: record.active, estimated_tokens: typeof record.estimated_tokens === 'number' ? record.estimated_tokens : null }
+            ? { ...base, delta_kind: 'thinking', active: record.active, estimated_tokens: typeof record.estimated_tokens === 'number' ? record.estimated_tokens : null, elapsed_ms: typeof record.elapsed_ms === 'number' ? record.elapsed_ms : null }
             : null
     }
     return null

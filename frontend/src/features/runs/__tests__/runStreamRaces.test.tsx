@@ -260,6 +260,7 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
     'rejects captured workspace callbacks after %s before dispatch or cursor updates', async (transition) => {
         class Source {
             static instances: Source[] = []
+            onopen: (() => void) | null = null
             onmessage: ((event: MessageEvent<string>) => void) | null = null
             onerror: (() => void) | null = null
             close = vi.fn()
@@ -339,6 +340,18 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
             expect(useLiveThinkingStore.getState().byKey[key]).toMatchObject({ estimatedTokens: 90 })
             emit(replacement.onmessage!, thinking(false))
             expect(useLiveThinkingStore.getState().byKey[key]).toBeUndefined()
+            // A reconnect drops thinking that ended unseen; its first frames restore what still runs.
+            emit(replacement.onmessage!, thinking(true))
+            act(() => replacement.onerror!())
+            act(() => vi.advanceTimersByTime(500))
+            const reconnected = Source.instances.at(-1)!
+            expect(reconnected).not.toBe(replacement)
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeDefined()
+            act(() => reconnected.onopen!())
+            expect(useLiveThinkingStore.getState().byKey[key]).toBeUndefined()
+            const restored = thinking(true)
+            emit(reconnected.onmessage!, { ...restored, payload: { ...restored.payload, elapsed_ms: 60_000 } })
+            expect(useLiveThinkingStore.getState().byKey[key].startedAt).toBeLessThanOrEqual(Date.now() - 60_000)
         } finally {
             window.removeEventListener('spark:run-segment-upsert', dispatched)
         }

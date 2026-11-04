@@ -411,6 +411,44 @@ fn live_thinking_progress_reaches_clients_as_a_transient_delta_and_is_never_trac
     assert_eq!(deltas[1]["estimated_tokens"], 186);
 }
 
+/// A harness that stops mid-thought never reports the end, so a client told it
+/// is thinking, or a later one told so on subscribing, would show it forever.
+#[test]
+fn a_turn_ending_mid_thought_still_reports_that_thinking_ended() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend = ScriptedAgentTurnBackend::with_stream_events(
+        vec![AgentTurnOutput::default()],
+        vec![vec![TurnStreamEvent::thinking_progress(true, Some(50))]],
+    );
+    let service = crate::conversations_with_backend(settings(temp.path()), Arc::new(backend));
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-open-thinking",
+            ConversationTurnRequest {
+                project_path: "/projects/open-thinking".to_string(),
+                message: "Think".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    let assistant_turn_id = prepared.assistant_turn_id.clone();
+    let deltas = Arc::new(Mutex::new(Vec::new()));
+    let seen = deltas.clone();
+    service
+        .complete_started_turn_with_progress_payloads(prepared, move |payload| {
+            if payload["delta_kind"] == "thinking" {
+                seen.lock().unwrap().push(payload);
+            }
+        })
+        .expect("turn completes");
+
+    let deltas = deltas.lock().unwrap();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(deltas[0]["active"], true);
+    assert_eq!(deltas[1]["active"], false);
+    assert_eq!(deltas[1]["turn_id"], json!(assistant_turn_id));
+}
+
 fn walkdir_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];

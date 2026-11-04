@@ -457,6 +457,8 @@ export function WorkspaceLiveEventsController() {
                             visitKey(payload.run_id, payload.node_id, payload.stage_index, payload.attempt),
                             payload.active === true,
                             typeof payload.estimated_tokens === 'number' ? payload.estimated_tokens : null,
+                            null,
+                            typeof payload.elapsed_ms === 'number' ? payload.elapsed_ms : null,
                         )
                     }
                     return
@@ -520,6 +522,8 @@ export function WorkspaceLiveEventsController() {
             eventSource = source
             source.onopen = () => {
                 if (!isCurrent(source)) return
+                // This connection's first frames restore whatever is still thinking; the rest ended unseen.
+                useLiveThinkingStore.getState().clear()
                 window.dispatchEvent(new Event('spark:settings-live-event'))
             }
             source.onmessage = (event) => handleMessage(event, source)

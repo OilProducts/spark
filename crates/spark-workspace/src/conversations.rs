@@ -2379,12 +2379,34 @@ impl WorkspaceConversationService {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(progress);
+        // A harness that stops mid-thought never reports the end of its thinking.
+        let open_thinking = Arc::new(Mutex::new(None::<Value>));
+        let progress: Arc<dyn Fn(Value) + Send + Sync> = {
+            let open_thinking = open_thinking.clone();
+            Arc::new(move |payload: Value| {
+                if payload["delta_kind"] == "thinking" {
+                    *open_thinking.lock().unwrap_or_else(|p| p.into_inner()) =
+                        (payload["active"] == true).then(|| payload.clone());
+                }
+                progress(payload);
+            })
+        };
+        let end_thinking = || {
+            let open = open_thinking
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(mut last) = open {
+                last["active"] = json!(false);
+                progress(last);
+            }
+        };
         let (conversation_id, project_path) = (
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
         );
         let mut result = self.run_started_turn(prepared, progress.clone());
+        end_thinking();
         loop {
             let next = match self.start_queued_turn(&conversation_id, &project_path) {
                 Ok(Some((next, _))) => next,
@@ -2392,6 +2414,7 @@ impl WorkspaceConversationService {
                 Ok(None) | Err(_) => break,
             };
             result = self.run_started_turn(next, progress.clone());
+            end_thinking();
         }
         result
     }

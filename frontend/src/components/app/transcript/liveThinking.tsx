@@ -10,13 +10,17 @@ interface LiveThinking {
 
 interface LiveThinkingStore {
     byKey: Record<string, LiveThinking>
-    /** Starts or updates `key` while `active`, keeping the start time; otherwise clears it. */
-    report: (key: string, active: boolean, estimatedTokens?: number | null, turnId?: string | null) => void
+    /**
+     * Starts or updates `key` while `active`, keeping the start time; otherwise clears it.
+     * `elapsedMs` is how long it has already run, when the client joined part way through.
+     */
+    report: (key: string, active: boolean, estimatedTokens?: number | null, turnId?: string | null, elapsedMs?: number | null) => void
+    clear: () => void
 }
 
 export const useLiveThinkingStore = create<LiveThinkingStore>((set) => ({
     byKey: {},
-    report: (key, active, estimatedTokens = null, turnId = null) => set((state) => {
+    report: (key, active, estimatedTokens = null, turnId = null, elapsedMs = null) => set((state) => {
         const current = state.byKey[key]
         if (!active) {
             if (!current) return state
@@ -28,13 +32,14 @@ export const useLiveThinkingStore = create<LiveThinkingStore>((set) => ({
             byKey: {
                 ...state.byKey,
                 [key]: {
-                    startedAt: current?.startedAt ?? Date.now(),
+                    startedAt: current?.startedAt ?? Date.now() - (elapsedMs ?? 0),
                     estimatedTokens: estimatedTokens ?? current?.estimatedTokens ?? null,
                     turnId,
                 },
             },
         }
     }),
+    clear: () => set((state) => (Object.keys(state.byKey).length ? { byKey: {} } : state)),
 }))
 
 export const conversationThinkingKey = (conversationId: string) => `conversation:${conversationId}`

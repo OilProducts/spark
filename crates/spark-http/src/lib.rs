@@ -321,6 +321,9 @@ const SUBSCRIBER_QUEUE_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) struct WorkspaceLiveHub {
     subscribers: Mutex<Vec<std::sync::Weak<LiveSubscriber>>>,
     execution_cursors: Mutex<HashMap<String, ExecutionTranscriptCursor>>,
+    /// Thinking in progress and when it began, for clients that subscribe
+    /// meanwhile. In memory only, keyed by resource kind and id.
+    active_thinking: Mutex<HashMap<(String, String), (std::time::Instant, LiveEnvelope)>>,
     /// Not owned: background tasks and installed runtimes hold the hub, and
     /// must not keep the home locked after the app is dropped.
     conversation_store: std::sync::Weak<spark_storage::ConversationStore>,
@@ -441,6 +444,7 @@ impl WorkspaceLiveHub {
         Self {
             subscribers: Mutex::new(Vec::new()),
             execution_cursors: Mutex::new(HashMap::new()),
+            active_thinking: Mutex::new(HashMap::new()),
             conversation_store: Arc::downgrade(conversation_store),
         }
     }
@@ -530,6 +534,7 @@ impl WorkspaceLiveHub {
     }
 
     pub(crate) fn publish(&self, envelope: LiveEnvelope) {
+        self.track_thinking(&envelope);
         for subscriber in self.live_subscribers() {
             let matches = subscriber.query.as_ref().is_none_or(|query| {
                 spark_workspace::live::envelope_matches_query(&envelope, query)
@@ -538,6 +543,61 @@ impl WorkspaceLiveHub {
                 subscriber.push(envelope.clone());
             }
         }
+    }
+
+    fn track_thinking(&self, envelope: &LiveEnvelope) {
+        if envelope.event_type != spark_workspace::live::NODE_THINKING_EVENT_TYPE
+            && envelope.payload["delta_kind"] != "thinking"
+        {
+            return;
+        }
+        let Some(id) = envelope.resource.id.clone() else {
+            return;
+        };
+        let key = (envelope.resource.kind.clone(), id);
+        let mut active = self
+            .active_thinking
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if envelope.payload["active"] == true {
+            let started = active
+                .get(&key)
+                .map_or_else(std::time::Instant::now, |(started, _)| *started);
+            active.insert(key, (started, envelope.clone()));
+        } else {
+            active.remove(&key);
+        }
+    }
+
+    /// The thinking in progress that `query` covers, with how long it has run,
+    /// so a client that just subscribed shows what it missed the start of.
+    /// Thinking that already ended is simply absent.
+    pub(crate) fn active_thinking_envelopes(
+        &self,
+        query: &spark_workspace::live::LiveQuery,
+    ) -> Vec<LiveEnvelope> {
+        self.active_thinking
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .values()
+            .filter(|(_, envelope)| spark_workspace::live::envelope_matches_query(envelope, query))
+            .map(|(started, envelope)| {
+                let mut envelope = envelope.clone();
+                envelope.payload["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+                envelope
+            })
+            .collect()
+    }
+
+    /// A finished run's agents have stopped, whatever they last reported.
+    fn forget_run_thinking(&self, run_id: &str) {
+        self.active_thinking
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .retain(|_, (_, envelope)| {
+                envelope.event_type != spark_workspace::live::NODE_THINKING_EVENT_TYPE
+                    || envelope.payload["run_id"] != run_id
+            });
     }
 
     fn publish_execution_transcripts(&self, settings: &SparkSettings, run_id: &str) {
@@ -999,6 +1059,7 @@ fn publish_live_run_after_incremental_with(
     }
     publish_terminal_run_trigger_events(settings, live_hub, run_id, run_event_observer);
     if spark_workspace::live::evict_run_live_cache_if_terminal(settings, run_id) {
+        live_hub.forget_run_thinking(run_id);
         *usage = None;
     }
     latest_sequence
@@ -1027,6 +1088,114 @@ mod live_queue_tests {
         let store = spark_storage::ConversationStore::open(temp.path()).unwrap();
         let hub = WorkspaceLiveHub::new(&store);
         (temp, hub)
+    }
+
+    fn query(raw: spark_workspace::live::RawLiveQuery) -> spark_workspace::live::LiveQuery {
+        spark_workspace::live::validate_live_query(raw).unwrap()
+    }
+
+    fn chat_thinking(conversation: &str, active: bool) -> LiveEnvelope {
+        spark_workspace::live::conversation_event_envelope(
+            conversation,
+            "/p",
+            json!({"delta_kind": "thinking", "turn_id": "t", "active": active}),
+        )
+    }
+
+    fn node_thinking(run: &str, active: bool) -> LiveEnvelope {
+        let mut envelope = envelope(spark_workspace::live::NODE_THINKING_EVENT_TYPE);
+        envelope.resource.kind = "node_execution".to_string();
+        envelope.resource.id = Some(format!("{run}:task:1:1"));
+        envelope.payload = json!({"run_id": run, "active": active});
+        envelope
+    }
+
+    /// A chat reopened mid-thought gets its thinking back, however silent, with
+    /// its true start; thinking that ended while it was away does not return.
+    #[test]
+    fn subscribing_restores_only_the_thinking_still_in_progress() {
+        let (_temp, hub) = hub();
+        let chat = query(spark_workspace::live::RawLiveQuery {
+            conversation_id: Some("chat".to_string()),
+            conversation_project_path: Some("/p".to_string()),
+            ..Default::default()
+        });
+        hub.publish(chat_thinking("chat", true));
+        hub.publish(chat_thinking("other", true));
+        std::thread::sleep(Duration::from_millis(5));
+        hub.publish(chat_thinking("chat", true));
+
+        let restored = hub.active_thinking_envelopes(&chat);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].resource.id.as_deref(), Some("chat"));
+        assert_eq!(restored[0].event_type, "conversation.stream_delta");
+        assert!(restored[0].payload["elapsed_ms"].as_u64().unwrap() >= 5);
+
+        hub.publish(chat_thinking("chat", false));
+        assert!(hub.active_thinking_envelopes(&chat).is_empty());
+    }
+
+    /// The stream's opening frames carry the restored thinking, and no more than that.
+    #[tokio::test]
+    async fn the_live_stream_opens_with_the_thinking_still_in_progress() {
+        use futures_util::StreamExt;
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(live_lag_settings(temp.path()));
+        let store = spark_storage::ConversationStore::open(temp.path()).unwrap();
+        let hub = Arc::new(WorkspaceLiveHub::new(&store));
+        let opening = |store: Arc<spark_storage::ConversationStore>| {
+            let (settings, hub) = (settings.clone(), hub.clone());
+            async move {
+                let response = workspace::workspace_live_events(
+                    State(settings),
+                    State(store),
+                    State(hub),
+                    Ok(axum::extract::Query(spark_workspace::live::RawLiveQuery {
+                        conversation_id: Some("chat".to_string()),
+                        conversation_project_path: Some("/p".to_string()),
+                        ..Default::default()
+                    })),
+                )
+                .await
+                .map_err(|_| "live events failed")
+                .unwrap();
+                let mut body = response.into_body().into_data_stream();
+                let mut frames = String::new();
+                while let Ok(Some(Ok(frame))) =
+                    tokio::time::timeout(Duration::from_millis(300), body.next()).await
+                {
+                    frames.push_str(&String::from_utf8_lossy(&frame));
+                }
+                frames
+            }
+        };
+
+        hub.publish(chat_thinking("chat", true));
+        let frames = opening(store.clone()).await;
+        assert!(frames.contains("\"delta_kind\":\"thinking\""), "{frames}");
+        assert!(frames.contains("elapsed_ms"), "{frames}");
+
+        hub.publish(chat_thinking("chat", false));
+        let frames = opening(store.clone()).await;
+        assert!(!frames.contains("\"delta_kind\":\"thinking\""), "{frames}");
+    }
+
+    #[test]
+    fn a_run_reconnect_restores_its_thinking_until_it_ends_or_the_run_finishes() {
+        let (_temp, hub) = hub();
+        let run = query(spark_workspace::live::RawLiveQuery {
+            run_id: Some("run".to_string()),
+            ..Default::default()
+        });
+        hub.publish(node_thinking("run", true));
+        hub.publish(node_thinking("other", true));
+        assert_eq!(hub.active_thinking_envelopes(&run).len(), 1);
+        hub.publish(node_thinking("run", false));
+        assert!(hub.active_thinking_envelopes(&run).is_empty());
+
+        hub.publish(node_thinking("run", true));
+        hub.forget_run_thinking("run");
+        assert!(hub.active_thinking_envelopes(&run).is_empty());
     }
 
     /// One slow tab overflows alone: its queue drains and it is told to

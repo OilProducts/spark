@@ -1160,7 +1160,7 @@ mod catch_up_tests {
     }
 }
 
-async fn workspace_live_events(
+pub(crate) async fn workspace_live_events(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
@@ -1174,12 +1174,15 @@ async fn workspace_live_events(
     let subscriber =
         live_query_subscribes(&query).then(|| live_hub.subscribe_with(Some(query.clone())));
     let service = WorkspaceConversationService::new((*settings).clone(), store.clone());
+    // Read after subscribing, so a change from here on also arrives as a frame.
+    let active_thinking = live_hub.active_thinking_envelopes(&query);
     let (initial, scopes) = {
         let (service, query) = (service.clone(), query.clone());
         tokio::task::spawn_blocking(move || {
             let mut envelopes = initial_live_envelopes(&settings, service.store(), &query)?;
             let (conversation, scopes) = initialize_live_scopes(&service, &query)?;
             envelopes.splice(0..0, conversation);
+            envelopes.extend(active_thinking);
             Ok::<_, WorkspaceError>((envelopes, scopes))
         })
         .await
