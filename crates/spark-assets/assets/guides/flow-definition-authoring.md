@@ -726,7 +726,8 @@ sessions, isolated roles and a visit limit:
   model under `execution`. They write short approaches to
   `context.approach.draft` in their own branch contexts and change no files.
 - `choose`, using the isolated `adversarial-reviewer` role, picks one draft
-  against the request and records why the others lost. `route_request` skips
+  against the request, recording why the others lost and any facts from them the
+  design should use. `route_request` skips
   both steps when `context.request.artifact_path` names an existing design.
 - `draft` and `resolve` use the `author` role and share `session: designer`,
   so the author keeps everything it learned while drafting.
