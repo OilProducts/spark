@@ -911,3 +911,41 @@ fn every_terminal_result_write_notifies_run_event_observers() {
     );
     assert!(seen.lock().unwrap().iter().any(|id| id == "run-orphan"));
 }
+
+/// Power loss can leave a run's record empty: that run is reported, and scans
+/// over every run keep working for the others.
+#[test]
+fn an_unreadable_run_is_listed_as_unreadable_and_blocks_no_other_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store(&temp);
+    let project = temp.path().join("project").to_string_lossy().into_owned();
+    let create = |run_id: &str| {
+        store
+            .create_run(CreateRunRequest {
+                record: record(run_id, &project),
+                ..CreateRunRequest::default()
+            })
+            .expect("run")
+    };
+    let bad = create("run-bad");
+    create("run-good");
+    std::fs::write(bad.run_json(), b"").expect("empty record");
+
+    let records = store.list_run_records().expect("listing");
+    let status = |run_id: &str| {
+        let record = records.iter().find(|r| r.run_id == run_id).expect(run_id);
+        (record.status.clone(), record.last_error.clone())
+    };
+    let (bad_status, bad_error) = status("run-bad");
+    assert_eq!(bad_status, attractor_core::RUN_STATUS_UNREADABLE);
+    assert!(bad_error.contains("run.json"), "{bad_error}");
+    assert_eq!(status("run-good").0, "running");
+
+    assert_eq!(
+        store
+            .next_child_invocation_index("run-good", "node")
+            .unwrap(),
+        1
+    );
+    assert!(store.list_child_run_bundles("run-good").unwrap().is_empty());
+}

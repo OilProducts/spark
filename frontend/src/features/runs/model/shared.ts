@@ -294,6 +294,7 @@ const STATUS_TONES: Record<string, StatusTone> = {
     failed: 'destructive',
     fail: 'destructive',
     validation_error: 'destructive',
+    unreadable: 'destructive',
 }
 
 export const runStatusTone = (status: string): StatusTone => STATUS_TONES[status] ?? 'muted'
@@ -311,6 +312,7 @@ export const STATUS_LABELS: Record<string, string> = {
     cancel_requested: 'Canceling',
     aborted: 'Canceled',
     canceled: 'Canceled',
+    unreadable: 'Unreadable',
 }
 
 // A completed run that reached a failure exit is not a success: it reads as
@@ -330,7 +332,7 @@ export const runRecordTone = (run: Pick<RunRecord, 'status' | 'outcome'>): Statu
 
 export const canCancelRun = (status: string) => status === 'running' || status === 'waiting'
 
-export const canContinueRun = (status: string) => !['queued', 'running', 'waiting', 'cancel_requested', 'abort_requested', 'pause_requested'].includes(status)
+export const canContinueRun = (status: string) => !['queued', 'running', 'waiting', 'cancel_requested', 'abort_requested', 'pause_requested', 'unreadable'].includes(status)
 export const canRetryRun = (status: string) => status === 'failed'
 
 export const cancelRunActionLabel = (status: string) => {

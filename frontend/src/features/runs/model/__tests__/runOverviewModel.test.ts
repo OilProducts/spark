@@ -8,7 +8,9 @@ import {
   formatRunDate,
   formatCompactCount,
   runDayLabel,
+  runStatusKind,
 } from '../runOverviewModel'
+import { canContinueRun, canRetryRun, formatRunStatusLabel } from '../shared'
 import type { RunVisit, VisitOutcome } from '../visitModel'
 
 const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: Record<string, unknown> | null = null): RunVisit => ({
@@ -168,5 +170,14 @@ describe('formatRunDate and formatCompactCount', () => {
     expect(formatCompactCount(5_517_077)).toBe('5.5M')
     expect(formatCompactCount(193_400)).toBe('193.4k')
     expect(formatCompactCount(812)).toBe('812')
+  })
+})
+
+describe('an unreadable run', () => {
+  it('tells the failure story and offers no way to continue it', () => {
+    expect(runStatusKind('unreadable', false)).toBe('failed')
+    expect(canContinueRun('unreadable')).toBe(false)
+    expect(canRetryRun('unreadable')).toBe(false)
+    expect(formatRunStatusLabel({ status: 'unreadable', outcome: null, outcome_reason_code: null })).toBe('Unreadable')
   })
 })

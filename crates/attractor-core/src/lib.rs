@@ -65,5 +65,5 @@ pub use outcomes::{BranchTerminal, FailureKind, Outcome, OutcomeStatus};
 pub use runtime::{
     ArtifactInfo, CheckpointId, CheckpointState, JournalEntry, JournalSequence, RawRuntimeEvent,
     RunExecutionLock, RunId, RunManifest, RunRecord, RunResult, RunStatus, RuntimeNodeState,
-    StageId,
+    StageId, RUN_STATUS_UNREADABLE,
 };

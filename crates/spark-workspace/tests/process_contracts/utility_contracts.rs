@@ -730,3 +730,37 @@ fn node_thinking_is_published_once_as_a_transient_envelope_for_that_run() {
     ));
     assert!(spark_workspace::live::node_thinking_envelopes(&settings, "run-a").is_empty());
 }
+
+/// An unreadable record can't name its project, so its run directory places it.
+#[test]
+fn the_runs_overview_reports_an_unreadable_run_under_its_project() {
+    let (temp, settings) = fixture();
+    let project = temp.path().join("project").to_string_lossy().into_owned();
+    let other = temp.path().join("other").to_string_lossy().into_owned();
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: attractor_core::RunRecord::new("run-bad", project.as_str()),
+            ..Default::default()
+        })
+        .unwrap();
+    fs::write(paths.run_json(), b"").unwrap();
+    let conversations = spark_storage::ConversationStore::open(&settings.data_dir).unwrap();
+    let reported = |path: &str| {
+        let query = validate_live_query(spark_workspace::live::RawLiveQuery {
+            include_runs_overview: Some("true".into()),
+            runs_project_path: Some(path.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        spark_workspace::live::initial_live_envelopes(&settings, &conversations, &query)
+            .unwrap()
+            .iter()
+            .any(|envelope| {
+                let payload = envelope.payload.to_string();
+                payload.contains("run-bad") && payload.contains("unreadable")
+            })
+    };
+    assert!(reported(&project));
+    assert!(!reported(&other));
+}
