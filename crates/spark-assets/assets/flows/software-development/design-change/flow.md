@@ -2,7 +2,7 @@
 type: Flow
 id: design_change
 title: Design Change
-description: Draft a design document, review it with isolated single-lens reviewers, resolve the findings in the drafter's session, and re-review once if anything changed. The run ends with a reviewed design at a known path.
+description: Draft competing approaches with two aims across two models, choose one, write it up as a design, review it with isolated single-lens reviewers, and resolve the findings in the author's session, re-reviewing up to twice if anything changed. The run ends with a design at a known path, listing any changes no reviewer saw under Open questions.
 schema_version: '2'
 inputs:
 - key: context.request.objective
@@ -39,4 +39,4 @@ metadata:
     launcher: true
 ---
 
-Draft a design document, review it with isolated single-lens reviewers, resolve the findings in the drafter's session, and re-review once if anything changed. The run ends with a reviewed design at a known path.
+Draft competing approaches with two aims across two models, choose one, write it up as a design, review it with isolated single-lens reviewers, and resolve the findings in the author's session, re-reviewing up to twice if anything changed. The run ends with a design at a known path, listing any changes no reviewer saw under Open questions.

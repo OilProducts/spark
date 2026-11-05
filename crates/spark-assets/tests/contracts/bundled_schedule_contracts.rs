@@ -42,6 +42,8 @@ const DESCRIPTIONS: &[(&str, &str)] = &[
     ("requirements_covered", "All in-scope requirements and bound contract decisions are covered; repository deliverability still requires its separate audit."),
     ("deliverable", "The repository passes the final deliverability and integrity criteria with no outstanding bound contract decision."),
     ("cleanup", "Repository integrity or deliverability gaps remain; write the cleanup ledger so bounded cleanup milestones can be planned."),
+    ("existing", "context.request.artifact_path names an existing design, so no approaches are drafted."),
+    ("new", "No existing design was given, so competing approaches are drafted."),
 ];
 
 const AGENTS: &[(&str, &[(&str, &str)])] = &[
@@ -204,6 +206,18 @@ const AGENTS: &[(&str, &[(&str, &str)])] = &[
         &[("done", "report")],
     ),
     (
+        "software-development/design-change/choose",
+        &[("done", "draft")],
+    ),
+    (
+        "software-development/design-change/cleanest_opus",
+        &[("done", "explore_join")],
+    ),
+    (
+        "software-development/design-change/cleanest_sol",
+        &[("done", "explore_join")],
+    ),
+    (
         "software-development/design-change/codebase_check",
         &[("done", "fan_in")],
     ),
@@ -226,6 +240,18 @@ const AGENTS: &[(&str, &[(&str, &str)])] = &[
     (
         "software-development/design-change/resolve",
         &[("done", "done"), ("rereview", "review")],
+    ),
+    (
+        "software-development/design-change/route_request",
+        &[("existing", "draft"), ("new", "explore")],
+    ),
+    (
+        "software-development/design-change/smallest_opus",
+        &[("done", "explore_join")],
+    ),
+    (
+        "software-development/design-change/smallest_sol",
+        &[("done", "explore_join")],
     ),
     (
         "software-development/design-change/synthesize",
@@ -571,7 +597,11 @@ const STARTS: &[(&str, &str, &str)] = &[
     ("math-research/research-program", "prepare", "done"),
     ("organization/review-change", "review", "done"),
     ("software-development/audit-codebase", "sweep", "done"),
-    ("software-development/design-change", "draft", "done"),
+    (
+        "software-development/design-change",
+        "route_request",
+        "done",
+    ),
     (
         "software-development/implement-change",
         "normalize_task",
@@ -625,6 +655,19 @@ const FORKS: &[(&str, &str, &[&str], &str, &str, bool)] = &[
         ],
         "fan_in",
         "verify_findings",
+        true,
+    ),
+    (
+        "software-development/design-change",
+        "explore",
+        &[
+            "cleanest_opus",
+            "cleanest_sol",
+            "smallest_opus",
+            "smallest_sol",
+        ],
+        "explore_join",
+        "choose",
         true,
     ),
     (
@@ -1013,7 +1056,7 @@ fn actual_routes(node: &Value) -> BTreeMap<String, (String, String, String)> {
 
 #[test]
 fn schedule_inventory_matches_the_design_counts() {
-    assert_eq!(AGENTS.len(), 97);
+    assert_eq!(AGENTS.len(), 103);
     assert_eq!(EXIT_CODE_TOOLS.len() + JSON_TOOLS.len() + 2, 27);
     assert_eq!((EXIT_CODE_TOOLS.len(), JSON_TOOLS.len()), (16, 9));
     assert_eq!(STARTS.len(), 20);
@@ -1043,11 +1086,11 @@ fn schedule_inventory_matches_the_design_counts() {
             .map(|(k, v)| (k.as_str(), *v))
             .collect::<BTreeMap<_, _>>(),
         BTreeMap::from([
-            ("agent_task", 97),
+            ("agent_task", 103),
             ("exit", 40),
-            ("fan_in", 4),
+            ("fan_in", 5),
             ("human_gate", 2),
-            ("parallel", 4),
+            ("parallel", 5),
             ("start", 20),
             ("subflow", 2),
             ("switch", 2),

@@ -718,11 +718,17 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
 }
 
 #[test]
-fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
+fn design_change_chooses_among_drafts_then_reviews_with_isolated_lenses() {
     let flow = bundled_flow("software-development/design-change");
     let node = |id: &str| json!(flow.nodes[id]);
     let mut ids = flow.nodes.keys().map(String::as_str).collect::<Vec<_>>();
     ids.sort();
+    let drafters = [
+        "cleanest_opus",
+        "cleanest_sol",
+        "smallest_opus",
+        "smallest_sol",
+    ];
     let reviewers = [
         "codebase_check",
         "critic",
@@ -731,18 +737,48 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
         "zoom_out",
     ];
     let mut expected = vec![
+        "choose",
         "done",
         "draft",
+        "explore",
+        "explore_join",
         "failed",
         "fan_in",
         "resolve",
         "review",
+        "route_request",
         "start",
         "synthesize",
     ];
+    expected.extend(drafters);
     expected.extend(reviewers);
     expected.sort();
     assert_eq!(ids, expected);
+
+    // Two aims across two models. A drafter's fresh session and role-free
+    // prompt keep the author's review instructions out of its contract.
+    for id in drafters {
+        let drafter = node(id);
+        let (provider, model) = if id.ends_with("opus") {
+            ("claude-code", "claude-opus-5-5[1m]")
+        } else {
+            ("codex", "gpt-6.1-sol")
+        };
+        assert_eq!(
+            drafter["execution"]["llm_provider"],
+            json!(provider),
+            "{id}"
+        );
+        assert_eq!(drafter["execution"]["llm_model"], json!(model), "{id}");
+        assert!(drafter["role"].is_null(), "{id}");
+        assert!(drafter["runtime"]["session"].is_null(), "{id}");
+        assert_eq!(
+            drafter["contracts"]["writes_context"],
+            json!(["context.approach.draft"]),
+            "{id}"
+        );
+    }
+    assert_eq!(node("choose")["role"], json!("adversarial-reviewer"));
 
     for id in ["draft", "resolve"] {
         assert_eq!(node(id)["role"], json!("author"), "{id}");
@@ -758,11 +794,17 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
         let reviewer = node(id);
         assert_eq!(reviewer["role"], json!("adversarial-reviewer"), "{id}");
         assert!(reviewer["runtime"]["session"].is_null(), "{id}");
-        assert_eq!(
-            reviewer["contracts"]["reads_context"],
-            json!(["context.design.path"]),
-            "{id}"
-        );
+        // Lenses that judge fit read the request; the others only the document.
+        let reads = if matches!(id, "codebase_check" | "naive_reader") {
+            json!(["context.design.path"])
+        } else {
+            json!([
+                "context.design.path",
+                "context.request.objective",
+                "context.request.constraints"
+            ])
+        };
+        assert_eq!(reviewer["contracts"]["reads_context"], reads, "{id}");
         // Complete findings reach `synthesize` through the branch context.
         assert_eq!(
             reviewer["contracts"]["writes_context"],
@@ -787,7 +829,16 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
     edges.sort();
     edges.dedup();
     let mut expected = vec![
-        ("start", "draft"),
+        ("start", "route_request"),
+        ("route_request", "draft"),
+        ("route_request", "explore"),
+        ("route_request", "failed"),
+        ("route_request", "route_request"),
+        ("explore", "explore_join"),
+        ("explore_join", "choose"),
+        ("choose", "choose"),
+        ("choose", "draft"),
+        ("choose", "failed"),
         ("draft", "draft"),
         ("draft", "failed"),
         ("draft", "review"),
@@ -801,6 +852,14 @@ fn design_change_drafts_reviews_with_isolated_lenses_and_re_reviews_once() {
         ("resolve", "review"),
         ("review", "fan_in"),
     ];
+    for id in drafters {
+        expected.extend([
+            ("explore", id),
+            (id, "explore_join"),
+            (id, "failed"),
+            (id, id),
+        ]);
+    }
     for id in reviewers {
         expected.extend([("review", id), (id, "fan_in"), (id, "failed"), (id, id)]);
     }
