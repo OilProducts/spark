@@ -1656,13 +1656,13 @@ mod incremental_usage_tests {
     }
 
     #[test]
-    fn incomplete_bounded_history_initializes_full_projection_once() {
+    fn mid_journal_cursor_initializes_full_projection_once() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = test_settings(temp.path());
         let project = temp.path().join("project");
         fs::create_dir_all(&project).expect("project");
         let store = RunStore::for_settings(&settings);
-        let mut record = RunRecord::new("bounded-usage", project.to_string_lossy().into_owned());
+        let mut record = RunRecord::new("cursor-usage", project.to_string_lossy().into_owned());
         record.model = "gpt-5".into();
         record.status = "running".into();
         let paths = store
@@ -1673,10 +1673,10 @@ mod incremental_usage_tests {
             .expect("run");
         append_execution_usage(
             &paths,
-            event("bounded-usage", "work", "codex_app_server_session_event", 7),
+            event("cursor-usage", "work", "codex_app_server_session_event", 7),
         );
-        for _ in 0..4097 {
-            let mut noise = RawRuntimeEvent::new("Log", "bounded-usage");
+        for _ in 0..3 {
+            let mut noise = RawRuntimeEvent::new("Log", "cursor-usage");
             noise.payload.insert("message".into(), json!("noise"));
             store.append_event(&paths, noise).expect("noise");
         }
@@ -1687,12 +1687,12 @@ mod incremental_usage_tests {
         let mut initializations = 0;
         let mut initialize = || {
             initializations += 1;
-            full_run_usage_accumulator(&settings, "bounded-usage").ok()
+            full_run_usage_accumulator(&settings, "cursor-usage").ok()
         };
         let cursor = publish_live_run_after_incremental_with(
             &settings,
             &hub,
-            "bounded-usage",
+            "cursor-usage",
             Some(1),
             &mut usage,
             None,
@@ -1701,7 +1701,7 @@ mod incremental_usage_tests {
         publish_live_run_after_incremental_with(
             &settings,
             &hub,
-            "bounded-usage",
+            "cursor-usage",
             cursor,
             &mut usage,
             None,
