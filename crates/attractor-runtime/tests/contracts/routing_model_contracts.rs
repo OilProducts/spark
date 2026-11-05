@@ -943,9 +943,17 @@ fn bundled_design_review_allows_three_rounds_then_fails_the_fourth() {
     ];
     let mut entries = lenses
         .iter()
-        .map(|lens| (*lens, vec![completed("done")]))
+        .chain(&[
+            "cleanest_opus",
+            "cleanest_sol",
+            "smallest_opus",
+            "smallest_sol",
+        ])
+        .map(|node| (*node, vec![completed("done")]))
         .collect::<Vec<_>>();
     entries.extend([
+        ("route_request", vec![completed("new")]),
+        ("choose", vec![completed("done")]),
         ("draft", vec![completed("done")]),
         ("synthesize", vec![completed("done")]),
         ("resolve", vec![completed("rereview")]),

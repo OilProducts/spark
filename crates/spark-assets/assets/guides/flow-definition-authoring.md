@@ -719,15 +719,23 @@ in the prompt, for example a reviewer that chooses between `rereview` and
 
 ### Author and Isolated Reviewers
 
-The bundled `software-development/design-change` flow combines sessions,
-isolated roles and a visit limit into a review loop:
+The bundled `software-development/design-change` flow combines parallel drafts,
+sessions, isolated roles and a visit limit:
 
+- `explore` forks four drafters, two aims across two models, each setting its
+  model under `execution`. They write short approaches to
+  `context.approach.draft` in their own branch contexts and change no files.
+- `choose`, using the isolated `adversarial-reviewer` role, picks one draft
+  against the request and records why the others lost. `route_request` skips
+  both steps when `context.request.artifact_path` names an existing design.
 - `draft` and `resolve` use the `author` role and share `session: designer`,
   so the author keeps everything it learned while drafting.
 - A `parallel` node, `review`, forks into reviewer branches that use the
   isolated `adversarial-reviewer` role. Each reviews through one lens and reads
-  only the document's path, never the request or the author's reasoning: the
-  document has to stand on its own. Each reviewer chooses `done` to the join
+  the document's path, never the author's reasoning. `critic`, `readiness` and
+  `zoom_out` also read the request and constraints to judge fit, while
+  `codebase_check` and `naive_reader` read only the document, which has to stand
+  on its own. Each reviewer chooses `done` to the join
   and writes its complete findings to `context.review.lens_findings`, which
   lands in its own `parallel.results` entry. A response itself reaches later
   nodes only as `last_response`, cut to 200 characters.
@@ -738,13 +746,14 @@ isolated roles and a visit limit into a review loop:
   branch that did not complete as a Blocker under its lens.
 - `resolve` fixes each finding, contests it with checkable evidence, or asks
   the owner, then chooses `rereview` (back to `review`) or `done`. `review`
-  sets `max_visits: 3`; a `rereview` past that fails the run with
-  `visit_limit_reached`.
+  sets `max_visits: 3`. Once `rereview` is marked out of visits, `resolve`
+  chooses `done` and lists the unreviewed changes under Open questions;
+  choosing `rereview` anyway fails the run with `visit_limit_reached`.
 
 The approach is adapted from the elephant/goldfish model
 ([google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model),
-Apache-2.0): an author who holds the context, reviewers who see only the
-document, findings settled by fix, contest or escalation, and a bounded
+Apache-2.0): an author who holds the context, reviewers who judge the
+document without the author's reasoning, findings settled by fix, contest or escalation, and a bounded
 re-review.
 
 ## Validation

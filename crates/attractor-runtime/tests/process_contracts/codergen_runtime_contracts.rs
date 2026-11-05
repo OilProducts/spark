@@ -1023,9 +1023,11 @@ fn bundled_implement_change_evaluate_prompt_lists_its_decisions() {
 /// hands out a new one per call (`h-<call>`). `check` answers `again` once,
 /// then `done`; `resolve` answers `rereview` until its prompt marks that
 /// target as out of visits (always, with `ignore_visit_budget`). A
-/// design-change reviewer records [`lens_findings`]; `synthesize` forwards
-/// every branch's findings from `parallel.results`. The first call of
-/// `flaky` fails retryably. Every other node answers `done`.
+/// design-change drafter records `<node> draft`, and `choose` picks
+/// [`CHOSEN_DRAFT`]. A reviewer records [`lens_findings`]; `synthesize` forwards
+/// every branch's findings from `parallel.results`. `route_request` follows
+/// `context.request.artifact_path`. The first call of `flaky` fails retryably.
+/// Every other node answers `done`.
 #[derive(Clone, Default)]
 struct SessionBackend {
     calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -1071,6 +1073,19 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
             // agent_written_runtime_sessions_are_contract_violations_not_dropped_keys);
             // the runtime alone records the handle the backend resumes.
             envelope("done", json!({}))
+        } else if DESIGN_DRAFTERS.contains(&request.node_id.as_str()) {
+            envelope(
+                "done",
+                json!({"context.approach.draft": format!("{} draft", request.node_id)}),
+            )
+        } else if request.node_id == "choose" {
+            envelope(
+                "done",
+                json!({
+                    "context.approach.chosen": CHOSEN_DRAFT,
+                    "context.approach.rejected": "the others lost",
+                }),
+            )
         } else if DESIGN_REVIEWERS.contains(&request.node_id.as_str()) {
             envelope(
                 "done",
@@ -1088,8 +1103,17 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
         } else {
             let decision = match (request.node_id.as_str(), checks) {
                 ("check", 1) => "again",
+                ("route_request", _)
+                    if request
+                        .context
+                        .contains_key("context.request.artifact_path") =>
+                {
+                    "existing"
+                }
+                ("route_request", _) => "new",
                 ("resolve", _)
-                    if self.ignore_visit_budget || !request.prompt.contains(VISITS_USED) =>
+                    if self.ignore_visit_budget
+                        || !request.prompt.contains(&format!("({VISITS_USED}")) =>
                 {
                     "rereview"
                 }
@@ -1110,6 +1134,14 @@ impl spark_agent_adapter::CodergenBackend for SessionBackend {
         })
     }
 }
+
+const DESIGN_DRAFTERS: [&str; 4] = [
+    "cleanest_opus",
+    "cleanest_sol",
+    "smallest_opus",
+    "smallest_sol",
+];
+const CHOSEN_DRAFT: &str = "smallest_sol draft";
 
 const DESIGN_REVIEWERS: [&str; 5] = [
     "codebase_check",
@@ -1178,6 +1210,21 @@ fn run_sessions(
     backend: &SessionBackend,
     start: attractor_runtime::ExecutionStart,
 ) -> attractor_runtime::PipelineExecutionResult {
+    run_sessions_with_context(temp, run_id, flow, backend, start, ContextMap::new())
+}
+
+fn run_sessions_with_context(
+    temp: &std::path::Path,
+    run_id: &str,
+    flow: FlowDefinition,
+    backend: &SessionBackend,
+    start: attractor_runtime::ExecutionStart,
+    mut context: ContextMap,
+) -> attractor_runtime::PipelineExecutionResult {
+    context.insert(
+        "internal.bundled_root".to_string(),
+        json!(temp.to_string_lossy()),
+    );
     let backend = backend.clone();
     let runner = RuntimeHandlerRunner::new()
         .with_codergen_backend_factory(move || Box::new(backend.clone()));
@@ -1188,10 +1235,7 @@ fn run_sessions(
             flow,
             flow_definition_json: None,
             launch_context: attractor_core::LaunchContext::empty(),
-            runtime_context: ContextMap::from([(
-                "internal.bundled_root".to_string(),
-                json!(temp.to_string_lossy()),
-            )]),
+            runtime_context: context,
             max_steps: None,
             start,
         })
@@ -1336,6 +1380,17 @@ fn bundled_design_change_resolves_in_the_drafters_session_until_review_visits_ru
             .map(|(_, prompt)| prompt.clone())
             .collect::<Vec<_>>()
     };
+    // Each drafter runs once in a fresh session, every draft reaches `choose`,
+    // and the chosen draft reaches `draft`.
+    for id in DESIGN_DRAFTERS {
+        let runs = handles(id);
+        assert_eq!(runs.len(), 1, "{id} {calls:?}");
+        assert!(runs[0].1.is_none(), "{id}");
+        let choose = prompts_of("choose");
+        assert!(choose[0].contains(&format!("{id} draft")), "{}", choose[0]);
+    }
+    let draft_prompt = &prompts_of("draft")[0];
+    assert!(draft_prompt.contains(CHOSEN_DRAFT), "{draft_prompt}");
     // Every reviewer's complete findings, Blockers included, reach
     // `synthesize` and then `resolve` in every round.
     for id in DESIGN_REVIEWERS {
@@ -1357,6 +1412,31 @@ fn bundled_design_change_resolves_in_the_drafters_session_until_review_visits_ru
     assert!(last.contains(&marked), "{last}");
     for prompt in earlier {
         assert!(!prompt.contains(&marked), "{prompt}");
+    }
+}
+
+#[test]
+fn bundled_design_change_reviewing_an_existing_design_skips_the_drafts() {
+    let temp = tempdir().unwrap();
+    let backend = SessionBackend::default();
+    let result = run_sessions_with_context(
+        temp.path(),
+        "run-design-existing",
+        bundled_design_change(),
+        &backend,
+        Default::default(),
+        ContextMap::from([(
+            "context.request.artifact_path".to_string(),
+            json!("design.md"),
+        )]),
+    );
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    let calls = backend.calls.lock().unwrap().clone();
+    let ran = |id: &str| calls.iter().any(|(node, _)| node == id);
+    assert!(ran("draft"), "{calls:?}");
+    assert!(!ran("choose"), "{calls:?}");
+    for id in DESIGN_DRAFTERS {
+        assert!(!ran(id), "{calls:?}");
     }
 }
 
