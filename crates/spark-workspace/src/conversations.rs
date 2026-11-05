@@ -2052,7 +2052,7 @@ impl WorkspaceConversationService {
             assistant_turn_id,
             chat_mode,
             output,
-            true,
+            Vec::new(),
         )?;
         self.get_snapshot(conversation_id, Some(project_path))
     }
@@ -2079,6 +2079,8 @@ impl WorkspaceConversationService {
             .ok_or_else(missing)
     }
 
+    /// Stores `output.events`, none of which may have been stored yet, and
+    /// settles the turn. `pending` is what a live turn has yet to commit.
     fn ingest_agent_turn_output_inner(
         &self,
         conversation_id: &str,
@@ -2086,7 +2088,7 @@ impl WorkspaceConversationService {
         assistant_turn_id: &str,
         chat_mode: &str,
         output: AgentTurnOutput,
-        persist_provider_events: bool,
+        pending: Vec<Value>,
     ) -> WorkspaceResult<()> {
         let project_path = normalize_project_path_or_400(project_path)?;
         let _ = chat_mode;
@@ -2112,7 +2114,9 @@ impl WorkspaceConversationService {
             } else {
                 "codex_app_server"
             };
-        let mut emitted_payloads = Vec::new();
+        // A live turn's uncommitted upserts commit with its settlement.
+        apply_pending_payloads(&mut snapshot, &pending);
+        let mut emitted_payloads = pending;
         if apply_assistant_turn_app_server_ids(
             &mut snapshot,
             assistant_turn_id,
@@ -2138,17 +2142,13 @@ impl WorkspaceConversationService {
             runtime_session_provider,
         );
         for mut event in output.events {
-            let provenance = if persist_provider_events {
-                Some(repository.append_provider_event(
-                    conversation_id,
-                    &project_path,
-                    assistant_turn_id,
-                    &mut event,
-                )?)
-            } else {
-                None
-            };
-            let provenance = provenance.as_ref();
+            let provenance = repository.append_provider_event(
+                conversation_id,
+                &project_path,
+                assistant_turn_id,
+                &mut event,
+            )?;
+            let provenance = Some(&provenance);
             ensure_assistant_streaming(&mut snapshot, assistant_turn_id, &mut emitted_payloads);
             match &event.kind {
                 TurnStreamEventKind::TokenUsageUpdated => {
@@ -2296,6 +2296,7 @@ impl WorkspaceConversationService {
         &self,
         prepared: &PreparedConversationTurn,
         error: AgentError,
+        pending: Vec<Value>,
         projected: bool,
     ) -> WorkspaceResult<()> {
         let repository = self.repository();
@@ -2312,7 +2313,8 @@ impl WorkspaceConversationService {
         let base_revision = snapshot_revision(&snapshot);
         let message =
             non_empty_string(&error.message).unwrap_or_else(|| "Agent turn failed.".to_string());
-        let mut emitted_payloads = Vec::new();
+        apply_pending_payloads(&mut snapshot, &pending);
+        let mut emitted_payloads = pending;
         fail_assistant_turn_and_segments(
             &mut snapshot,
             &prepared.assistant_turn_id,
@@ -2436,6 +2438,7 @@ impl WorkspaceConversationService {
                         retryable: true,
                         raw: None,
                     },
+                    Vec::new(),
                     true,
                 );
                 return Err(error);
@@ -2469,7 +2472,7 @@ impl WorkspaceConversationService {
                 std::thread::spawn(move || backend.interrupt_turn(&project_path, &conversation_id));
             })
         };
-        let (event_sink, provider_event_error) = live_conversation_turn_event_sink(
+        let (event_sink, live_state, provider_event_error) = live_conversation_turn_event_sink(
             head,
             prepared.assistant_turn_id.clone(),
             prepared.chat_mode.clone(),
@@ -2478,6 +2481,13 @@ impl WorkspaceConversationService {
             prepared.project_path.clone(),
             progress,
             stop,
+        );
+        let _registration = LiveTurnRegistration::new(
+            (
+                self.settings.data_dir.clone(),
+                prepared.conversation_id.clone(),
+            ),
+            Arc::clone(&live_state),
         );
         let output = self
             .agent_turn_backend
@@ -2499,20 +2509,32 @@ impl WorkspaceConversationService {
                     retryable: true,
                     raw: None,
                 },
+                Vec::new(),
                 false,
             );
             return Err(error.into());
         }
+        // The sink stored the turn as it happened. What it still holds, such as
+        // a segment in progress, commits with the turn's settlement.
+        let pending = std::mem::take(
+            &mut live_state
+                .lock()
+                .map_err(|_| WorkspaceError::Internal("live turn state lock poisoned".to_string()))?
+                .pending_payloads,
+        );
         match output {
             Ok(output) => self.ingest_agent_turn_output_inner(
                 &prepared.conversation_id,
                 &prepared.project_path,
                 &prepared.assistant_turn_id,
                 &prepared.chat_mode,
-                output,
-                false,
+                AgentTurnOutput {
+                    events: Vec::new(),
+                    ..output
+                },
+                pending,
             ),
-            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error, true),
+            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error, pending, true),
         }
     }
 
@@ -3032,13 +3054,24 @@ impl WorkspaceConversationService {
             answered_request_user_input_segment(&segment, &request_record, &submitted_at);
         upsert_segment(&mut snapshot, updated_segment.clone());
 
-        let answered_commit = commit_conversation_mutations(
-            &repository,
-            conversation_id,
-            &project_path,
-            base_revision,
-            vec![segment_mutation_from_value(&updated_segment)?],
-        )?;
+        let live_turn = live_turns()
+            .lock()
+            .unwrap()
+            .get(&(self.settings.data_dir.clone(), conversation_id.to_string()))
+            .cloned();
+        let answered_commit = match live_turn {
+            Some(live_turn) => live_turn
+                .lock()
+                .map_err(|_| WorkspaceError::Internal("live turn state lock poisoned".to_string()))?
+                .commit_segment(&updated_segment)?,
+            None => commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                &project_path,
+                base_revision,
+                vec![segment_mutation_from_value(&updated_segment)?],
+            )?,
+        };
         snapshot["revision"] = json!(answered_commit.revision);
 
         let answer_trace_path = if captured
@@ -3122,7 +3155,7 @@ impl WorkspaceConversationService {
             &assistant_turn_id,
             &effective_chat_mode,
             output,
-            true,
+            Vec::new(),
         )
     }
 
@@ -5272,6 +5305,7 @@ fn live_conversation_turn_event_sink(
     stop: Arc<dyn Fn() + Send + Sync>,
 ) -> (
     AgentTurnEventSink,
+    Arc<Mutex<LiveConversationTurnState>>,
     Arc<Mutex<Option<spark_storage::StorageError>>>,
 ) {
     let base_revision = snapshot_revision(&snapshot);
@@ -5289,6 +5323,7 @@ fn live_conversation_turn_event_sink(
     }));
     let provider_event_error = Arc::new(Mutex::new(None));
     let sink_error = Arc::clone(&provider_event_error);
+    let sink_state = Arc::clone(&state);
     let sink = Arc::new(move |event| {
         if sink_error
             .lock()
@@ -5297,7 +5332,7 @@ fn live_conversation_turn_event_sink(
         {
             return;
         }
-        if let Ok(mut state) = state.lock() {
+        if let Ok(mut state) = sink_state.lock() {
             if let Err(error) = state.ingest_event(event) {
                 if let Ok(mut stored) = sink_error.lock() {
                     if stored.is_none() {
@@ -5308,7 +5343,34 @@ fn live_conversation_turn_event_sink(
             }
         }
     });
-    (sink, provider_event_error)
+    (sink, state, provider_event_error)
+}
+
+type LiveTurnKey = (std::path::PathBuf, String);
+
+/// Each running turn's live state, by home and conversation. The state writes
+/// all of a running turn's rows, including ones a route changes.
+fn live_turns() -> &'static Mutex<HashMap<LiveTurnKey, Arc<Mutex<LiveConversationTurnState>>>> {
+    static LIVE_TURNS: std::sync::OnceLock<
+        Mutex<HashMap<LiveTurnKey, Arc<Mutex<LiveConversationTurnState>>>>,
+    > = std::sync::OnceLock::new();
+    LIVE_TURNS.get_or_init(Default::default)
+}
+
+/// Lists a turn's live state for as long as the turn runs.
+struct LiveTurnRegistration(LiveTurnKey);
+
+impl LiveTurnRegistration {
+    fn new(key: LiveTurnKey, state: Arc<Mutex<LiveConversationTurnState>>) -> Self {
+        live_turns().lock().unwrap().insert(key.clone(), state);
+        Self(key)
+    }
+}
+
+impl Drop for LiveTurnRegistration {
+    fn drop(&mut self) {
+        live_turns().lock().unwrap().remove(&self.0);
+    }
 }
 
 struct LiveConversationTurnState {
@@ -5496,6 +5558,24 @@ impl LiveConversationTurnState {
         Ok(())
     }
 
+    /// Writes a segment a route changed, such as a question's answer, so this
+    /// view holds it and nothing here later overwrites it.
+    fn commit_segment(&mut self, segment: &Value) -> WorkspaceResult<ConversationCommit> {
+        upsert_segment(&mut self.snapshot, segment.clone());
+        self.pending_payloads
+            .retain(|payload| payload["segment"]["id"] != segment["id"]);
+        let commit = commit_conversation_mutations(
+            &self.repository,
+            &self.conversation_id,
+            &self.project_path,
+            self.base_revision,
+            vec![segment_mutation_from_value(segment)?],
+        )?;
+        self.snapshot["revision"] = json!(commit.revision);
+        self.base_revision = commit.revision;
+        Ok(commit)
+    }
+
     /// Commits the working view's pending upserts. Returns false when there was nothing to commit
     /// or the commit failed; the upserts then stay pending for the turn's
     /// final commit.
@@ -5580,6 +5660,24 @@ impl LiveConversationTurnState {
             Some(provenance),
         ) {
             emitted_payloads.push(build_segment_upsert_payload(&self.snapshot, &segment));
+        }
+    }
+}
+
+/// Puts a live turn's uncommitted upserts on a view read from the store.
+fn apply_pending_payloads(snapshot: &mut Value, pending: &[Value]) {
+    for payload in pending {
+        match payload["type"].as_str() {
+            Some("turn_upsert") => {
+                if let Some(turn) = payload["turn"]["id"]
+                    .as_str()
+                    .and_then(|id| find_turn_mut(snapshot, id))
+                {
+                    turn.clone_from(&payload["turn"]);
+                }
+            }
+            Some("segment_upsert") => upsert_segment(snapshot, payload["segment"].clone()),
+            _ => {}
         }
     }
 }

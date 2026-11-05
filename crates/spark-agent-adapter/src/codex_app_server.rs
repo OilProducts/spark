@@ -259,14 +259,20 @@ impl CodexAppServerBackend {
                 // Authentication failure says nothing about the saved thread's validity.
                 Err(error) if auth::requires_login(&error.message) => return Err(error),
                 Err(error) => {
-                    return Ok(thread_resume_failure_output(
+                    let output = thread_resume_failure_output(
                         "thread/resume",
                         AgentThreadResumeFailure {
                             message: error.message,
                             error_code: Some("codex_app_server_resume_failed".to_string()),
                             details: error.details,
                         },
-                    ));
+                    );
+                    if let Some(sink) = event_sink.as_ref() {
+                        for event in &output.events {
+                            sink(event.clone());
+                        }
+                    }
+                    return Ok(output);
                 }
             }
         } else {

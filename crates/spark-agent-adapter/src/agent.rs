@@ -141,13 +141,21 @@ pub trait AgentTurnBackend: Send + Sync {
 
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError>;
 
+    /// Runs the turn, passing each event through the sink as it happens. The
+    /// caller stores the turn from the sink, so every event in the returned
+    /// output must have gone through it.
     fn run_turn_with_event_sink(
         &self,
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let _ = event_sink;
-        self.run_turn(request)
+        let output = self.run_turn(request)?;
+        if let Some(sink) = event_sink {
+            for event in &output.events {
+                sink(event.clone());
+            }
+        }
+        Ok(output)
     }
 
     fn answer_request_user_input(

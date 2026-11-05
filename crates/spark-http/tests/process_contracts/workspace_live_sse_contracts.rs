@@ -822,12 +822,14 @@ impl AgentTurnBackend for StreamingAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<spark_agent_adapter::AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
+        let output = self.run_turn(request)?;
         if let Some(sink) = event_sink {
-            for event in &self.stream_events {
+            // Every event a backend returns has gone through its sink.
+            for event in self.stream_events.iter().chain(&output.events) {
                 sink(event.clone());
             }
         }
-        self.run_turn(request)
+        Ok(output)
     }
 }
 

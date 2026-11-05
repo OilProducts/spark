@@ -2797,16 +2797,13 @@ impl AgentTurnBackend for BlockingRequestInputBackend {
                     .expect("turn released wait"),
             );
         }
+        let completed = content_completed("assistant", "Approved.", "app-turn", "final");
         if let Some(sink) = event_sink.as_ref() {
             sink(request_user_input_event_with("input-2", "decision-2"));
+            sink(completed.clone());
         }
         Ok(AgentTurnOutput {
-            events: vec![content_completed(
-                "assistant",
-                "Approved.",
-                "app-turn",
-                "final",
-            )],
+            events: vec![completed],
             app_thread_id: Some("thread-live".to_string()),
             app_turn_id: Some("app-turn".to_string()),
             final_assistant_text: Some("Approved.".to_string()),
@@ -2946,19 +2943,27 @@ impl AgentTurnBackend for ScriptedAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        if let Some(sink) = event_sink {
-            if let Some(events) = self
-                .stream_events
-                .lock()
-                .expect("stream events")
-                .pop_front()
-            {
-                for event in events {
-                    sink(event);
-                }
+        let Some(sink) = event_sink else {
+            return self.run_turn(request);
+        };
+        if let Some(events) = self
+            .stream_events
+            .lock()
+            .expect("stream events")
+            .pop_front()
+        {
+            for event in events {
+                sink(event);
             }
         }
-        self.run_turn(request)
+        // Every event a backend returns has gone through its sink, on its thread.
+        let output = self.run_turn(request)?;
+        for event in &output.events {
+            let mut event = event.clone();
+            event.source.app_thread_id = output.app_thread_id.clone();
+            sink(event);
+        }
+        Ok(output)
     }
 
     fn answer_request_user_input(
@@ -4749,7 +4754,20 @@ impl AgentTurnBackend for LiveMessageBackend {
                 ..AgentTurnOutput::default()
             });
         }
-        let sink = event_sink.unwrap();
+        // Like a real backend: every event goes through the sink as it happens,
+        // and the returned output repeats them all.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let inner = event_sink.unwrap();
+        let sink: AgentTurnEventSink = {
+            let recorded = recorded.clone();
+            Arc::new(move |event: TurnStreamEvent| {
+                recorded.lock().unwrap().push(event.clone());
+                inner(event);
+            })
+        };
+        sink(content_delta("reasoning", "Checking.", "t1", "r1"));
+        sink(content_completed("reasoning", "Checking.", "t1", "r1"));
+        sink(content_delta("assistant", "Looking.", "t1", "a1"));
         sink(content_completed("assistant", "Looking.", "t1", "a1"));
         *self.sink.lock().unwrap() = Some(sink.clone());
         let mut released = self.released.0.lock().unwrap();
@@ -4778,10 +4796,89 @@ impl AgentTurnBackend for LiveMessageBackend {
             "t1",
             "a2",
         ));
+        sink(TurnStreamEvent {
+            kind: TurnStreamEventKind::TurnCompleted,
+            ..content_delta("assistant", "", "t1", "unused")
+        });
+        let events = recorded.lock().unwrap().clone();
         Ok(AgentTurnOutput {
             final_assistant_text: (!self.plan).then(|| "Done with the docs.".to_string()),
+            events,
             ..AgentTurnOutput::default()
         })
+    }
+}
+
+/// Streams part of an answer and never completes it.
+struct PartialAnswerBackend {
+    fails: bool,
+}
+
+impl AgentTurnBackend for PartialAnswerBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        _request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let sink = event_sink.unwrap();
+        sink(content_delta("assistant", "Half an answer", "t1", "a1"));
+        if self.fails {
+            return Err(AgentError {
+                message: "Provider went away.".to_string(),
+                retryable: false,
+                raw: None,
+            });
+        }
+        sink(TurnStreamEvent {
+            kind: TurnStreamEventKind::TurnCompleted,
+            ..content_delta("assistant", "", "t1", "unused")
+        });
+        Ok(AgentTurnOutput {
+            final_assistant_text: Some("Half an answer".to_string()),
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
+#[test]
+fn a_turn_keeps_the_segment_it_was_streaming_when_it_ended() {
+    for fails in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = Arc::new(PartialAnswerBackend { fails });
+        let service = crate::conversations_with_backend(settings(temp.path()), backend);
+        let project = "/projects/partial";
+        let (prepared, _) = service
+            .send_turn(
+                "partial",
+                ConversationTurnRequest {
+                    project_path: project.to_string(),
+                    message: "Start".to_string(),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .unwrap();
+        service
+            .complete_started_turn_with_progress_payloads(prepared.unwrap(), |_| {})
+            .unwrap();
+
+        let snapshot = service.get_snapshot("partial", Some(project)).unwrap();
+        let contents = snapshot["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|segment| segment["kind"] == "assistant_message")
+            .map(|segment| segment["content"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(contents, vec!["Half an answer"], "fails: {fails}");
+        assert_eq!(
+            snapshot["turns"][1]["status"],
+            if fails { "failed" } else { "complete" },
+            "fails: {fails}"
+        );
     }
 }
 
@@ -4822,6 +4919,40 @@ fn assert_delivered_history(plan: bool) {
     *backend.released.0.lock().unwrap() = true;
     backend.released.1.notify_all();
     turn.join().unwrap().unwrap();
+
+    // Each block is stored once, where it happened.
+    let snapshot = service.get_snapshot("history", Some(project)).unwrap();
+    let running_turn = &snapshot["turns"][1]["id"];
+    let mut segments = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| &segment["turn_id"] == running_turn && segment["kind"] != "agent_event")
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let segments = segments
+        .iter()
+        .map(|segment| {
+            (
+                segment["kind"].as_str().unwrap(),
+                segment["content"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        segments,
+        vec![
+            ("reasoning", "Checking."),
+            ("assistant_message", "Looking."),
+            ("user_message", "Use the docs."),
+            ("user_message", "Never mind."),
+            (
+                if plan { "plan" } else { "assistant_message" },
+                "Done with the docs."
+            ),
+        ],
+        "plan: {plan}"
+    );
 
     let (next, _) = service.send_turn("history", request("Next")).unwrap();
     service
