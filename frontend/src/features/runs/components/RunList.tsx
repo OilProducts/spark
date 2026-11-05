@@ -29,6 +29,7 @@ const ACTIVE_LIST_STATUSES = new Set([
 const ATTENTION: Record<string, { label: string; className: string }> = {
     failed: { label: 'Failed', className: 'text-destructive' },
     validation_error: { label: 'Failed', className: 'text-destructive' },
+    unreadable: { label: 'Unreadable', className: 'text-destructive' },
     waiting: { label: 'Needs input', className: 'text-warning' },
     running: { label: 'Running', className: 'text-info' },
     queued: { label: 'Queued', className: 'text-muted-foreground' },

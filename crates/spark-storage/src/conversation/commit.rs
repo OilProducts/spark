@@ -11,7 +11,7 @@ use super::database::{
 };
 use super::loaded::{is_active_status, LoadedConversation, StoredArtifact};
 use super::mutations::{ConversationMetadataPatch, ConversationMutation};
-use super::provider_trace::{read_trace, replace_trace, sync_trace};
+use super::provider_trace::{read_trace, replace_trace};
 use super::records::{ConversationMeta, ConversationRecord, TranscriptSegment, TranscriptTurn};
 use super::store::EVENT_LOG_COLLECTION;
 use super::tool_output::{externalize_conversation_segment_tool_output, safe_tool_output_artifact};
@@ -452,10 +452,6 @@ fn write_changes(
         Some((turn_id.to_string(), sequence, settled))
     });
     let allocated = loaded.next_trace_sequence.saturating_sub(1);
-    if projected.is_some() {
-        // The applied cursor may only cover durable trace records.
-        sync_trace(root)?;
-    }
     let conversation_row = summary_row(conversation_id, loaded)?;
     let (revision, rows) = store.database().write(|tx| {
         let mut conversation_row = conversation_row.clone();

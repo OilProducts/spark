@@ -3,7 +3,7 @@ pub use attractor_runtime::usage::RunUsageAccumulator;
 use attractor_runtime::RunStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use spark_common::project::normalize_project_path;
+use spark_common::project::{build_project_id, normalize_project_path};
 use spark_common::settings::SparkSettings;
 use spark_storage::ConversationStore;
 use std::sync::Arc;
@@ -750,16 +750,24 @@ fn runs_overview_envelopes(
     project_path: Option<&str>,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
     let store = RunStore::for_settings(settings);
+    let project_id = project_path.and_then(|path| build_project_id(path).ok());
     let mut records = store
-        .list_run_records()
-        .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
-    if let Some(project_path) = project_path {
-        records.retain(|record| {
-            normalized_record_path(&record.project_path).as_deref() == Some(project_path)
-                || normalized_record_path(&record.working_directory).as_deref()
-                    == Some(project_path)
-        });
-    }
+        .list_run_metas()
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+        .into_iter()
+        .filter_map(|meta| {
+            let record = meta.record?;
+            let in_project = project_path.is_none_or(|project_path| {
+                normalized_record_path(&record.project_path).as_deref() == Some(project_path)
+                    || normalized_record_path(&record.working_directory).as_deref()
+                        == Some(project_path)
+                    // No record names its project, so its directory does.
+                    || (record.status == attractor_core::RUN_STATUS_UNREADABLE
+                        && project_id.as_deref() == Some(meta.paths.project_id.as_str()))
+            });
+            in_project.then_some(record)
+        })
+        .collect::<Vec<_>>();
     records.sort_by(|left, right| {
         run_sort_key(right)
             .cmp(&run_sort_key(left))

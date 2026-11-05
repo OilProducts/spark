@@ -2397,3 +2397,46 @@ fn direct_child_retry_rejects_ambiguous_ancestor_invocations_without_mutation() 
         }
     }
 }
+
+/// One unreadable record is reported under its project, and neither the runs
+/// list nor startup recovery stops for the other runs.
+#[test]
+fn an_unreadable_run_is_reported_without_stopping_the_list_or_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = RunStore::for_settings(&settings);
+    let project = temp.path().join("project").to_string_lossy().into_owned();
+    let other = temp.path().join("other").to_string_lossy().into_owned();
+    let create = |run_id: &str, status: &str| {
+        let mut record = attractor_core::RunRecord::new(run_id, project.as_str());
+        record.status = status.to_string();
+        store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let bad = create("run-bad", "running");
+    create("run-stopping", "cancel_requested");
+    std::fs::write(bad.run_json(), b"").unwrap();
+
+    let service = blocking_gate_service(&settings);
+    let listed = |filter: Option<&str>| {
+        let response = service.list_runs_for_project(filter);
+        assert_eq!(response.status_code, 200, "{}", response.body);
+        response.body["runs"].as_array().unwrap().clone()
+    };
+    for filter in [None, Some(project.as_str())] {
+        let runs = listed(filter);
+        let row = runs.iter().find(|run| run["run_id"] == "run-bad").unwrap();
+        assert_eq!(row["status"], "unreadable");
+        assert!(row["last_error"].as_str().unwrap().contains("run.json"));
+        assert!(runs.iter().any(|run| run["run_id"] == "run-stopping"));
+    }
+    assert!(listed(Some(other.as_str())).is_empty());
+
+    let recovery = service.recover_interrupted_runs();
+    assert_eq!(recovery["failed"][0]["run_id"], "run-bad", "{recovery}");
+    assert_eq!(recovery["canceled"], json!(["run-stopping"]), "{recovery}");
+}

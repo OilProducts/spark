@@ -7,6 +7,8 @@ use serde::Serialize;
 use crate::error::{Result, StorageError};
 
 /// Replace a file atomically after the full byte payload has been written.
+/// Nothing here forces a disk flush: this survives a process crash, but power
+/// loss before the OS writes back can lose the write or leave the file empty.
 pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
     let path = path.as_ref();
     let parent = prepare_parent(path)?;
@@ -17,11 +19,6 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<(
 
     temp.write_all(bytes.as_ref())
         .map_err(|source| StorageError::io("write temporary file for", path, source))?;
-    temp.flush()
-        .map_err(|source| StorageError::io("flush temporary file for", path, source))?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|source| StorageError::io("sync temporary file for", path, source))?;
 
     let temp_path = temp.into_temp_path();
     let temp_path_buf = temp_path.to_path_buf();
@@ -32,11 +29,6 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<(
             temp_path: temp_path_buf,
             source,
         })?;
-    // The rename is durable only once the directory entry is.
-    #[cfg(unix)]
-    fs::File::open(&parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|source| StorageError::io("sync parent directory of", path, source))?;
     Ok(())
 }
 
@@ -74,10 +66,6 @@ fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|source| StorageError::io("open append-only file", path, source))?;
     file.write_all(bytes)
         .map_err(|source| StorageError::io("append to", path, source))?;
-    file.flush()
-        .map_err(|source| StorageError::io("flush append-only file", path, source))?;
-    file.sync_all()
-        .map_err(|source| StorageError::io("sync append-only file", path, source))?;
     Ok(())
 }
 

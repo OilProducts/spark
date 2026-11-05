@@ -409,8 +409,11 @@ impl RunStore {
         let mut metas = self
             .list_existing_run_roots()?
             .into_iter()
-            .map(|paths| self.read_meta_for_paths(paths))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|paths| {
+                self.read_meta_for_paths(paths.clone())
+                    .unwrap_or_else(|error| unreadable_run_meta(paths, &error))
+            })
+            .collect::<Vec<_>>();
         metas.sort_by(|left, right| {
             let left_key = record_sort_key(left.record.as_ref());
             let right_key = record_sort_key(right.record.as_ref());
@@ -432,7 +435,8 @@ impl RunStore {
     pub fn list_child_run_bundles(&self, parent_run_id: &str) -> Result<Vec<RunBundle>> {
         let mut children = Vec::new();
         for paths in self.list_existing_run_roots()? {
-            let Some(record) = self.read_run_record(&paths)? else {
+            // An unreadable run can't name its parent; the runs list reports it.
+            let Ok(Some(record)) = self.read_run_record(&paths) else {
                 continue;
             };
             if record.parent_run_id.as_deref() != Some(parent_run_id) {
@@ -472,7 +476,8 @@ impl RunStore {
     ) -> Result<u64> {
         let mut max_index = 0_u64;
         for paths in self.list_existing_run_roots()? {
-            let Some(record) = self.read_run_record(&paths)? else {
+            // An unreadable run can't name its parent; the runs list reports it.
+            let Ok(Some(record)) = self.read_run_record(&paths) else {
                 continue;
             };
             if record.parent_run_id.as_deref() == Some(parent_run_id)
@@ -723,6 +728,18 @@ fn none_if_empty(value: &str) -> Option<String> {
 
 fn bundle_sort_key(bundle: &RunBundle) -> String {
     record_sort_key(bundle.record.as_ref())
+}
+
+/// Lists a run whose stored state can't be read instead of failing every run.
+fn unreadable_run_meta(paths: RunRootPaths, error: &RuntimeStorageError) -> RunMeta {
+    let mut record = RunRecord::new(paths.run_id.clone(), "");
+    record.status = attractor_core::RUN_STATUS_UNREADABLE.to_string();
+    record.last_error = error.to_string();
+    RunMeta {
+        paths,
+        record: Some(record),
+        checkpoint: None,
+    }
 }
 
 fn record_sort_key(record: Option<&RunRecord>) -> String {

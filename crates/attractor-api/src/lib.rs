@@ -999,6 +999,10 @@ impl AttractorApiService {
 
         for record in records {
             let run_id = record.run_id.as_str();
+            if record.status == attractor_core::RUN_STATUS_UNREADABLE {
+                failed.push(json!({"run_id": run_id, "error": record.last_error}));
+                continue;
+            }
             // Lineage repair updates durable records while `records` remains an
             // intentionally stable snapshot. Never let that stale snapshot
             // restart a run we just made terminal.
@@ -4176,24 +4180,37 @@ fn list_run_records(
                 if project_path_filter.is_some() {
                     continue;
                 }
-                records.push(json!({
-                    "run_id": run_entry.file_name().to_string_lossy(),
-                    "flow_name": "",
-                    "status": "unknown",
-                    "outcome": null,
-                    "outcome_reason_code": null,
-                    "outcome_reason_message": null,
-                    "working_directory": "",
-                    "model": "",
-                    "llm_provider": "codex",
-                    "reasoning_effort": null,
-                    "started_at": "",
-                }));
+                records.push(placeholder_run_row(
+                    &run_entry.file_name().to_string_lossy(),
+                    "unknown",
+                ));
                 continue;
             }
-            let raw = fs::read_to_string(&record_path).map_err(|error| error.to_string())?;
-            let mut value =
-                serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())?;
+            let parsed = fs::read_to_string(&record_path)
+                .map_err(|error| error.to_string())
+                .and_then(|raw| {
+                    serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())
+                });
+            let mut value = match parsed {
+                Ok(value) => value,
+                Err(error) => {
+                    // No record names its project, so its directory does.
+                    let in_project = project_path_filter.as_deref().is_none_or(|filter| {
+                        spark_common::project::build_project_id(filter).is_ok_and(|id| {
+                            project_entry.file_name().to_string_lossy() == id.as_str()
+                        })
+                    });
+                    if in_project {
+                        let mut row = placeholder_run_row(
+                            &run_entry.file_name().to_string_lossy(),
+                            attractor_core::RUN_STATUS_UNREADABLE,
+                        );
+                        row["last_error"] = json!(format!("{}: {error}", record_path.display()));
+                        records.push(row);
+                    }
+                    continue;
+                }
+            };
             // Launch inputs can be large; the runs list stays lean and the
             // detail endpoint remains the only place they are exposed. The
             // first one, cut to a line, names a run that has no title.
@@ -4232,6 +4249,23 @@ fn list_run_records(
         right_key.cmp(&left_key)
     });
     Ok(records)
+}
+
+/// A runs-list row for a run with no readable record.
+fn placeholder_run_row(run_id: &str, status: &str) -> Value {
+    json!({
+        "run_id": run_id,
+        "flow_name": "",
+        "status": status,
+        "outcome": null,
+        "outcome_reason_code": null,
+        "outcome_reason_message": null,
+        "working_directory": "",
+        "model": "",
+        "llm_provider": "codex",
+        "reasoning_effort": null,
+        "started_at": "",
+    })
 }
 
 /// The first non-empty launch input, cut to a line, which names a run that

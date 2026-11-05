@@ -89,7 +89,7 @@ const ACTIVE_STATUSES = new Set(['running', 'queued', 'pause_requested', 'abort_
 /** Which story the status item tells: a pending question wins over everything else. */
 export function runStatusKind(status: string, hasPendingQuestion: boolean): RunStatusKind {
     if (hasPendingQuestion || status === 'waiting') return 'waiting'
-    if (status === 'failed' || status === 'validation_error') return 'failed'
+    if (status === 'failed' || status === 'validation_error' || status === 'unreadable') return 'failed'
     if (status === 'completed') return 'completed'
     return ACTIVE_STATUSES.has(status) ? 'running' : 'ended'
 }

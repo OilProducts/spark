@@ -114,6 +114,10 @@ pub struct RunExecutionLock {
     pub queue_position: Option<u64>,
 }
 
+/// Status of a listed run whose stored state can't be read. It is never written
+/// to disk; `last_error` on that listed record says what failed.
+pub const RUN_STATUS_UNREADABLE: &str = "unreadable";
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunRecord {
     #[serde(default)]
