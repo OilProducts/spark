@@ -680,7 +680,8 @@ Branch contexts are never merged into the parent. Successors of the join read
 record for errors. Branches may therefore write the same key without
 overwriting each other. A node that synthesizes branch work reads each
 completed entry's `context` and reports missing or failed branches instead of
-counting them as covered.
+counting them as covered. Branches themselves start without `parallel.results`,
+so an entry never contains an earlier fork's results.
 
 ## Loops and Visit Limits
 

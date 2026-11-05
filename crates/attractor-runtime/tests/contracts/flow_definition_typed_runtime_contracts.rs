@@ -3432,6 +3432,128 @@ fn branch_routing_errors_fail_the_parent_strict_or_tolerant() {
     }
 }
 
+/// Runs `flow` with `gate` looping back twice and every other agent completing
+/// `done`; returns the result and each agent's node and `parallel.results`.
+fn run_forks(
+    flow: FlowDefinition,
+) -> (
+    attractor_runtime::PipelineExecutionResult,
+    Vec<(String, Option<Value>)>,
+) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = calls.clone();
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.register_handler_fn(HANDLER_CODERGEN, move |runtime| {
+        let mut calls = seen.lock().unwrap();
+        calls.push((
+            runtime.node_id.clone(),
+            runtime.context.get("parallel.results").cloned(),
+        ));
+        let gates = calls.iter().filter(|(node, _)| node == "gate").count();
+        let loop_back = runtime.node_id == "gate" && gates < 3;
+        Ok(Outcome::completed(if loop_back { "again" } else { "done" }))
+    });
+    let mut request = execute_request(
+        &store,
+        "run-forks",
+        temp.path(),
+        flow,
+        None,
+        Default::default(),
+    );
+    request.runtime_context = ContextMap::from([(
+        "context.fixture.padding".to_string(),
+        json!("x".repeat(4096)),
+    )]);
+    let result = PipelineExecutor::new(runner)
+        .execute(request)
+        .expect("execute");
+    let calls = calls.lock().unwrap().clone();
+    (result, calls)
+}
+
+/// Each entry keeps its branch's inherited values but no earlier results.
+fn assert_entries_hold_no_results(results: &Value, ids: &[&str]) {
+    let entries = results.as_array().expect("results");
+    assert_eq!(
+        entries.iter().map(|entry| &entry["id"]).collect::<Vec<_>>(),
+        ids
+    );
+    for entry in entries {
+        assert_eq!(entry["status"], "completed");
+        assert_eq!(
+            entry["context"]["context.fixture.padding"],
+            "x".repeat(4096)
+        );
+        assert!(entry["context"].get("parallel.results").is_none());
+    }
+}
+
+/// Nesting each round's results in the next grows them by the branch count per
+/// round, which took a prompt past a provider's limit by round three.
+#[test]
+fn a_repeated_fork_keeps_parallel_results_the_same_size() {
+    let (result, calls) = run_forks(flow_of(
+        "repeated-fork",
+        vec![
+            ("start", start_node("fan")),
+            ("fan", fork(&["a", "b"], "join", false)),
+            ("a", agent("a", &[("done", "join")])),
+            ("b", agent("b", &[("done", "join")])),
+            ("join", fan_in("gate")),
+            ("gate", agent("gate", &[("again", "fan"), ("done", "done")])),
+            ("done", success_exit()),
+        ],
+    ));
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+
+    let rounds = calls
+        .iter()
+        .filter(|(node, _)| node == "gate")
+        .map(|(_, results)| results.clone().expect("gate reads the round's results"))
+        .collect::<Vec<_>>();
+    assert_eq!(rounds.len(), 3);
+    for round in &rounds {
+        assert_entries_hold_no_results(round, &["a", "b"]);
+    }
+    let sizes = rounds
+        .iter()
+        .map(|round| round.to_string().len())
+        .collect::<Vec<_>>();
+    assert!(sizes[2] < sizes[0] * 2, "{sizes:?}");
+    assert!(
+        calls
+            .iter()
+            .all(|(node, results)| node == "gate" || results.is_none()),
+        "branches start without earlier results"
+    );
+}
+
+#[test]
+fn a_later_fork_does_not_nest_an_earlier_forks_results() {
+    let (result, calls) = run_forks(flow_of(
+        "successive-forks",
+        vec![
+            ("start", start_node("first")),
+            ("first", fork(&["a", "b"], "first_join", false)),
+            ("a", agent("a", &[("done", "first_join")])),
+            ("b", agent("b", &[("done", "first_join")])),
+            ("first_join", fan_in("second")),
+            ("second", fork(&["c", "d"], "second_join", false)),
+            ("c", agent("c", &[("done", "second_join")])),
+            ("d", agent("d", &[("done", "second_join")])),
+            ("second_join", fan_in("done")),
+            ("done", success_exit()),
+        ],
+    ));
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_entries_hold_no_results(&result.context["parallel.results"], &["c", "d"]);
+    assert_eq!(calls.len(), 4);
+    assert!(calls.iter().all(|(_, results)| results.is_none()));
+}
+
 /// A branch execution error fails a strict fork; a tolerant fork keeps it
 /// as evidence in parallel.results and enters the join exactly once.
 #[test]

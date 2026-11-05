@@ -2152,6 +2152,9 @@ impl RuntimeHandlerRunner {
         let saved = progress_path.and_then(read_branch_progress);
         let mut values = crate::flow_runtime::flow_context_seed(flow);
         values.extend(runtime.context.clone());
+        // ponytail: a branch can't read an earlier fork's results, because its
+        // record would nest them. Pass them explicitly if a flow ever needs them.
+        values.remove("parallel.results");
         let mut context = match AttractorContext::from_map(values)
             .map_err(crate::error::RuntimeStorageError::from)
             .and_then(|mut context| {
