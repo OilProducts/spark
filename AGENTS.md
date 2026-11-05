@@ -83,7 +83,6 @@ Do not write long design notes unless the user explicitly asks for explanation, 
 
 - `just test` is the full gate: fmt check, all Rust tests, frontend unit tests, frontend build. It takes several minutes after a rebuild of core crates.
 - While iterating, run only the affected tests. Scope Rust test commands like the full gate so they reuse its build: `cargo test --workspace --all-features --test <name> [filter]`. `cargo test -p <crate>` builds a different feature set and recompiles.
-- Run `just test` once before handing work off, in the foreground, and report the result.
 - When reviewing, rerun `just test` only if the tree changed after the last green run you can verify. Otherwise run targeted checks for the areas you are judging.
 
 ### Where tests go
