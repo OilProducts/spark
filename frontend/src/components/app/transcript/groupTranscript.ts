@@ -1,14 +1,13 @@
 import type { ConversationSegmentResponse } from '@/lib/workspaceClient'
 import type { TranscriptToolCall } from './SegmentRows'
 
-// Transcript grammar: consecutive tool calls, and the thinking entries between them,
-// fold into one group ("Ran 6 commands · 2 failed"). Everything else stays its own block.
+// Transcript grammar: consecutive tool calls fold into one group ("Ran 6 commands · 2 failed").
+// Everything else, thinking included, stays its own block and ends the group.
 // A subagent's own calls (`parentCallId`) nest under the call that spawned it instead.
 // The helper is generic over the consumer's entry type; `classify` says what each is.
 
 export type TranscriptItemClass =
     | { kind: 'tool_call'; toolCall: TranscriptToolCall }
-    | { kind: 'thinking' }
     | { kind: 'other' }
 
 /** A tool call and the calls nested under it. */
@@ -17,10 +16,6 @@ export interface TranscriptToolCallNode<T> {
     toolCall: TranscriptToolCall
     children: TranscriptToolCallNode<T>[]
 }
-
-export type TranscriptGroupMember<T> =
-    | ({ kind: 'tool_call' } & TranscriptToolCallNode<T>)
-    | { kind: 'thinking'; item: T }
 
 export interface ToolGroupSummary {
     commands: number
@@ -33,7 +28,7 @@ export interface ToolGroupSummary {
 }
 
 export type TranscriptBlock<T> =
-    | { kind: 'tool_group'; id: string; members: TranscriptGroupMember<T>[]; summary: ToolGroupSummary }
+    | { kind: 'tool_group'; id: string; members: TranscriptToolCallNode<T>[]; summary: ToolGroupSummary }
     | { kind: 'item'; item: T }
 
 /** The shared row shape of a segment's tool call. */
@@ -79,31 +74,24 @@ export function summarizeToolGroup(toolCalls: readonly TranscriptToolCall[]): To
 
 export function groupTranscript<T>(items: readonly T[], classify: (item: T) => TranscriptItemClass): TranscriptBlock<T>[] {
     const blocks: TranscriptBlock<T>[] = []
-    let open: TranscriptGroupMember<T>[] | null = null
-    // Thinking seen since the last tool call: it joins the group only if another tool call follows.
-    let pendingThinking: T[] = []
+    let open: TranscriptToolCallNode<T>[] | null = null
 
     const closeGroup = () => {
-        if (open) {
-            const toolCalls = open.filter((member) => member.kind === 'tool_call').map((member) => member.toolCall)
-            blocks.push({ kind: 'tool_group', id: `tool-group:${toolCalls[0].id}`, members: open, summary: summarizeToolGroup(toolCalls) })
-            open = null
-        }
-        for (const item of pendingThinking) blocks.push({ kind: 'item', item })
-        pendingThinking = []
+        if (!open) return
+        blocks.push({ kind: 'tool_group', id: `tool-group:${open[0].toolCall.id}`, members: open, summary: summarizeToolGroup(open.map((member) => member.toolCall)) })
+        open = null
     }
 
-    const classes = items.map(classify)
-    const nodes = classes.map((classified, index): TranscriptToolCallNode<T> | null => (
-        classified.kind === 'tool_call' ? { item: items[index], toolCall: classified.toolCall, children: [] } : null
-    ))
+    const nodes = items.map((item): TranscriptToolCallNode<T> | null => {
+        const classified = classify(item)
+        return classified.kind === 'tool_call' ? { item, toolCall: classified.toolCall, children: [] } : null
+    })
     const nodesById = new Map<string, TranscriptToolCallNode<T>>()
     for (const node of nodes) if (node && !nodesById.has(node.toolCall.id)) nodesById.set(node.toolCall.id, node)
 
     items.forEach((item, index) => {
-        const classified = classes[index]
         const node = nodes[index]
-        if (classified.kind === 'tool_call' && node) {
+        if (node) {
             // A call whose parent is not in this transcript stays top-level.
             const parent = node.toolCall.parentCallId ? nodesById.get(node.toolCall.parentCallId) : undefined
             if (parent && parent !== node) {
@@ -111,11 +99,7 @@ export function groupTranscript<T>(items: readonly T[], classify: (item: T) => T
                 return
             }
             open ??= []
-            for (const thinking of pendingThinking) open.push({ kind: 'thinking', item: thinking })
-            pendingThinking = []
-            open.push({ kind: 'tool_call', ...node })
-        } else if (classified.kind === 'thinking' && open) {
-            pendingThinking.push(item)
+            open.push(node)
         } else {
             closeGroup()
             blocks.push({ kind: 'item', item })

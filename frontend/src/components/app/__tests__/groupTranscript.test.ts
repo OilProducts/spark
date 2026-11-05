@@ -16,12 +16,12 @@ const thinking = (id: string): Item => ({ kind: 'thinking', id })
 const message = (id: string): Item => ({ kind: 'message', id })
 
 const classify = (item: Item): TranscriptItemClass =>
-    item.kind === 'tool' ? { kind: 'tool_call', toolCall: item.toolCall } : item.kind === 'thinking' ? { kind: 'thinking' } : { kind: 'other' }
+    item.kind === 'tool' ? { kind: 'tool_call', toolCall: item.toolCall } : { kind: 'other' }
 
 const shape = (items: Item[]) => groupTranscript(items, classify).map((block) =>
     block.kind === 'item'
         ? (block.item.kind === 'tool' ? block.item.toolCall.id : block.item.id)
-        : `[${block.members.map((member) => member.kind === 'tool_call' ? member.toolCall.id : member.item.kind === 'thinking' ? member.item.id : '?').join(' ')}]`)
+        : `[${block.members.map((member) => member.toolCall.id).join(' ')}]`)
 
 describe('groupTranscript', () => {
     it('nests a subagent\'s calls under the call that spawned it and keeps top-level folding', () => {
@@ -32,18 +32,15 @@ describe('groupTranscript', () => {
         expect(shape(items)).toEqual(['m1', '[agent b orphan]', 'm2'])
         const group = groupTranscript(items, classify)[1]
         const agent = group.kind === 'tool_group' ? group.members[0] : null
-        expect(agent?.kind === 'tool_call' ? agent.children.map((child) => child.toolCall.id) : null).toEqual(['c1', 'c2'])
+        expect(agent?.children.map((child) => child.toolCall.id)).toEqual(['c1', 'c2'])
         expect(group.kind === 'tool_group' ? group.summary.label : null).toBe('Ran 2 commands, used 1 tool')
     })
 
-    it('folds consecutive tool calls and the thinking between them into one group', () => {
-        expect(shape([message('m1'), call('a'), thinking('t1'), call('b'), call('c'), message('m2'), call('d')]))
-            .toEqual(['m1', '[a t1 b c]', 'm2', '[d]'])
-    })
-
-    it('keeps thinking that is not between tool calls as its own block', () => {
-        expect(shape([thinking('t0'), call('a'), thinking('t1'), thinking('t2'), message('m'), call('b'), thinking('t3')]))
-            .toEqual(['t0', '[a]', 't1', 't2', 'm', '[b]', 't3'])
+    it('folds only directly consecutive tool calls; a message or thinking ends the group', () => {
+        expect(shape([message('m1'), call('a'), call('b'), message('m2'), call('c')]))
+            .toEqual(['m1', '[a b]', 'm2', '[c]'])
+        expect(shape([thinking('t0'), call('a'), thinking('t1'), call('b'), call('c'), thinking('t2'), thinking('t3'), call('d'), thinking('t4')]))
+            .toEqual(['t0', '[a]', 't1', '[b c]', 't2', 't3', '[d]', 't4'])
     })
 
     it('names a group after its first call and summarizes it', () => {

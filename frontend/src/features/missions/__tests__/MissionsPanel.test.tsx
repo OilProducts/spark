@@ -287,20 +287,22 @@ it('opens assistant turns with the worked meta, folds commands, shows thinking b
     // The turn opens with a header carrying how long it worked, not a centered rule.
     expect(detail().getByText(/worked 16s$/)).toBeInTheDocument()
     expect(detail().queryByText(/Worked for/)).not.toBeInTheDocument()
-    // Both commands fold into one group whose lines drop the shell wrapper but keep the full command as a tooltip.
+    // The thought between the commands shows unless turned off, leaving each a plain row that drops the shell wrapper but keeps the full command as a tooltip.
+    const thinking = detail().getByRole('button', { name: 'Show thinking' })
+    expect(thinking).toHaveAttribute('aria-pressed', 'true')
+    expect(detail().getByText('Planning the fix')).toBeInTheDocument()
+    expect(detail().queryByRole('button', { name: 'Ran 2 commands' })).not.toBeInTheDocument()
+    expect(detail().getByText('git status')).toBeInTheDocument()
+    expect(detail().getByTestId('mission-tool-call-toggle-c1')).toHaveAttribute('title', "/bin/zsh -lc 'git status'")
+    // With thinking off, both commands fold into one group.
+    fireEvent.click(thinking)
+    expect(thinking).toHaveAttribute('aria-pressed', 'false')
+    expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
     const group = detail().getByRole('button', { name: 'Ran 2 commands' })
     expect(detail().queryByText('git status')).not.toBeInTheDocument()
     fireEvent.click(group)
     expect(group).toHaveAttribute('aria-expanded', 'true')
     expect(detail().getByText('git status')).toBeInTheDocument()
-    expect(detail().getByTestId('mission-tool-call-toggle-c1')).toHaveAttribute('title', "/bin/zsh -lc 'git status'")
-    // Thinking between the calls shows unless turned off.
-    const thinking = detail().getByRole('button', { name: 'Show thinking' })
-    expect(thinking).toHaveAttribute('aria-pressed', 'true')
-    expect(detail().getByText('Planning the fix')).toBeInTheDocument()
-    fireEvent.click(thinking)
-    expect(thinking).toHaveAttribute('aria-pressed', 'false')
-    expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
     fireEvent.click(thinking)
     expect(detail().getByText('Planning the fix')).toBeInTheDocument()
     // Opening a call with a truncated preview fetches its full output once.

@@ -41,7 +41,7 @@ function Group() {
     return (
         <ul>
             <ToolCallGroupRow summary={block.summary} isExpanded={open} onToggle={() => setOpen(!open)} testId="group">
-                {block.members.map((member) => member.kind === 'tool_call' ? (
+                {block.members.map((member) => (
                     <ToolCallRow
                         key={member.toolCall.id}
                         variant="line"
@@ -50,7 +50,7 @@ function Group() {
                         onToggleToolCallExpanded={(id) => setExpanded((current) => ({ ...current, [id]: !current[id] }))}
                         testIdPrefix="t"
                     />
-                ) : null)}
+                ))}
             </ToolCallGroupRow>
         </ul>
     )
@@ -194,6 +194,17 @@ describe('Transcript', () => {
         expect(screen.getAllByText('details')).toHaveLength(1)
         fireEvent.click(screen.getByTestId('t-thinking-toggle-done'))
         expect(screen.getAllByText('details')).toHaveLength(2)
+    })
+
+    it('keeps thoughts between tool calls visible when shown, and folds across them when hidden', () => {
+        const entries = [call('a'), thought('between', 'complete'), call('b'), call('c')]
+        const { rerender } = render(view(entries, { showThinking: true }))
+        expect(screen.getByText('Thought between')).toBeVisible()
+        expect(screen.getByTestId('t-tool-call-toggle-a')).toBeVisible()
+        expect(screen.getByTestId('t-tool-group-b')).toHaveTextContent('Ran 2 commands')
+        rerender(view(entries))
+        expect(screen.queryByText('Thought between')).toBeNull()
+        expect(screen.getByTestId('t-tool-group-a')).toHaveTextContent('Ran 3 commands')
     })
 
     it('fetches a truncated call\'s full output once when it opens within a conversation, and never without one', async () => {

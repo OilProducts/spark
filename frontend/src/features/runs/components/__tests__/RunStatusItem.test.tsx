@@ -489,26 +489,25 @@ describe('RunVisitsCard', () => {
     expect(screen.queryByTestId('run-visit-ended')).not.toBeInTheDocument()
 
     const transcript = screen.getByTestId('run-visit-transcript')
-    const groups = within(transcript).getAllByRole('button', { expanded: false }).filter((button) => button.dataset.testid?.startsWith('run-tool-group-'))
-    // A lone call is a plain row, not a group of one.
-    expect(groups.map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed'])
+    const groups = () => within(transcript).queryAllByRole('button', { expanded: false }).filter((button) => button.dataset.testid?.startsWith('run-tool-group-'))
+    // Thinking shows by default, and the calls around it stay plain rows, as does a lone call.
+    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Checking the diff')).toBeVisible()
+    expect(groups()).toEqual([])
     expect(within(transcript).getByTestId('run-tool-call-toggle-c')).toHaveTextContent('cat AGENTS.md')
     expect(transcript).toHaveTextContent('The tests fail on the loop.')
-    // Thinking stays hidden until asked, then appears inside the group it sat in.
-    expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
-    fireEvent.click(groups[0])
     expect(within(transcript).getByText('git status --short')).toBeVisible()
     expect(within(transcript).getByText('npm test').closest('button')).toHaveAttribute('title', "/bin/zsh -lc 'npm test'")
     expect(within(transcript).getByText('Failed')).toBeVisible()
-    expect(screen.getByText('Checking the diff')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
     act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), true, 1200))
     expect(screen.getByTestId('run-visit-thinking')).toHaveTextContent('~1,200 tokens')
     act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), false))
     expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
+    // With thinking off, the calls it separated fold into a group.
     fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
     expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
+    expect(groups().map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed'])
     fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
     expect(screen.getByText('Checking the diff')).toBeVisible()
     // A line still expands to that call's output.

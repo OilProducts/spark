@@ -85,9 +85,12 @@ function groupTurns(entries: readonly Entry[]): TranscriptTurn[] {
 }
 
 const classify = (entry: Entry): TranscriptItemClass => (
-    entry.kind === 'tool_call'
-        ? { kind: 'tool_call', toolCall: entry.toolCall }
-        : isThinkingEntry(entry) ? { kind: 'thinking' } : { kind: 'other' }
+    entry.kind === 'tool_call' ? { kind: 'tool_call', toolCall: entry.toolCall } : { kind: 'other' }
+)
+
+/** A thought with no row while thinking is hidden, so the tool calls around it fold together. A thought still in progress (or a turn with nothing yet) keeps a marker so the agent never looks idle. */
+const isFinishedThought = (entry: Entry) => (
+    isThinkingEntry(entry) && (entry.status === 'complete' || entry.status === 'failed') && entry.content.trim() !== ''
 )
 
 /** The live "Thinking" marker shown while thinking is hidden and the agent is still at it. */
@@ -229,11 +232,7 @@ export function Transcript({
                         />
                     )
                 }
-                // A thought still in progress (or a turn with nothing yet) keeps a bare marker so the agent never looks idle.
-                const isLive = entry.status !== 'complete' && entry.status !== 'failed'
-                return isLive || !entry.content.trim()
-                    ? <ThinkingIndicatorRow key={key} entry={entry} formatTimestamp={formatTimestamp} />
-                    : null
+                return <ThinkingIndicatorRow key={key} entry={entry} formatTimestamp={formatTimestamp} />
             }
             return (
                 <MessageRow
@@ -269,10 +268,10 @@ export function Transcript({
         }
     }
 
-    const renderBody = (items: Entry[]) => groupTranscript(items, classify).map((block) => {
+    const renderBody = (items: Entry[]) => groupTranscript(items.filter((entry) => showThinking || !isFinishedThought(entry)), classify).map((block) => {
         if (block.kind === 'item') return renderRow(block.item)
         const [first] = block.members
-        if (block.members.length === 1 && first.kind === 'tool_call' && first.item.kind === 'tool_call') {
+        if (block.members.length === 1 && first.item.kind === 'tool_call') {
             return renderToolCall(first.item, 'row', first.children)
         }
         return (
@@ -281,11 +280,9 @@ export function Transcript({
                 summary={block.summary}
                 isExpanded={openGroups[block.id] === true}
                 onToggle={() => setOpenGroups((current) => ({ ...current, [block.id]: !current[block.id] }))}
-                testId={`${testIdPrefix}-tool-group-${first.kind === 'tool_call' ? first.toolCall.id : first.item.id}`}
+                testId={`${testIdPrefix}-tool-group-${first.toolCall.id}`}
             >
-                {block.members.map((member) => member.kind === 'tool_call'
-                    ? (member.item.kind === 'tool_call' ? renderToolCall(member.item, 'line', member.children) : null)
-                    : renderRow(member.item))}
+                {block.members.map((member) => member.item.kind === 'tool_call' ? renderToolCall(member.item, 'line', member.children) : null)}
             </ToolCallGroupRow>
         )
     })
