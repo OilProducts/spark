@@ -41,10 +41,7 @@ pub(crate) fn write_if_absent(path: &Path, content: &str) -> io::Result<()> {
     }
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
-            if let Err(error) = file
-                .write_all(content.as_bytes())
-                .and_then(|_| file.sync_all())
-            {
+            if let Err(error) = file.write_all(content.as_bytes()) {
                 drop(file);
                 let _ = fs::remove_file(path);
                 return Err(error);

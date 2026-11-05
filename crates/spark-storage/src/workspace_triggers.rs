@@ -276,7 +276,6 @@ impl TriggerDefinitionRepository {
             .tempfile_in(&staging)
             .map_err(|source| StorageError::io("stage trigger definition", &staging, source))?;
         temp.write_all(bytes)
-            .and_then(|()| temp.as_file().sync_all())
             .map_err(|source| StorageError::io("write trigger definition", path, source))?;
         temp.persist(path)
             .map_err(|error| StorageError::io("replace trigger definition", path, error.error))?;

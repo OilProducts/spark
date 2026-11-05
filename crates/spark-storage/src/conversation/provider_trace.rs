@@ -1,5 +1,5 @@
-//! Per-conversation provider trace: normalized provider events appended and
-//! synced before they are projected, so a crash mid-turn can replay them.
+//! Per-conversation provider trace: normalized provider events appended
+//! before they are projected, so a crash mid-turn can replay them.
 //!
 //! The trace is recovery input only. Listing, opening and catch-up never read
 //! it. Each turn's `applied_trace_sequence` row column is the authoritative
@@ -62,9 +62,9 @@ pub(crate) fn read_trace(conversation_root: &Path) -> Result<Vec<ProviderTraceRe
     Ok(records)
 }
 
-/// Append one record. The trace is synced by [`sync_trace`] before any
-/// commit that projects it, so an applied cursor never covers bytes that a
-/// power loss could drop; a process crash keeps written records either way.
+/// Append one record. A process crash keeps written records. Power loss can
+/// drop them, which leaves an applied cursor past the trace's end; replay only
+/// reads above the cursor, so its already projected rows need nothing from them.
 pub(crate) fn append_trace(conversation_root: &Path, record: &ProviderTraceRecord) -> Result<()> {
     let path = trace_path(conversation_root);
     let mut line = serde_json::to_vec(record).map_err(|source| StorageError::JsonWrite {
@@ -86,23 +86,6 @@ pub(crate) fn append_trace(conversation_root: &Path, record: &ProviderTraceRecor
         .map_err(|source| StorageError::io("append provider trace", &path, source))
 }
 
-/// Make every appended record, and the file's directory entry, durable.
-pub(crate) fn sync_trace(conversation_root: &Path) -> Result<()> {
-    let path = trace_path(conversation_root);
-    match fs::File::open(&path) {
-        Ok(file) => file
-            .sync_data()
-            .map_err(|source| StorageError::io("sync provider trace", &path, source))?,
-        Err(source) if source.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(source) => return Err(StorageError::io("open provider trace", &path, source)),
-    }
-    #[cfg(unix)]
-    fs::File::open(conversation_root)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|source| StorageError::io("sync conversation directory", &path, source))?;
-    Ok(())
-}
-
 /// Replace the trace with `retained` records (empty truncates it). Callers
 /// hold the conversation lock and have passed the cleanup checkpoint barrier.
 pub(crate) fn replace_trace(
@@ -112,9 +95,7 @@ pub(crate) fn replace_trace(
     let path = trace_path(conversation_root);
     if retained.is_empty() {
         return match OpenOptions::new().write(true).truncate(true).open(&path) {
-            Ok(file) => file
-                .sync_all()
-                .map_err(|source| StorageError::io("truncate provider trace", &path, source)),
+            Ok(_) => Ok(()),
             Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
             Err(source) => Err(StorageError::io("truncate provider trace", &path, source)),
         };
