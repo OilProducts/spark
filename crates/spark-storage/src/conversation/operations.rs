@@ -195,17 +195,11 @@ pub enum Answer {
     Answered(Box<AnsweredQuestion>),
 }
 
-/// One artifact change of an artifact decision or result.
+/// One artifact decision, creation or result. Each names its target and
+/// carries only new input: the store checks the target's current status
+/// and decides the transition and the fields it writes.
 #[derive(Debug, Clone)]
 pub enum ArtifactChange {
-    /// Change fields of an existing artifact in one of `from` (empty: any).
-    Update {
-        collection: ArtifactCollection,
-        artifact_id: String,
-        from: Vec<String>,
-        set: Map<String, Value>,
-        remove: Vec<String>,
-    },
     /// Create an artifact with an `id`, anchored by a new segment on its
     /// owner: `owner`, or the running or latest answered assistant turn.
     Create {
@@ -214,6 +208,55 @@ pub enum ArtifactChange {
         owner: Option<String>,
         anchor_kind: String,
     },
+    /// Reject a pending, approved or failed flow run request.
+    RejectFlowRequest { request_id: String, message: String },
+    /// Approve a pending, approved or failed flow run request for launch.
+    ApproveFlowRequest {
+        request_id: String,
+        message: String,
+        approval: FlowRequestApproval,
+    },
+    /// Reject a proposed plan awaiting review.
+    RejectPlan {
+        plan_id: String,
+        note: Option<String>,
+    },
+    /// Approve a proposed plan awaiting review: note its written change
+    /// request and create `flow_launch` on the plan's source turn.
+    ApprovePlan {
+        plan_id: String,
+        note: Option<String>,
+        change_request_path: String,
+        flow_launch: Value,
+    },
+    /// A launch's run id or error, recorded only while its target still
+    /// waits for it: an approved flow run request, a pending flow launch,
+    /// or an approved plan with its pending flow launch. A newer decision
+    /// keeps its state.
+    LaunchResult {
+        collection: ArtifactCollection,
+        artifact_id: String,
+        result: std::result::Result<String, String>,
+    },
+    /// A run recovery's result, recorded only while it is pending.
+    RecoveryResult {
+        recovery_id: String,
+        status: String,
+        result_run_id: String,
+        error: Option<String>,
+    },
+}
+
+/// The launch settings an approval sets: `None` keeps one, `Some(None)`
+/// clears it.
+#[derive(Debug, Clone, Default)]
+pub struct FlowRequestApproval {
+    pub flow_name: String,
+    pub model: Option<Option<String>>,
+    pub llm_provider: Option<Option<String>>,
+    pub llm_profile: Option<Option<String>>,
+    pub reasoning_effort: Option<Option<String>>,
+    pub execution_profile_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,6 +316,30 @@ fn set(target: &mut Value, key: &str, value: impl Into<Value>) {
 fn unset(target: &mut Value, key: &str) {
     if let Some(object) = target.as_object_mut() {
         object.remove(key);
+    }
+}
+
+/// Set `key` to `value`, or remove it for `None`.
+fn put_text(target: &mut Value, key: &str, value: Option<String>) {
+    match value {
+        Some(value) => set(target, key, value),
+        None => unset(target, key),
+    }
+}
+
+/// A launch's run id or error on the artifact that started it.
+fn launch_result(artifact: &mut Value, result: &std::result::Result<String, String>) {
+    match result {
+        Ok(run_id) => {
+            set(artifact, "status", "launched");
+            set(artifact, "run_id", run_id.clone());
+            unset(artifact, "launch_error");
+        }
+        Err(error) => {
+            set(artifact, "status", "launch_failed");
+            set(artifact, "launch_error", error.clone());
+            unset(artifact, "run_id");
+        }
     }
 }
 
@@ -1758,73 +1825,208 @@ impl Op<'_> {
     }
 
     fn change_artifact(&mut self, change: ArtifactChange) -> Result<ArtifactOutcome> {
+        use ArtifactCollection::{FlowLaunches, FlowRunRequests, ProposedPlans, RunRecoveries};
+        const REVIEWABLE_REQUEST: [&str; 3] = ["pending", "approved", "launch_failed"];
         match change {
-            ArtifactChange::Update {
-                collection,
-                artifact_id,
-                from,
-                set: fields,
-                remove,
-            } => {
-                let Some(mut artifact) = self.artifact(collection.key(), &artifact_id)? else {
-                    return Ok(ArtifactOutcome::Unknown { artifact_id });
-                };
-                let status = text(&artifact, "status").unwrap_or_else(|| {
-                    match collection {
-                        ArtifactCollection::FlowRunRequests => "pending",
-                        ArtifactCollection::ProposedPlans => "pending_review",
-                        _ => "",
-                    }
-                    .to_string()
-                });
-                if !from.is_empty() && !from.contains(&status) {
-                    return Ok(ArtifactOutcome::NotAllowed {
-                        artifact_id,
-                        status,
-                    });
-                }
-                for (key, value) in fields {
-                    set(&mut artifact, &key, value);
-                }
-                for key in remove {
-                    unset(&mut artifact, &key);
-                }
-                self.put_artifact(collection.key(), artifact.clone())?;
-                Ok(ArtifactOutcome::Changed(vec![artifact]))
-            }
             ArtifactChange::Create {
                 collection,
-                mut artifact,
+                artifact,
                 owner,
                 anchor_kind,
+            } => self.create_artifact(collection, artifact, owner, &anchor_kind),
+            ArtifactChange::RejectFlowRequest {
+                request_id,
+                message,
+            } => self.transition(
+                FlowRunRequests,
+                &request_id,
+                &REVIEWABLE_REQUEST,
+                |request| {
+                    set(request, "status", "rejected");
+                    set(request, "review_message", message);
+                },
+            ),
+            ArtifactChange::ApproveFlowRequest {
+                request_id,
+                message,
+                approval,
+            } => self.transition(
+                FlowRunRequests,
+                &request_id,
+                &REVIEWABLE_REQUEST,
+                |request| {
+                    set(request, "status", "approved");
+                    set(request, "review_message", message);
+                    set(request, "flow_name", approval.flow_name);
+                    unset(request, "launch_error");
+                    for (key, value) in [
+                        ("model", approval.model),
+                        ("llm_provider", approval.llm_provider),
+                        ("llm_profile", approval.llm_profile),
+                        ("reasoning_effort", approval.reasoning_effort),
+                        ("execution_profile_id", approval.execution_profile_id),
+                    ] {
+                        if let Some(value) = value {
+                            put_text(request, key, value);
+                        }
+                    }
+                },
+            ),
+            ArtifactChange::RejectPlan { plan_id, note } => {
+                self.transition(ProposedPlans, &plan_id, &["pending_review"], |plan| {
+                    set(plan, "status", "rejected");
+                    put_text(plan, "review_note", note);
+                })
+            }
+            ArtifactChange::ApprovePlan {
+                plan_id,
+                note,
+                change_request_path,
+                flow_launch,
             } => {
-                let owner = match owner {
-                    Some(turn_id) => self.turn(&turn_id)?.map(|_| turn_id),
-                    None => self.artifact_owner()?,
+                let launch_id = text(&flow_launch, "id").unwrap_or_default();
+                let approved =
+                    self.transition(ProposedPlans, &plan_id, &["pending_review"], |plan| {
+                        set(plan, "status", "approved");
+                        put_text(plan, "review_note", note);
+                        set(plan, "written_change_request_path", change_request_path);
+                        set(plan, "flow_launch_id", launch_id);
+                        unset(plan, "run_id");
+                        unset(plan, "launch_error");
+                    })?;
+                let ArtifactOutcome::Changed(mut changed) = approved else {
+                    return Ok(approved);
                 };
-                let (Some(owner), Some(artifact_id)) = (owner, text(&artifact, "id")) else {
+                // The launch belongs to the turn that proposed the plan.
+                let Some(owner) = text(&changed[0], "source_turn_id") else {
                     return Ok(ArtifactOutcome::NoOwner);
                 };
-                let segment_id = format!("segment-artifact-{artifact_id}");
-                set(&mut artifact, "source_turn_id", owner.clone());
-                set(&mut artifact, "source_segment_id", segment_id.clone());
-                self.put_artifact(collection.key(), artifact.clone())?;
-                self.put_segment(json!({
-                    "id": segment_id,
-                    "turn_id": owner,
-                    "order": super::records::ORDER_UNASSIGNED,
-                    "kind": anchor_kind,
-                    "role": "system",
-                    "status": "complete",
-                    "timestamp": self.now.clone(),
-                    "updated_at": self.now.clone(),
-                    "content": "",
-                    "artifact_id": artifact_id,
-                    "source": {},
-                }))?;
-                Ok(ArtifactOutcome::Changed(vec![artifact]))
+                match self.create_artifact(FlowLaunches, flow_launch, Some(owner), "flow_launch")? {
+                    ArtifactOutcome::Changed(launch) => changed.extend(launch),
+                    refused => return Ok(refused),
+                }
+                Ok(ArtifactOutcome::Changed(changed))
             }
+            ArtifactChange::LaunchResult {
+                collection,
+                artifact_id,
+                result,
+            } => match collection {
+                FlowRunRequests => {
+                    self.transition(collection, &artifact_id, &["approved"], |request| {
+                        launch_result(request, &result)
+                    })
+                }
+                FlowLaunches => self.transition(collection, &artifact_id, &["pending"], |launch| {
+                    launch_result(launch, &result)
+                }),
+                ProposedPlans => {
+                    let Some(plan) = self.artifact(ProposedPlans.key(), &artifact_id)? else {
+                        return Ok(ArtifactOutcome::Unknown { artifact_id });
+                    };
+                    let launch_id = text(&plan, "flow_launch_id").unwrap_or_default();
+                    let plan =
+                        self.transition(ProposedPlans, &artifact_id, &["approved"], |plan| {
+                            launch_result(plan, &result);
+                            // A launched plan stays approved.
+                            if result.is_ok() {
+                                set(plan, "status", "approved");
+                            }
+                        })?;
+                    let ArtifactOutcome::Changed(mut changed) = plan else {
+                        return Ok(plan);
+                    };
+                    match self.transition(FlowLaunches, &launch_id, &["pending"], |launch| {
+                        launch_result(launch, &result)
+                    })? {
+                        ArtifactOutcome::Changed(launch) => changed.extend(launch),
+                        refused => return Ok(refused),
+                    }
+                    Ok(ArtifactOutcome::Changed(changed))
+                }
+                _ => Err(commit_rejected(
+                    &self.conversation_id,
+                    &format!("{} artifacts have no launch result.", collection.key()),
+                )),
+            },
+            ArtifactChange::RecoveryResult {
+                recovery_id,
+                status,
+                result_run_id,
+                error,
+            } => self.transition(RunRecoveries, &recovery_id, &["pending"], |recovery| {
+                set(recovery, "status", status);
+                set(recovery, "result_run_id", result_run_id);
+                put_text(recovery, "recovery_error", error);
+            }),
         }
+    }
+
+    /// Change an artifact whose current status is one of `from`.
+    fn transition(
+        &mut self,
+        collection: ArtifactCollection,
+        artifact_id: &str,
+        from: &[&str],
+        change: impl FnOnce(&mut Value),
+    ) -> Result<ArtifactOutcome> {
+        let Some(mut artifact) = self.artifact(collection.key(), artifact_id)? else {
+            return Ok(ArtifactOutcome::Unknown {
+                artifact_id: artifact_id.to_string(),
+            });
+        };
+        let status = text(&artifact, "status").unwrap_or_else(|| {
+            match collection {
+                ArtifactCollection::FlowRunRequests => "pending",
+                ArtifactCollection::ProposedPlans => "pending_review",
+                _ => "",
+            }
+            .to_string()
+        });
+        if !from.contains(&status.as_str()) {
+            return Ok(ArtifactOutcome::NotAllowed {
+                artifact_id: artifact_id.to_string(),
+                status,
+            });
+        }
+        change(&mut artifact);
+        set(&mut artifact, "updated_at", self.now.clone());
+        self.put_artifact(collection.key(), artifact.clone())?;
+        Ok(ArtifactOutcome::Changed(vec![artifact]))
+    }
+
+    fn create_artifact(
+        &mut self,
+        collection: ArtifactCollection,
+        mut artifact: Value,
+        owner: Option<String>,
+        anchor_kind: &str,
+    ) -> Result<ArtifactOutcome> {
+        let owner = match owner {
+            Some(turn_id) => self.turn(&turn_id)?.map(|_| turn_id),
+            None => self.artifact_owner()?,
+        };
+        let (Some(owner), Some(artifact_id)) = (owner, text(&artifact, "id")) else {
+            return Ok(ArtifactOutcome::NoOwner);
+        };
+        let segment_id = format!("segment-artifact-{artifact_id}");
+        set(&mut artifact, "source_turn_id", owner.clone());
+        set(&mut artifact, "source_segment_id", segment_id.clone());
+        self.put_artifact(collection.key(), artifact.clone())?;
+        self.put_segment(json!({
+            "id": segment_id,
+            "turn_id": owner,
+            "order": super::records::ORDER_UNASSIGNED,
+            "kind": anchor_kind,
+            "role": "system",
+            "status": "complete",
+            "timestamp": self.now.clone(),
+            "updated_at": self.now.clone(),
+            "content": "",
+            "artifact_id": artifact_id,
+            "source": {},
+        }))?;
+        Ok(ArtifactOutcome::Changed(vec![artifact]))
     }
 }
 

@@ -26,7 +26,7 @@ use spark_storage::conversation::operations::growth_item_segment_id;
 use spark_storage::conversation::{
     Accepted, Admission, Answer, ArtifactChange, ArtifactCollection, ArtifactOutcome, ChangeBatch,
     ConversationCommit, ConversationMetadataPatch, Delivery, EntityRow, EventOutcome,
-    ExecutionOutcome, MessageInput, TransientStreamBody, TransientStreamEvent,
+    ExecutionOutcome, FlowRequestApproval, MessageInput, TransientStreamBody, TransientStreamEvent,
 };
 use spark_storage::{
     ConversationRepository, ConversationStore, ProjectRegistry, StorageError,
@@ -2539,24 +2539,16 @@ impl WorkspaceConversationService {
                 "",
             )
         };
-        let reviewable = ["pending", "approved", "launch_failed"];
-        let now = iso_now();
         if disposition == "rejected" {
             reviewed(
                 repository
                     .change_artifacts(
                         conversation_id,
                         &project_path,
-                        vec![artifact_update(
-                            ArtifactCollection::FlowRunRequests,
-                            request_id,
-                            &reviewable,
-                            [
-                                ("status", Some(json!("rejected"))),
-                                ("review_message", Some(json!(review_message))),
-                                ("updated_at", Some(json!(now))),
-                            ],
-                        )],
+                        vec![ArtifactChange::RejectFlowRequest {
+                            request_id: request_id.to_string(),
+                            message: review_message,
+                        }],
                         Some(format!("Rejected flow run request {request_id}.")),
                     )?
                     .1,
@@ -2582,93 +2574,55 @@ impl WorkspaceConversationService {
                     .to_string()
             });
         ensure_flow_exists(&self.settings, Some(&project_path), &approved_flow_name)?;
-        let lowercase = |value: Option<&str>| {
-            value
-                .and_then(non_empty_string)
-                .map(|value| value.to_lowercase())
+        let lowercase = |value: Option<&String>| {
+            value.map(|value| non_empty_string(value).map(|value| value.to_lowercase()))
         };
-        let mut fields = vec![
-            ("status", Some(json!("approved"))),
-            ("review_message", Some(json!(review_message))),
-            ("updated_at", Some(json!(now))),
-            ("flow_name", Some(json!(approved_flow_name))),
-            ("launch_error", None),
-        ];
-        if let Some(model) = request.model.as_deref().and_then(non_empty_string) {
-            fields.push(("model", Some(json!(model))));
-        }
-        if request.llm_provider.is_some() {
-            fields.push((
-                "llm_provider",
-                optional_text(lowercase(request.llm_provider.as_deref()).as_deref()),
-            ));
-        }
-        if request.llm_profile.is_some() {
-            fields.push(("llm_profile", optional_text(request.llm_profile.as_deref())));
-        }
-        if request.reasoning_effort.is_some() {
-            fields.push((
-                "reasoning_effort",
-                optional_text(lowercase(request.reasoning_effort.as_deref()).as_deref()),
-            ));
-        }
-        if request.execution_profile_id.is_some() {
-            fields.push((
-                "execution_profile_id",
-                optional_text(request.execution_profile_id.as_deref()),
-            ));
-        }
+        let text = |value: Option<&String>| value.map(|value| non_empty_string(value));
+        let approval = FlowRequestApproval {
+            flow_name: approved_flow_name.clone(),
+            model: request
+                .model
+                .as_deref()
+                .and_then(non_empty_string)
+                .map(Some),
+            llm_provider: lowercase(request.llm_provider.as_ref()),
+            llm_profile: text(request.llm_profile.as_ref()),
+            reasoning_effort: lowercase(request.reasoning_effort.as_ref()),
+            execution_profile_id: text(request.execution_profile_id.as_ref()),
+        };
         let approved = reviewed(
             repository
                 .change_artifacts(
                     conversation_id,
                     &project_path,
-                    vec![artifact_update(
-                        ArtifactCollection::FlowRunRequests,
-                        request_id,
-                        &reviewable,
-                        fields,
-                    )],
+                    vec![ArtifactChange::ApproveFlowRequest {
+                        request_id: request_id.to_string(),
+                        message: review_message,
+                        approval,
+                    }],
                     Some(format!("Approved flow run request {request_id}.")),
                 )?
                 .1,
         )?;
         let launch_artifact = approved.into_iter().next().unwrap_or_default();
-        let launch_result =
+        let result =
             self.launch_workspace_flow(&project_path, &approved_flow_name, &launch_artifact);
-        let (mut fields, message) = match &launch_result {
-            Ok(run_id) => (
-                vec![
-                    ("status", Some(json!("launched"))),
-                    ("run_id", Some(json!(run_id))),
-                    ("launch_error", None),
-                ],
-                format!(
-                    "Launched flow run request {request_id} as run {run_id} using {approved_flow_name}."
-                ),
+        let message = match &result {
+            Ok(run_id) => format!(
+                "Launched flow run request {request_id} as run {run_id} using {approved_flow_name}."
             ),
-            Err(error) => (
-                vec![
-                    ("status", Some(json!("launch_failed"))),
-                    ("launch_error", Some(json!(error))),
-                    ("run_id", None),
-                ],
-                format!("Flow run request {request_id} failed to launch: {error}"),
-            ),
+            Err(error) => format!("Flow run request {request_id} failed to launch: {error}"),
         };
-        fields.extend([
-            ("updated_at", Some(json!(iso_now()))),
-            ("flow_name", Some(json!(approved_flow_name))),
-        ]);
+        // A decision made while the launch ran keeps its state: the result
+        // is then not recorded.
         repository.change_artifacts(
             conversation_id,
             &project_path,
-            vec![artifact_update(
-                ArtifactCollection::FlowRunRequests,
-                request_id,
-                &[],
-                fields,
-            )],
+            vec![ArtifactChange::LaunchResult {
+                collection: ArtifactCollection::FlowRunRequests,
+                artifact_id: request_id.to_string(),
+                result,
+            }],
             Some(message),
         )?;
         Ok(())
@@ -2725,7 +2679,7 @@ impl WorkspaceConversationService {
                 "Proposed plan is not reviewable in status '{status}'."
             )));
         }
-        let review_note = optional_text(request.review_note.as_deref());
+        let review_note = request.review_note.as_deref().and_then(non_empty_string);
         let now = iso_now();
 
         if disposition == "rejected" {
@@ -2734,16 +2688,10 @@ impl WorkspaceConversationService {
                     .change_artifacts(
                         conversation_id,
                         &project_path,
-                        vec![artifact_update(
-                            ArtifactCollection::ProposedPlans,
-                            plan_id,
-                            &["pending_review"],
-                            [
-                                ("status", Some(json!("rejected"))),
-                                ("review_note", review_note),
-                                ("updated_at", Some(json!(now))),
-                            ],
-                        )],
+                        vec![ArtifactChange::RejectPlan {
+                            plan_id: plan_id.to_string(),
+                            note: review_note,
+                        }],
                         Some(format!("Rejected proposed plan {plan_id}.")),
                     )?
                     .1,
@@ -2803,31 +2751,12 @@ impl WorkspaceConversationService {
                 .change_artifacts(
                     conversation_id,
                     &project_path,
-                    vec![
-                        artifact_update(
-                            ArtifactCollection::ProposedPlans,
-                            plan_id,
-                            &["pending_review"],
-                            [
-                                ("status", Some(json!("approved"))),
-                                ("review_note", review_note),
-                                (
-                                    "written_change_request_path",
-                                    Some(json!(absolute_path_string(&request_path))),
-                                ),
-                                ("flow_launch_id", Some(json!(flow_launch_id))),
-                                ("updated_at", Some(json!(iso_now()))),
-                                ("run_id", None),
-                                ("launch_error", None),
-                            ],
-                        ),
-                        ArtifactChange::Create {
-                            collection: ArtifactCollection::FlowLaunches,
-                            artifact: flow_launch,
-                            owner: Some(source_turn_id),
-                            anchor_kind: "flow_launch".to_string(),
-                        },
-                    ],
+                    vec![ArtifactChange::ApprovePlan {
+                        plan_id: plan_id.to_string(),
+                        note: review_note,
+                        change_request_path: absolute_path_string(&request_path),
+                        flow_launch,
+                    }],
                     Some(format!(
                         "Approved proposed plan {plan_id} and wrote {relative_request_path}."
                     )),
@@ -2835,53 +2764,24 @@ impl WorkspaceConversationService {
                 .1,
         )?;
         let launch_artifact = changed.get(1).cloned().unwrap_or_default();
-        let launch_result =
+        let result =
             self.launch_workspace_flow(&project_path, IMPLEMENT_CHANGE_FLOW, &launch_artifact);
-        let now = iso_now();
-        let (plan_status, launch_status, outcome_fields, message) = match &launch_result {
-            Ok(run_id) => (
-                "approved",
-                "launched",
-                [("run_id", Some(json!(run_id))), ("launch_error", None)],
-                format!(
-                    "Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_FLOW}."
-                ),
+        let message = match &result {
+            Ok(run_id) => format!(
+                "Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_FLOW}."
             ),
-            Err(error) => (
-                "launch_failed",
-                "launch_failed",
-                [("launch_error", Some(json!(error))), ("run_id", None)],
-                format!(
-                    "Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_FLOW}: {error}"
-                ),
+            Err(error) => format!(
+                "Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_FLOW}: {error}"
             ),
-        };
-        let fields = |status: &str| {
-            [
-                ("status", Some(json!(status))),
-                ("updated_at", Some(json!(now))),
-            ]
-            .into_iter()
-            .chain(outcome_fields.clone())
         };
         repository.change_artifacts(
             conversation_id,
             &project_path,
-            vec![
-                artifact_update(
-                    ArtifactCollection::ProposedPlans,
-                    plan_id,
-                    &[],
-                    fields(plan_status),
-                ),
-                artifact_update(
-                    ArtifactCollection::FlowLaunches,
-                    &flow_launch_id,
-                    &[],
-                    fields(launch_status)
-                        .chain([("flow_name", Some(json!(IMPLEMENT_CHANGE_FLOW)))]),
-                ),
-            ],
+            vec![ArtifactChange::LaunchResult {
+                collection: ArtifactCollection::ProposedPlans,
+                artifact_id: plan_id.to_string(),
+                result,
+            }],
             Some(message),
         )?;
         Ok(())
@@ -3466,50 +3366,33 @@ impl WorkspaceConversationService {
         flow_name: &str,
         outcome: Result<&WorkspaceFlowStartOutcome, &WorkspaceFlowStartFailure>,
     ) -> WorkspaceResult<()> {
-        let (mut fields, message) = match outcome {
-            Ok(outcome) => (
-                vec![
-                    ("status", Some(json!("launched"))),
-                    ("run_id", Some(json!(outcome.run_id))),
-                    ("launch_error", None),
-                ],
-                format!(
-                    "Launched flow launch {} as run {} using {flow_name}.",
-                    artifact.flow_launch_id, outcome.run_id
-                ),
+        let message = match outcome {
+            Ok(outcome) => format!(
+                "Launched flow launch {} as run {} using {flow_name}.",
+                artifact.flow_launch_id, outcome.run_id
             ),
-            Err(error) => (
-                vec![
-                    ("status", Some(json!("launch_failed"))),
-                    ("launch_error", Some(json!(error.detail))),
-                    ("run_id", None),
-                ],
-                format!(
-                    "Flow launch {} failed to launch: {}",
-                    artifact.flow_launch_id, error.detail
-                ),
+            Err(error) => format!(
+                "Flow launch {} failed to launch: {}",
+                artifact.flow_launch_id, error.detail
             ),
         };
-        fields.extend([
-            ("updated_at", Some(json!(iso_now()))),
-            ("flow_name", Some(json!(flow_name))),
-        ]);
         changed_artifacts(
             self.repository()
                 .change_artifacts(
                     &artifact.conversation_id,
                     &artifact.project_path,
-                    vec![artifact_update(
-                        ArtifactCollection::FlowLaunches,
-                        &artifact.flow_launch_id,
-                        &[],
-                        fields,
-                    )],
+                    vec![ArtifactChange::LaunchResult {
+                        collection: ArtifactCollection::FlowLaunches,
+                        artifact_id: artifact.flow_launch_id.clone(),
+                        result: outcome
+                            .map(|outcome| outcome.run_id.clone())
+                            .map_err(|error| error.detail.clone()),
+                    }],
                     Some(message),
                 )?
                 .1,
             "Unknown flow launch.",
-            "",
+            "Flow launch already has its result in status",
             "",
         )?;
         Ok(())
@@ -3636,17 +3519,12 @@ impl WorkspaceConversationService {
                 .change_artifacts(
                     &selection.conversation_id,
                     &selection.project_path,
-                    vec![artifact_update(
-                        ArtifactCollection::RunRecoveries,
-                        &recovery.run_recovery_id,
-                        &[],
-                        [
-                            ("updated_at", Some(json!(iso_now()))),
-                            ("status", Some(json!(status))),
-                            ("result_run_id", Some(json!(result_run_id))),
-                            ("recovery_error", optional_text(recovery_error)),
-                        ],
-                    )],
+                    vec![ArtifactChange::RecoveryResult {
+                        recovery_id: recovery.run_recovery_id.clone(),
+                        status: status.to_string(),
+                        result_run_id: result_run_id.to_string(),
+                        error: recovery_error.and_then(non_empty_string),
+                    }],
                     Some(format!(
                         "Updated run recovery {} to {status}.",
                         recovery.run_recovery_id
@@ -3654,7 +3532,7 @@ impl WorkspaceConversationService {
                 )?
                 .1,
             "Unknown run recovery.",
-            "",
+            "Run recovery already has its result in status",
             "",
         )?;
         Ok(())
@@ -4317,30 +4195,6 @@ fn recovery_response_base(
 
 /// An update to one artifact: each field is set, or removed when `None`.
 /// `from` lists the statuses it may change from; empty allows any.
-fn artifact_update<'a>(
-    collection: ArtifactCollection,
-    artifact_id: &str,
-    from: &[&str],
-    fields: impl IntoIterator<Item = (&'a str, Option<Value>)>,
-) -> ArtifactChange {
-    let (mut set, mut remove) = (Map::new(), Vec::new());
-    for (key, value) in fields {
-        match value {
-            Some(value) => {
-                set.insert(key.to_string(), value);
-            }
-            None => remove.push(key.to_string()),
-        }
-    }
-    ArtifactChange::Update {
-        collection,
-        artifact_id: artifact_id.to_string(),
-        from: from.iter().map(|status| status.to_string()).collect(),
-        set,
-        remove,
-    }
-}
-
 /// The artifacts a change wrote, or why it was refused.
 fn changed_artifacts(
     outcome: ArtifactOutcome,
@@ -4355,11 +4209,6 @@ fn changed_artifacts(
         ArtifactOutcome::NoOwner => no_owner.to_string(),
     };
     Err(WorkspaceError::Validation(message))
-}
-
-/// Non-empty text as a field value; `None` removes the field.
-fn optional_text(value: Option<&str>) -> Option<Value> {
-    value.and_then(non_empty_string).map(Value::String)
 }
 
 fn set_optional_artifact_string(target: &mut Value, key: &str, value: Option<&str>) {

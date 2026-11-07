@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 use spark_storage::conversation::{
     record_from_snapshot, snapshot_from_record, Accepted, Admission, Answer, ArtifactChange,
     ArtifactCollection, ArtifactOutcome, CommitNotice, ConversationCommit,
-    ConversationMetadataPatch, EntityKind, EntityRow, ExecutionOutcome, MessageInput, Settlement,
-    TransientStreamBody, TransientStreamEvent, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+    ConversationMetadataPatch, EntityKind, EntityRow, ExecutionOutcome, FlowRequestApproval,
+    MessageInput, Settlement, TransientStreamBody, TransientStreamEvent,
+    TOOL_OUTPUT_INLINE_LIMIT_BYTES,
 };
 use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry, StorageError};
 
@@ -1071,6 +1072,152 @@ fn tool_events_externalize_oversized_outputs() {
         big_output
     );
     assert_eq!(read_output(&segment_id), Some(second_output));
+}
+
+/// A launch or recovery result is recorded only while its target still
+/// waits for it; a newer decision or an earlier result keeps its state.
+#[test]
+fn results_apply_only_to_artifacts_still_waiting_for_them() {
+    let project_path = "/projects/commit-artifact-results";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-r", project_path, "Plan it");
+    settle(&repo, "conversation-r", project_path);
+    let change = |change: ArtifactChange| {
+        repo.change_artifacts("conversation-r", project_path, vec![change], None)
+            .expect("artifact operation")
+            .1
+    };
+    let create = |collection: ArtifactCollection, id: &str, status: &str| {
+        let outcome = change(ArtifactChange::Create {
+            collection,
+            artifact: json!({"id": id, "status": status}),
+            owner: None,
+            anchor_kind: "artifact".to_string(),
+        });
+        assert!(
+            matches!(outcome, ArtifactOutcome::Changed(_)),
+            "{outcome:?}"
+        );
+    };
+    let refused = |outcome: ArtifactOutcome, expected: &str| match outcome {
+        ArtifactOutcome::NotAllowed { status, .. } => assert_eq!(status, expected),
+        outcome => panic!("expected a refusal in {expected}: {outcome:?}"),
+    };
+    let launched = |collection, artifact_id: &str, result: Result<&str, &str>| {
+        change(ArtifactChange::LaunchResult {
+            collection,
+            artifact_id: artifact_id.to_string(),
+            result: result.map(str::to_string).map_err(str::to_string),
+        })
+    };
+    create(ArtifactCollection::FlowRunRequests, "request-r", "pending");
+    create(ArtifactCollection::FlowLaunches, "launch-r", "pending");
+    create(
+        ArtifactCollection::ProposedPlans,
+        "plan-r",
+        "pending_review",
+    );
+    create(ArtifactCollection::RunRecoveries, "recovery-r", "pending");
+
+    // An approved request's late result does not replace its rejection.
+    change(ArtifactChange::ApproveFlowRequest {
+        request_id: "request-r".to_string(),
+        message: "Go.".to_string(),
+        approval: FlowRequestApproval {
+            flow_name: "ops/review".to_string(),
+            ..FlowRequestApproval::default()
+        },
+    });
+    change(ArtifactChange::RejectFlowRequest {
+        request_id: "request-r".to_string(),
+        message: "Stop.".to_string(),
+    });
+    refused(
+        launched(
+            ArtifactCollection::FlowRunRequests,
+            "request-r",
+            Ok("run-1"),
+        ),
+        "rejected",
+    );
+    // A direct launch and a recovery take one result.
+    assert!(matches!(
+        launched(ArtifactCollection::FlowLaunches, "launch-r", Ok("run-2")),
+        ArtifactOutcome::Changed(_)
+    ));
+    refused(
+        launched(ArtifactCollection::FlowLaunches, "launch-r", Err("late")),
+        "launched",
+    );
+    let recovered = || {
+        change(ArtifactChange::RecoveryResult {
+            recovery_id: "recovery-r".to_string(),
+            status: "started".to_string(),
+            result_run_id: "run-3".to_string(),
+            error: None,
+        })
+    };
+    assert!(matches!(recovered(), ArtifactOutcome::Changed(_)));
+    refused(recovered(), "started");
+    // An approved plan's failed launch fails the plan and its launch once;
+    // the plan cannot be reviewed again.
+    let ArtifactOutcome::Changed(approved) = change(ArtifactChange::ApprovePlan {
+        plan_id: "plan-r".to_string(),
+        note: None,
+        change_request_path: "/projects/change.md".to_string(),
+        flow_launch: json!({"id": "launch-plan", "status": "pending"}),
+    }) else {
+        panic!("plan approved");
+    };
+    assert_eq!(approved[1]["source_turn_id"], approved[0]["source_turn_id"]);
+    refused(
+        change(ArtifactChange::RejectPlan {
+            plan_id: "plan-r".to_string(),
+            note: None,
+        }),
+        "approved",
+    );
+    assert!(matches!(
+        launched(
+            ArtifactCollection::ProposedPlans,
+            "plan-r",
+            Err("no runner")
+        ),
+        ArtifactOutcome::Changed(_)
+    ));
+    refused(
+        launched(ArtifactCollection::ProposedPlans, "plan-r", Ok("run-4")),
+        "launch_failed",
+    );
+
+    let after = snapshot(&repo, "conversation-r");
+    let artifact = |collection: &str, id: &str| {
+        after[collection]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{collection} {id}"))
+    };
+    let request = artifact("flow_run_requests", "request-r");
+    assert_eq!(request["status"], "rejected");
+    assert!(request.get("run_id").is_none());
+    let launch = artifact("flow_launches", "launch-r");
+    assert_eq!(
+        (&launch["status"], &launch["run_id"]),
+        (&json!("launched"), &json!("run-2"))
+    );
+    assert!(launch.get("launch_error").is_none());
+    let recovery = artifact("run_recoveries", "recovery-r");
+    assert_eq!(recovery["status"], "started");
+    assert_eq!(recovery["result_run_id"], "run-3");
+    let plan = artifact("proposed_plans", "plan-r");
+    assert_eq!(plan["status"], "launch_failed");
+    assert_eq!(plan["launch_error"], "no runner");
+    let plan_launch = artifact("flow_launches", "launch-plan");
+    assert_eq!(plan_launch["status"], "launch_failed");
+    assert!(plan_launch.get("run_id").is_none());
 }
 
 #[test]
