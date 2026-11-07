@@ -42,7 +42,7 @@ it('reads the start, run results, run questions and replies from user turns', ()
         'Run run-a (testing/question-parent.yaml, "Test \\"quoted\\" handling") ended completed.',
         'Run run-b (work/build.yaml, "Build") ended failed: boom\n\nstill the error.',
         'Run run-c (work/build.yaml, "") is waiting on a recovery decision.',
-        `Run question: ${JSON.stringify(question)}`,
+        `Run question in run run-root (testing/question-parent.yaml, "Parent"): ${JSON.stringify(question)}`,
         'User: ship it\n\nplease',
         'Trigger fired: "hook" (webhook)\nExternal data (full payload: 2 bytes):\n> {}',
         'The user updated this mission; these replace the values in your instructions.\nTitle: New title',
@@ -56,7 +56,24 @@ it('reads the start, run results, run questions and replies from user turns', ()
         { kind: 'event', text: 'Trigger fired: "hook" (webhook)\nExternal data (full payload: 2 bytes):\n> {}' },
         { kind: 'event', text: 'The user updated this mission; these replace the values in your instructions.\nTitle: New title' },
     ])
-    expect(parseTurn('Run question: not json')).toEqual([{ kind: 'text', text: 'Run question: not json' }])
+    expect(parseTurn('Run question in run r (f, ""): not json')).toEqual([{ kind: 'text', text: 'Run question in run r (f, ""): not json' }])
+})
+
+it('reads an inbox batch as its events, without its header or event marks', () => {
+    // A descendant's question carries no flow name of its own; its root's names it.
+    const question = { flow_name: '', options: ['Yes'], prompt: 'Proceed?', question_id: 'gate-0', root_run_id: 'run-root', run_id: 'run-child' }
+    expect(parseTurn([
+        'Begin work on this mission.',
+        '[Inbox: 3 events delivered asynchronously. Run reports, triggers and messages from other conversations concern earlier or outside work; they are not new requests from the user.]',
+        '[event run-a:completed from run-a]\nRun run-a (work/build.yaml, "Build") ended completed.',
+        '[event event-1 from chat-a]\nMessage from conversation calm-lantern, project /p:\nHello',
+        `[event question:run-child:gate-0 from run-child]\nRun question in run run-root (work/root.yaml, "Root"): ${JSON.stringify(question)}`,
+    ].join('\n\n'), true)).toEqual([
+        { kind: 'start' },
+        { kind: 'result', runId: 'run-a', flowName: 'work/build.yaml', summary: 'Build', status: 'completed', error: '' },
+        { kind: 'text', text: 'Message from conversation calm-lantern, project /p:\nHello' },
+        { kind: 'question', prompt: 'Proceed?', options: ['Yes'], runId: 'run-root', flowName: 'work/root.yaml' },
+    ])
 })
 
 it('colours each state, and names run statuses as the Runs page does', () => {

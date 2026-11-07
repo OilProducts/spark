@@ -151,7 +151,8 @@ fn chats_hear_every_outcome_of_the_runs_they_own_and_nothing_else() {
     record.outcome_reason_code = Some("recovery_decision_required".into());
     store.write_run_record(&paths, &record).unwrap();
     assert!(crate::deliver_run_events(&h.settings, "run-stuck"));
-    // A child's question reaches its root's owner.
+    // A child's question reaches its root's owner, even when the child emits
+    // no flow name of its own.
     crate::owned_run(&h.settings, &h.project, chat, "run-root", "running");
     let mut child = RunRecord::new("run-child", &h.project);
     child.parent_run_id = Some("run-root".into());
@@ -170,7 +171,7 @@ fn chats_hear_every_outcome_of_the_runs_they_own_and_nothing_else() {
                 "run-child",
                 "gate-0",
                 "gate",
-                "work",
+                "",
                 "Proceed?",
                 None,
                 vec![],
@@ -198,10 +199,30 @@ fn chats_hear_every_outcome_of_the_runs_they_own_and_nothing_else() {
         seeded("run-broke", "ended failed: disk full"),
         seeded("run-stopped", "ended canceled"),
         seeded("run-stuck", "is waiting on a recovery decision"),
-        "[event question:run-child:gate-0 from run-child]".to_string(),
     ] {
         h.wait_prompt(chat, &text);
     }
+    // The question names its root run's flow and launch summary, and keeps
+    // the ids its answer is routed by.
+    let asked = "[event question:run-child:gate-0 from run-child]\n\
+                 Run question in run run-root (work/seeded, \"Seeded work\"): ";
+    let prompt = h.wait_prompt(chat, asked).prompt;
+    let (_, question) = prompt.split_once(asked).unwrap();
+    let question: Value = serde_json::from_str(question.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        [
+            &question["run_id"],
+            &question["question_id"],
+            &question["root_run_id"],
+            &question["prompt"]
+        ],
+        [
+            &json!("run-child"),
+            &json!("gate-0"),
+            &json!("run-root"),
+            &json!("Proceed?")
+        ]
+    );
     let requests = h.requests();
     assert!(requests
         .iter()

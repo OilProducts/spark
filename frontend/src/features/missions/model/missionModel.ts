@@ -64,23 +64,30 @@ export type TurnEvent =
     | { kind: 'text'; text: string }
 
 // The runtime joins a turn's events with blank lines; split only where the next event starts.
-const EVENT = /^(?:Run \S+ \(|Run question: |User: |Trigger fired: |The user updated this mission)/
-const EVENT_START = new RegExp(`\n\n(?=${EVENT.source.slice(1)})`)
+// An inbox batch opens with a header and marks each event with its id and source for the agent.
+const EVENT = /^(?:Run \S+ \(|Run question in run |User: |Trigger fired: |The user updated this mission)/
+const EVENT_START = new RegExp(`\n\n(?=\\[Inbox: |\\[event |${EVENT.source.slice(1)})`)
+const HEADER = /^\[Inbox: [^\n]*\]$/
+const MARK = /^\[event \S+ from \S+\]\n/
 const RUNTIME_EVENT = /^(?:Trigger fired: |The user updated this mission)/
 const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is waiting on a recovery decision)(?:: ([\s\S]*))?\.$/
+// A question names its root run's flow and launch summary; its own flow name may be empty.
+const QUESTION = /^Run question in run \S+ \(([^,]*), "(?:[^"\\]|\\.)*"\): /
 
 /**
  * Reads the events a mission's user turn carries: its start, run results, run questions, runtime events, and your replies.
  * The conversation's first turn opens with the start, whatever its wording; older missions repeated the objective there.
  */
 export function parseTurn(content: string, first = false): TurnEvent[] {
-    return content.split(EVENT_START).map((chunk, index): TurnEvent => {
+    return content.split(EVENT_START).filter(chunk => !HEADER.test(chunk)).map((marked, index): TurnEvent => {
+        const chunk = marked.replace(MARK, '')
         if (first && index === 0 && !EVENT.test(chunk)) return { kind: 'start' }
         if (chunk.startsWith('User: ')) return { kind: 'reply', text: chunk.slice(6) }
-        if (chunk.startsWith('Run question: ')) {
+        const asked = QUESTION.exec(chunk)
+        if (asked) {
             try {
-                const question = readQuestion(JSON.parse(chunk.slice(14)))
-                if (question) return { kind: 'question', ...question }
+                const question = readQuestion(JSON.parse(chunk.slice(asked[0].length)))
+                if (question) return { kind: 'question', ...question, flowName: question.flowName || asked[1] }
             } catch { /* not JSON: show it as written */ }
         }
         const result = RESULT.exec(chunk)

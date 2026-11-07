@@ -2497,6 +2497,19 @@ fn inbox_message(begin: Option<&str>, events: &[InboxEvent], runs: &[InboxRun]) 
 fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
     let payload = &event.payload;
     let text = |value: &Value| value.as_str().unwrap_or_default().to_string();
+    // A root run's flow and launch summary, from the roster; a descendant's
+    // question reports its root's, as its own flow name may be empty.
+    let launch = |root: &str| {
+        let run = runs.iter().find(|run| run.run_id == root);
+        let flow = run
+            .map(|run| run.flow_name.as_str())
+            .filter(|flow| !flow.is_empty())
+            .or(payload["flow_name"]
+                .as_str()
+                .filter(|flow| !flow.is_empty()))
+            .unwrap_or("unknown flow");
+        format!("{flow}, {:?}", run.map_or("", |run| run.summary.as_str()))
+    };
     match event.kind.as_str() {
         "trigger.fired" => {
             let data = serde_json::to_string(&payload["source_payload"]).unwrap_or_default();
@@ -2537,7 +2550,10 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
                 text(&payload["reason"])
             )
         }
-        "run.question" => return format!("Run question: {payload}"),
+        "run.question" => {
+            let root = payload["root_run_id"].as_str().unwrap_or(&event.source);
+            return format!("Run question in run {root} ({}): {payload}", launch(root));
+        }
         "mission.updated" => {
             let mut lines = vec![
                 "The user updated this mission; these replace the values in your instructions."
@@ -2559,13 +2575,6 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
         }
         _ => {}
     }
-    let run = runs.iter().find(|run| run.run_id == event.source);
-    let flow = run
-        .map(|run| run.flow_name.as_str())
-        .filter(|flow| !flow.is_empty())
-        .or(payload["flow_name"].as_str())
-        .unwrap_or("unknown flow");
-    let summary = run.map_or("", |run| run.summary.as_str());
     let outcome = match event.kind.as_str() {
         "run.waiting" => "is waiting on a recovery decision".to_string(),
         _ => format!("ended {}", text(&payload["status"])),
@@ -2576,7 +2585,8 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
         .map(|error| format!(": {error}"))
         .unwrap_or_default();
     format!(
-        "Run {} ({flow}, {summary:?}) {outcome}{error}.",
-        event.source
+        "Run {} ({}) {outcome}{error}.",
+        event.source,
+        launch(&event.source)
     )
 }
