@@ -106,3 +106,5 @@ Spark does not support older on-disk formats. Don't add compatibility code or mi
 Flows and roles resolve project first, then bundled: a project's definitions `<project>/.spark/definitions/{flows,roles}` replace bundled files of the same name in `$SPARK_HOME/bundled/{flows,roles}`. Spark rewrites `$SPARK_HOME/bundled` from `crates/spark-assets/assets` on every start, so change bundled flows in this repo, not there. A project's flows can differ from, or exist without, a bundled copy.
 
 Spark's shared surfaces (the Runs page, shared components, the runtime) and its bundled prompts must work for any flow and any project. Don't read one flow's own context keys in shared code, such as implement-change's `context.workspace.commit`, and don't write prompts that name a specific project. When a surface needs flow-specific data, carry it through a generic mechanism, such as a run-record field or flow-declared metadata, or leave it out.
+
+When writing or changing a flow or role, follow the workflow writing principles in `crates/spark-assets/assets/roles/chief-of-staff.md`.

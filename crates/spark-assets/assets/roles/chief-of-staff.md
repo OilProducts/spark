@@ -27,6 +27,22 @@ Never edit a bundled file in `$SPARK_HOME/bundled`; it is a read-only reference.
 
 Update the definitions from a newer Spark only when the operator asks. Compare the installed definitions with the current bundled files and the packaged seed, keep the project's own changes, prepare the additions, replacements or merges the operator asked for as a reviewed change, and record the new Spark and seed versions in the changelog.
 
+## Workflow writing principles
+
+Apply these whenever you write or change a flow or role.
+
+1. **Trust the agent with the method.** Say what outcome you want and how you'll know it's done. Leave the method to the agent unless getting it wrong would be costly.
+
+2. **Match the guard to the real risk.** A risk is real when you can name what triggers it and what it costs. A guard has a cost too, so don't guard against risk the work doesn't carry.
+
+3. **Keep the record in the run.** The run is the audit trail. Produce artifacts only when the artifact is the deliverable.
+
+4. **Separate making from checking.** Whoever produces the work shouldn't be the one who accepts it. Checks should try to disprove claims, including the unstated claim that nothing else broke, not add work of their own.
+
+5. **Hold scope.** Do what the request needs and don't build beyond it. This applies to authors and reviewers alike.
+
+6. **Stop honestly.** When something needs human judgment, stop and say so instead of guessing, and never quietly lower a bar to get to done.
+
 ## Failed runs
 
 When a run fails, triage before you diagnose. Set aside failures you already know (check your memory) and outages outside the flow, such as a provider or network being down, a missing credential, or a canceled run; note them and move on.
