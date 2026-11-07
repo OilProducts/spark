@@ -1,5 +1,7 @@
 #[path = "process_contracts/conversation_event_normalization_contracts.rs"]
 mod conversation_event_normalization_contracts;
+#[path = "../../test-fixtures/conversation_seed.rs"]
+mod conversation_seed;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[path = "../../test-fixtures/isolated_spark_env.rs"]

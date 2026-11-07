@@ -24,7 +24,6 @@ import type { ProjectGitMetadata } from './presentation'
 import {
     conversationRowKey,
     mergeConversationRows,
-    sanitizeStreamingTurnUpsert,
     upsertConversationSummary,
     type ConversationRows,
 } from './conversationState'
@@ -34,6 +33,9 @@ import type { ConversationTimelineEntry } from './types'
 export type { ConversationSummaryResponse } from '@/lib/workspaceClient'
 
 export type ConversationStreamDelta = ConversationStreamDeltaEventResponse
+
+/** An open segment's streamed text and the stream sequence of the frame that set it. */
+type StreamText = { turnId: string; text: string; sequence: number }
 
 /** What a conversation's loaded rows hold: its live cursor, loaded pages and stream overlay. */
 type ConversationWindowState = {
@@ -57,9 +59,11 @@ type ConversationWindowState = {
     windowStart: string | null
     pinnedTurnIds: string[]
     rows: ConversationRows
-    /** Uncommitted stream content shown over committed rows, until the row commits. */
-    streamTurnsById: Record<string, ConversationTurnResponse>
-    streamSegmentsById: Record<string, ConversationSegmentResponse>
+    /**
+     * Open segments' streamed text by segment id, shown over their committed rows until a row
+     * closes them. A frame that arrives before its segment's row waits here for it.
+     */
+    streamTextBySegmentId: Record<string, StreamText>
 }
 
 /** The normalized rows and the transcript view derived from them. */
@@ -111,8 +115,6 @@ export type ProjectConversationCacheState = {
     summaryAuthority?: { generation: string; watermark: string } | null
     /** Conversations that were deleted or are gone after a reset. */
     unavailableConversationIds?: Record<string, true>
-    // Last applied live update's stream_sequence, by turn id.
-    streamSequenceByTurnId?: Record<string, number>
 }
 
 export const EMPTY_PROJECT_CONVERSATION_CACHE_STATE: ProjectConversationCacheState = {
@@ -276,14 +278,13 @@ function emptyWindow(generation: string, projectPath: string | null): Conversati
         windowStart: null,
         pinnedTurnIds: [],
         rows: {},
-        streamTurnsById: {},
-        streamSegmentsById: {},
+        streamTextBySegmentId: {},
     }
 }
 
 function windowOf(record: NormalizedConversationRecord): ConversationWindowState {
-    const { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById } = record
-    return { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTurnsById, streamSegmentsById }
+    const { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTextBySegmentId } = record
+    return { generation, projectPath, watermark, resetting, windowEpoch, olderCursor, windowStart, pinnedTurnIds, rows, streamTextBySegmentId }
 }
 
 /** A deleted conversation keeps only its tombstone: every child it had is invalid. */
@@ -293,7 +294,17 @@ function dropChildrenOfDeletedConversation(conversationId: string, state: Conver
     if (!conversation?.deleted || Object.keys(state.rows).length === 1) {
         return state
     }
-    return { ...state, rows: { [key]: conversation }, streamTurnsById: {}, streamSegmentsById: {} }
+    return { ...state, rows: { [key]: conversation }, streamTextBySegmentId: {} }
+}
+
+/**
+ * A segment row with its open streamed text: a frame owns only a tool call's output, else the
+ * content, so status, answers and tool metadata stay the row's. A closed row shows its own text.
+ */
+function withStreamText(segment: ConversationSegmentResponse, stream: StreamText | undefined): ConversationSegmentResponse {
+    if (!stream || segment.completed_at) return segment
+    if (segment.kind !== 'tool_call') return { ...segment, content: stream.text }
+    return segment.tool_call ? { ...segment, tool_call: { ...segment.tool_call, output: stream.text } } : segment
 }
 
 function sameTurnSegments(previous: NormalizedConversationRecord, turnId: string, segments: ConversationSegmentResponse[]) {
@@ -343,24 +354,13 @@ function deriveConversationRecord(
         .filter(isVisible)
         .sort((left, right) => compareOptionalDecimals(left.position, right.position) || left.id.localeCompare(right.id))
         .map((row) => {
-            turnsById[row.id] = state.streamTurnsById[row.id] ?? row.payload!
+            turnsById[row.id] = row.payload!
             return row.id
         })
-    Object.values(state.streamTurnsById).forEach((turn) => {
-        if (!state.rows[turnKey(conversationId, turn.id)]) {
-            turnsById[turn.id] = turn
-            orderedTurnIds.push(turn.id)
-        }
-    })
 
     const planIdBySegmentId = new Map(proposedPlans.flatMap((plan) => plan.source_segment_id ? [[plan.source_segment_id, plan.id]] : []))
-    const ordered: Array<{ segment: ConversationSegmentResponse; order: string }> = segmentRows
-        .map((row) => ({ segment: state.streamSegmentsById[row.id] ?? row.payload!, order: row.order ?? '0' }))
-    Object.values(state.streamSegmentsById).forEach((segment) => {
-        if (!state.rows[segmentKey(conversationId, segment.id)]) {
-            ordered.push({ segment, order: Number.isSafeInteger(segment.order) && segment.order >= 0 ? String(segment.order) : '0' })
-        }
-    })
+    const ordered = segmentRows
+        .map((row) => ({ segment: withStreamText(row.payload!, state.streamTextBySegmentId[row.id]), order: row.order ?? '0' }))
     ordered.sort((left, right) => compareRevisions(left.order, right.order)
         || left.segment.timestamp.localeCompare(right.segment.timestamp)
         || left.segment.id.localeCompare(right.segment.id))
@@ -479,47 +479,35 @@ export function applyConversationPage(
         windowStart: pageStart(page),
         pinnedTurnIds: page.pinned_turn_ids,
         rows,
-        ...(sameGeneration ? settleStreamOverlay(record!, rows, page.rows) : { streamTurnsById: {}, streamSegmentsById: {} }),
+        streamTextBySegmentId: sameGeneration ? settleStreamText(record!, rows, page.rows) : {},
     }), sameGeneration ? record : undefined)
 }
 
 /**
- * The stream overlay once committed rows land: a committed segment replaces its streamed copy,
- * a finished turn drops everything it streamed, and a running turn's commit without its text
- * keeps the text it showed.
+ * The streamed text once committed rows land: a closed or deleted segment drops its text, and
+ * so does every segment of a finished or deleted turn. An opening row or any other commit keeps
+ * the open text it showed. Dropping the text drops its sequence, so a replayed frame restores it.
  */
-function settleStreamOverlay(
+function settleStreamText(
     record: NormalizedConversationRecord,
     rows: ConversationRows,
     incoming: ConversationRow[],
-): Pick<ConversationWindowState, 'streamTurnsById' | 'streamSegmentsById'> {
-    let streamTurnsById = record.streamTurnsById
-    let streamSegmentsById = record.streamSegmentsById
+): Record<string, StreamText> {
+    let streamText = record.streamTextBySegmentId
+    const drop = (ended: (id: string, stream: StreamText) => boolean) => {
+        const kept = Object.entries(streamText).filter(([id, stream]) => !ended(id, stream))
+        if (kept.length !== Object.keys(streamText).length) streamText = Object.fromEntries(kept)
+    }
     incoming.forEach((row) => {
         if (rows[conversationRowKey(row)] !== row) return
-        if (row.kind === 'segment' && streamSegmentsById[row.id]) {
-            streamSegmentsById = { ...streamSegmentsById }
-            delete streamSegmentsById[row.id]
+        if (row.kind === 'segment' && (row.deleted || row.payload?.completed_at)) {
+            drop((id) => id === row.id)
         }
-        if (row.kind === 'turn') {
-            // A finished turn's committed segments replace everything it streamed.
-            if (row.deleted || (row.payload?.status !== 'pending' && row.payload?.status !== 'streaming')) {
-                const kept = Object.values(streamSegmentsById).filter((segment) => segment.turn_id !== row.id)
-                if (kept.length !== Object.keys(streamSegmentsById).length) {
-                    streamSegmentsById = Object.fromEntries(kept.map((segment) => [segment.id, segment]))
-                }
-            }
-            // A running turn's commit without its streamed text keeps the text it showed.
-            const shown = streamTurnsById[row.id] ?? record.turnsById[row.id]
-            const kept = row.payload && shown ? sanitizeStreamingTurnUpsert(shown, row.payload) : row.payload
-            if (kept !== row.payload || streamTurnsById[row.id]) {
-                streamTurnsById = { ...streamTurnsById }
-                if (kept && kept !== row.payload) streamTurnsById[row.id] = kept
-                else delete streamTurnsById[row.id]
-            }
+        if (row.kind === 'turn' && (row.deleted || (row.payload?.status !== 'pending' && row.payload?.status !== 'streaming'))) {
+            drop((_, stream) => stream.turnId === row.id)
         }
     })
-    return { streamTurnsById, streamSegmentsById }
+    return streamText
 }
 
 /**
@@ -552,13 +540,11 @@ export function applyConversationBatch(
     if (rows === record.rows && watermark === record.watermark) {
         return record
     }
-    const { streamTurnsById, streamSegmentsById } = settleStreamOverlay(record, rows, batch.rows)
     return deriveConversationRecord(conversationId, dropChildrenOfDeletedConversation(conversationId, {
         ...windowOf(record),
         rows,
         watermark,
-        streamTurnsById,
-        streamSegmentsById,
+        streamTextBySegmentId: settleStreamText(record, rows, batch.rows),
     }), record)
 }
 
@@ -784,43 +770,41 @@ export type ApplyTransientConversationEventResult =
     }
 
 /**
- * Apply a transient stream delta over the committed rows. Transients update the visible
- * turn/segment state but never change a row or a revision, never touch summaries or artifacts,
- * and are simply dropped when stale or when no committed record exists yet; the turn's
- * committed rows restore durable state.
+ * Apply an open segment's streamed text over its committed row. Frames update only the shown
+ * text, never a row, a revision, summaries or artifacts. A frame is dropped when its segment or
+ * turn has ended in a committed row, or when it is not newer than the last one applied to that
+ * segment; another segment's sequence never stales it. One that precedes its segment's row
+ * waits for the row.
  */
 export function applyTransientConversationEventToCache(
     current: ProjectConversationCacheState,
     event: ConversationStreamDeltaEventResponse,
 ): ApplyTransientConversationEventResult {
-    // Staleness is per turn: other commits during the turn raise revisions
-    // but don't make its live updates stale.
     const record = current.conversationsById[event.conversation_id]
-    const turnStatus = record?.turnsById[event.turn_id]?.status
-    const lastSequence = current.streamSequenceByTurnId?.[event.turn_id] ?? 0
+    if (!record || record.deleted || record.resetting || event.delta_kind !== 'segment_text'
+        || event.segment_id === undefined || event.text === undefined) {
+        return { status: 'dropped', cache: current }
+    }
+    const turn = record.rows[turnKey(record.conversation_id, event.turn_id)] as RowOf<'turn'> | undefined
+    const segment = record.rows[segmentKey(record.conversation_id, event.segment_id)] as RowOf<'segment'> | undefined
+    const shown = record.streamTextBySegmentId[event.segment_id]
     if (
-        !record
-        || record.deleted
-        || record.resetting
-        || turnStatus === 'complete'
-        || turnStatus === 'failed'
-        || event.stream_sequence <= lastSequence
+        turn?.deleted
+        || turn?.payload?.status === 'complete'
+        || turn?.payload?.status === 'failed'
+        || segment?.deleted
+        || segment?.payload?.completed_at
+        || (shown && event.stream_sequence <= shown.sequence)
     ) {
         return { status: 'dropped', cache: current }
     }
-    let state = windowOf(record)
-    if (event.delta_kind === 'turn_delta' && event.turn) {
-        const turn = sanitizeStreamingTurnUpsert(record.turnsById[event.turn.id] || null, event.turn)
-        state = { ...state, streamTurnsById: { ...state.streamTurnsById, [turn.id]: turn } }
-    } else if (event.delta_kind === 'segment_delta' && event.segment && !record.rows[segmentKey(record.conversation_id, event.segment.id)]?.deleted) {
-        state = { ...state, streamSegmentsById: { ...state.streamSegmentsById, [event.segment.id]: event.segment } }
-    } else if (event.delta_kind === 'token_usage' && event.token_usage && record.turnsById[event.turn_id]) {
-        const turn = { ...record.turnsById[event.turn_id], token_usage: event.token_usage }
-        state = { ...state, streamTurnsById: { ...state.streamTurnsById, [turn.id]: turn } }
-    } else {
-        return { status: 'dropped', cache: current }
-    }
-    const mergedRecord = deriveConversationRecord(record.conversation_id, state, record)
+    const mergedRecord = deriveConversationRecord(record.conversation_id, {
+        ...windowOf(record),
+        streamTextBySegmentId: {
+            ...record.streamTextBySegmentId,
+            [event.segment_id]: { turnId: event.turn_id, text: event.text, sequence: event.stream_sequence },
+        },
+    }, record)
     return {
         status: 'applied',
         record: mergedRecord,
@@ -829,10 +813,6 @@ export function applyTransientConversationEventToCache(
             conversationsById: {
                 ...current.conversationsById,
                 [event.conversation_id]: mergedRecord,
-            },
-            streamSequenceByTurnId: {
-                ...current.streamSequenceByTurnId,
-                [event.turn_id]: event.stream_sequence,
             },
         },
     }

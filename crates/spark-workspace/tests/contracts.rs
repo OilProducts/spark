@@ -1,5 +1,7 @@
 #[path = "contracts/conversation_repository_contracts.rs"]
 mod conversation_repository_contracts;
+#[path = "../../test-fixtures/conversation_seed.rs"]
+mod conversation_seed;
 #[path = "contracts/history_index_contracts.rs"]
 mod history_index_contracts;
 #[path = "../../test-fixtures/isolated_spark_env.rs"]
@@ -23,14 +25,7 @@ mod workflow_log_contracts;
 
 /// Seeds one conversation's rows in the home's shared store, exactly as given.
 fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json::Value) {
-    let mut record =
-        spark_storage::conversation::record_from_snapshot(snapshot).expect("conversation snapshot");
-    // Each stored turn and segment accounts for at least one revision.
-    let entries = (record.transcript.turns.len() + record.transcript.segments.len()) as i64;
-    record.meta.revision = record.meta.revision.max(entries);
-    spark_storage::ConversationRepository::new(shared_store(data_dir))
-        .seed_record(&record)
-        .expect("seed conversation");
+    conversation_seed::seed_conversation_snapshot(&shared_store(data_dir), snapshot);
 }
 #[path = "contracts/flow_install.rs"]
 mod flow_install;

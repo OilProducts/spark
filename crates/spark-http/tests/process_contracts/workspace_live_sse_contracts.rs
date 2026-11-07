@@ -18,7 +18,7 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::settings::SparkSettings;
-use spark_storage::conversation::{ConversationMutation, TranscriptSegment, TranscriptTurn};
+use spark_storage::conversation::{Accepted, Admission, MessageInput, TranscriptSegment};
 use spark_storage::ConversationRepository;
 use spark_workspace::{
     project_run_milestones, ConversationTurnRequest, TriggerCreateRequest, WorkspaceTriggerService,
@@ -909,16 +909,12 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
     let mut promoted = None;
     for _ in 0..20 {
         let envelope = next_envelope(&mut live_stream).await;
-        // A finished segment arrives as a committed row; a transient delta would also do.
-        let mut segments = carried(std::slice::from_ref(&envelope), "segment");
-        if envelope["type"] == "conversation.stream_delta"
-            && envelope["payload"]["delta_kind"] == "segment_delta"
-        {
-            segments.push(envelope["payload"]["segment"].clone());
-        }
-        promoted = segments.into_iter().find(|segment| {
-            segment["source"]["item_id"] == "block-2" && segment["phase"] == "final_answer"
-        });
+        // A finished segment arrives as a committed row.
+        promoted = carried(std::slice::from_ref(&envelope), "segment")
+            .into_iter()
+            .find(|segment| {
+                segment["source"]["item_id"] == "block-2" && segment["phase"] == "final_answer"
+            });
         if promoted.is_some() {
             break;
         }
@@ -1029,16 +1025,13 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sequences, sorted, "stream sequences strictly increase");
-    assert!(deltas.iter().any(|delta| {
-        delta["payload"]["delta_kind"] == "segment_delta"
-            && delta["payload"]["segment"]["kind"] == "assistant_message"
-            && delta["payload"]["segment"]["content"] == "Str"
-    }));
-    assert!(deltas.iter().any(|delta| {
-        delta["payload"]["delta_kind"] == "turn_delta"
-            && delta["payload"]["turn"]["status"] == "streaming"
-            && delta["payload"]["turn"]["content"] == "Streaming."
-    }));
+    // Each frame carries its open segment's whole text so far.
+    let texts = deltas
+        .iter()
+        .filter(|delta| delta["payload"]["delta_kind"] == "segment_text")
+        .map(|delta| delta["payload"]["text"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["Str", "Streaming."]);
 
     // The pending request-user-input mid-turn commit publishes durable
     // segment upserts with real revision cursors.
@@ -1198,7 +1191,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     let started_revision: i64 = started["revision"].as_str().unwrap().parse().unwrap();
 
     // Wait until the gated backend has streamed its first half.
-    let mut last_sequence = 0;
+    let mut last_sequence;
     loop {
         let envelope = next_envelope(&mut live_stream).await;
         if envelope["type"] != "conversation.stream_delta" {
@@ -1209,7 +1202,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         last_sequence = envelope["payload"]["stream_sequence"]
             .as_i64()
             .expect("sequence");
-        if envelope["payload"]["segment"]["content"] == "Half done." {
+        if envelope["payload"]["text"] == "Half done." {
             break;
         }
     }
@@ -1269,26 +1262,12 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     )
     .await;
     assert_eq!(launched.status(), StatusCode::OK);
-    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let revision = repository
-        .read_snapshot(conversation_id, Some(&project))
-        .expect("read")
-        .expect("snapshot")["revision"]
-        .as_i64()
-        .expect("revision");
-    repository
-        .commit_conversation(
-            conversation_id,
-            &project,
-            revision,
-            vec![ConversationMutation::MetadataUpdated {
-                patch: spark_storage::conversation::ConversationMetadataPatch {
-                    title: Some("Stored title".to_string()),
-                    ..Default::default()
-                },
-            }],
-        )
-        .expect("store title");
+    // The seeded reply is the only completed one, so a title still fits.
+    assert!(
+        ConversationRepository::new(crate::shared_store(&settings.data_dir))
+            .set_generated_title(conversation_id, &project, "Stored title")
+            .expect("store title")
+    );
     let mid_turn = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
     let mid_turn_revision = page_revision(&mid_turn);
     assert!(mid_turn_revision > started_revision);
@@ -1318,8 +1297,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         }
     }
     assert!(late_deltas.iter().any(|delta| {
-        delta["delta_kind"] == "segment_delta"
-            && delta["segment"]["content"] == "Half done. All done."
+        delta["delta_kind"] == "segment_text" && delta["text"] == "Half done. All done."
     }));
     for delta in &late_deltas {
         let sequence = delta["stream_sequence"].as_i64().expect("sequence");
@@ -2158,12 +2136,10 @@ async fn a_role_summary_change_during_a_disconnect_arrives_on_reconnect() {
     );
 }
 
-/// ponytail: the known ceiling of `placeholder_touches`: they live for the
-/// process, so a placeholder's change made in the gap and followed by a
-/// restart is not in the catch-up. The row stays stale for that client until
-/// its next change or a fresh snapshot, which is current.
+/// A role's change is a committed row, so a change made in the gap and
+/// followed by a restart is in the catch-up as well as a fresh snapshot.
 #[tokio::test]
-async fn a_placeholder_change_before_a_restart_is_missing_from_catch_up_but_not_from_a_snapshot() {
+async fn a_role_change_before_a_restart_reaches_catch_up_and_snapshots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
@@ -2189,7 +2165,11 @@ async fn a_placeholder_change_before_a_restart_is_missing_from_catch_up_but_not_
     .await;
     let mut stream = live.into_body().into_data_stream();
     let caught_up = next_of_type(&mut stream, "conversations.changes").await;
-    assert_eq!(coordinator_state(&caught_up), None, "{caught_up}");
+    assert_eq!(
+        coordinator_state(&caught_up).as_deref(),
+        Some("stopped"),
+        "{caught_up}"
+    );
 
     let live = request(
         restarted,
@@ -2870,39 +2850,23 @@ fn request_user_input_event() -> TurnStreamEvent {
 }
 
 fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation_id: &str) {
-    let project_path = project_path.to_string_lossy().to_string();
-    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let turn: TranscriptTurn = serde_json::from_value(json!({
-        "id": "turn-live",
-        "role": "assistant",
-        "content": "Ready.",
-        "timestamp": "2026-01-01T00:00:01Z",
-        "status": "complete",
-        "kind": "message"
-    }))
-    .expect("turn");
-    let segment: TranscriptSegment = serde_json::from_value(json!({
-        "id": "segment-live",
-        "turn_id": "turn-live",
-        "role": "assistant",
-        "kind": "message",
-        "content": "Ready.",
-        "timestamp": "2026-01-01T00:00:02Z",
-        "status": "complete",
-        "order": 1
-    }))
-    .expect("segment");
-    repository
-        .commit_conversation(
-            conversation_id,
-            &project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted { turn },
-                ConversationMutation::SegmentUpserted { segment },
-            ],
-        )
-        .expect("seed conversation");
+    crate::seed_conversation(
+        &settings.data_dir,
+        &json!({
+            "schema_version": 5, "revision": 1, "conversation_id": conversation_id,
+            "project_path": project_path.to_string_lossy(),
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:02Z",
+            "turns": [{
+                "id": "turn-live", "role": "assistant", "content": "Ready.",
+                "timestamp": "2026-01-01T00:00:01Z", "status": "complete", "kind": "message"
+            }],
+            "segments": [{
+                "id": "segment-live", "turn_id": "turn-live", "role": "assistant",
+                "kind": "message", "content": "Ready.", "timestamp": "2026-01-01T00:00:02Z",
+                "status": "complete", "order": 1
+            }],
+        }),
+    );
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
@@ -3784,7 +3748,7 @@ fn store_cursor(settings: &SparkSettings) -> (String, u64) {
     (database.generation().to_string(), watermark as u64)
 }
 
-/// Appends one complete user turn to a conversation, returning its revision.
+/// Queues one user message in a conversation, returning its revision.
 fn append_turn(
     settings: &SparkSettings,
     project_path: &Path,
@@ -3792,24 +3756,30 @@ fn append_turn(
     id: &str,
 ) -> u64 {
     let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let base = repository
-        .read_snapshot(conversation_id, None)
+    let settings_revision = repository
+        .read_head(conversation_id, None)
         .expect("read")
-        .map_or(0, |snapshot| snapshot["revision"].as_i64().unwrap());
-    let turn: TranscriptTurn = serde_json::from_value(json!({
-        "id": id, "role": "user", "content": id, "kind": "message",
-        "status": "complete", "timestamp": "2026-01-01T00:00:03Z",
-    }))
-    .expect("turn");
-    repository
-        .commit_conversation(
+        .map_or(0, |head| head["settings_revision"].as_i64().unwrap());
+    let (commit, accepted) = repository
+        .accept_message(
             conversation_id,
             &project_path.to_string_lossy(),
-            base,
-            vec![ConversationMutation::TurnUpserted { turn }],
+            MessageInput {
+                admission: Admission::Send,
+                user_turn_id: id.to_string(),
+                content: id.to_string(),
+                attachments: None,
+                client_request_sha256: None,
+                expected_settings_revision: settings_revision,
+                settings: Default::default(),
+                held: true,
+                assistant_turn_id: format!("{id}-reply"),
+                execution_settings: json!({}),
+            },
         )
-        .expect("append turn")
-        .revision as u64
+        .expect("append turn");
+    assert_eq!(accepted, Accepted::Queued);
+    commit.expect("commit").revision as u64
 }
 
 /// The live route for summary rows, optionally filtered and with a cursor.
@@ -3959,23 +3929,9 @@ async fn disconnected_clients_catch_up_with_changed_rows_and_tombstones() {
         "conversation-away",
         "turn-while-away",
     );
-    let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let base = repository
-        .read_snapshot("conversation-away", None)
-        .unwrap()
-        .unwrap()["revision"]
-        .as_i64()
-        .unwrap();
-    repository
-        .commit_conversation(
-            "conversation-away",
-            &project_path.to_string_lossy(),
-            base,
-            vec![ConversationMutation::SegmentTombstoned {
-                turn_id: "turn-live".to_string(),
-                segment_id: "segment-live".to_string(),
-            }],
-        )
+    crate::shared_store(&settings.data_dir)
+        .database()
+        .write(|tx| tx.delete_segment("conversation-away", "segment-live"))
         .unwrap();
     let back = request(
         app.clone(),
@@ -4442,7 +4398,8 @@ fn registered_path(settings: &SparkSettings, project_path: &Path) -> String {
 }
 
 /// A standing role with no conversation yet still follows its state live:
-/// each change re-delivers its placeholder row at a new revision.
+/// its first change commits the role's conversation row, and each change
+/// delivers that row at a new revision.
 #[tokio::test]
 async fn placeholder_role_rows_follow_role_state_changes() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -4495,7 +4452,7 @@ async fn placeholder_role_rows_follow_role_state_changes() {
                 .iter()
                 .find(|row| row["payload"]["standing_role"]["state"] == state)
             {
-                assert_eq!(row["payload"]["placeholder"], true);
+                assert_eq!(row["payload"]["placeholder"], Value::Null);
                 let revision: u64 = row["revision"].as_str().unwrap().parse().unwrap();
                 assert!(revision > 0 && revision <= last);
                 break;

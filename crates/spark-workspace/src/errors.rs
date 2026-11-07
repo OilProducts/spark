@@ -61,7 +61,8 @@ impl From<spark_storage::StorageError> for WorkspaceError {
             spark_storage::StorageError::InvalidRepositoryPath { reason, .. } => {
                 Self::Validation(reason)
             }
-            spark_storage::StorageError::InvalidConversationState { reason, .. } => {
+            spark_storage::StorageError::InvalidConversationState { reason, .. }
+            | spark_storage::StorageError::InvalidConversationInput { reason } => {
                 Self::Validation(reason)
             }
             spark_storage::StorageError::ConversationCommitRejected { reason, .. } => {

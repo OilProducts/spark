@@ -156,7 +156,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
 }
 
 #[test]
-fn project_chat_persists_every_provider_event_but_only_the_completed_logical_unit() {
+fn project_chat_writes_a_large_stream_once_at_its_segment_end() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
@@ -170,6 +170,13 @@ fn project_chat_persists_every_provider_event_but_only_the_completed_logical_uni
             },
         )
         .expect("start turn");
+    let watermark = || {
+        crate::shared_store(&settings.data_dir)
+            .database()
+            .read(|read| Ok(read.watermark()))
+            .expect("watermark")
+    };
+    let before = watermark();
     let mut events = (0..50_000)
         .map(|_| content_delta("assistant", "x", "app-turn", "answer"))
         .collect::<Vec<_>>();
@@ -194,24 +201,25 @@ fn project_chat_persists_every_provider_event_but_only_the_completed_logical_uni
         )
         .expect("ingest provider stream");
 
-    // Every provider event was traced before projection; the settled turn's
-    // trace is pruned and its sequences stay below the allocator floor.
+    // Deltas write nothing: the segment's opening, its end and the
+    // settlement are the only commits, and no provider trace exists.
+    assert!(
+        watermark() - before <= 4,
+        "{} commits",
+        watermark() - before
+    );
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths("/projects/large-provider-stream")
         .expect("project paths");
     let root = project
         .conversations_dir
         .join("conversation-large-provider-stream");
-    assert_eq!(
-        fs::read(root.join("provider-trace.jsonl")).expect("trace"),
-        Vec::<u8>::new()
-    );
+    assert!(!root.join("provider-trace.jsonl").exists());
     let stored = crate::shared_store(&settings.data_dir)
         .database()
         .read(|read| read.conversation("conversation-large-provider-stream"))
         .expect("rows")
         .expect("conversation");
-    assert_eq!(stored.trace_sequence_high_water, 50_001);
     let logical_units = stored
         .segments
         .iter()
@@ -261,7 +269,7 @@ fn project_chat_event_and_transcript_share_externalized_tool_output() {
     let root = project
         .conversations_dir
         .join("conversation-large-tool-output");
-    // The traced event and the stored segment share one immutable blob.
+    // The stored segment references one immutable blob.
     let snapshot = service
         .get_snapshot(
             "conversation-large-tool-output",
@@ -294,7 +302,7 @@ fn project_chat_event_and_transcript_share_externalized_tool_output() {
 }
 
 #[test]
-fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
+fn settling_an_orphaned_turn_keeps_its_committed_segments_across_reopens() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
@@ -309,15 +317,16 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
         )
         .expect("start turn");
     let repository = ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let mut completed = content_completed("assistant", "recovered", "app-turn", "answer");
+    let completed = content_completed("assistant", "recovered", "app-turn", "answer");
     repository
-        .append_provider_event(
+        .record_provider_event(
             "conversation-recovered-provider-unit",
             "/projects/recovered-provider-unit",
             &prepared.assistant_turn_id,
-            &mut completed,
+            &completed,
+            &Default::default(),
         )
-        .expect("persist terminal provider event");
+        .expect("record a completed segment");
     let read = || {
         ConversationRepository::new(crate::shared_store(&settings.data_dir))
             .read_snapshot(
@@ -339,9 +348,9 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
             .count()
     };
 
-    // Reads never replay the provider log.
+    // The completed segment committed when it ended; reads change nothing.
     let before = read();
-    assert_eq!(recovered_count(&before), 0);
+    assert_eq!(recovered_count(&before), 1);
     assert_eq!(read()["revision"], before["revision"]);
 
     service.settle_orphaned_turns().expect("settle");
@@ -361,7 +370,7 @@ fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
 }
 
 #[test]
-fn live_thinking_progress_reaches_clients_as_a_transient_delta_and_is_never_traced() {
+fn live_thinking_progress_reaches_clients_as_a_transient_delta_and_is_never_stored() {
     let temp = tempfile::tempdir().expect("tempdir");
     let backend = ScriptedAgentTurnBackend::with_stream_events(
         vec![AgentTurnOutput::default()],
@@ -382,24 +391,26 @@ fn live_thinking_progress_reaches_clients_as_a_transient_delta_and_is_never_trac
         )
         .expect("start turn");
     let assistant_turn_id = prepared.assistant_turn_id.clone();
-    let trace_root = temp.path().to_path_buf();
     let deltas = Arc::new(Mutex::new(Vec::new()));
     let seen = deltas.clone();
     service
         .complete_started_turn_with_progress_payloads(prepared, move |payload| {
             if payload["delta_kind"] == "thinking" {
                 seen.lock().unwrap().push(payload);
-                // Nothing wrote it: the trace is pruned only once the turn settles.
-                for entry in walkdir_files(&trace_root) {
-                    if entry.ends_with("provider-trace.jsonl") {
-                        assert!(!fs::read_to_string(&entry)
-                            .unwrap_or_default()
-                            .contains("thinking_progress"));
-                    }
-                }
             }
         })
         .expect("turn completes");
+    // Nothing stores it, and there is no provider trace to hold it.
+    let snapshot = service
+        .get_snapshot(
+            "conversation-live-thinking",
+            Some("/projects/live-thinking"),
+        )
+        .expect("snapshot");
+    assert!(!snapshot.to_string().contains("thinking_progress"));
+    assert!(!walkdir_files(temp.path())
+        .iter()
+        .any(|entry| entry.ends_with("provider-trace.jsonl")));
 
     let deltas = deltas.lock().unwrap();
     assert_eq!(deltas.len(), 2);
@@ -469,7 +480,12 @@ fn walkdir_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn live_provider_event_write_failure_prevents_transcript_commit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let completion = content_completed("assistant", "must not commit", "app-turn", "answer");
+    let completion = tool_event(
+        "tool_call_completed",
+        "tool-unbacked",
+        "completed",
+        &"must not commit".repeat(2_000),
+    );
     let backend = ScriptedAgentTurnBackend::with_stream_events(
         vec![AgentTurnOutput {
             events: vec![completion.clone()],
@@ -502,8 +518,9 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
             .expect("rows")
     };
     let before = rows();
-    // A directory where the trace file belongs makes every append fail.
-    fs::create_dir_all(root.join("provider-trace.jsonl")).expect("block trace append");
+    // A file where tool output belongs makes the tool segment's end write fail.
+    fs::create_dir_all(&root).expect("conversation root");
+    fs::write(root.join("tool-output"), "").expect("block tool output");
 
     let assistant_turn_id = prepared.assistant_turn_id.clone();
     let error = service
@@ -512,9 +529,9 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
     assert!(matches!(error, WorkspaceError::Internal(_)));
 
     // The turn settles as a visible failure; none of the unbacked provider
-    // output is committed and its applied trace cursor does not move.
+    // output is committed.
     let after = rows().expect("conversation");
-    let (_, _, applied, assistant) = after
+    let (_, _, assistant) = after
         .turns
         .iter()
         .find(|(id, ..)| *id == assistant_turn_id)
@@ -523,7 +540,6 @@ fn live_provider_event_write_failure_prevents_transcript_commit() {
     assert!(assistant["error"]
         .as_str()
         .is_some_and(|error| error.contains("could not record")));
-    assert_eq!(*applied, 0);
     assert!(!serde_json::to_string(&after.segments)
         .unwrap()
         .contains("must not commit"));
@@ -1737,7 +1753,7 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
 }
 
 #[test]
-fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_order() {
+fn provider_output_after_settlement_changes_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
@@ -1752,7 +1768,7 @@ fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_or
         )
         .expect("start turn");
 
-    service
+    let settled = service
         .ingest_agent_turn_output(
             "conversation-late-segment",
             "/projects/late-segment",
@@ -1769,7 +1785,7 @@ fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_or
         )
         .expect("initial ingest");
 
-    let completed = service
+    let late = service
         .ingest_agent_turn_output(
             "conversation-late-segment",
             "/projects/late-segment",
@@ -1788,42 +1804,10 @@ fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_or
         )
         .expect("late tool completion");
 
-    let segments = completed["segments"].as_array().expect("segments");
-    let tool = segment_by_kind(segments, "tool_call");
-    let assistant = segment_by_kind(segments, "assistant_message");
-    assert_eq!(tool["status"], "complete");
-    assert_eq!(tool["tool_call"]["output"], "full output");
-    assert!(
-        tool["order"].as_i64().expect("tool order")
-            < assistant["order"].as_i64().expect("assistant order")
-    );
-
-    let events = crate::stored_upserts(&settings, "conversation-late-segment");
-    let assistant_revision = events
-        .iter()
-        .find(|event| {
-            event["type"] == "segment_upsert"
-                && event["segment"]["kind"] == "assistant_message"
-                && event["segment"]["content"] == "Tool is running."
-        })
-        .and_then(|event| event["revision"].as_i64())
-        .expect("assistant revision");
-    let completed_tool_revision = events
-        .iter()
-        .filter(|event| {
-            event["type"] == "segment_upsert"
-                && event["segment"]["kind"] == "tool_call"
-                && event["segment"]["status"] == "complete"
-        })
-        .filter_map(|event| event["revision"].as_i64())
-        .max()
-        .expect("completed tool revision");
-    assert!(completed_tool_revision > assistant_revision);
-    let completed_tool_event = events
-        .iter()
-        .find(|event| event["revision"].as_i64() == Some(completed_tool_revision))
-        .expect("completed tool event");
-    assert_eq!(completed_tool_event["segment"]["order"], tool["order"]);
+    // Settlement is final: neither the late event nor a second return writes.
+    assert_eq!(late, settled);
+    let tool = segment_by_kind(late["segments"].as_array().unwrap(), "tool_call");
+    assert_eq!(tool["tool_call"]["output"], "partial output");
 }
 
 #[test]
@@ -1875,30 +1859,26 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
     assert!(crate::stored_upserts(&settings, "conversation-live-stream")
         .iter()
         .any(|event| event["turn"]["role"] == "user" && event["turn"]["content"] == "Stream this"));
-    // Streamed updates are transient deltas: coalesced bodies, a per-turn
-    // stream sequence, the committed base revision, and no durable revision.
-    assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "stream_delta"
-            && payload["delta_kind"] == "turn_delta"
-            && payload["turn"]["role"] == "assistant"
-            && payload["turn"]["status"] == "streaming"
-            && payload["turn"]["content"] == "Hel"
-            && payload.get("revision").is_none()
-    }));
-    assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "stream_delta"
-            && payload["delta_kind"] == "segment_delta"
-            && payload["segment"]["kind"] == "assistant_message"
-            && payload["segment"]["status"] == "streaming"
-            && payload["segment"]["content"] == "Hel"
-    }));
-    assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "stream_delta"
-            && payload["delta_kind"] == "segment_delta"
-            && payload["segment"]["kind"] == "reasoning"
-            && payload["segment"]["status"] == "streaming"
-            && payload["segment"]["content"] == "Thinking"
-    }));
+    // Streamed text is transient: each open segment's whole text so far, a
+    // per-execution stream sequence, the committed base revision, and no
+    // durable revision.
+    for (prefix, text) in [
+        ("segment-assistant-", "Hel"),
+        ("segment-reasoning-", "Thinking"),
+    ] {
+        assert!(
+            live_payloads.iter().any(|payload| {
+                payload["delta_kind"] == "segment_text"
+                    && payload["segment_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with(prefix))
+                    && payload["text"] == text
+                    && payload["base_revision"].as_i64().is_some()
+                    && payload.get("revision").is_none()
+            }),
+            "{live_payloads:#?}"
+        );
+    }
     let stream_sequences = live_payloads
         .iter()
         .filter(|payload| payload["type"] == "stream_delta")
@@ -1993,15 +1973,19 @@ fn claude_code_live_text_completions_update_delta_segments_in_place() {
         .expect("payloads")
         .iter()
         .filter(|payload| {
-            payload["type"] == "stream_delta"
-                && payload["delta_kind"] == "segment_delta"
-                && payload["segment"]["kind"] == "assistant_message"
+            payload["type"] == "stream_delta" && payload["delta_kind"] == "segment_text"
         })
-        .filter_map(|payload| payload["segment"]["id"].as_str().map(str::to_string))
+        .filter_map(|payload| payload["segment_id"].as_str().map(str::to_string))
         .collect::<Vec<_>>();
     live_segment_ids.sort_unstable();
     live_segment_ids.dedup();
-    assert_eq!(live_segment_ids.len(), 2);
+    // Live text streams under the ids its segments are stored with.
+    let mut stored_ids = assistant_segments
+        .iter()
+        .map(|segment| segment["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    stored_ids.sort_unstable();
+    assert_eq!(live_segment_ids, stored_ids);
 }
 
 #[cfg(unix)]
@@ -3601,85 +3585,11 @@ fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
     assert!(!session.resume_failed);
 }
 
+/// A settled turn is stored in its final form, including an unmatched tool
+/// start finalized as `yielded` at the turn boundary, so reading it again
+/// writes nothing: no new revision, identical rows.
 #[test]
-fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let backend = ScriptedAgentTurnBackend::new(vec![
-        AgentTurnOutput {
-            app_thread_id: Some("thread-legacy".to_string()),
-            final_assistant_text: Some("First answer".to_string()),
-            ..AgentTurnOutput::default()
-        },
-        AgentTurnOutput {
-            final_assistant_text: Some("Second answer".to_string()),
-            ..AgentTurnOutput::default()
-        },
-    ]);
-    let requests = backend.requests();
-    let service = crate::conversations_with_backend(settings.clone(), Arc::new(backend));
-    let repository =
-        spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
-
-    service
-        .execute_turn(
-            "conversation-legacy-continuity",
-            ConversationTurnRequest {
-                project_path: "/projects/runtime-session".to_string(),
-                message: "Establish the thread".to_string(),
-                ..ConversationTurnRequest::default()
-            },
-        )
-        .expect("first turn");
-
-    // Conversations that predate the runtime-session sidecar have only the
-    // transcript turn stamps; continuity must still resume via the turn scan.
-    assert!(repository
-        .read_runtime_session("conversation-legacy-continuity", None)
-        .expect("session")
-        .is_some());
-    repository
-        .store()
-        .database()
-        .write(|tx| tx.delete_runtime_session("conversation-legacy-continuity", "codex_app_server"))
-        .expect("remove runtime session");
-
-    service
-        .execute_turn(
-            "conversation-legacy-continuity",
-            ConversationTurnRequest {
-                project_path: "/projects/runtime-session".to_string(),
-                message: "Continue without a sidecar".to_string(),
-                ..ConversationTurnRequest::default()
-            },
-        )
-        .expect("second turn");
-    assert_eq!(
-        requests.lock().expect("requests")[1].metadata["spark.runtime.codex_app_server.thread_id"],
-        json!("thread-legacy")
-    );
-
-    // The successful turn scan self-heals: the sidecar is materialized so the
-    // next continuity read never touches the transcript.
-    let healed = repository
-        .read_runtime_session(
-            "conversation-legacy-continuity",
-            Some("/projects/runtime-session"),
-        )
-        .expect("read healed session")
-        .expect("healed session");
-    assert_eq!(healed.thread_id.as_deref(), Some("thread-legacy"));
-    assert!(!healed.resume_failed);
-}
-
-/// Live ingestion and recovery replay share one deterministic projector with
-/// replay-stable inputs (provider committed_at + append sequence). A reopen
-/// after a live-projected turn — including an unmatched tool start finalized
-/// as `yielded` at the turn boundary — must therefore be a fixed point: zero
-/// new revisions, byte-identical transcript, canonical ordering already in
-/// place.
-#[test]
-fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
+fn a_settled_turn_reads_back_without_writing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = crate::conversations(settings.clone());
@@ -4056,7 +3966,7 @@ fn claude_stream_interrupt_error_result_completes_shortened_turn() {
     service
         .complete_started_turn_with_progress_payloads(prepared, move |payload| {
             if payload["type"] == "stream_delta"
-                && payload["segment"]["content"] == "Shortened turn."
+                && payload["text"] == "Shortened turn."
                 && !interrupted.swap(true, std::sync::atomic::Ordering::SeqCst)
             {
                 assert!(controller
@@ -4438,8 +4348,8 @@ fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
 
 /// Runs a Claude turn with the fake CLI in `mode`, sends "Also check the
 /// docs." once it streams, and optionally stops it right after. Returns the
-/// send's acceptance, the completed snapshot, and every live payload: the
-/// transient stream deltas and, per commit, the rows it changed.
+/// send's acceptance, the completed snapshot, and the live frames in order,
+/// with a `{"type": "sent"}` marker where the message was sent.
 fn claude_turn_with_mid_turn_send(
     temp: &Path,
     mode: &str,
@@ -4463,37 +4373,6 @@ fn claude_turn_with_mid_turn_send(
         ..ConversationTurnRequest::default()
     };
     let payloads = Arc::new(Mutex::new(Vec::new()));
-    {
-        let committed = payloads.clone();
-        let store = service.store().clone();
-        let listener_store = Arc::downgrade(&store);
-        store.set_commit_listener(Arc::new(move |notice| {
-            let Some(store) = listener_store.upgrade() else {
-                return;
-            };
-            let generation = store.database().generation().to_string();
-            let Ok(spark_storage::conversation::CatchUp::Batch(batch)) =
-                store.database().read(|read| {
-                    read.changes(
-                        spark_storage::conversation::ChangeScope::Conversation("mid-turn"),
-                        &generation,
-                        notice.revision - 1,
-                    )
-                })
-            else {
-                return;
-            };
-            let rows = batch
-                .rows
-                .into_iter()
-                .filter_map(|row| row.payload)
-                .collect::<Vec<_>>();
-            committed
-                .lock()
-                .unwrap()
-                .push(json!({"type": "commit", "rows": rows}));
-        }));
-    }
     let (prepared, _) = service
         .send_turn(
             "mid-turn",
@@ -4508,9 +4387,7 @@ fn claude_turn_with_mid_turn_send(
     let running = service.clone();
     let handle = std::thread::spawn(move || {
         running.complete_started_turn_with_progress_payloads(prepared.unwrap(), move |payload| {
-            let streaming_text = live_segments(std::slice::from_ref(&payload))
-                .iter()
-                .any(|segment| segment["kind"] == "assistant_message");
+            let streaming_text = payload["delta_kind"] == "segment_text";
             live.lock().unwrap().push(payload);
             if streaming_text {
                 let _ = streaming.send(());
@@ -4518,6 +4395,7 @@ fn claude_turn_with_mid_turn_send(
         })
     });
     streamed.recv_timeout(Duration::from_secs(120)).unwrap();
+    payloads.lock().unwrap().push(json!({"type": "sent"}));
     let (none, sent) = service
         .send_turn("mid-turn", request("Also check the docs."))
         .expect("no 409 while the turn streams");
@@ -4529,27 +4407,6 @@ fn claude_turn_with_mid_turn_send(
     let completed = service.get_snapshot("mid-turn", Some(&project)).unwrap();
     let payloads = payloads.lock().unwrap().clone();
     (sent, completed, payloads)
-}
-
-/// Every transcript segment a live payload carries, in the order sent.
-fn live_segments(payloads: &[Value]) -> Vec<Value> {
-    fn collect(value: &Value, found: &mut Vec<Value>) {
-        match value {
-            Value::Object(object) => {
-                if object.contains_key("turn_id") && object.contains_key("order") {
-                    found.push(value.clone());
-                }
-                object.values().for_each(|value| collect(value, found));
-            }
-            Value::Array(items) => items.iter().for_each(|value| collect(value, found)),
-            _ => {}
-        }
-    }
-    let mut found = Vec::new();
-    payloads
-        .iter()
-        .for_each(|payload| collect(payload, &mut found));
-    found
 }
 
 fn user_message_segment(snapshot: &Value) -> Value {
@@ -4663,25 +4520,24 @@ fn output_streamed_the_moment_a_message_is_accepted_follows_it_live_and_persiste
         "{completed}"
     );
 
-    // Live, the message arrives before anything streamed after it, and the
-    // earlier part never takes the later text.
+    // Live, text streamed after the message is sent goes to new segments,
+    // and the earlier part never takes the later text.
     let ids = segments
         .iter()
         .map(|segment| segment["id"].as_str().unwrap())
         .collect::<Vec<_>>();
-    let live = live_segments(&payloads);
     let first_seen = |id: &str| {
-        live.iter()
-            .position(|segment| segment["id"] == id)
-            .unwrap_or_else(|| panic!("{id} live"))
+        payloads
+            .iter()
+            .position(|payload| payload["segment_id"] == id || payload["type"] == id)
+            .unwrap_or_else(|| panic!("{id} live in {payloads:#?}"))
     };
-    assert!(first_seen(ids[0]) < first_seen(ids[1]));
-    assert!(first_seen(ids[1]) < first_seen(ids[2]));
-    assert!(first_seen(ids[2]) < first_seen(ids[3]));
-    assert!(live
+    assert!(first_seen(ids[0]) < first_seen("sent"));
+    assert!(first_seen("sent") < first_seen(ids[2]));
+    assert!(payloads
         .iter()
-        .filter(|segment| segment["id"] == ids[0])
-        .all(|segment| !segment["content"].as_str().unwrap().contains("still")));
+        .filter(|payload| payload["segment_id"] == ids[0])
+        .all(|payload| !payload["text"].as_str().unwrap().contains("still")));
 }
 
 /// A turn that takes messages while it runs: it says "Looking.", waits to

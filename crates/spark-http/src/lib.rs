@@ -324,6 +324,11 @@ pub(crate) struct WorkspaceLiveHub {
     /// Thinking in progress and when it began, for clients that subscribe
     /// meanwhile. In memory only, keyed by resource kind and id.
     active_thinking: Mutex<HashMap<(String, String), (std::time::Instant, LiveEnvelope)>>,
+    /// The latest whole-text frame of each open segment, keyed by
+    /// conversation, owning turn and segment, for clients that subscribe or
+    /// lag meanwhile. Display-only and in memory; commit notices retire the
+    /// frames of segments that closed and executions that settled.
+    segment_frames: Mutex<HashMap<(String, String, String), LiveEnvelope>>,
     /// Not owned: background tasks and installed runtimes hold the hub, and
     /// must not keep the home locked after the app is dropped.
     conversation_store: std::sync::Weak<spark_storage::ConversationStore>,
@@ -445,6 +450,7 @@ impl WorkspaceLiveHub {
             subscribers: Mutex::new(Vec::new()),
             execution_cursors: Mutex::new(HashMap::new()),
             active_thinking: Mutex::new(HashMap::new()),
+            segment_frames: Mutex::new(HashMap::new()),
             conversation_store: Arc::downgrade(conversation_store),
         }
     }
@@ -492,6 +498,23 @@ impl WorkspaceLiveHub {
     /// Wake the subscribers whose conversation scopes a committed write
     /// touched. They read the changed rows from the database themselves.
     pub(crate) fn notify_commit(&self, notice: &spark_storage::conversation::CommitNotice) {
+        if !notice.closed_segments.is_empty() || !notice.settled_executions.is_empty() {
+            // Retired before the wakeup, so a catch-up that reads the closed
+            // row never replays its frame.
+            self.segment_frames
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .retain(|(conversation, turn, segment), _| {
+                    !notice
+                        .closed_segments
+                        .iter()
+                        .any(|(closed, _, id)| closed == conversation && id == segment)
+                        && !notice
+                            .settled_executions
+                            .iter()
+                            .any(|(settled, owner)| settled == conversation && owner == turn)
+                });
+        }
         for subscriber in self.live_subscribers() {
             let Some(query) = subscriber.query.as_ref() else {
                 continue;
@@ -535,6 +558,7 @@ impl WorkspaceLiveHub {
 
     pub(crate) fn publish(&self, envelope: LiveEnvelope) {
         self.track_thinking(&envelope);
+        self.track_segment_frame(&envelope);
         for subscriber in self.live_subscribers() {
             let matches = subscriber.query.as_ref().is_none_or(|query| {
                 spark_workspace::live::envelope_matches_query(&envelope, query)
@@ -567,6 +591,53 @@ impl WorkspaceLiveHub {
         } else {
             active.remove(&key);
         }
+    }
+
+    fn track_segment_frame(&self, envelope: &LiveEnvelope) {
+        let payload = &envelope.payload;
+        if envelope.event_type != "conversation.stream_delta"
+            || payload["delta_kind"] != "segment_text"
+        {
+            return;
+        }
+        let (Some(conversation), Some(turn), Some(segment)) = (
+            envelope.resource.id.clone(),
+            payload["turn_id"].as_str(),
+            payload["segment_id"].as_str(),
+        ) else {
+            return;
+        };
+        let sequence = |envelope: &LiveEnvelope| envelope.payload["stream_sequence"].as_u64();
+        let mut frames = self
+            .segment_frames
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let key = (conversation, turn.to_string(), segment.to_string());
+        if frames
+            .get(&key)
+            .is_none_or(|kept| sequence(kept) < sequence(envelope))
+        {
+            frames.insert(key, envelope.clone());
+        }
+    }
+
+    /// The latest frames of the open segments `query` covers, in sequence
+    /// order. Sent after a committed baseline, whose closed rows fence any
+    /// that closed meanwhile.
+    pub(crate) fn segment_frame_envelopes(
+        &self,
+        query: &spark_workspace::live::LiveQuery,
+    ) -> Vec<LiveEnvelope> {
+        let mut frames: Vec<LiveEnvelope> = self
+            .segment_frames
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .values()
+            .filter(|envelope| spark_workspace::live::envelope_matches_query(envelope, query))
+            .cloned()
+            .collect();
+        frames.sort_by_key(|envelope| envelope.payload["stream_sequence"].as_u64());
+        frames
     }
 
     /// The thinking in progress that `query` covers, with how long it has run,
@@ -1180,6 +1251,189 @@ mod live_queue_tests {
         assert!(!frames.contains("\"delta_kind\":\"thinking\""), "{frames}");
     }
 
+    fn segment_frame(
+        conversation: &str,
+        project_path: &str,
+        (turn, segment): (&str, &str),
+        sequence: u64,
+        text: &str,
+    ) -> LiveEnvelope {
+        spark_workspace::live::conversation_event_envelope(
+            conversation,
+            project_path,
+            json!({"type": "stream_delta", "delta_kind": "segment_text",
+                "conversation_id": conversation, "turn_id": turn, "segment_id": segment,
+                "stream_sequence": sequence, "base_revision": 1, "text": text}),
+        )
+    }
+
+    fn notice(
+        closed: &[(&str, &str, &str)],
+        settled: &[(&str, &str)],
+    ) -> spark_storage::conversation::CommitNotice {
+        spark_storage::conversation::CommitNotice {
+            revision: 1,
+            conversations: Vec::new(),
+            closed_segments: closed
+                .iter()
+                .map(|(c, t, s)| (c.to_string(), t.to_string(), s.to_string()))
+                .collect(),
+            settled_executions: settled
+                .iter()
+                .map(|(c, t)| (c.to_string(), t.to_string()))
+                .collect(),
+        }
+    }
+
+    /// The hub keeps each open segment's latest frame for its query, in
+    /// sequence order, until a commit ends the segment or settles or removes
+    /// its execution. Other commits, a question-only return among them, keep it.
+    #[test]
+    fn open_segment_frames_replay_until_their_segment_ends_or_execution_settles() {
+        let (_temp, hub) = hub();
+        let chat = query(spark_workspace::live::RawLiveQuery {
+            conversation_id: Some("chat".to_string()),
+            conversation_project_path: Some("/p".to_string()),
+            ..Default::default()
+        });
+        let texts = |hub: &WorkspaceLiveHub| -> Vec<String> {
+            hub.segment_frame_envelopes(&chat)
+                .iter()
+                .map(|envelope| envelope.payload["text"].as_str().unwrap().to_string())
+                .collect()
+        };
+        hub.publish(segment_frame("chat", "/p", ("t", "a"), 1, "He"));
+        hub.publish(segment_frame("chat", "/p", ("t", "b"), 2, "Th"));
+        hub.publish(segment_frame("chat", "/p", ("t", "a"), 3, "Hello"));
+        hub.publish(segment_frame("chat", "/p", ("t", "a"), 1, "He"));
+        hub.publish(segment_frame("other", "/p", ("t", "a"), 4, "Elsewhere"));
+        assert_eq!(texts(&hub), ["Th", "Hello"]);
+
+        hub.notify_commit(&notice(&[], &[]));
+        hub.notify_commit(&notice(&[("other", "t", "b")], &[("other", "t")]));
+        assert_eq!(texts(&hub), ["Th", "Hello"]);
+        hub.notify_commit(&notice(&[("chat", "t", "a")], &[]));
+        assert_eq!(texts(&hub), ["Th"]);
+        hub.notify_commit(&notice(&[], &[("chat", "t")]));
+        assert!(texts(&hub).is_empty());
+    }
+
+    /// A quiet open segment's text reaches a new stream right after its
+    /// committed rows, and a stream that lagged again after its catch-up,
+    /// with no further provider delta.
+    #[tokio::test]
+    async fn new_and_lagged_streams_replay_quiet_open_text_after_their_rows() {
+        use futures_util::StreamExt;
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(live_lag_settings(temp.path()));
+        let project = spark_storage::ProjectRegistry::new(temp.path())
+            .ensure_project_paths(&temp.path().join("project").to_string_lossy())
+            .unwrap()
+            .project_path;
+        let store = spark_storage::ConversationStore::open(temp.path()).unwrap();
+        let hub = Arc::new(WorkspaceLiveHub::new(&store));
+        let repository = spark_storage::ConversationRepository::new(store.clone());
+        let (_, accepted) = repository
+            .accept_message(
+                "chat",
+                &project,
+                spark_storage::conversation::MessageInput {
+                    admission: spark_storage::conversation::Admission::Start,
+                    user_turn_id: "turn-user".to_string(),
+                    content: "Hello".to_string(),
+                    attachments: None,
+                    client_request_sha256: None,
+                    expected_settings_revision: 0,
+                    settings: Default::default(),
+                    held: false,
+                    assistant_turn_id: "turn-assistant".to_string(),
+                    execution_settings: json!({}),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            accepted,
+            spark_storage::conversation::Accepted::Started { .. }
+        ));
+        let (segment, _) = repository
+            .record_provider_event(
+                "chat",
+                &project,
+                "turn-assistant",
+                &serde_json::from_value(json!({"kind": "content_delta",
+                    "channel": "assistant", "content_delta": "Quiet",
+                    "source": {"item_id": "item-1"}}))
+                .unwrap(),
+                &Default::default(),
+            )
+            .unwrap()
+            .opened
+            .unwrap();
+        hub.publish(segment_frame(
+            "chat",
+            &project,
+            ("turn-assistant", &segment),
+            1,
+            "Quiet text",
+        ));
+
+        let response = workspace::workspace_live_events(
+            State(settings),
+            State(store),
+            State(hub.clone()),
+            Ok(axum::extract::Query(spark_workspace::live::RawLiveQuery {
+                conversation_id: Some("chat".to_string()),
+                conversation_project_path: Some(project.clone()),
+                include_settings: Some("true".to_string()),
+                ..Default::default()
+            })),
+        )
+        .await
+        .map_err(|_| "live events failed")
+        .unwrap();
+        let mut stream = response.into_body().into_data_stream();
+        let mut frames = Vec::<Value>::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut until = async |frames: &mut Vec<Value>, done: &dyn Fn(&Value) -> bool| loop {
+            let frame = tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .unwrap_or_else(|_| panic!("no such frame in {frames:?}"))
+                .unwrap()
+                .unwrap();
+            let frame = String::from_utf8(frame.to_vec()).unwrap();
+            let Some(data) = frame.strip_prefix("data: ") else {
+                continue;
+            };
+            let frame: Value = serde_json::from_str(data.trim()).unwrap();
+            frames.push(frame.clone());
+            if done(&frame) {
+                return frames.len() - 1;
+            }
+        };
+        let replayed = |frame: &Value| frame["payload"]["text"] == "Quiet text";
+
+        let replay = until(&mut frames, &replayed).await;
+        let rows = frames
+            .iter()
+            .position(|frame| frame["resource"]["kind"] == "conversation")
+            .unwrap();
+        assert!(rows < replay, "{frames:?}");
+        // The committed rows hold the open segment, not its text.
+        assert!(
+            !frames[rows].to_string().contains("Quiet"),
+            "{}",
+            frames[rows]
+        );
+
+        for _ in 0..=SUBSCRIBER_QUEUE_ENVELOPES {
+            hub.publish_settings_change("workspace", "agents", None, json!("1"));
+        }
+        let resync = until(&mut frames, &|frame| frame["type"] == "resync_required").await;
+        let replay = until(&mut frames, &replayed).await;
+        assert!(resync < replay);
+        assert_eq!(frames[replay]["payload"]["segment_id"], segment.as_str());
+    }
+
     #[test]
     fn a_run_reconnect_restores_its_thinking_until_it_ends_or_the_run_finishes() {
         let (_temp, hub) = hub();
@@ -1251,25 +1505,7 @@ mod live_queue_tests {
         .unwrap();
         let store = hub.conversation_store().unwrap();
         let repository = spark_storage::ConversationRepository::new(store.clone());
-        let commit = |id: &str| {
-            repository
-                .commit_conversation(
-                    id,
-                    &project,
-                    0,
-                    vec![
-                        spark_storage::conversation::ConversationMutation::TurnUpserted {
-                            turn: serde_json::from_value(json!({
-                                "id": "turn-1", "role": "user", "kind": "message",
-                                "content": "Hello", "status": "complete",
-                                "timestamp": "2026-01-01T00:00:00Z",
-                            }))
-                            .unwrap(),
-                        },
-                    ],
-                )
-                .unwrap();
-        };
+        let commit = |id: &str| repository.touch_conversation(id, &project).unwrap();
         commit("chat-before");
         store.set_commit_listener(Arc::new(|_| {}));
 
@@ -1409,6 +1645,7 @@ mod live_queue_tests {
             hub.notify_commit(&spark_storage::conversation::CommitNotice {
                 revision,
                 conversations: vec![("chat".into(), "/p".into())],
+                ..Default::default()
             });
         }
         let mut changed = 0;

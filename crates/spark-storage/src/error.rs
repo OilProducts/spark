@@ -79,6 +79,10 @@ pub enum StorageError {
     #[error("{reason}")]
     InvalidConversationState { path: PathBuf, reason: String },
 
+    /// Caller input a conversation operation cannot accept.
+    #[error("{reason}")]
+    InvalidConversationInput { reason: String },
+
     #[error("Conversation commit rejected for {conversation_id}: {reason}")]
     ConversationCommitRejected {
         conversation_id: String,
@@ -89,7 +93,8 @@ pub enum StorageError {
     ConversationDatabase(#[from] rusqlite::Error),
 
     #[error(
-        "Conversation database {path} has unsupported schema version {found} (expected {expected}); stop Spark and remove it to reset conversation history."
+        "Conversation database {path} has unsupported schema version {found} (expected {expected}). To reset conversation history, stop every Spark server and desktop app using this Spark home, then remove exactly {path}, {path}-wal and {path}-shm (the last two only if present); never remove them while Spark runs. The next start creates a fresh database and removes the registered projects' old conversation directories; projects, settings and run records are kept.",
+        path = path.display()
     )]
     UnsupportedConversationDatabase {
         path: PathBuf,

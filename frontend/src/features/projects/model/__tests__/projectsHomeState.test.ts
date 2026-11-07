@@ -193,6 +193,25 @@ const turn = (value: ConversationTurnResponse, revision: number, position?: numb
 const segment = (value: ConversationSegmentResponse, revision: number) => segmentRow(ID, value, String(revision))
 const conversation = (revision: number, overrides: Partial<Snapshot> = {}) => conversationRow(buildSnapshot(overrides), String(revision))
 const timelineIds = (cache: ProjectConversationCacheState) => getConversationTimelineEntries(recordOf(cache)).map((entry) => entry.id)
+/** A segment's opening row: no text and no completion yet. */
+const openSegment = (overrides: Partial<ConversationSegmentResponse> = {}) => buildSegment({ status: 'streaming', completed_at: null, content: '', ...overrides })
+/** A `segment_text` frame: the open segment's whole text so far. */
+const textFrame = (
+  segmentId: string,
+  sequence: number,
+  text: string,
+  overrides: Partial<ConversationStreamDeltaEventResponse> = {},
+): ConversationStreamDeltaEventResponse => ({
+  type: 'stream_delta',
+  conversation_id: ID,
+  turn_id: 'turn-assistant',
+  stream_sequence: sequence,
+  base_revision: 3,
+  delta_kind: 'segment_text',
+  segment_id: segmentId,
+  text,
+  ...overrides,
+})
 
 describe('applyConversationPageToCache', () => {
   it('hydrates a page into a normalized record with ordered timeline and artifact maps', () => {
@@ -549,26 +568,22 @@ describe('the live cursor', () => {
   })
 
   it('clears history on a reset and stops applying live batches until the next window', () => {
-    const streamingTurn = (sequence: number, content: string): ConversationStreamDeltaEventResponse => ({
-      type: 'stream_delta',
-      conversation_id: ID,
-      turn_id: 'turn-streaming',
-      stream_sequence: sequence,
-      base_revision: 3,
-      delta_kind: 'turn_delta',
-      turn: buildTurn({ id: 'turn-streaming', status: 'streaming', content }),
-    })
-    let cache = open(buildSnapshot({ revision: 3, title: 'Kept title' }), undefined, { older_cursor: 'cursor-1' })
-    cache = applyTransientConversationEventToCache(cache, streamingTurn(1, 'Partial')).cache
-    expect(recordOf(cache).orderedTurnIds).toContain('turn-streaming')
+    let cache = open(buildSnapshot({
+      revision: 3,
+      title: 'Kept title',
+      turns: [buildTurn({ status: 'streaming', content: '' })],
+      segments: [openSegment()],
+    }), undefined, { older_cursor: 'cursor-1' })
+    cache = applyTransientConversationEventToCache(cache, textFrame('segment-assistant', 1, 'Partial')).cache
+    expect(recordOf(cache).segmentsById['segment-assistant']?.content).toBe('Partial')
     cache = resetConversationInCache(cache, ID)
     // The invalid history, stream overlay and older cursor go at once; the conversation row stays.
     expect(recordOf(cache)).toMatchObject({ resetting: true, watermark: null, olderCursor: null, windowStart: null, title: 'Kept title' })
     expect(recordOf(cache).orderedTurnIds).toEqual([])
-    expect(recordOf(cache).streamTurnsById).toEqual({})
+    expect(recordOf(cache).streamTextBySegmentId).toEqual({})
     cache = live(cache, [turn(buildTurn({ content: 'Ignored while resetting.' }), 4)])
     expect(recordOf(cache).orderedTurnIds).toEqual([])
-    expect(applyTransientConversationEventToCache(cache, streamingTurn(2, 'Partial more')).status).toBe('dropped')
+    expect(applyTransientConversationEventToCache(cache, textFrame('segment-assistant', 2, 'Partial more')).status).toBe('dropped')
     cache = open(buildSnapshot({ revision: 6 }), cache)
     expect(recordOf(cache)).toMatchObject({ resetting: false, watermark: '6' })
   })
@@ -859,29 +874,28 @@ describe('a summary\'s running flag', () => {
 })
 
 describe('applyTransientConversationEventToCache', () => {
-  const buildDelta = (
-    overrides: Partial<ConversationStreamDeltaEventResponse> = {},
-  ): ConversationStreamDeltaEventResponse => ({
-    type: 'stream_delta',
-    conversation_id: ID,
-    turn_id: 'turn-assistant',
-    stream_sequence: 1,
-    base_revision: 3,
-    delta_kind: 'segment_delta',
-    segment: buildSegment({
-      status: 'streaming',
-      completed_at: null,
-      content: 'Partial stream',
-    }),
+  const buildDelta = (overrides: Partial<ConversationStreamDeltaEventResponse> = {}) => (
+    textFrame('segment-assistant', 1, 'Partial stream', overrides)
+  )
+  const userTurn = buildSnapshot().turns[0]
+  /** A running turn with one open segment, as their opening rows leave them. */
+  const runningSnapshot = (overrides: Partial<Snapshot> = {}) => buildSnapshot({
+    revision: 3,
+    turns: [userTurn, buildTurn({ status: 'streaming', content: '' })],
+    segments: [openSegment()],
     ...overrides,
   })
-
-  const seededCache = (turnStatus: ConversationTurnResponse['status'] = 'streaming') => open(buildSnapshot({
-    revision: 3,
-    turns: [buildSnapshot().turns[0], buildTurn({ status: turnStatus })],
+  const seededCache = (turnStatus: ConversationTurnResponse['status'] = 'streaming') => open(runningSnapshot({
+    turns: [userTurn, buildTurn({ status: turnStatus, content: '' })],
   }))
+  const apply = (cache: ProjectConversationCacheState, frame: ConversationStreamDeltaEventResponse) => {
+    const result = applyTransientConversationEventToCache(cache, frame)
+    expect(result.status).toBe('applied')
+    return result.cache
+  }
+  const shownText = (cache: ProjectConversationCacheState, id = 'segment-assistant') => recordOf(cache).segmentsById[id]?.content
 
-  it('applies segment deltas to the timeline without changing a row or revision', () => {
+  it('applies segment text to the timeline without changing a row or revision', () => {
     const cache = seededCache()
     const result = applyTransientConversationEventToCache(cache, buildDelta())
 
@@ -896,35 +910,7 @@ describe('applyTransientConversationEventToCache', () => {
     expect(entries.some((entry) => 'content' in entry && entry.content === 'Partial stream')).toBe(true)
   })
 
-  it('applies turn deltas with streaming-content sanitization and no revision change', () => {
-    const result = applyTransientConversationEventToCache(seededCache(), buildDelta({
-      delta_kind: 'turn_delta',
-      segment: undefined,
-      turn: buildTurn({ status: 'streaming', content: 'Live turn content' }),
-    }))
-
-    expect(result.status).toBe('applied')
-    if (result.status !== 'applied') {
-      return
-    }
-    expect(result.record.revision).toBe('3')
-    expect(result.record.turnsById['turn-assistant']?.content).toBe('Live turn content')
-    expect(result.record.turnsById['turn-assistant']?.status).toBe('streaming')
-  })
-
-  it('keeps streamed turn text when a running turn commits without it', () => {
-    const streamed = applyTransientConversationEventToCache(seededCache(), buildDelta({
-      delta_kind: 'turn_delta',
-      segment: undefined,
-      turn: buildTurn({ status: 'streaming', content: 'Live turn content' }),
-    }))
-    const committed = live(streamed.cache, [turn(buildTurn({ status: 'streaming', content: '' }), 4)])
-    expect(recordOf(committed).turnsById['turn-assistant']?.content).toBe('Live turn content')
-    const finished = live(committed, [turn(buildTurn({ status: 'complete', content: 'Final.' }), 5)])
-    expect(recordOf(finished).turnsById['turn-assistant']?.content).toBe('Final.')
-  })
-
-  it('applies deltas after an unrelated commit raised the conversation revision', () => {
+  it('applies frames after an unrelated commit raised the conversation revision', () => {
     const titled = live(seededCache(), [conversation(5, { title: 'Stored title' })])
     const result = applyTransientConversationEventToCache(titled, buildDelta({ base_revision: 3 }))
 
@@ -936,7 +922,7 @@ describe('applyTransientConversationEventToCache', () => {
     expect(result.record.segmentsById['segment-assistant']?.content).toBe('Partial stream')
   })
 
-  it('drops late deltas for a turn that is already complete or failed', () => {
+  it('drops late frames for a turn that is already complete or failed', () => {
     for (const status of ['complete', 'failed'] as const) {
       const cache = seededCache(status)
       const result = applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 99 }))
@@ -946,83 +932,174 @@ describe('applyTransientConversationEventToCache', () => {
     }
   })
 
-  it('drops deltas whose stream sequence is not newer than the last applied for the turn', () => {
-    const first = applyTransientConversationEventToCache(seededCache(), buildDelta({ stream_sequence: 2 }))
-    expect(first.status).toBe('applied')
+  it('drops old and duplicate frames for the same segment', () => {
+    const first = apply(seededCache(), buildDelta({ stream_sequence: 2, text: 'Newer' }))
     for (const stream_sequence of [1, 2]) {
-      const result = applyTransientConversationEventToCache(first.cache, buildDelta({
-        stream_sequence,
-        segment: buildSegment({ status: 'streaming', completed_at: null, content: 'Older' }),
-      }))
+      const result = applyTransientConversationEventToCache(first, buildDelta({ stream_sequence, text: 'Older' }))
       expect(result.status).toBe('dropped')
-      expect(result.cache).toBe(first.cache)
+      expect(result.cache).toBe(first)
     }
-    const newer = applyTransientConversationEventToCache(first.cache, buildDelta({ stream_sequence: 3 }))
-    expect(newer.status).toBe('applied')
+    expect(shownText(apply(first, buildDelta({ stream_sequence: 3, text: 'Newest' })))).toBe('Newest')
   })
 
-  it('keeps per-turn stream sequences across window, batch and project removal updates', () => {
-    const first = applyTransientConversationEventToCache(seededCache(), buildDelta({ stream_sequence: 10 }))
-    expect(first.status).toBe('applied')
+  it('does not let another segment\'s higher sequence stale a segment\'s frame', () => {
+    // A turn's segments share its sequence, so a quiet segment's replayed frame trails a busy one's.
+    let cache = live(seededCache(), [segment(openSegment({ id: 'segment-reasoning', order: 2, kind: 'reasoning' }), 4)])
+    cache = apply(cache, textFrame('segment-reasoning', 9, 'Thinking it over'))
+    cache = apply(cache, textFrame('segment-assistant', 3, 'Quiet text'))
+    expect(shownText(cache)).toBe('Quiet text')
+    expect(shownText(cache, 'segment-reasoning')).toBe('Thinking it over')
+  })
+
+  it('restores open text a reconnect cleared from a replay at the sequence it already applied', () => {
+    let cache = apply(seededCache(), buildDelta({ stream_sequence: 5, text: 'Open text' }))
+    // A reset clears the text; the reloaded window still has the segment open.
+    cache = open(runningSnapshot({ revision: 4 }), resetConversationInCache(cache, ID))
+    expect(shownText(cache)).toBe('')
+    cache = apply(cache, buildDelta({ stream_sequence: 5, text: 'Open text' }))
+    expect(shownText(cache)).toBe('Open text')
+    // A new store generation clears it too, and the replay restores it.
+    cache = open(runningSnapshot({ revision: 2 }), cache, { generation: 'generation-2' })
+    expect(shownText(cache)).toBe('')
+    expect(shownText(apply(cache, buildDelta({ stream_sequence: 5, text: 'Open text' })))).toBe('Open text')
+  })
+
+  it('keeps a frame that precedes its opening row until the row arrives', () => {
+    const early = apply(open(runningSnapshot({ segments: [] })), textFrame('segment-late', 1, 'Early text'))
+    expect(recordOf(early).segmentsById['segment-late']).toBeUndefined()
+    const opened = live(early, [segment(openSegment({ id: 'segment-late' }), 4)])
+    expect(shownText(opened, 'segment-late')).toBe('Early text')
+  })
+
+  it('keeps open text through an empty opening row and unrelated commits', () => {
+    let cache = apply(seededCache(), buildDelta({ text: 'Open text' }))
+    cache = live(cache, [
+      segment(openSegment({ updated_at: '2026-03-06T15:00:20Z' }), 4),
+      turn(buildTurn({ status: 'streaming', content: '' }), 4),
+      conversation(4, { title: 'Stored title' }),
+      segment(buildSegment({ id: 'segment-earlier', order: 0, content: 'Earlier note.' }), 4),
+    ])
+    expect(recordOf(cache).title).toBe('Stored title')
+    expect(shownText(cache)).toBe('Open text')
+    // A window read while the segment is still open keeps it too.
+    cache = open(runningSnapshot({ revision: 5 }), cache)
+    expect(shownText(cache)).toBe('Open text')
+  })
+
+  it('shows a closed row once, clears its text and rejects later frames for it', () => {
+    let cache = apply(seededCache(), buildDelta({ stream_sequence: 4, text: 'Almost done' }))
+    cache = live(cache, [segment(buildSegment({ content: 'Done.' }), 4)])
+    const record = recordOf(cache)
+    expect(record.streamTextBySegmentId).toEqual({})
+    const contents = getConversationTimelineEntries(record).flatMap((entry) => 'content' in entry ? [entry.content] : [])
+    expect(contents.filter((content) => content === 'Done.')).toHaveLength(1)
+    expect(contents).not.toContain('Almost done')
+    // A frame replayed after the closed row cannot reopen it.
+    const late = applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 5, text: 'Almost done' }))
+    expect(late.status).toBe('dropped')
+    expect(late.cache).toBe(cache)
+  })
+
+  it('keeps a newer closed row over a page or acknowledgement read while the segment was open', () => {
+    let cache = apply(seededCache(), buildDelta({ text: 'Open text' }))
+    cache = live(cache, [segment(buildSegment({ content: 'Done.' }), 5)])
+    cache = open(runningSnapshot({ revision: 4 }), cache)
+    cache = ack(cache, [segment(openSegment(), 4)])
+    expect(shownText(cache)).toBe('Done.')
+    expect(applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 2, text: 'Open text' })).status).toBe('dropped')
+  })
+
+  it('clears open text when its segment, turn or conversation is deleted, and rejects frames for them', () => {
+    const withText = apply(seededCache(), buildDelta({ text: 'Open text' }))
+    for (const tombstone of [
+      tombstoneRow('segment', ID, 'segment-assistant', '4', { turn_id: 'turn-assistant' }),
+      tombstoneRow('turn', ID, 'turn-assistant', '4'),
+      tombstoneRow('conversation', ID, ID, '4'),
+    ]) {
+      const cache = live(withText, [tombstone])
+      expect(recordOf(cache).streamTextBySegmentId).toEqual({})
+      expect(applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 2 })).status).toBe('dropped')
+    }
+  })
+
+  it('merges only the text a frame owns, so a delayed frame never regresses status, answers or tool metadata', () => {
+    const question = openSegment({
+      id: 'segment-question',
+      order: 2,
+      kind: 'request_user_input',
+      status: 'running',
+      request_user_input: { request_id: 'request-1', status: 'pending', questions: [], answers: {} },
+    })
+    const tool = openSegment({
+      id: 'segment-tool',
+      order: 3,
+      kind: 'tool_call',
+      status: 'running',
+      content: 'Run tests',
+      tool_call: { kind: 'command_execution', status: 'running', id: 'call-1', title: 'Run tests', command: 'just test', output: 'one\n', file_paths: [] },
+    })
+    let cache = live(seededCache(), [segment(question, 4), segment(tool, 4)])
+    cache = apply(cache, textFrame('segment-question', 2, 'Which scope?'))
+    cache = apply(cache, textFrame('segment-tool', 3, 'one\ntwo\n'))
+    expect(recordOf(cache).segmentsById['segment-question']).toMatchObject({ ...question, content: 'Which scope?' })
+    expect(recordOf(cache).segmentsById['segment-tool']).toMatchObject({ ...tool, tool_call: { ...tool.tool_call!, output: 'one\ntwo\n' } })
+
+    // Rows committed meanwhile change the metadata; frames delayed past them change only their text.
+    const answered = { ...question, request_user_input: { ...question.request_user_input!, status: 'answered' as const, answers: { scope: 'Only the API.' } } }
+    const progressed = { ...tool, tool_call: { ...tool.tool_call!, progress: 'Halfway', output_size: 8 } }
+    cache = live(cache, [segment(answered, 5), segment(progressed, 5)])
+    cache = apply(cache, textFrame('segment-question', 4, 'Which scope?'))
+    cache = apply(cache, textFrame('segment-tool', 5, 'one\ntwo\nthree\n'))
+    expect(recordOf(cache).segmentsById['segment-question']).toMatchObject({ ...answered, content: 'Which scope?' })
+    expect(recordOf(cache).segmentsById['segment-tool']).toMatchObject({ ...progressed, tool_call: { ...progressed.tool_call, output: 'one\ntwo\nthree\n' } })
+
+    // The tool's closed row shows its own output.
+    const finished = { ...progressed, status: 'complete' as const, completed_at: '2026-03-06T15:00:40Z', tool_call: { ...progressed.tool_call, status: 'completed' as const, output: 'all passed\n' } }
+    cache = live(cache, [segment(finished, 6)])
+    expect(recordOf(cache).segmentsById['segment-tool']).toMatchObject(finished)
+  })
+
+  it('drops a running turn\'s open text when the turn ends, even with its segment row left open', () => {
+    const commentary = buildSegment({ id: 'segment-commentary', order: 1, content: 'Looking at the repo.' })
+    const answer = openSegment({ id: 'segment-answer', order: 2 })
+    let cache = open(runningSnapshot({ segments: [commentary, answer] }))
+    cache = apply(cache, textFrame('segment-answer', 2, 'Partial answer'))
+    expect(recordOf(cache).orderedSegmentIdsByTurnId['turn-assistant']).toEqual(['segment-commentary', 'segment-answer'])
+    expect(shownText(cache, 'segment-answer')).toBe('Partial answer')
+    // An interrupted turn keeps only what it committed.
+    cache = live(cache, [turn(buildTurn({ status: 'failed', content: '' }), 4)])
+    expect(recordOf(cache).streamTextBySegmentId).toEqual({})
+    expect(shownText(cache, 'segment-answer')).toBe('')
+    expect(shownText(cache, 'segment-commentary')).toBe('Looking at the repo.')
+  })
+
+  it('keeps a segment\'s sequence with its open text across window, batch and project removal updates', () => {
+    const first = apply(seededCache(), buildDelta({ stream_sequence: 10 }))
     const unrelatedUpdates = [
-      (cache: typeof first.cache) => open(buildSnapshot({ revision: 5, title: 'Stored title', turns: [buildTurn({ status: 'streaming' })] }), cache),
-      (cache: typeof first.cache) => live(cache, [turn(buildTurn({ id: 'turn-user', role: 'user', content: 'Draft a plan.', timestamp: '2026-03-06T15:00:00Z' }), 5)]),
-      (cache: typeof first.cache) => removeProjectFromCache(cache, '/tmp/other-project'),
+      (cache: ProjectConversationCacheState) => open(runningSnapshot({ revision: 5, title: 'Stored title' }), cache),
+      (cache: ProjectConversationCacheState) => live(cache, [turn(userTurn, 5)]),
+      (cache: ProjectConversationCacheState) => removeProjectFromCache(cache, '/tmp/other-project'),
     ]
     for (const update of unrelatedUpdates) {
-      const cache = update(first.cache)
-      const olderDelta = applyTransientConversationEventToCache(cache, buildDelta({
-        stream_sequence: 9,
-        segment: buildSegment({ status: 'streaming', completed_at: null, content: 'Older' }),
-      }))
-      expect(olderDelta.status).toBe('dropped')
-      const newer = applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 11 }))
-      expect(newer.status).toBe('applied')
+      const cache = update(first)
+      expect(shownText(cache)).toBe('Partial stream')
+      expect(applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 9, text: 'Older' })).status).toBe('dropped')
+      expect(applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 11 })).status).toBe('applied')
     }
-  })
-
-  it('keeps a running turn\'s live segments through a mid-turn commit until its terminal commit', () => {
-    const commentary = buildSegment({ id: 'segment-commentary', order: 1, status: 'complete', content: 'Looking at the repo.' })
-    const answer = buildSegment({ id: 'segment-answer', order: 2, status: 'streaming', completed_at: null, content: 'Partial answer' })
-    const running = open(buildSnapshot({ revision: 3, turns: [buildTurn({ status: 'streaming', content: '' })], segments: [] }))
-    const withCommentary = applyTransientConversationEventToCache(running, buildDelta({ segment: commentary }))
-    expect(withCommentary.status).toBe('applied')
-    const titled = live(withCommentary.cache, [conversation(4, { title: 'Stored title' })])
-    expect(recordOf(titled).title).toBe('Stored title')
-    const withAnswer = applyTransientConversationEventToCache(titled, buildDelta({ stream_sequence: 2, segment: answer }))
-    expect(withAnswer.status).toBe('applied')
-    if (withAnswer.status !== 'applied') {
-      return
-    }
-    expect(withAnswer.record.orderedSegmentIdsByTurnId['turn-assistant']).toEqual(['segment-commentary', 'segment-answer'])
-    expect(withAnswer.record.segmentsById['segment-commentary']?.content).toBe('Looking at the repo.')
-
-    const finalAnswer = buildSegment({ id: 'segment-final', order: 2, content: 'Done.' })
-    const completed = live(withAnswer.cache, [
-      turn(buildTurn({ status: 'complete', content: 'Done.' }), 5),
-      segment(commentary, 5),
-      segment(finalAnswer, 5),
-    ])
-    const record = recordOf(completed)
-    expect(record.orderedSegmentIdsByTurnId['turn-assistant']).toEqual(['segment-commentary', 'segment-final'])
-    expect(record.segmentsById['segment-answer']).toBeUndefined()
-    const late = applyTransientConversationEventToCache(completed, buildDelta({ stream_sequence: 3, segment: answer }))
-    expect(late.status).toBe('dropped')
   })
 
   it('shows the committed turn, not what it streamed, when a window reopens a chat that finished meanwhile', () => {
-    const streamed = applyTransientConversationEventToCache(seededCache(), buildDelta({ segment: buildSegment({ status: 'streaming', content: 'Half done.' }) }))
-    expect(streamed.status).toBe('applied')
+    const streamed = apply(seededCache(), buildDelta({ text: 'Half done.' }))
     const reopened = open(buildSnapshot({
       revision: 6,
-      turns: [buildSnapshot().turns[0], buildTurn({ status: 'complete', content: 'Half done. All done.' })],
+      turns: [userTurn, buildTurn({ status: 'complete', content: 'Half done. All done.' })],
       segments: [buildSegment({ content: 'Half done. All done.' })],
-    }), streamed.cache)
-    expect(recordOf(reopened).segmentsById['segment-assistant']?.content).toBe('Half done. All done.')
-    expect(recordOf(reopened).streamSegmentsById).toEqual({})
+    }), streamed)
+    expect(shownText(reopened)).toBe('Half done. All done.')
+    expect(recordOf(reopened).streamTextBySegmentId).toEqual({})
   })
 
-  it('drops deltas for unknown conversations instead of buffering them', () => {
+  it('drops frames for unknown conversations instead of buffering them', () => {
     const result = applyTransientConversationEventToCache(
       EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
       buildDelta({ conversation_id: 'conversation-unknown' }),
@@ -1030,32 +1107,6 @@ describe('applyTransientConversationEventToCache', () => {
 
     expect(result.status).toBe('dropped')
     expect(result.cache).toBe(EMPTY_PROJECT_CONVERSATION_CACHE_STATE)
-  })
-
-  it('lets a later committed segment row win over prior transients', () => {
-    const transient = applyTransientConversationEventToCache(seededCache(), buildDelta())
-    expect(transient.status).toBe('applied')
-    const committed = live(transient.cache, [segment(buildSegment({ content: 'Final committed content' }), 4)])
-
-    expect(recordOf(committed).latestRevision).toBe('4')
-    expect(recordOf(committed).segmentsById['segment-assistant']?.content).toBe('Final committed content')
-  })
-
-  it('merges token usage deltas onto the targeted turn', () => {
-    const result = applyTransientConversationEventToCache(seededCache(), buildDelta({
-      delta_kind: 'token_usage',
-      segment: undefined,
-      token_usage: { total: { inputTokens: 12, outputTokens: 5 } },
-    }))
-
-    expect(result.status).toBe('applied')
-    if (result.status !== 'applied') {
-      return
-    }
-    expect(result.record.revision).toBe('3')
-    expect(result.record.turnsById['turn-assistant']?.token_usage).toEqual({
-      total: { inputTokens: 12, outputTokens: 5 },
-    })
   })
 })
 

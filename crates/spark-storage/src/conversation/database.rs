@@ -21,7 +21,7 @@ use crate::error::{Result, StorageError};
 /// File name of the conversation database inside the Spark home.
 pub const CONVERSATION_DATABASE_FILE_NAME: &str = "conversations.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const CONVERSATION_DATABASE_SCHEMA_VERSION: i64 = 1;
+pub const CONVERSATION_DATABASE_SCHEMA_VERSION: i64 = 2;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -52,7 +52,6 @@ CREATE TABLE conversations (
     updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-    trace_sequence_high_water INTEGER NOT NULL DEFAULT 0 CHECK (trace_sequence_high_water >= 0),
     title TEXT NOT NULL,
     preview TEXT NOT NULL,
     running INTEGER NOT NULL CHECK (running IN (0, 1)),
@@ -68,13 +67,16 @@ CREATE INDEX conversations_revision ON conversations(revision, id);
 CREATE TABLE turns (
     conversation_id TEXT NOT NULL REFERENCES conversations(id),
     turn_id TEXT NOT NULL CHECK (length(turn_id) > 0),
+    role TEXT NOT NULL,
+    kind TEXT NOT NULL,
     position INTEGER NOT NULL CHECK (position >= 0),
     order_changed_revision INTEGER NOT NULL DEFAULT 0 CHECK (order_changed_revision >= 0),
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-    applied_trace_sequence INTEGER NOT NULL DEFAULT 0 CHECK (applied_trace_sequence >= 0),
+    -- Set once when the execution this assistant turn owns is settled.
+    settled INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0, 1)),
     payload TEXT NOT NULL CHECK (json_type(payload) = 'object'),
     PRIMARY KEY (conversation_id, turn_id)
 ) WITHOUT ROWID;
@@ -82,11 +84,14 @@ CREATE INDEX turns_page ON turns(conversation_id, position, turn_id) WHERE delet
 CREATE INDEX turns_order_changed ON turns(conversation_id, order_changed_revision);
 CREATE INDEX turns_revision ON turns(conversation_id, revision);
 CREATE INDEX turns_status ON turns(status, conversation_id) WHERE deleted = 0;
+CREATE INDEX turns_kind ON turns(conversation_id, kind, role, position) WHERE deleted = 0;
+CREATE INDEX turns_unsettled ON turns(conversation_id) WHERE deleted = 0 AND settled = 0 AND role = 'assistant';
 
 CREATE TABLE segments (
     conversation_id TEXT NOT NULL,
     segment_id TEXT NOT NULL CHECK (length(segment_id) > 0),
     turn_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -99,6 +104,7 @@ CREATE TABLE segments (
 CREATE INDEX segments_page ON segments(conversation_id, turn_id, sort_order, segment_id) WHERE deleted = 0;
 CREATE INDEX segments_revision ON segments(conversation_id, revision);
 CREATE INDEX segments_status ON segments(status, conversation_id) WHERE deleted = 0;
+CREATE INDEX segments_kind ON segments(conversation_id, turn_id, kind, sort_order) WHERE deleted = 0;
 
 CREATE TABLE artifacts (
     conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -225,10 +231,6 @@ const PINNED_TURNS_SQL: &str = "SELECT 'turn', conversation_id, turn_id, NULL, N
 const PINNED_ARTIFACTS_SQL: &str = "SELECT 'artifact', conversation_id, artifact_id, collection, \
      turn_id, position, NULL, revision, deleted, payload FROM artifacts INDEXED BY artifacts_pending \
      WHERE conversation_id = ?1 AND status IN ('pending', 'pending_review') AND deleted = 0";
-/// Indexes added after the first schema; created on open when missing.
-const ENSURE_INDEXES: &str =
-    "CREATE INDEX IF NOT EXISTS artifacts_pending ON artifacts(conversation_id, status) WHERE deleted = 0;";
-
 /// Named read statements whose query plans contract checks inspect.
 const READ_STATEMENTS: &[(&str, &str)] = &[
     ("summaries_for_project", SUMMARIES_FOR_PROJECT_SQL),
@@ -243,9 +245,12 @@ const READ_STATEMENTS: &[(&str, &str)] = &[
     ("pinned_artifacts", PINNED_ARTIFACTS_SQL),
 ];
 
-/// Turn and segment statuses a previous process may have left unsettled.
+/// Executions, turns and deliveries a previous process may have left
+/// unsettled.
 const UNSETTLED_CONVERSATIONS_SQL: &str = "SELECT c.id, c.project_path FROM conversations c \
-     WHERE c.deleted = 0 AND (EXISTS(SELECT 1 FROM turns t INDEXED BY turns_status \
+     WHERE c.deleted = 0 AND (EXISTS(SELECT 1 FROM turns t INDEXED BY turns_unsettled \
+     WHERE t.conversation_id = c.id AND t.deleted = 0 AND t.settled = 0 \
+     AND t.role = 'assistant') OR EXISTS(SELECT 1 FROM turns t INDEXED BY turns_status \
      WHERE t.status IN ('pending', 'streaming', 'queued') AND t.conversation_id = c.id \
      AND t.deleted = 0) OR EXISTS(SELECT 1 FROM segments s INDEXED BY segments_status \
      WHERE s.status = 'delivery_pending' AND s.conversation_id = c.id AND s.deleted = 0)) \
@@ -284,10 +289,9 @@ pub struct StoredConversation {
     pub handle: String,
     /// The conversation row's last-change revision.
     pub revision: i64,
-    pub trace_sequence_high_water: u64,
     pub metadata: Value,
-    /// Ascending position: (turn id, position, applied trace sequence, payload).
-    pub turns: Vec<(String, i64, u64, Value)>,
+    /// Ascending position: (turn id, position, payload).
+    pub turns: Vec<(String, i64, Value)>,
     pub segments: Vec<Value>,
     /// (collection, artifact id, position, owner turn, payload), in insertion
     /// order per collection.
@@ -324,7 +328,10 @@ pub struct ConversationRow {
 pub struct TurnRow {
     pub conversation_id: String,
     pub id: String,
+    pub role: String,
+    pub kind: String,
     pub position: i64,
+    pub settled: bool,
     pub status: String,
     pub updated_at: String,
     pub payload: Value,
@@ -335,6 +342,7 @@ pub struct SegmentRow {
     pub conversation_id: String,
     pub id: String,
     pub turn_id: String,
+    pub kind: String,
     pub order: i64,
     pub status: String,
     pub updated_at: String,
@@ -505,7 +513,6 @@ impl ConversationDatabase {
                 expected: CONVERSATION_DATABASE_SCHEMA_VERSION,
             });
         }
-        tx.execute_batch(ENSURE_INDEXES)?;
         tx.commit()?;
 
         Ok(Self {
@@ -635,7 +642,9 @@ impl ConversationDatabase {
 
     /// Run `apply` in one immediate transaction with one newly allocated
     /// revision. An error from `apply` or the commit rolls everything back,
-    /// including the revision allocation.
+    /// including the revision allocation. Low-level contract tests only:
+    /// conversation state changes go through the typed operations.
+    #[doc(hidden)]
     pub fn write<T>(
         &self,
         apply: impl FnOnce(&WriteTransaction<'_>) -> Result<T>,
@@ -653,6 +662,35 @@ impl ConversationDatabase {
         write.tx.commit()?;
         self.written_since_checkpoint.store(true, Ordering::SeqCst);
         Ok((revision, value))
+    }
+
+    /// `write` for an operation that may change nothing: when `apply`
+    /// changed no row the transaction rolls back, allocating no revision.
+    /// `publish` runs after the commit while the connection is still held,
+    /// so notices of successive commits are published in commit order.
+    pub(crate) fn write_if_changed<T>(
+        &self,
+        apply: impl FnOnce(&WriteTransaction<'_>) -> Result<T>,
+        publish: impl FnOnce(i64, &T),
+    ) -> Result<(Option<i64>, T)> {
+        let mut connection = self.lock();
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let revision = tx.query_row(
+            "UPDATE store_meta SET next_revision = next_revision + 1 \
+             WHERE singleton = 1 RETURNING next_revision - 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let changes_before = tx.total_changes();
+        let write = WriteTransaction { tx, revision };
+        let value = apply(&write)?;
+        if write.tx.total_changes() == changes_before {
+            return Ok((None, value));
+        }
+        write.tx.commit()?;
+        self.written_since_checkpoint.store(true, Ordering::SeqCst);
+        publish(revision, &value);
+        Ok((Some(revision), value))
     }
 
     /// Run `read` against one coherent snapshot and its watermark.
@@ -767,6 +805,11 @@ impl WriteTransaction<'_> {
         self.revision
     }
 
+    /// The connection, for row reads shared with read transactions.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.tx
+    }
+
     pub fn put_conversation(&self, row: &ConversationRow) -> Result<()> {
         self.tx.execute(
             "INSERT INTO conversations (id, project_path, handle, created_at, updated_at, \
@@ -825,18 +868,22 @@ impl WriteTransaction<'_> {
         self.touch(&row.conversation_id)?;
         // Moving an existing turn invalidates older page cursors; appends do not.
         self.tx.execute(
-            "INSERT INTO turns (conversation_id, turn_id, position, status, updated_at, \
-             revision, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+            "INSERT INTO turns (conversation_id, turn_id, role, kind, position, settled, status, \
+             updated_at, revision, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
              ON CONFLICT (conversation_id, turn_id) DO UPDATE SET \
              order_changed_revision = iif(turns.position != excluded.position, \
              excluded.revision, turns.order_changed_revision), \
-             position = excluded.position, status = excluded.status, \
+             role = excluded.role, kind = excluded.kind, position = excluded.position, \
+             settled = excluded.settled, status = excluded.status, \
              updated_at = excluded.updated_at, revision = excluded.revision, deleted = 0, \
              payload = excluded.payload",
             params![
                 row.conversation_id,
                 row.id,
+                row.role,
+                row.kind,
                 row.position,
+                row.settled,
                 row.status,
                 row.updated_at,
                 self.revision,
@@ -849,16 +896,17 @@ impl WriteTransaction<'_> {
     pub fn put_segment(&self, row: &SegmentRow) -> Result<()> {
         self.touch(&row.conversation_id)?;
         self.tx.execute(
-            "INSERT INTO segments (conversation_id, segment_id, turn_id, sort_order, status, \
-             updated_at, revision, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+            "INSERT INTO segments (conversation_id, segment_id, turn_id, kind, sort_order, status, \
+             updated_at, revision, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
              ON CONFLICT (conversation_id, segment_id) DO UPDATE SET \
-             turn_id = excluded.turn_id, sort_order = excluded.sort_order, \
+             turn_id = excluded.turn_id, kind = excluded.kind, sort_order = excluded.sort_order, \
              status = excluded.status, updated_at = excluded.updated_at, \
              revision = excluded.revision, deleted = 0, payload = excluded.payload",
             params![
                 row.conversation_id,
                 row.id,
                 row.turn_id,
+                row.kind,
                 row.order,
                 row.status,
                 row.updated_at,
@@ -1029,31 +1077,6 @@ impl WriteTransaction<'_> {
         )
     }
 
-    /// Record that `turn_id` has projected every trace event through
-    /// `sequence`, and keep the conversation's allocator floor above it.
-    pub fn set_applied_trace(
-        &self,
-        conversation_id: &str,
-        turn_id: &str,
-        sequence: u64,
-    ) -> Result<()> {
-        self.tx.execute(
-            "UPDATE turns SET applied_trace_sequence = max(applied_trace_sequence, ?3) \
-             WHERE conversation_id = ?1 AND turn_id = ?2",
-            params![conversation_id, turn_id, sequence as i64],
-        )?;
-        self.raise_trace_high_water(conversation_id, sequence)
-    }
-
-    pub fn raise_trace_high_water(&self, conversation_id: &str, sequence: u64) -> Result<()> {
-        self.tx.execute(
-            "UPDATE conversations SET trace_sequence_high_water = \
-             max(trace_sequence_high_water, ?2) WHERE id = ?1",
-            params![conversation_id, sequence as i64],
-        )?;
-        Ok(())
-    }
-
     /// Tombstone every live conversation of a project and record the
     /// pending filesystem cleanup. Returns the tombstoned conversation ids.
     pub fn delete_project(&self, marker: &ProjectDeletionMarker) -> Result<Vec<String>> {
@@ -1148,6 +1171,11 @@ impl WriteTransaction<'_> {
 }
 
 impl ReadTransaction<'_> {
+    /// The connection, for row reads shared with write transactions.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.tx
+    }
+
     /// Whether any live row references exactly `blob_path`.
     pub fn has_live_reference(&self, blob_path: &str) -> Result<bool> {
         Ok(self.tx.query_row(
@@ -1357,40 +1385,38 @@ impl ReadTransaction<'_> {
     /// Every live row of a conversation; `None` when it is unknown or deleted.
     pub fn conversation(&self, conversation_id: &str) -> Result<Option<StoredConversation>> {
         let head = self.tx.query_row(
-            "SELECT project_path, handle, trace_sequence_high_water, metadata, revision \
+            "SELECT project_path, handle, metadata, revision \
              FROM conversations WHERE id = ?1 AND deleted = 0",
             [conversation_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         );
-        let (project_path, handle, high_water, metadata, revision) = match head {
+        let (project_path, handle, metadata, revision) = match head {
             Ok(head) => head,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let turns = self
             .json_rows(
-                "SELECT turn_id, position, applied_trace_sequence, payload FROM turns \
+                "SELECT turn_id, position, payload FROM turns \
              WHERE conversation_id = ?1 AND deleted = 0 ORDER BY position, turn_id",
                 conversation_id,
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)? as u64,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(2)?,
                     ))
                 },
             )?
             .into_iter()
-            .map(|(id, position, applied, payload)| Ok((id, position, applied, parse(&payload)?)))
+            .map(|(id, position, payload)| Ok((id, position, parse(&payload)?)))
             .collect::<Result<Vec<_>>>()?;
         let segments = self
             .json_rows(
@@ -1449,7 +1475,6 @@ impl ReadTransaction<'_> {
             project_path,
             handle,
             revision,
-            trace_sequence_high_water: high_water as u64,
             metadata: parse(&metadata)?,
             turns,
             segments,

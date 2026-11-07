@@ -39,7 +39,7 @@ export function conversationPayload(fixture: Fixture): Fixture {
             model: fixture.model ?? null,
             reasoning_effort: fixture.reasoning_effort ?? null,
             title: fixture.title ?? 'New thread',
-            revision: String(fixture.settings_revision ?? fixtureRevision(fixture)),
+            settings_revision: String(fixture.settings_revision ?? fixtureRevision(fixture)),
         },
         ...(fixture.settings ? { settings: fixture.settings } : {}),
         effective: {

@@ -101,18 +101,78 @@ pub fn event_text(event: &TurnStreamEvent) -> Option<String> {
         .or_else(|| event.message.as_deref().and_then(non_empty_string))
 }
 
-// Turn-content fallback for ContentCompleted events without text. Containers
-// without a "turns" array (run-node projections) make this a no-op.
-fn find_turn<'a>(snapshot: &'a Value, turn_id: &str) -> Option<&'a Value> {
-    snapshot
-        .get("turns")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+/// Where a projection reads and writes segments: a transcript container
+/// holding a top-level `"segments"` array (run nodes, tests), or a
+/// conversation store's current rows. Reads see every earlier write.
+pub trait SegmentStore {
+    fn segment(&self, segment_id: &str) -> Option<Value>;
+    /// One past the highest order among the turn's segments.
+    fn next_segment_order(&self, turn_id: &str) -> i64;
+    /// The turn's user message segment with the highest order.
+    fn latest_user_message(&self, turn_id: &str) -> Option<Value>;
+    /// An item's own segment and every `-after-` continuation of it.
+    fn item_parts(&self, item_segment_id: &str) -> Vec<Value>;
+    /// The turn's content: the fallback text of a completion without any.
+    fn turn_content(&self, turn_id: &str) -> Option<String>;
+    fn put_segment(&mut self, segment: Value);
 }
 
-pub fn materialize_segment_for_event(
-    snapshot: &mut Value,
+impl SegmentStore for Value {
+    fn segment(&self, segment_id: &str) -> Option<Value> {
+        find_segment(self, segment_id).cloned()
+    }
+
+    fn next_segment_order(&self, turn_id: &str) -> i64 {
+        next_turn_segment_order(self, turn_id)
+    }
+
+    fn latest_user_message(&self, turn_id: &str) -> Option<Value> {
+        self.get("segments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|segment| {
+                segment.get("turn_id").and_then(Value::as_str) == Some(turn_id)
+                    && segment.get("kind").and_then(Value::as_str) == Some("user_message")
+            })
+            .max_by_key(|segment| segment.get("order").and_then(Value::as_i64).unwrap_or(0))
+            .cloned()
+    }
+
+    fn item_parts(&self, item_segment_id: &str) -> Vec<Value> {
+        let continuation_prefix = format!("{item_segment_id}-after-");
+        self.get("segments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|segment| {
+                segment
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id == item_segment_id || id.starts_with(&continuation_prefix))
+            })
+            .cloned()
+            .collect()
+    }
+
+    // Containers without a "turns" array (run-node projections) have none.
+    fn turn_content(&self, turn_id: &str) -> Option<String> {
+        self.get("turns")
+            .and_then(Value::as_array)?
+            .iter()
+            .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))?
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    fn put_segment(&mut self, segment: Value) {
+        upsert_segment(self, segment);
+    }
+}
+
+pub fn materialize_segment_for_event<S: SegmentStore + ?Sized>(
+    snapshot: &mut S,
     assistant_turn_id: &str,
     event: &TurnStreamEvent,
     now: &str,
@@ -127,24 +187,22 @@ pub fn materialize_segment_for_event(
                 assistant_turn_id,
                 &reasoning_segment_id(assistant_turn_id, event),
             );
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "reasoning",
-                        "assistant",
-                        "streaming",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "reasoning",
+                    "assistant",
+                    "streaming",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             append_segment_content(&mut segment, event.content_delta.as_deref().unwrap_or(""));
             set_string_value(&mut segment, "status", "streaming");
             set_string_value(&mut segment, "updated_at", now);
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContentDelta
@@ -155,24 +213,22 @@ pub fn materialize_segment_for_event(
                 assistant_turn_id,
                 &assistant_segment_id(assistant_turn_id, event),
             );
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    let mut segment = segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "assistant_message",
-                        "assistant",
-                        "streaming",
-                        now,
-                        build_segment_source(event, None),
-                    );
-                    if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
-                        set_string_value(&mut segment, "phase", &phase);
-                    }
-                    segment
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                let mut segment = segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "assistant_message",
+                    "assistant",
+                    "streaming",
+                    now,
+                    build_segment_source(event, None),
+                );
+                if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
+                    set_string_value(&mut segment, "phase", &phase);
+                }
+                segment
+            });
             append_segment_content(&mut segment, event.content_delta.as_deref().unwrap_or(""));
             set_string_value(&mut segment, "status", "streaming");
             set_string_value(&mut segment, "updated_at", now);
@@ -182,30 +238,28 @@ pub fn materialize_segment_for_event(
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
                 set_string_value(&mut segment, "phase", &phase);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContentDelta if event.channel == Some(TurnStreamChannel::Plan) => {
             let segment_id = plan_segment_id(assistant_turn_id, event);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "plan",
-                        "assistant",
-                        "streaming",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "plan",
+                    "assistant",
+                    "streaming",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             append_segment_content(&mut segment, event.content_delta.as_deref().unwrap_or(""));
             set_string_value(&mut segment, "status", "streaming");
             set_string_value(&mut segment, "updated_at", now);
             remove_key(&mut segment, "error");
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContentCompleted
@@ -217,25 +271,23 @@ pub fn materialize_segment_for_event(
                 &assistant_segment_id(assistant_turn_id, event),
                 event_text(event),
             );
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "assistant_message",
-                        "assistant",
-                        "complete",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "assistant_message",
+                    "assistant",
+                    "complete",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             if let Some(text) = text {
                 set_string_value(&mut segment, "content", &text);
-            } else if let Some(turn_content) = find_turn(snapshot, assistant_turn_id)
-                .and_then(|turn| turn.get("content"))
-                .and_then(Value::as_str)
+            } else if let Some(turn_content) = snapshot
+                .turn_content(assistant_turn_id)
+                .as_deref()
                 .and_then(non_empty_string)
             {
                 set_string_value(&mut segment, "content", &turn_content);
@@ -249,7 +301,7 @@ pub fn materialize_segment_for_event(
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
                 set_string_value(&mut segment, "phase", &phase);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContentCompleted
@@ -261,45 +313,41 @@ pub fn materialize_segment_for_event(
                 &reasoning_segment_id(assistant_turn_id, event),
                 event_text(event),
             );
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "reasoning",
-                        "assistant",
-                        "complete",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "reasoning",
+                    "assistant",
+                    "complete",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             if let Some(text) = text {
                 set_string_value(&mut segment, "content", &text);
             }
             set_string_value(&mut segment, "status", "complete");
             set_string_value(&mut segment, "updated_at", now);
             set_string_value(&mut segment, "completed_at", now);
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContentCompleted if event.channel == Some(TurnStreamChannel::Plan) => {
             let segment_id = plan_segment_id(assistant_turn_id, event);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "plan",
-                        "assistant",
-                        "complete",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "plan",
+                    "assistant",
+                    "complete",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             if let Some(text) = event_text(event) {
                 set_string_value(&mut segment, "content", &text);
             }
@@ -307,27 +355,25 @@ pub fn materialize_segment_for_event(
             set_string_value(&mut segment, "updated_at", now);
             set_string_value(&mut segment, "completed_at", now);
             remove_key(&mut segment, "error");
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ContextCompactionStarted
         | TurnStreamEventKind::ContextCompactionCompleted => {
             let complete = event.kind == TurnStreamEventKind::ContextCompactionCompleted;
             let segment_id = context_compaction_segment_id(assistant_turn_id, event);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "context_compaction",
-                        "system",
-                        if complete { "complete" } else { "running" },
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "context_compaction",
+                    "system",
+                    if complete { "complete" } else { "running" },
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             // The backend may say how much the compaction freed.
             let content = match event.message.as_deref().and_then(non_empty_string) {
                 Some(message) if complete => message,
@@ -345,7 +391,7 @@ pub fn materialize_segment_for_event(
                 set_string_value(&mut segment, "completed_at", now);
             }
             remove_key(&mut segment, "error");
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::RequestUserInputRequested => {
@@ -354,20 +400,18 @@ pub fn materialize_segment_for_event(
                 .as_ref()
                 .and_then(normalize_request_user_input_payload)?;
             let segment_id = request_user_input_segment_id(assistant_turn_id, event, &request);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "request_user_input",
-                        "system",
-                        "pending",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "request_user_input",
+                    "system",
+                    "pending",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             if segment.get("status").and_then(Value::as_str) == Some("complete") {
                 return None;
             }
@@ -381,27 +425,25 @@ pub fn materialize_segment_for_event(
             remove_key(&mut segment, "completed_at");
             remove_key(&mut segment, "error");
             set_value(&mut segment, "request_user_input", Value::Object(request));
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::Other(kind) if is_model_tool_call_kind(kind) => {
             let tool_call = normalize_tool_call_payload(event.tool_call.as_ref()?);
             let segment_id = model_tool_segment_id(assistant_turn_id, event, &tool_call);
             let status = model_tool_call_status(kind, &tool_call);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "model_tool_call",
-                        "assistant",
-                        &status,
-                        now,
-                        build_segment_source(event, tool_call_id(&tool_call).as_deref()),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "model_tool_call",
+                    "assistant",
+                    &status,
+                    now,
+                    build_segment_source(event, tool_call_id(&tool_call).as_deref()),
+                )
+            });
             set_string_value(&mut segment, "status", &status);
             set_string_value(&mut segment, "updated_at", now);
             set_value(
@@ -413,13 +455,13 @@ pub fn materialize_segment_for_event(
             if status == "complete" || status == "failed" {
                 set_string_value(&mut segment, "completed_at", now);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ToolCallUpdated if event.tool_call.is_none() => {
             let item_id = event.source.item_id.as_deref().and_then(non_empty_string)?;
             let segment_id = tool_segment_id(assistant_turn_id, event, &json!({ "id": item_id }));
-            let mut segment = find_segment(snapshot, &segment_id).cloned()?;
+            let mut segment = snapshot.segment(&segment_id)?;
             append_tool_call_output(&mut segment, event.content_delta.as_deref().unwrap_or(""));
             set_string_value(&mut segment, "status", "running");
             set_string_value(&mut segment, "updated_at", now);
@@ -428,7 +470,7 @@ pub fn materialize_segment_for_event(
                 "source",
                 build_segment_source(event, Some(&item_id)),
             );
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::ToolCallStarted
@@ -438,51 +480,47 @@ pub fn materialize_segment_for_event(
             let tool_call = normalize_tool_call_payload(event.tool_call.as_ref()?);
             let segment_id = tool_segment_id(assistant_turn_id, event, &tool_call);
             let status = tool_call_status(event, &tool_call);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "tool_call",
-                        "system",
-                        &status,
-                        now,
-                        build_segment_source(event, tool_call_id(&tool_call).as_deref()),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "tool_call",
+                    "system",
+                    &status,
+                    now,
+                    build_segment_source(event, tool_call_id(&tool_call).as_deref()),
+                )
+            });
             set_string_value(&mut segment, "status", &status);
             set_string_value(&mut segment, "updated_at", now);
             set_value(&mut segment, "tool_call", tool_call);
             if status != "running" {
                 set_string_value(&mut segment, "completed_at", now);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::TurnCompleted => {
             let segment_id = agent_event_segment_id(assistant_turn_id, event, provider_sequence);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    agent_event_segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "processing",
-                        "complete",
-                        now,
-                        event,
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                agent_event_segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "processing",
+                    "complete",
+                    now,
+                    event,
+                )
+            });
             if let Some(status) = event.status.as_deref().and_then(non_empty_string) {
                 set_string_value(&mut segment, "event_status", &status);
             }
             if let Some(phase) = event.phase.as_deref().and_then(non_empty_string) {
                 set_string_value(&mut segment, "phase", &phase);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         // A user message delivered into the running turn, shown where it was
@@ -491,13 +529,13 @@ pub fn materialize_segment_for_event(
             let message_id = event.source.item_id.as_deref()?;
             let segment_id = format!("segment-user-message-{message_id}");
             // A turn's output replays its events; the message keeps its place.
-            if let Some(segment) = find_segment(snapshot, &segment_id) {
-                return Some(segment.clone());
+            if let Some(segment) = snapshot.segment(&segment_id) {
+                return Some(segment);
             }
             let mut segment = segment_shell(
                 &segment_id,
                 assistant_turn_id,
-                next_turn_segment_order(snapshot, assistant_turn_id),
+                snapshot.next_segment_order(assistant_turn_id),
                 "user_message",
                 "user",
                 "complete",
@@ -509,13 +547,12 @@ pub fn materialize_segment_for_event(
                 "content",
                 event.message.as_deref().unwrap_or(""),
             );
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::Other(kind) if kind == "user_message_not_delivered" => {
             let message_id = event.source.item_id.as_deref()?;
-            let mut segment =
-                find_segment(snapshot, &format!("segment-user-message-{message_id}"))?.clone();
+            let mut segment = snapshot.segment(&format!("segment-user-message-{message_id}"))?;
             set_string_value(&mut segment, "status", "failed");
             set_string_value(
                 &mut segment,
@@ -523,7 +560,7 @@ pub fn materialize_segment_for_event(
                 event.message.as_deref().unwrap_or(""),
             );
             set_string_value(&mut segment, "updated_at", now);
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::Other(kind) if is_agent_event_kind(kind) => {
@@ -534,41 +571,37 @@ pub fn materialize_segment_for_event(
                 "warning" => ("warning", "complete"),
                 _ => ("session", "complete"),
             };
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    agent_event_segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        category,
-                        status,
-                        now,
-                        event,
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                agent_event_segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    category,
+                    status,
+                    now,
+                    event,
+                )
+            });
             if let Some(event_status) = event.status.as_deref().and_then(non_empty_string) {
                 set_string_value(&mut segment, "event_status", &event_status);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         TurnStreamEventKind::Error => {
             let segment_id = assistant_segment_id(assistant_turn_id, event);
-            let mut segment = find_segment(snapshot, &segment_id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    segment_shell(
-                        &segment_id,
-                        assistant_turn_id,
-                        next_turn_segment_order(snapshot, assistant_turn_id),
-                        "assistant_message",
-                        "assistant",
-                        "failed",
-                        now,
-                        build_segment_source(event, None),
-                    )
-                });
+            let mut segment = snapshot.segment(&segment_id).unwrap_or_else(|| {
+                segment_shell(
+                    &segment_id,
+                    assistant_turn_id,
+                    snapshot.next_segment_order(assistant_turn_id),
+                    "assistant_message",
+                    "assistant",
+                    "failed",
+                    now,
+                    build_segment_source(event, None),
+                )
+            });
             let message = event
                 .error
                 .clone()
@@ -590,7 +623,7 @@ pub fn materialize_segment_for_event(
             if let Some(phase) = normalized_assistant_phase(event.phase.as_deref()) {
                 set_string_value(&mut segment, "phase", &phase);
             }
-            upsert_segment(snapshot, segment.clone());
+            snapshot.put_segment(segment.clone());
             Some(segment)
         }
         _ => None,
@@ -617,43 +650,52 @@ pub fn finalize_turn_segments(
     let Some(segments) = snapshot.get_mut("segments").and_then(Value::as_array_mut) else {
         return Vec::new();
     };
-    let mut changed = Vec::new();
-    for segment in segments
+    segments
         .iter_mut()
         .filter(|segment| segment.get("turn_id").and_then(Value::as_str) == Some(turn_id))
-    {
-        let status = segment.get("status").and_then(Value::as_str).unwrap_or("");
-        if !matches!(status, "streaming" | "running" | "pending") {
-            continue;
-        }
-        let is_tool = matches!(
-            segment.get("kind").and_then(Value::as_str),
-            Some("tool_call" | "model_tool_call")
-        );
-        if successful {
-            set_string_value(segment, "status", "complete");
-            if is_tool {
-                set_string_value(segment, "completion_reason", "turn_boundary_yield");
-                if let Some(tool) = segment.get_mut("tool_call") {
-                    set_string_value(tool, "status", "yielded");
-                    set_string_value(tool, "completion_reason", "turn_boundary_yield");
-                }
-            }
-        } else {
-            set_string_value(segment, "status", "failed");
-            if is_tool {
-                set_string_value(segment, "error_code", "tool_completion_missing");
-                if let Some(tool) = segment.get_mut("tool_call") {
-                    set_string_value(tool, "status", "failed");
-                    set_string_value(tool, "error_code", "tool_completion_missing");
-                }
-            }
-        }
-        set_string_value(segment, "updated_at", now);
-        set_string_value(segment, "completed_at", now);
-        changed.push(segment.clone());
+        .filter_map(|segment| finalize_segment(segment, successful, now).then(|| segment.clone()))
+        .collect()
+}
+
+/// Whether a segment is still transient: streaming, running or pending.
+pub fn is_open_segment_status(status: &str) -> bool {
+    matches!(status, "streaming" | "running" | "pending")
+}
+
+/// Finalize one still-transient segment at a turn boundary: complete
+/// (tools yielded) or failed (tools missing their completion). Returns
+/// whether it changed.
+pub fn finalize_segment(segment: &mut Value, successful: bool, now: &str) -> bool {
+    let status = segment.get("status").and_then(Value::as_str).unwrap_or("");
+    if !is_open_segment_status(status) {
+        return false;
     }
-    changed
+    let is_tool = matches!(
+        segment.get("kind").and_then(Value::as_str),
+        Some("tool_call" | "model_tool_call")
+    );
+    if successful {
+        set_string_value(segment, "status", "complete");
+        if is_tool {
+            set_string_value(segment, "completion_reason", "turn_boundary_yield");
+            if let Some(tool) = segment.get_mut("tool_call") {
+                set_string_value(tool, "status", "yielded");
+                set_string_value(tool, "completion_reason", "turn_boundary_yield");
+            }
+        }
+    } else {
+        set_string_value(segment, "status", "failed");
+        if is_tool {
+            set_string_value(segment, "error_code", "tool_completion_missing");
+            if let Some(tool) = segment.get_mut("tool_call") {
+                set_string_value(tool, "status", "failed");
+                set_string_value(tool, "error_code", "tool_completion_missing");
+            }
+        }
+    }
+    set_string_value(segment, "updated_at", now);
+    set_string_value(segment, "completed_at", now);
+    true
 }
 
 /// Streamed output kept on a running tool segment, the size of the durable
@@ -661,8 +703,19 @@ pub fn finalize_turn_segments(
 /// an unbounded copy makes large outputs cost quadratic memory; the
 /// completion event carries the full output.
 // ponytail: a command yielded at a turn boundary keeps only this prefix in the
-// transcript; the provider event log still holds every delta.
-const LIVE_TOOL_OUTPUT_LIMIT_BYTES: usize = 8 * 1024;
+// transcript; no complete raw output is archived anywhere else.
+pub const LIVE_TOOL_OUTPUT_LIMIT_BYTES: usize = 8 * 1024;
+
+/// Appends streamed tool output to `output`, keeping only its bounded prefix.
+pub fn append_bounded_tool_output(output: &mut String, delta: &str) {
+    // A capped prefix ends within one UTF-8 character (4 bytes) of the limit;
+    // appending past that would splice a later delta onto a cut one.
+    if output.len() + 4 > LIVE_TOOL_OUTPUT_LIMIT_BYTES {
+        return;
+    }
+    let (bounded, _) = truncate_utf8(&format!("{output}{delta}"), LIVE_TOOL_OUTPUT_LIMIT_BYTES);
+    *output = bounded;
+}
 
 fn append_tool_call_output(segment: &mut Value, delta: &str) {
     let Some(tool_call) = segment
@@ -672,16 +725,12 @@ fn append_tool_call_output(segment: &mut Value, delta: &str) {
     else {
         return;
     };
-    let output = tool_call
+    let mut output = tool_call
         .get("output")
         .and_then(Value::as_str)
-        .unwrap_or("");
-    // A capped prefix ends within one UTF-8 character (4 bytes) of the limit;
-    // appending past that would splice a later delta onto a cut one.
-    if output.len() + 4 > LIVE_TOOL_OUTPUT_LIMIT_BYTES {
-        return;
-    }
-    let (output, _) = truncate_utf8(&format!("{output}{delta}"), LIVE_TOOL_OUTPUT_LIMIT_BYTES);
+        .unwrap_or("")
+        .to_string();
+    append_bounded_tool_output(&mut output, delta);
     tool_call.insert("output".to_string(), json!(output));
 }
 
@@ -733,23 +782,17 @@ pub fn agent_event_segment_shell(
 /// Output for an item that was already streaming when a user message was
 /// delivered continues in a segment after that message, so the transcript
 /// keeps the order things happened in.
-fn continued_segment_id(snapshot: &Value, turn_id: &str, item_segment_id: &str) -> String {
+pub fn continued_segment_id<S: SegmentStore + ?Sized>(
+    snapshot: &S,
+    turn_id: &str,
+    item_segment_id: &str,
+) -> String {
     let order = |segment: &Value| segment.get("order").and_then(Value::as_i64).unwrap_or(0);
-    let Some(item) = find_segment(snapshot, item_segment_id) else {
+    let Some(item) = snapshot.segment(item_segment_id) else {
         return item_segment_id.to_string();
     };
-    let latest_message = snapshot
-        .get("segments")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|segment| {
-            segment.get("turn_id").and_then(Value::as_str) == Some(turn_id)
-                && segment.get("kind").and_then(Value::as_str) == Some("user_message")
-        })
-        .max_by_key(|segment| order(segment));
-    match latest_message {
-        Some(message) if order(message) > order(item) => format!(
+    match snapshot.latest_user_message(turn_id) {
+        Some(message) if order(&message) > order(&item) => format!(
             "{item_segment_id}-after-{}",
             message.get("id").and_then(Value::as_str).unwrap_or("")
         ),
@@ -761,8 +804,8 @@ fn continued_segment_id(snapshot: &Value, turn_id: &str, item_segment_id: &str) 
 /// item split by a delivered message completes with only the text its
 /// earlier parts do not show, or completes its last part when they show it
 /// all.
-fn continued_completed_text(
-    snapshot: &Value,
+fn continued_completed_text<S: SegmentStore + ?Sized>(
+    snapshot: &S,
     turn_id: &str,
     item_segment_id: &str,
     text: Option<String>,
@@ -771,17 +814,10 @@ fn continued_completed_text(
     if segment_id == item_segment_id {
         return (segment_id, text);
     }
-    let continuation_prefix = format!("{item_segment_id}-after-");
     let mut parts = snapshot
-        .get("segments")
-        .and_then(Value::as_array)
+        .item_parts(item_segment_id)
         .into_iter()
-        .flatten()
-        .filter(|segment| {
-            segment.get("id").and_then(Value::as_str).is_some_and(|id| {
-                id != segment_id && (id == item_segment_id || id.starts_with(&continuation_prefix))
-            })
-        })
+        .filter(|segment| segment.get("id").and_then(Value::as_str) != Some(segment_id.as_str()))
         .collect::<Vec<_>>();
     parts.sort_by_key(|segment| segment.get("order").and_then(Value::as_i64));
     let shown = parts
@@ -1395,6 +1431,42 @@ pub fn request_user_input_answer_summary(request: &Map<String, Value>) -> String
     } else {
         lines.join("\n\n")
     }
+}
+
+/// A proposed plan's title: its first top-level heading, as plain text.
+pub fn proposed_plan_title(content: &str) -> String {
+    content
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim_start();
+            let title = trimmed.strip_prefix("# ")?;
+            let title = strip_markdown_heading(title);
+            (!title.is_empty()).then_some(title)
+        })
+        .unwrap_or_else(|| "Proposed Plan".to_string())
+}
+
+/// Markdown heading text without emphasis, code or link markup.
+pub fn strip_markdown_heading(value: &str) -> String {
+    let mut output = String::new();
+    let mut in_link_label = false;
+    let mut skip_link_target = false;
+    for ch in value.chars() {
+        if skip_link_target {
+            if ch == ')' {
+                skip_link_target = false;
+            }
+            continue;
+        }
+        match ch {
+            '[' => in_link_label = true,
+            ']' if in_link_label => in_link_label = false,
+            '(' if !in_link_label => skip_link_target = true,
+            '*' | '_' | '~' | '`' | '#' | '>' | '!' => {}
+            other => output.push(other),
+        }
+    }
+    output.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

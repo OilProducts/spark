@@ -995,7 +995,10 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
         app.clone(),
         "PUT",
         "/workspace/api/conversations/bound-chat/settings",
-        Some(json!({"chat_mode": "plan", "expected_revision": bound.1["revision"]})),
+        Some(json!({
+            "chat_mode": "plan",
+            "expected_revision": crate::conversation_payload(&bound.1["changes"])["metadata"]["settings_revision"].to_string(),
+        })),
     )
     .await;
     assert_eq!(rebound.0, StatusCode::OK, "{}", rebound.1);

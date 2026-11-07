@@ -1,10 +1,9 @@
 //! The app-owned conversation store: one SQLite database and home lock per
-//! Spark home, the loaded conversations' in-memory authority, and the
+//! Spark home, which is the only authority for conversation state, and the
 //! per-project lifecycle gates.
 //!
-//! Lock order: project lifecycle gate, then one conversation's lock, then the
-//! database connection. Reads that only query the database take neither of
-//! the first two.
+//! Lock order: project lifecycle gate, then the database connection. Reads
+//! take only the connection.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -17,15 +16,12 @@ use fs2::FileExt;
 use crate::error::{Result, StorageError};
 use crate::{DeletedProjectRecord, ProjectRegistry};
 
-use super::attachments::ConversationAttachment;
-use super::database::{ConversationDatabase, ProjectDeletionMarker, StoredConversation};
-pub(crate) use super::loaded::{LoadedConversation, StoredArtifact, StoredAttachment};
-use super::provider_trace::read_trace;
-use super::records::ConversationMeta;
+use super::database::{ConversationDatabase, ProjectDeletionMarker};
 
 /// Held exclusively for the app's lifetime; never unlinked.
 pub const SERVER_LOCK_FILE_NAME: &str = "server.lock";
-pub(crate) use super::loaded::EVENT_LOG_COLLECTION;
+/// Workflow events, stored as artifacts with no owner.
+pub(crate) const EVENT_LOG_COLLECTION: &str = "event_log";
 pub(crate) const ALL_COLLECTIONS: [super::ArtifactCollection; 4] = [
     super::ArtifactCollection::FlowRunRequests,
     super::ArtifactCollection::FlowLaunches,
@@ -40,12 +36,17 @@ const PASSIVE_CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// subscribers, who read the changed rows themselves. It must not block.
 pub type CommitListener = Arc<dyn Fn(&CommitNotice) + Send + Sync>;
 
-/// One committed write: the conversations it changed and its revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One committed write: the conversations it changed and its revision, and
+/// the open content it ended, whose live display copies are now obsolete.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitNotice {
     pub revision: i64,
     /// (conversation id, project path).
     pub conversations: Vec<(String, String)>,
+    /// Segments this commit closed or removed: (conversation, turn, segment).
+    pub closed_segments: Vec<(String, String, String)>,
+    /// Executions this commit settled or removed: (conversation, owning turn).
+    pub settled_executions: Vec<(String, String)>,
 }
 
 /// The one conversation store of a running Spark app.
@@ -53,18 +54,11 @@ pub struct ConversationStore {
     home_dir: PathBuf,
     registry: ProjectRegistry,
     database: ConversationDatabase,
-    conversations: Mutex<HashMap<String, Arc<Mutex<Option<LoadedConversation>>>>>,
     project_gates: Mutex<HashMap<String, Arc<RwLock<()>>>>,
     pending_deletions: Mutex<HashSet<String>>,
     /// Handles promised to conversations before their first commit.
     reserved_handles: Mutex<HashMap<String, String>>,
     commit_listener: RwLock<Option<CommitListener>>,
-    /// Revisions allocated for summary rows that have no conversation row
-    /// yet (a standing role before its first message): id to (revision,
-    /// project path).
-    // ponytail: process-lifetime only; after a restart placeholders read at
-    // revision 0 until their next change, and their snapshot is current.
-    placeholder_touches: Mutex<HashMap<String, (i64, String)>>,
     // Declared last so the database closes before the lock is released.
     _home_lock: fs::File,
 }
@@ -103,7 +97,6 @@ impl ConversationStore {
             registry: ProjectRegistry::new(home_dir.clone()),
             home_dir,
             database,
-            conversations: Mutex::new(HashMap::new()),
             project_gates: Mutex::new(HashMap::new()),
             pending_deletions: Mutex::new(
                 markers
@@ -113,7 +106,6 @@ impl ConversationStore {
             ),
             reserved_handles: Mutex::new(HashMap::new()),
             commit_listener: RwLock::new(None),
-            placeholder_touches: Mutex::new(HashMap::new()),
             _home_lock: lock,
         };
         if !store.database.read(|read| read.reset_complete())? {
@@ -149,65 +141,27 @@ impl ConversationStore {
 
     /// Recovery collection of tool-output blobs nothing needs: no live row
     /// references them (an old version a commit replaced, a tombstoned
-    /// segment's output, or an abandoned publication), and no retained trace
-    /// record does, so replay can still project them. Holds every
-    /// conversation's lock, so no commit or trace append can start
-    /// referencing a candidate, and removes candidates only behind the
-    /// cleanup barrier after rechecking their references. Returns the number
-    /// of removed files.
+    /// segment's output, or an abandoned publication). Candidates are removed
+    /// only behind the cleanup barrier after rechecking their references, so
+    /// a commit that references one first keeps it. Returns the number of
+    /// removed files.
     #[doc(hidden)]
     pub fn collect_tool_output_garbage(&self) -> Result<usize> {
         // ponytail: scans every conversation directory once per startup;
         // record candidates in a table if that grows slow.
-        let mut roots = Vec::new();
+        let mut candidates = Vec::new();
         for project in self.registry.list_project_records()? {
             let dir = self
                 .registry
                 .project_paths(&project.project_path)?
                 .conversations_dir;
-            for entry in read_dir_or_empty(&dir)? {
-                if let Some(id) = entry.file_name().and_then(|name| name.to_str()) {
-                    roots.push((id.to_string(), entry.clone()));
-                }
-            }
-        }
-        roots.sort();
-        // Directories of the same id can exist in several projects (an
-        // abandoned publication has no SQL owner); lock each id once.
-        let mut ids: Vec<&String> = roots.iter().map(|(id, _)| id).collect();
-        ids.dedup();
-        let slots: Vec<_> = {
-            let mut conversations = self
-                .conversations
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            ids.into_iter()
-                .map(|id| conversations.entry(id.clone()).or_default().clone())
-                .collect()
-        };
-        // Sorted by conversation id, per the lock order.
-        let _locks: Vec<_> = slots
-            .iter()
-            .map(|slot| slot.lock().unwrap_or_else(|poison| poison.into_inner()))
-            .collect();
-        let mut candidates = Vec::new();
-        for (_, root) in &roots {
-            // An unreadable trace may still need any of its blobs.
-            let Ok(trace) = read_trace(root) else {
-                continue;
-            };
-            let replay_needed: HashSet<String> = trace
-                .iter()
-                .filter_map(|record| record.event.pointer("/tool_call/output_artifact"))
-                .filter_map(|artifact| artifact.as_str())
-                .map(|artifact| self.home_relative(&root.join(artifact)))
-                .collect();
-            for file in read_dir_or_empty(&root.join(super::tool_output::TOOL_OUTPUT_DIR_NAME))? {
-                let path = self.home_relative(&file);
-                if !replay_needed.contains(&path)
-                    && !self.database.read(|read| read.has_live_reference(&path))?
+            for root in read_dir_or_empty(&dir)? {
+                for file in read_dir_or_empty(&root.join(super::tool_output::TOOL_OUTPUT_DIR_NAME))?
                 {
-                    candidates.push((file, path));
+                    let path = self.home_relative(&file);
+                    if !self.database.read(|read| read.has_live_reference(&path))? {
+                        candidates.push((file, path));
+                    }
                 }
             }
         }
@@ -236,7 +190,8 @@ impl ConversationStore {
         &self.home_dir
     }
 
-    /// Install the app's commit listener, replacing any earlier one.
+    /// Install the app's commit listener, replacing any earlier one. It runs
+    /// while the database is held, so it must not reenter the store.
     pub fn set_commit_listener(&self, listener: CommitListener) {
         *self
             .commit_listener
@@ -244,64 +199,18 @@ impl ConversationStore {
             .unwrap_or_else(|poison| poison.into_inner()) = Some(listener);
     }
 
-    /// Allocate a revision for a placeholder summary row whose decoration
-    /// changed, and wake its subscribers.
-    pub(crate) fn touch_placeholder(
-        &self,
-        conversation_id: &str,
-        project_path: &str,
-    ) -> Result<()> {
-        let (revision, ()) = self.database.write(|_| Ok(()))?;
-        self.placeholder_touches
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .insert(
-                conversation_id.to_string(),
-                (revision, project_path.to_string()),
-            );
-        self.notify_commit(
-            revision,
-            vec![(conversation_id.to_string(), project_path.to_string())],
-        );
-        Ok(())
-    }
-
-    /// The revision of a placeholder row's last change, if any.
-    pub fn placeholder_revision(&self, conversation_id: &str) -> Option<i64> {
-        self.placeholder_touches
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .get(conversation_id)
-            .map(|(revision, _)| *revision)
-    }
-
-    /// Placeholder rows changed in `(since, watermark]`: (id, project path, revision).
-    pub fn placeholder_changes(&self, since: i64, watermark: i64) -> Vec<(String, String, i64)> {
-        let mut changes: Vec<_> = self
-            .placeholder_touches
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .iter()
-            .filter(|(_, (revision, _))| since < *revision && *revision <= watermark)
-            .map(|(id, (revision, project_path))| (id.clone(), project_path.clone(), *revision))
-            .collect();
-        changes.sort();
-        changes
-    }
-
-    /// Wake live subscribers after a committed write. Durable state comes
-    /// first: a lost notice is closed by the subscriber's heartbeat catch-up.
-    pub(crate) fn notify_commit(&self, revision: i64, conversations: Vec<(String, String)>) {
+    /// Wake live subscribers about a committed write. Called while the
+    /// database is still serialized, so notices follow commit order; the
+    /// listener must not block or reenter the store. A lost notice is closed
+    /// by the subscriber's heartbeat catch-up.
+    pub(crate) fn notify_commit(&self, notice: CommitNotice) {
         let listener = self
             .commit_listener
             .read()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
         if let Some(listener) = listener {
-            listener(&CommitNotice {
-                revision,
-                conversations,
-            });
+            listener(&notice);
         }
     }
 
@@ -338,17 +247,25 @@ impl ConversationStore {
                     }
                 })?,
             };
-            let (revision, tombstoned) = self.database.write(|tx| tx.delete_project(&marker))?;
+            let (_, (tombstoned, _)) = self.database.write_if_changed(
+                |tx| {
+                    let open = open_executions(tx.connection(), &deleted.project_path, None)?;
+                    Ok((tx.delete_project(&marker)?, open))
+                },
+                |revision, (tombstoned, open)| {
+                    self.notify_commit(CommitNotice {
+                        revision,
+                        conversations: tombstoned
+                            .iter()
+                            .map(|id| (id.clone(), deleted.project_path.clone()))
+                            .collect(),
+                        closed_segments: Vec::new(),
+                        settled_executions: open.clone(),
+                    })
+                },
+            )?;
             self.pending_deletions()
                 .insert(deleted.project_path.clone());
-            self.evict(&tombstoned);
-            self.notify_commit(
-                revision,
-                tombstoned
-                    .iter()
-                    .map(|id| (id.clone(), deleted.project_path.clone()))
-                    .collect(),
-            );
             tombstoned
         };
         // Then stop the work that was running. Outside the gate, so a provider
@@ -462,28 +379,6 @@ impl ConversationStore {
             .clone()
     }
 
-    /// Run `apply` on one conversation's loaded state under its lock,
-    /// loading it from the database first. The slot stays `None` for an
-    /// unknown or deleted conversation.
-    pub(crate) fn with_conversation<T>(
-        &self,
-        conversation_id: &str,
-        apply: impl FnOnce(&mut Option<LoadedConversation>) -> Result<T>,
-    ) -> Result<T> {
-        let slot = self
-            .conversations
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .entry(conversation_id.to_string())
-            .or_default()
-            .clone();
-        let mut loaded = slot.lock().unwrap_or_else(|poison| poison.into_inner());
-        if loaded.is_none() {
-            *loaded = self.load(conversation_id)?;
-        }
-        apply(&mut loaded)
-    }
-
     /// The handle reserved for a conversation's first commit, if any.
     pub(crate) fn reserved_handle(&self, conversation_id: &str) -> Option<String> {
         self.reserved_handles
@@ -507,17 +402,7 @@ impl ConversationStore {
             .remove(conversation_id);
     }
 
-    pub(crate) fn evict(&self, conversation_ids: &[String]) {
-        let mut conversations = self
-            .conversations
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        for conversation_id in conversation_ids {
-            conversations.remove(conversation_id);
-        }
-    }
-
-    /// The directory holding a conversation's blobs and provider trace.
+    /// The directory holding a conversation's blobs.
     pub(crate) fn conversation_root(
         &self,
         project_path: &str,
@@ -536,24 +421,6 @@ impl ConversationStore {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/")
-    }
-
-    fn load(&self, conversation_id: &str) -> Result<Option<LoadedConversation>> {
-        let Some(stored) = self
-            .database
-            .read(|read| read.conversation(conversation_id))?
-        else {
-            return Ok(None);
-        };
-        let root = self.conversation_root(&stored.project_path, conversation_id)?;
-        let trace = read_trace(&root)?;
-        let mut loaded = loaded_from_rows(conversation_id, stored)?;
-        for record in trace {
-            loaded.next_trace_sequence = loaded.next_trace_sequence.max(record.sequence + 1);
-            let last = loaded.trace_last_by_turn.entry(record.turn_id).or_default();
-            *last = (*last).max(record.sequence);
-        }
-        Ok(Some(loaded))
     }
 
     fn reset_legacy_conversations(&self) -> Result<()> {
@@ -614,69 +481,22 @@ pub(crate) fn read_dir_or_empty(dir: &Path) -> Result<Vec<PathBuf>> {
     }
 }
 
-fn loaded_from_rows(
-    conversation_id: &str,
-    stored: StoredConversation,
-) -> Result<LoadedConversation> {
-    let invalid = |reason: String| StorageError::InvalidConversationState {
-        path: PathBuf::from(conversation_id),
-        reason,
-    };
-    let mut meta: ConversationMeta = serde_json::from_value(stored.metadata)
-        .map_err(|error| invalid(format!("Invalid conversation metadata: {error}")))?;
-    if meta.settings_schema_version != 1 {
-        return Err(invalid(format!(
-            "Conversation {conversation_id} has unsupported settings_schema_version {}",
-            meta.settings_schema_version
-        )));
-    }
-    meta.conversation_id = conversation_id.to_string();
-    meta.project_path = stored.project_path.clone();
-    meta.conversation_handle = stored.handle;
-    let mut loaded = LoadedConversation::new(conversation_id, &stored.project_path);
-    loaded.meta = meta;
-    loaded.revision = stored.revision;
-    for (turn_id, position, applied, payload) in stored.turns {
-        let turn = serde_json::from_value(payload)
-            .map_err(|error| invalid(format!("Invalid turn {turn_id}: {error}")))?;
-        loaded.put_turn(turn, position);
-        loaded.applied_trace.insert(turn_id, applied);
-    }
-    for payload in stored.segments {
-        let segment = serde_json::from_value(payload)
-            .map_err(|error| invalid(format!("Invalid segment: {error}")))?;
-        loaded.put_segment(segment);
-    }
-    for (collection, id, position, owner, payload) in stored.artifacts {
-        if collection != EVENT_LOG_COLLECTION
-            && !ALL_COLLECTIONS
-                .iter()
-                .any(|known| known.key() == collection)
-        {
-            return Err(invalid(format!("Unknown artifact collection {collection}")));
-        }
-        loaded.put_artifact(
-            &collection,
-            &id,
-            StoredArtifact {
-                position,
-                owner,
-                payload,
-            },
-        );
-    }
-    for (id, blob_path, status, payload) in stored.attachments {
-        let record: ConversationAttachment = serde_json::from_value(payload)
-            .map_err(|error| invalid(format!("Invalid attachment {id}: {error}")))?;
-        loaded.attachments.insert(
-            id,
-            StoredAttachment {
-                record,
-                blob_path,
-                attached: status == "attached",
-            },
-        );
-    }
-    loaded.next_trace_sequence = stored.trace_sequence_high_water + 1;
-    Ok(loaded)
+/// The unsettled assistant turns of a project's live conversations, or of
+/// one conversation: the executions a deletion ends. (conversation, turn).
+pub(crate) fn open_executions(
+    connection: &rusqlite::Connection,
+    project_path: &str,
+    conversation_id: Option<&str>,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = connection.prepare_cached(
+        "SELECT t.conversation_id, t.turn_id FROM conversations c JOIN turns t \
+         ON t.conversation_id = c.id WHERE c.project_path = ?1 AND (?2 IS NULL OR c.id = ?2) \
+         AND c.deleted = 0 AND t.deleted = 0 AND t.role = 'assistant' AND t.settled = 0",
+    )?;
+    let rows = statement
+        .query_map(rusqlite::params![project_path, conversation_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }

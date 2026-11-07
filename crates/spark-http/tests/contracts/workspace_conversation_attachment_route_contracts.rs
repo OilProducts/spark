@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use serde_json::{json, Value};
 use spark_agent_adapter::{AgentTurnOutput, HistoryTurn, AGENT_ATTACHMENTS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
-use spark_storage::conversation::{ConversationMutation, TranscriptTurn};
+use spark_storage::conversation::{Accepted, Admission, MessageInput};
 use spark_storage::{ConversationRepository, StorageError};
 use tower::ServiceExt;
 
@@ -541,13 +541,32 @@ fn content_path(settings: &SparkSettings, conversation_id: &str, attachment: &Va
         .expect("content file")
 }
 
-fn user_turn_mutation(attachment: &Value) -> ConversationMutation {
-    let turn: TranscriptTurn = serde_json::from_value(json!({
-        "id": "turn-race", "role": "user", "content": "", "status": "complete",
-        "kind": "message", "attachments": [{"id": attachment["id"]}],
-    }))
-    .expect("turn");
-    ConversationMutation::TurnUpserted { turn }
+/// Accepts a message referencing `attachment`, held so it only queues.
+fn accept_with_attachment(
+    repository: &ConversationRepository,
+    attachment: &Value,
+) -> Result<Accepted, StorageError> {
+    let settings_revision = repository
+        .read_head("chat-f", None)?
+        .map_or(0, |head| head["settings_revision"].as_i64().unwrap());
+    repository
+        .accept_message(
+            "chat-f",
+            PROJECT,
+            MessageInput {
+                admission: Admission::Send,
+                user_turn_id: "turn-race".to_string(),
+                content: String::new(),
+                attachments: Some(json!([{"id": attachment["id"]}])),
+                client_request_sha256: None,
+                expected_settings_revision: settings_revision,
+                settings: Default::default(),
+                held: true,
+                assistant_turn_id: "turn-race-reply".to_string(),
+                execution_settings: json!({}),
+            },
+        )
+        .map(|(_, accepted)| accepted)
 }
 
 /// The assistant turn once it settled as failed.
@@ -729,9 +748,7 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
         .prune_attachments("chat-f", PROJECT, past_window())
         .expect("prune");
     for attachment in [&deleted, &pruned] {
-        let error = repository
-            .commit_conversation("chat-f", PROJECT, 0, vec![user_turn_mutation(attachment)])
-            .expect_err("stale reference");
+        let error = accept_with_attachment(&repository, attachment).expect_err("stale reference");
         assert!(
             matches!(error, StorageError::ConversationCommitRejected { .. }),
             "{error}"
@@ -741,9 +758,10 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
 
     // Send first: deletion conflicts and cleanup keeps the upload.
     let (_, sent) = upload(&app, "chat-f", "c.txt", b"c".to_vec()).await;
-    repository
-        .commit_conversation("chat-f", PROJECT, 0, vec![user_turn_mutation(&sent)])
-        .expect("commit");
+    assert_eq!(
+        accept_with_attachment(&repository, &sent).expect("accept"),
+        Accepted::Queued
+    );
     let url = attachment_url("chat-f", sent["id"].as_str().unwrap());
     assert_eq!(
         request_raw(app.clone(), "DELETE", &url, Vec::new()).await.0,

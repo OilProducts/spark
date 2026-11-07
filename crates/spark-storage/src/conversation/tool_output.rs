@@ -53,14 +53,6 @@ pub(crate) fn externalize_conversation_segment_tool_output(
     externalize(root, &segment.id, tool_call, true)
 }
 
-pub(crate) fn externalize_conversation_tool_output(
-    root: &std::path::Path,
-    artifact_id: &str,
-    tool_call: &mut serde_json::Map<String, Value>,
-) -> Result<()> {
-    externalize(root, artifact_id, tool_call, true)
-}
-
 fn externalize(
     root: &std::path::Path,
     artifact_id: &str,

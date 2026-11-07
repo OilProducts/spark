@@ -1068,20 +1068,23 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
             "segments": []
         }),
     );
-    spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
-        .write_runtime_session(
-            "conversation-resume",
-            &project_path.to_string_lossy(),
-            &spark_storage::conversation::RuntimeSession {
-                schema_version: 1,
-                provider: "codex_app_server".to_string(),
-                thread_id: Some("thread-existing".to_string()),
-                established_at: "2026-01-01T00:00:00Z".to_string(),
-                last_turn_id: None,
-                resume_failed: false,
-                updated_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-        )
+    // A previous turn established the thread.
+    crate::shared_store(&settings.data_dir)
+        .database()
+        .write(|tx| {
+            tx.put_runtime_session(
+                "conversation-resume",
+                "codex_app_server",
+                &json!({
+                    "schema_version": 1,
+                    "provider": "codex_app_server",
+                    "thread_id": "thread-existing",
+                    "established_at": "2026-01-01T00:00:00Z",
+                    "resume_failed": false,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }),
+            )
+        })
         .expect("seed runtime session");
     let _ = &project;
 
