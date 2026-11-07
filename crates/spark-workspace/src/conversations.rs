@@ -1302,7 +1302,8 @@ impl WorkspaceConversationService {
     }
 
     /// Starts the oldest queued message once no turn runs. A queued message
-    /// that cannot start is marked failed, never left behind.
+    /// that cannot start is marked failed, never left behind. A stopped
+    /// role or a closed mission keeps its queued messages without a turn.
     pub(crate) fn start_queued_turn(
         &self,
         conversation_id: &str,
@@ -1317,6 +1318,7 @@ impl WorkspaceConversationService {
             };
             if active_assistant_turn_id(&head).is_some()
                 || self.role_stopped(project_path, conversation_id)
+                || self.mission_closed(project_path, conversation_id)
             {
                 return Ok(None);
             }
@@ -2287,6 +2289,14 @@ impl WorkspaceConversationService {
         crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
             .conversation_role(project_path, conversation_id)
             .is_some_and(|role| role.stopped_at.is_some())
+    }
+
+    /// Whether this is a closed mission's conversation. Reads the record
+    /// without its lock, so it is safe under the turn lock.
+    fn mission_closed(&self, project_path: &str, conversation_id: &str) -> bool {
+        crate::missions::WorkspaceMissionService::new(self.settings.clone(), self.store.clone())
+            .conversation_mission(project_path, conversation_id)
+            .is_some_and(|mission| mission.closed.is_some())
     }
 
     /// Startup recovery: settles every execution, delivery and queued

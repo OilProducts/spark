@@ -515,6 +515,81 @@ fn a_mission_opened_from_a_chat_reports_its_close_to_the_chat() {
 }
 
 #[test]
+fn a_mission_closed_or_canceled_during_a_turn_keeps_its_queued_batch_without_a_turn() {
+    for cancel in [false, true] {
+        let h = Harness::new();
+        // The completion thread's last step processes the mission, which
+        // publishes it: past that point no queued turn can still start.
+        let upserts = Arc::new(Mutex::new(0));
+        let counted = upserts.clone();
+        install_runtime(
+            &h.settings,
+            InboxRuntime {
+                agent_turn_backend: h.agent.clone(),
+                publish: Arc::new(move |envelope| {
+                    if envelope.event_type == "mission.upsert" {
+                        *counted.lock().unwrap() += 1;
+                    }
+                }),
+            },
+        );
+        let chat = h.chat("chat-a", &h.project);
+        let missions = crate::missions(h.settings.clone());
+        let mission = missions
+            .create(
+                &h.project,
+                serde_json::from_value(json!({"fields": {"title": "Ship"}})).unwrap(),
+            )
+            .unwrap();
+        missions.start(&h.project, &mission.id).unwrap();
+        h.wait_prompt(&mission.id, "Begin work on this mission.");
+        // The busy turn refuses the message live, so the accepted batch queues.
+        h.send(&chat, &h.handle(&mission.id), "Too late").unwrap();
+        assert!(h
+            .repository()
+            .pending_inbox_events(&mission.id)
+            .unwrap()
+            .is_empty());
+        if cancel {
+            missions.cancel(&h.project, &mission.id).unwrap();
+        } else {
+            missions
+                .close(
+                    &h.project,
+                    &mission.id,
+                    serde_json::from_value(json!({"reason": "Done"})).unwrap(),
+                )
+                .unwrap();
+        }
+        let published = *upserts.lock().unwrap();
+        h.agent.gated.release(1);
+        wait_for("the completed turn's processing", || {
+            *upserts.lock().unwrap() > published
+        });
+        assert_eq!(h.requests().len(), 1, "cancel: {cancel}");
+        let turns = crate::conversations(h.settings.clone())
+            .get_snapshot(&mission.id, Some(&h.project))
+            .unwrap()["turns"]
+            .clone();
+        let queued = turns
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|turn| {
+                turn["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("Too late"))
+            })
+            .unwrap();
+        assert_eq!(queued["status"], "queued", "cancel: {cancel}");
+        assert_eq!(
+            missions.get(&h.project, &mission.id).unwrap().status,
+            spark_workspace::missions::MissionStatus::Closed
+        );
+    }
+}
+
+#[test]
 fn a_deleted_owner_discards_its_runs_reports() {
     let h = Harness::new();
     h.chat("chat-gone", &h.project);
