@@ -27,19 +27,10 @@ fn segment(id: &str, turn_id: &str, order: i64, kind: &str, status: &str, conten
     })
 }
 
-fn plan(id: &str, segment_id: &str) -> Value {
-    json!({
-        "id": id,
-        "status": "pending_review",
-        "source_turn_id": "a3",
-        "source_segment_id": segment_id
-    })
-}
-
 /// Segments of several turns, interleaved and out of order, each reach only
-/// their own turn's history; every plan links its own source segment once.
+/// their own turn's history, in order.
 #[test]
-fn history_and_plan_links_read_each_turns_own_segments() {
+fn history_reads_each_turns_own_segments() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = super::conversation_repository_contracts::settings(temp.path());
     let project = "/projects/history-index";
@@ -83,40 +74,10 @@ fn history_and_plan_links_read_each_turns_own_segments() {
             "flow_run_requests": [],
             "flow_launches": [],
             "run_recoveries": [],
-            "proposed_plans": [
-                plan("plan-a3", "a3-plan"),
-                plan("plan-a1", "a1-plan"),
-                plan("plan-a1-again", "a1-plan"),
-                plan("plan-missing", "no-such-segment"),
-            ]
+            "proposed_plans": []
         }),
     );
     let service = crate::conversations(settings);
-
-    let snapshot = service
-        .get_snapshot("history-index", Some(project))
-        .expect("snapshot");
-    let links = snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .map(|segment| (segment["id"].clone(), segment["artifact_id"].clone()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        links,
-        [
-            ("a1-before", Value::Null),
-            ("a1-msg", Value::Null),
-            ("a1-after", Value::Null),
-            ("a1-plan", json!("plan-a1")),
-            ("a2-said", Value::Null),
-            ("a3-before", Value::Null),
-            ("a3-msg", Value::Null),
-            ("a3-draft", Value::Null),
-            ("a3-plan", json!("plan-a3")),
-        ]
-        .map(|(id, artifact)| (json!(id), artifact))
-    );
 
     let (prepared, _) = service
         .start_turn(

@@ -600,37 +600,21 @@ async fn conversation_pages_keyset_pin_in_flight_turns_and_reset_when_a_turn_mov
     // A newest-end insert keeps the cursor valid.
     let repository =
         spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir));
-    let revision = || {
-        repository
-            .read_snapshot("conversation-paged", None)
-            .unwrap()
-            .unwrap()["revision"]
-            .as_i64()
-            .unwrap()
-    };
-    let turn = |value: Value| spark_storage::conversation::ConversationMutation::TurnUpserted {
-        turn: serde_json::from_value(value).unwrap(),
-    };
     repository
-        .commit_conversation(
-            "conversation-paged",
-            project_path,
-            revision(),
-            vec![turn(history_turn("t5", "complete", "five"))],
-        )
+        .append_system_turn("conversation-paged", project_path, "mode_change", "plan")
         .unwrap();
+    let appended = repository
+        .read_snapshot("conversation-paged", None)
+        .unwrap()
+        .unwrap()["turns"][5]["id"]
+        .clone();
     assert_eq!(
         page(format!("&limit=2&before={cursor}")).await.1["turn_ids"],
         json!(["t1", "t2"])
     );
     // Rewriting the queued turn moves it to the end: the cursor resets.
     repository
-        .commit_conversation(
-            "conversation-paged",
-            project_path,
-            revision(),
-            vec![turn(history_turn("t1", "queued", "one"))],
-        )
+        .fail_queued_message("conversation-paged", project_path, "t1", "not sent")
         .unwrap();
     let reset = page(format!("&limit=2&before={cursor}")).await;
     assert_eq!(reset.0, StatusCode::CONFLICT, "{}", reset.1);
@@ -638,7 +622,7 @@ async fn conversation_pages_keyset_pin_in_flight_turns_and_reset_when_a_turn_mov
     assert_eq!(reset.1["reason"], "order_changed");
     assert_eq!(reset.1["generation"], newest.1["generation"]);
     let reopened = page("&limit=2".into()).await;
-    assert_eq!(reopened.1["turn_ids"], json!(["t5", "t1"]));
+    assert_eq!(reopened.1["turn_ids"], json!([appended, "t1"]));
 
     // Limits and cursors are validated; another generation's cursor resets.
     for bad in [

@@ -176,6 +176,76 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     assert!(!failed["launch_error"].as_str().expect("error").is_empty());
 }
 
+/// Another reviewer's rejection while an approval's launch runs stays: the
+/// launch's late result is not recorded over it.
+#[test]
+fn a_rejection_during_an_approvals_launch_outlasts_its_result() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_native_execution_profile(&settings);
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
+    seed_conversation_with_requests(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-race",
+        "complete",
+        json!([pending_request(
+            "request-race",
+            "conversation-race",
+            &project_path,
+            Some("native")
+        )]),
+    );
+    // The launch's first run event waits until the rejection is in.
+    let (entered, launching) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let pause = std::sync::Mutex::new(Some((entered, released)));
+    let service = crate::conversations(settings.clone()).with_run_event_observer(
+        std::sync::Arc::new(move |_: &str| {
+            let paused = pause.lock().unwrap().take();
+            if let Some((entered, released)) = paused {
+                entered.send(()).expect("entered");
+                released.recv().expect("released");
+            }
+        }),
+    );
+    let review = |disposition: &str| FlowRunRequestReviewRequest {
+        project_path: project_path.to_string_lossy().into_owned(),
+        disposition: disposition.to_string(),
+        message: format!("{disposition} by a reviewer."),
+        ..FlowRunRequestReviewRequest::default()
+    };
+
+    let approving = std::thread::spawn({
+        let (service, approval) = (service.clone(), review("approved"));
+        move || service.review_flow_run_request("conversation-race", "request-race", approval)
+    });
+    launching
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the approved request launches");
+    service
+        .review_flow_run_request("conversation-race", "request-race", review("rejected"))
+        .expect("rejected while its launch runs");
+    release.send(()).expect("release");
+    approving
+        .join()
+        .expect("approval thread")
+        .expect("the approval itself succeeded");
+
+    let snapshot = service
+        .get_snapshot(
+            "conversation-race",
+            Some(project_path.to_str().expect("utf-8")),
+        )
+        .expect("snapshot");
+    let request = request_by_id(&snapshot, "request-race");
+    assert_eq!(request["status"], "rejected", "{request}");
+    assert_eq!(request["review_message"], "rejected by a reviewer.");
+    assert!(request.get("run_id").is_none(), "{request}");
+}
+
 fn pending_request(
     id: &str,
     conversation_id: &str,
@@ -1068,21 +1138,28 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
             "segments": []
         }),
     );
-    spark_storage::ConversationRepository::new(crate::shared_store(&settings.data_dir))
-        .write_runtime_session(
-            "conversation-resume",
-            &project_path.to_string_lossy(),
-            &spark_storage::conversation::RuntimeSession {
-                schema_version: 1,
-                provider: "codex_app_server".to_string(),
-                thread_id: Some("thread-existing".to_string()),
-                established_at: "2026-01-01T00:00:00Z".to_string(),
-                last_turn_id: None,
-                resume_failed: false,
-                updated_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-        )
-        .expect("seed runtime session");
+    // A previous turn established the thread.
+    crate::conversation_seed::write_rows(
+        &crate::shared_store(&settings.data_dir),
+        |tx, revision| {
+            tx.execute(
+                "INSERT INTO runtime_sessions (conversation_id, provider, revision, payload) \
+                 VALUES ('conversation-resume', 'codex_app_server', ?1, ?2)",
+                rusqlite::params![
+                    revision,
+                    json!({
+                        "schema_version": 1,
+                        "provider": "codex_app_server",
+                        "thread_id": "thread-existing",
+                        "established_at": "2026-01-01T00:00:00Z",
+                        "resume_failed": false,
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    })
+                    .to_string(),
+                ],
+            )
+        },
+    );
     let _ = &project;
 
     let service = crate::conversations(settings.clone());

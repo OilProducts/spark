@@ -23,6 +23,9 @@ pub struct ConversationMeta {
     #[serde(default)]
     pub settings_schema_version: i64,
     pub revision: i64,
+    /// The revision of the last settings change, compared by settings writes.
+    #[serde(default)]
+    pub settings_revision: i64,
     pub conversation_id: String,
     #[serde(default)]
     pub conversation_handle: String,
@@ -65,6 +68,7 @@ impl ConversationMeta {
             schema_version: crate::CONVERSATION_STATE_SCHEMA_VERSION,
             settings_schema_version: 1,
             revision: 0,
+            settings_revision: 0,
             conversation_id: conversation_id.to_string(),
             conversation_handle: String::new(),
             project_path: project_path.to_string(),

@@ -951,24 +951,18 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
     let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project.to_str().unwrap())
         .unwrap();
-    // Seeded through a store that closes before the server opens its own.
-    spark_storage::ConversationRepository::new(
-        spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
-    )
-    .seed_record(
-        &spark_storage::conversation::record_from_snapshot(&json!({
-            "schema_version": 5,
-            "revision": 1,
-            "conversation_id": "conversation-chat",
-            "conversation_handle": "amber-anchor",
-            "project_path": paths.project_path,
-            "created_at": "2026-10-01T00:00:00Z",
-            "turns": [],
-            "segments": []
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    // Created through a store that closes before the server opens its own.
+    {
+        let repository = spark_storage::ConversationRepository::new(
+            spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        );
+        repository
+            .conversation_handle("conversation-chat", Some("amber-anchor"))
+            .unwrap();
+        repository
+            .touch_conversation("conversation-chat", &paths.project_path)
+            .unwrap();
+    }
     let server = serve(build_app(settings.clone()).expect("app")).await;
     let payload_file = temp.path().join("mission.json");
     fs::write(

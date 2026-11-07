@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_common::project::build_project_id;
-use spark_storage::conversation::{CatchUp, ChangeScope, ConversationMutation, TranscriptTurn};
+use spark_storage::conversation::{
+    Accepted, Admission, CatchUp, ChangeScope, ConversationCommit, ExecutionOutcome, MessageInput,
+    Settlement, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+};
 use spark_storage::{
     ConversationRepository, ConversationStore, DeletedProjectRecord, ProjectRecordUpdate,
     ProjectRegistry, StorageError,
@@ -323,37 +326,31 @@ fn provider_events_persist_without_replacing_project_metadata() {
     let path = "/projects/provider-events";
     let paths = seed_historical_metadata(&registry, path);
     let repo = ConversationRepository::new(ConversationStore::open(temp.path()).unwrap());
-    repo.commit_conversation(
-        "conversation-1",
-        path,
-        0,
-        vec![assistant("turn-1", "streaming")],
-    )
-    .unwrap();
+    start(&repo, "conversation-1", path, "turn-1", &[]).unwrap();
     let bytes = fs::read(&paths.project_file).unwrap();
     let before = fs::metadata(&paths.project_file).unwrap();
     for message in ["one", "two", "three"] {
-        let mut event = serde_json::from_value(json!({
-            "kind": "content_delta", "channel": "assistant", "message": message
-        }))
+        record(
+            &repo,
+            "conversation-1",
+            path,
+            "turn-1",
+            tool_event(message, message),
+        )
         .unwrap();
-        repo.append_provider_event("conversation-1", path, "turn-1", &mut event)
-            .unwrap();
         assert_metadata_untouched(&paths.project_file, &bytes, &before);
     }
-    let events = repo
-        .unapplied_provider_events("conversation-1", path, "turn-1")
+    let snapshot = repo
+        .read_snapshot("conversation-1", Some(path))
+        .unwrap()
         .unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .map(|record| record.sequence)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
-    for (event, message) in events.iter().zip(["one", "two", "three"]) {
-        assert_eq!(event.event["message"], message);
-    }
+    let outputs: Vec<_> = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| segment["tool_call"]["output"].clone())
+        .collect();
+    assert_eq!(outputs, vec![json!("one"), json!("two"), json!("three")]);
 }
 
 #[test]
@@ -371,74 +368,106 @@ fn conversation_reads_never_register_projects_and_writes_need_a_live_conversatio
         .unwrap()
         .is_empty());
     repo.delete_conversation("conversation", path).unwrap();
-    let mut event = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "hello"}),
+    assert!(record(
+        &repo,
+        "conversation",
+        path,
+        "turn",
+        tool_event("call", "hello")
     )
-    .unwrap();
-    assert!(repo
-        .append_provider_event("conversation", path, "turn", &mut event)
-        .is_err());
-    assert!(repo
-        .write_runtime_session("conversation", path, &session())
-        .is_err());
+    .is_err());
+    assert!(settle(&repo, "conversation", path, "turn").is_err());
     assert_eq!(registry.read_project_record(path).unwrap(), None);
-    // The first commit of a new conversation registers its project.
-    repo.commit_conversation("conversation", path, 0, vec![assistant("turn", "complete")])
-        .unwrap();
+    // The first message of a new conversation registers its project.
+    start(&repo, "conversation", path, "turn", &[]).unwrap();
     assert!(registry.read_project_record(path).unwrap().is_some());
-    repo.write_runtime_session("conversation", path, &session())
-        .unwrap();
-    assert_eq!(
-        repo.read_runtime_session("conversation", Some(path))
-            .unwrap(),
-        Some(session())
-    );
+    settle(&repo, "conversation", path, "turn").unwrap();
+    let session = repo
+        .read_runtime_session("conversation", Some(path))
+        .unwrap()
+        .expect("session");
+    assert_eq!(session.thread_id.as_deref(), Some("thread"));
+    assert_eq!(session.last_turn_id.as_deref(), Some("turn"));
 }
 
-fn session() -> spark_storage::conversation::RuntimeSession {
-    spark_storage::conversation::RuntimeSession {
-        schema_version: spark_storage::conversation::RUNTIME_SESSION_SCHEMA_VERSION,
-        provider: "codex_app_server".into(),
-        thread_id: Some("thread".into()),
-        established_at: "2001-01-01T00:00:00Z".into(),
-        last_turn_id: None,
-        resume_failed: false,
-        updated_at: "2001-01-01T00:00:00Z".into(),
-    }
-}
-
-fn assistant(id: &str, status: &str) -> ConversationMutation {
-    ConversationMutation::TurnUpserted {
-        turn: TranscriptTurn {
-            id: id.into(),
-            role: "assistant".into(),
-            status: status.into(),
-            ..TranscriptTurn::default()
+/// Accept a message that starts the execution `assistant_turn_id`, with
+/// `attachments`.
+fn start(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    path: &str,
+    assistant_turn_id: &str,
+    attachments: &[&str],
+) -> spark_storage::Result<Option<ConversationCommit>> {
+    let attachments: Vec<_> = attachments.iter().map(|id| json!({"id": id})).collect();
+    let (commit, accepted) = repo.accept_message(
+        conversation_id,
+        path,
+        MessageInput {
+            admission: Admission::Start,
+            user_turn_id: format!("{assistant_turn_id}-user"),
+            content: "hello".into(),
+            attachments: (!attachments.is_empty()).then(|| json!(attachments)),
+            client_request_sha256: None,
+            expected_settings_revision: 0,
+            settings: Default::default(),
+            held: false,
+            assistant_turn_id: assistant_turn_id.into(),
+            execution_settings: json!({}),
         },
-    }
+    )?;
+    assert!(matches!(accepted, Accepted::Started { .. }), "{accepted:?}");
+    Ok(commit)
 }
 
-fn user(id: &str, attachments: &[&str]) -> ConversationMutation {
-    let mut turn = TranscriptTurn {
-        id: id.into(),
-        role: "user".into(),
-        content: "hello".into(),
-        status: "complete".into(),
-        ..TranscriptTurn::default()
-    };
-    if !attachments.is_empty() {
-        turn.extra.insert(
-            "attachments".into(),
-            json!(attachments
-                .iter()
-                .map(|id| json!({"id": id}))
-                .collect::<Vec<_>>()),
-        );
-    }
-    ConversationMutation::TurnUpserted { turn }
+/// Record one provider event of the execution `turn_id`.
+fn record(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    path: &str,
+    turn_id: &str,
+    event: Value,
+) -> spark_storage::Result<Option<ConversationCommit>> {
+    let event = serde_json::from_value(event).unwrap();
+    Ok(repo
+        .record_provider_event(conversation_id, path, turn_id, &event, &BTreeMap::new())?
+        .commit)
 }
 
-/// A registered project with two conversations, an attachment and a trace.
+/// A completed tool call `call_id` with `output`.
+fn tool_event(call_id: &str, output: &str) -> Value {
+    json!({"kind": "tool_call_completed", "tool_call": {"id": call_id, "output": output}})
+}
+
+/// Answer and settle the execution `turn_id` on the provider thread `thread`.
+fn settle(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    path: &str,
+    turn_id: &str,
+) -> spark_storage::Result<Settlement> {
+    let answer = json!({"kind": "content_completed", "channel": "assistant",
+        "phase": "final_answer", "message": "Done."});
+    record(repo, conversation_id, path, turn_id, answer)?;
+    repo.settle_execution(
+        conversation_id,
+        path,
+        turn_id,
+        ExecutionOutcome::Returned {
+            final_text: Some("Done.".into()),
+            token_usage: None,
+            token_usage_breakdown: None,
+            app_thread_id: Some("thread".into()),
+            app_turn_id: None,
+            thread_resume_failure: None,
+            continued_question: None,
+        },
+        &BTreeMap::new(),
+    )
+}
+
+/// A registered project with two conversations, an attachment and an
+/// externalized tool output.
 fn seeded_project(
     home: &std::path::Path,
     path: &str,
@@ -450,24 +479,11 @@ fn seeded_project(
     let attachment = repo
         .create_attachment("chat-a", path, "notes.txt", b"attached bytes")
         .unwrap();
-    repo.commit_conversation(
-        "chat-a",
-        path,
-        0,
-        vec![
-            user("turn-user", &[&attachment.id]),
-            assistant("turn-a", "streaming"),
-        ],
-    )
-    .unwrap();
-    repo.commit_conversation("chat-b", path, 0, vec![assistant("turn-b", "complete")])
-        .unwrap();
-    let mut event = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "partial"}),
-    )
-    .unwrap();
-    repo.append_provider_event("chat-a", path, "turn-a", &mut event)
-        .unwrap();
+    start(&repo, "chat-a", path, "turn-a", &[&attachment.id]).unwrap();
+    start(&repo, "chat-b", path, "turn-b", &[]).unwrap();
+    settle(&repo, "chat-b", path, "turn-b").unwrap();
+    let output = "x".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
+    record(&repo, "chat-a", path, "turn-a", tool_event("call", &output)).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
     (store, deleted)
 }
@@ -482,7 +498,7 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     let handle = repo.conversation_handle("chat-a", None).unwrap();
     let project_root = home.join("workspace/projects").join(&deleted.project_id);
     assert!(project_root
-        .join("conversations/chat-a/provider-trace.jsonl")
+        .join("conversations/chat-a/tool-output")
         .exists());
 
     let cancelled = std::sync::Mutex::new(Vec::new());
@@ -522,33 +538,20 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     assert!(!batch.rows.is_empty());
 
     // Late callbacks for the deleted work fail and recreate nothing.
-    let mut event = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "late"}),
-    )
-    .unwrap();
-    assert!(repo
-        .append_provider_event("chat-a", path, "turn-a", &mut event)
-        .is_err());
-    assert!(repo
-        .commit_conversation("chat-a", path, 0, vec![assistant("turn-a", "complete")])
-        .is_err());
-    assert!(repo
-        .write_runtime_session("chat-a", path, &session())
-        .is_err());
+    assert!(record(&repo, "chat-a", path, "turn-a", tool_event("late", "late")).is_err());
+    assert!(start(&repo, "chat-a", path, "turn-late", &[]).is_err());
+    assert!(settle(&repo, "chat-a", path, "turn-a").is_err());
     assert!(!project_root.exists());
 
     // Re-registration starts fresh; the deleted handle is free again but a
     // deleted conversation id never comes back.
     ProjectRegistry::new(&home).register_project(path).unwrap();
-    assert!(repo
-        .commit_conversation("chat-a", path, 0, vec![assistant("turn-new", "complete")])
-        .is_err());
+    assert!(start(&repo, "chat-a", path, "turn-new", &[]).is_err());
     assert_eq!(
         repo.conversation_handle("chat-new", Some(&handle)).unwrap(),
         handle
     );
-    repo.commit_conversation("chat-new", path, 0, vec![assistant("turn-new", "complete")])
-        .unwrap();
+    start(&repo, "chat-new", path, "turn-new", &[]).unwrap();
     assert_eq!(
         repo.read_snapshot("chat-new", None).unwrap().unwrap()["conversation_handle"],
         handle
@@ -590,20 +593,14 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
     let kept = repo
         .create_attachment("chat-a-finished", survivor, "kept.txt", b"kept bytes")
         .unwrap();
-    repo.commit_conversation(
-        "chat-a-finished",
-        survivor,
-        0,
-        vec![user("turn-kept", &[&kept.id])],
-    )
-    .unwrap();
+    start(&repo, "chat-a-finished", survivor, "turn-kept", &[&kept.id]).unwrap();
     let project_root = home.join("workspace/projects").join(&deleted.project_id);
     // Everything so far is checkpointed; the deletion commits under NORMAL.
     store.database().after_checkpoint(|_| Ok(())).unwrap();
     let before = tree(&project_root);
     assert!(before
         .iter()
-        .any(|(file, _)| file.ends_with("provider-trace.jsonl")));
+        .any(|(file, _)| file.parent().unwrap().ends_with("tool-output")));
 
     let faults = [
         CheckpointFault::Busy,
@@ -631,9 +628,7 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
         Some(deleted.clone())
     );
     // Nothing new is admitted while cleanup is pending.
-    assert!(repo
-        .commit_conversation("chat-c", path, 0, vec![assistant("turn-c", "complete")])
-        .is_err());
+    assert!(start(&repo, "chat-c", path, "turn-c", &[]).is_err());
     drop(repo);
     drop(store);
 
@@ -687,11 +682,8 @@ fn deletion_during_provider_output_stops_the_writer_without_recreating_files() {
     let repo = ConversationRepository::new(store.clone());
     let writer = std::thread::spawn(move || {
         for index in 0.. {
-            let mut event = serde_json::from_value(
-                json!({"kind": "content_delta", "channel": "assistant", "message": format!("{index}")}),
-            )
-            .unwrap();
-            if let Err(error) = repo.append_provider_event("chat-a", path, "turn-a", &mut event) {
+            let event = tool_event(&format!("call-{index}"), &format!("{index}"));
+            if let Err(error) = record(&repo, "chat-a", path, "turn-a", event) {
                 return (index, error);
             }
         }
@@ -728,9 +720,7 @@ fn turns_cannot_reference_attachments_whose_bytes_are_missing() {
         repo.read_attachment("chat", path, &attachment.id).unwrap(),
         None
     );
-    let error = repo
-        .commit_conversation("chat", path, 0, vec![user("turn-user", &[&attachment.id])])
-        .unwrap_err();
+    let error = start(&repo, "chat", path, "turn-assistant", &[&attachment.id]).unwrap_err();
     assert!(error.to_string().contains("not available"), "{error}");
 }
 
@@ -831,75 +821,10 @@ fn seeded_project_in(
 ) -> (std::sync::Arc<ConversationStore>, DeletedProjectRecord) {
     let registry = ProjectRegistry::new(home);
     registry.register_project(path).unwrap();
-    ConversationRepository::new(store.clone())
-        .commit_conversation(
-            "chat-a-finished",
-            path,
-            0,
-            vec![assistant("turn-a", "complete")],
-        )
-        .unwrap();
+    let repo = ConversationRepository::new(store.clone());
+    start(&repo, "chat-a-finished", path, "turn-a", &[]).unwrap();
+    settle(&repo, "chat-a-finished", path, "turn-a").unwrap();
     (store.clone(), registry.deletable_project(path).unwrap())
-}
-
-#[test]
-fn an_interrupted_trace_append_is_repaired_before_the_next_one() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
-    let path = "/projects/trace-tail";
-    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    repo.commit_conversation("chat", path, 0, vec![assistant("turn-a", "streaming")])
-        .unwrap();
-    let mut first = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "kept"}),
-    )
-    .unwrap();
-    repo.append_provider_event("chat", path, "turn-a", &mut first)
-        .unwrap();
-    let trace = ProjectRegistry::new(&home)
-        .project_paths(path)
-        .unwrap()
-        .conversations_dir
-        .join("chat/provider-trace.jsonl");
-    // A crash mid-append leaves an unterminated, unparsable tail.
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&trace)
-        .unwrap()
-        .write_all(br#"{"sequence":2,"turn_id":"#)
-        .unwrap();
-    drop(repo);
-
-    let reopen = || ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    let repo = reopen();
-    let sequences = |repo: &ConversationRepository| {
-        repo.unapplied_provider_events("chat", path, "turn-a")
-            .unwrap()
-            .iter()
-            .map(|record| record.sequence)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(sequences(&repo), vec![1]);
-    let mut next = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "after"}),
-    )
-    .unwrap();
-    let appended = repo
-        .append_provider_event("chat", path, "turn-a", &mut next)
-        .unwrap();
-    assert_eq!(appended.sequence, 2);
-    assert_eq!(sequences(&repo), vec![1, 2]);
-    drop(repo);
-    assert_eq!(sequences(&reopen()), vec![1, 2]);
-
-    // Corruption before the final record stays an explicit recovery error.
-    let mut bytes = b"{\"broken\n".to_vec();
-    bytes.extend(fs::read(&trace).unwrap());
-    fs::write(&trace, bytes).unwrap();
-    assert!(matches!(
-        reopen().read_snapshot("chat", Some(path)),
-        Err(StorageError::JsonlLine { line: 1, .. })
-    ));
 }
 
 /// Registration and deletion of one project serialize on its lifecycle
@@ -1022,16 +947,17 @@ fn work_arriving_during_deletion_cancellation_is_refused() {
     let attempts = std::sync::Mutex::new(Vec::new());
     store
         .delete_project(&deleted, &|conversation_id| {
-            let mut event = serde_json::from_value(
-                json!({"kind": "content_delta", "channel": "assistant", "message": "late"}),
-            )
-            .unwrap();
             attempts.lock().unwrap().push((
                 conversation_id.to_string(),
-                repo.commit_conversation("chat-new", path, 0, vec![assistant("turn-n", "pending")])
-                    .is_err(),
-                repo.append_provider_event(conversation_id, path, "turn-a", &mut event)
-                    .is_err(),
+                start(&repo, "chat-new", path, "turn-n", &[]).is_err(),
+                record(
+                    &repo,
+                    conversation_id,
+                    path,
+                    "turn-a",
+                    tool_event("late", "late"),
+                )
+                .is_err(),
             ));
         })
         .unwrap();

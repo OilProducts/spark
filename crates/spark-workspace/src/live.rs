@@ -1556,16 +1556,12 @@ pub fn conversations_snapshot_envelope(
     );
     for project in projects {
         for role in roles.list(&project).unwrap_or_default() {
+            // A touched role has a conversation row; one never touched has
+            // only this placeholder.
             if rows.iter().any(|row| row.id == role.conversation_id) {
                 continue;
             }
-            // A change after this snapshot's watermark arrives as a change.
-            let revision = service
-                .store()
-                .placeholder_revision(&role.conversation_id)
-                .filter(|revision| *revision <= watermark)
-                .unwrap_or(0);
-            rows.push(placeholder_row(&role, &project, revision));
+            rows.push(placeholder_row(&role, &project));
         }
     }
     let generation = database.generation();
@@ -1582,11 +1578,7 @@ pub fn conversations_snapshot_envelope(
 }
 
 /// A standing role's summary row before its conversation exists.
-fn placeholder_row(
-    role: &crate::roles::RoleRecord,
-    project_path: &str,
-    revision: i64,
-) -> EntityRow {
+fn placeholder_row(role: &crate::roles::RoleRecord, project_path: &str) -> EntityRow {
     EntityRow {
         kind: EntityKind::Conversation,
         conversation_id: role.conversation_id.clone(),
@@ -1595,7 +1587,7 @@ fn placeholder_row(
         turn_id: None,
         position: None,
         order: None,
-        revision,
+        revision: 0,
         deleted: false,
         payload: Some(json!({
             "placeholder": true,
@@ -1631,26 +1623,6 @@ pub fn conversations_changes_envelope(
     Ok(match catch_up {
         CatchUp::Batch(mut batch) => {
             batch.rows = listed_summary_rows(service, batch.rows);
-            // Placeholder rows changed in range, while still without a conversation.
-            let roles = crate::roles::WorkspaceRoleService::new(
-                service.settings().clone(),
-                service.store().clone(),
-            );
-            for (id, project, revision) in
-                service.store().placeholder_changes(since, batch.watermark)
-            {
-                if project_path.is_some_and(|filter| filter != project)
-                    || batch.rows.iter().any(|row| row.id == id)
-                    || database
-                        .read(|read| read.conversation_location(&id))?
-                        .is_some()
-                {
-                    continue;
-                }
-                if let Some(role) = roles.conversation_role(&project, &id) {
-                    batch.rows.push(placeholder_row(&role, &project, revision));
-                }
-            }
             (
                 conversations_envelope(
                     "conversations.changes",
@@ -1703,8 +1675,9 @@ fn listed_summary_rows(
             }
             if let Some(role) = roles.conversation_role(&project_path, &row.id) {
                 payload["title"] = json!(role.title);
+                let state = role.state_beside(payload["running"] == true);
                 payload["standing_role"] =
-                    json!({"name": role.name, "title": role.title, "state": role.state});
+                    json!({"name": role.name, "title": role.title, "state": state});
             }
             Some(row)
         })

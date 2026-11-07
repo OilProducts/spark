@@ -1,12 +1,17 @@
+use std::collections::BTreeMap;
 use std::fs;
 
 use serde_json::{json, Value};
 use spark_storage::conversation::{
-    record_from_snapshot, snapshot_from_record, ArtifactCollection, ConversationMetadataPatch,
-    ConversationMutation, EntityKind, EntityRow, TranscriptSegment, TranscriptTurn,
-    TransientStreamBody, TransientStreamEvent, ORDER_UNASSIGNED, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+    record_from_snapshot, snapshot_from_record, Accepted, Admission, Answer, ArtifactChange,
+    ArtifactCollection, ArtifactOutcome, CommitNotice, ConversationCommit,
+    ConversationMetadataPatch, EntityKind, EntityRow, ExecutionOutcome, FlowRequestApproval,
+    MessageInput, Settlement, TransientStreamBody, TransientStreamEvent,
+    TOOL_OUTPUT_INLINE_LIMIT_BYTES,
 };
 use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry, StorageError};
+
+use crate::conversation_seed::{put_blob_reference, write_rows};
 
 fn setup(project_path: &str) -> (tempfile::TempDir, ConversationRepository) {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -38,11 +43,7 @@ fn snapshot(repo: &ConversationRepository, conversation_id: &str) -> Value {
 }
 
 /// The row a commit changed, by kind and id.
-fn changed<'a>(
-    commit: &'a spark_storage::conversation::ConversationCommit,
-    kind: EntityKind,
-    id: &str,
-) -> &'a EntityRow {
+fn changed<'a>(commit: &'a ConversationCommit, kind: EntityKind, id: &str) -> &'a EntityRow {
     commit
         .changes
         .rows
@@ -51,80 +52,137 @@ fn changed<'a>(
         .unwrap_or_else(|| panic!("changed {kind:?} {id}"))
 }
 
-fn user_turn(id: &str, content: &str) -> TranscriptTurn {
-    TranscriptTurn {
-        id: id.to_string(),
-        role: "user".to_string(),
-        kind: Some("message".to_string()),
+fn message(user_turn_id: &str, assistant_turn_id: &str, content: &str) -> MessageInput {
+    MessageInput {
+        admission: Admission::Start,
+        user_turn_id: user_turn_id.to_string(),
         content: content.to_string(),
-        status: "complete".to_string(),
-        timestamp: "2026-01-01T00:00:00Z".to_string(),
-        ..TranscriptTurn::default()
+        attachments: None,
+        client_request_sha256: None,
+        expected_settings_revision: 0,
+        settings: ConversationMetadataPatch::default(),
+        held: false,
+        assistant_turn_id: assistant_turn_id.to_string(),
+        execution_settings: json!({}),
     }
 }
 
-fn assistant_turn(id: &str, status: &str) -> TranscriptTurn {
-    TranscriptTurn {
-        id: id.to_string(),
-        role: "assistant".to_string(),
-        kind: Some("message".to_string()),
-        status: status.to_string(),
-        timestamp: "2026-01-01T00:00:00Z".to_string(),
-        ..TranscriptTurn::default()
-    }
+/// Accept a message that starts `turn-assistant`.
+fn start(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    content: &str,
+) -> ConversationCommit {
+    let (commit, accepted) = repo
+        .accept_message(
+            conversation_id,
+            project_path,
+            message("turn-user", "turn-assistant", content),
+        )
+        .expect("accept message");
+    assert!(matches!(accepted, Accepted::Started { .. }), "{accepted:?}");
+    commit.expect("acceptance commit")
 }
 
-fn segment(id: &str, turn_id: &str, order: i64) -> TranscriptSegment {
-    TranscriptSegment {
-        id: id.to_string(),
-        turn_id: turn_id.to_string(),
-        order,
-        kind: "assistant_message".to_string(),
-        role: "assistant".to_string(),
-        status: "streaming".to_string(),
-        timestamp: "2026-01-01T00:00:01Z".to_string(),
-        updated_at: "2026-01-01T00:00:01Z".to_string(),
-        content: "partial".to_string(),
-        completed_at: None,
-        error: None,
-        error_code: None,
-        details: None,
-        phase: None,
-        artifact_id: None,
-        tool_call: None,
-        request_user_input: None,
-        source: Some(json!({})),
-        boundary: None,
-        extra: serde_json::Map::new(),
-    }
+/// Record one provider event of the running `turn-assistant`.
+fn record(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    event: Value,
+) -> Option<ConversationCommit> {
+    repo.record_provider_event(
+        conversation_id,
+        project_path,
+        "turn-assistant",
+        &serde_json::from_value(event).expect("provider event"),
+        &BTreeMap::new(),
+    )
+    .expect("record event")
+    .commit
+}
+
+/// A completed tool call of `turn-assistant`.
+fn tool_event(tool_call: Value) -> Value {
+    json!({"kind": "tool_call_completed", "tool_call": tool_call})
+}
+
+/// Record a completed tool call carrying `output` (externalized when large).
+fn record_tool(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    call_id: &str,
+    output: &str,
+) -> ConversationCommit {
+    record(
+        repo,
+        conversation_id,
+        project_path,
+        tool_event(json!({"id": call_id, "output": output})),
+    )
+    .expect("tool commit")
+}
+
+/// The segment a tool call of `turn-assistant` writes.
+fn tool_segment_id(call_id: &str) -> String {
+    format!("segment-tool-turn-assistant-{call_id}")
+}
+
+/// The blob a commit's tool segment references, relative to its conversation.
+fn output_artifact(commit: &ConversationCommit, call_id: &str) -> String {
+    changed(commit, EntityKind::Segment, &tool_segment_id(call_id))
+        .payload
+        .as_ref()
+        .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
+        .expect("output artifact")
+        .to_string()
+}
+
+/// Answer and settle `turn-assistant`.
+fn settle(repo: &ConversationRepository, conversation_id: &str, project_path: &str) -> Settlement {
+    record(
+        repo,
+        conversation_id,
+        project_path,
+        json!({"kind": "content_completed", "channel": "assistant",
+            "phase": "final_answer", "message": "Done."}),
+    );
+    repo.settle_execution(
+        conversation_id,
+        project_path,
+        "turn-assistant",
+        ExecutionOutcome::Returned {
+            final_text: Some("Done.".to_string()),
+            token_usage: None,
+            token_usage_breakdown: None,
+            app_thread_id: None,
+            app_turn_id: None,
+            thread_resume_failure: None,
+            continued_question: None,
+        },
+        &BTreeMap::new(),
+    )
+    .expect("settle")
 }
 
 #[test]
-fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
+fn accepting_a_message_creates_the_conversation_and_returns_only_changed_rows() {
     let project_path = "/projects/commit-basics";
     let _temp = tempfile::tempdir().expect("tempdir");
     let home = _temp.path().join("spark-home");
     let repo = ConversationRepository::new(ConversationStore::open(&home).expect("store"));
 
-    let commit = repo
-        .commit_conversation(
-            "conversation-a",
-            project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: user_turn("turn-user", "Hello there commit boundary"),
-                },
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "pending"),
-                },
-            ],
-        )
-        .expect("initial commit");
+    let commit = start(
+        &repo,
+        "conversation-a",
+        project_path,
+        "Hello there commit boundary",
+    );
 
     // One home-global revision per transaction, stamped on every changed row.
     assert_eq!(commit.revision, 1);
-    assert!(!commit.rebased);
     assert_eq!(commit.changes.from_revision, 0);
     assert_eq!(commit.changes.watermark, 1);
     assert_eq!(commit.changes.rows.len(), 3);
@@ -143,22 +201,27 @@ fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
         "Hello there commit boundary"
     );
 
-    let second = repo
-        .commit_conversation(
-            "conversation-a",
-            project_path,
-            commit.revision,
-            vec![ConversationMutation::SegmentUpserted {
-                segment: segment("segment-a", "turn-assistant", ORDER_UNASSIGNED),
-            }],
-        )
-        .expect("second commit");
+    let second = record(
+        &repo,
+        "conversation-a",
+        project_path,
+        json!({"kind": "tool_call_started", "tool_call": {"id": "call-a"}}),
+    )
+    .expect("second commit");
     assert_eq!(second.revision, 2);
-    // Only the segment and its conversation's summary changed.
-    assert_eq!(second.changes.rows.len(), 2);
+    // Only the new segment, the turn it started streaming and the
+    // conversation's summary changed.
+    assert_eq!(second.changes.rows.len(), 3, "{:?}", second.changes.rows);
     assert_eq!(
-        changed(&second, EntityKind::Segment, "segment-a").order,
+        changed(&second, EntityKind::Segment, &tool_segment_id("call-a")).order,
         Some(1)
+    );
+    assert_eq!(
+        changed(&second, EntityKind::Turn, "turn-assistant")
+            .payload
+            .as_ref()
+            .unwrap()["status"],
+        "streaming"
     );
 
     let persisted = repo
@@ -167,7 +230,7 @@ fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
         .expect("snapshot");
     assert_eq!(persisted["revision"], 2);
     assert_eq!(persisted["turns"].as_array().expect("turns").len(), 2);
-    assert_eq!(persisted["segments"][0]["id"], "segment-a");
+    assert_eq!(persisted["segments"][0]["id"], tool_segment_id("call-a"));
     // Every entity is a database row; no split conversation files exist.
     let stored = repo
         .store()
@@ -185,6 +248,7 @@ fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
         "transcript.jsonl",
         "event-log.json",
         "events.jsonl",
+        "provider-events.jsonl",
         "artifacts",
     ] {
         assert!(!root.join(legacy).exists(), "unexpected {legacy}");
@@ -199,234 +263,704 @@ fn commit_conversation_creates_conversations_and_returns_only_changed_rows() {
 }
 
 #[test]
-fn commit_conversation_rebases_stale_base_without_clobbering_concurrent_writes() {
-    let project_path = "/projects/commit-rebase";
-    let (_temp, repo) = setup(project_path);
-
-    let started = repo
-        .commit_conversation(
-            "conversation-b",
-            project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: user_turn("turn-user", "Launch a flow while streaming"),
-                },
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-            ],
-        )
-        .expect("start commit");
-
-    // A streaming segment commits on top of the started state.
-    let streamed = repo
-        .commit_conversation(
-            "conversation-b",
-            project_path,
-            started.revision,
-            vec![ConversationMutation::SegmentUpserted {
-                segment: segment("segment-stream", "turn-assistant", ORDER_UNASSIGNED),
-            }],
-        )
-        .expect("stream commit");
-
-    // A concurrent artifact review still holds the pre-stream revision. Today
-    // this interleaving clobbers the streamed segment; the commit boundary
-    // must rebase by mutation identity instead.
-    let artifact = repo
-        .commit_conversation(
-            "conversation-b",
-            project_path,
-            started.revision,
-            vec![ConversationMutation::ArtifactUpserted {
-                collection: ArtifactCollection::FlowRunRequests,
-                artifact: json!({"id": "request-a", "status": "pending_review"}),
-            }],
-        )
-        .expect("artifact commit");
-
-    assert!(artifact.rebased);
-    assert_eq!(artifact.revision, streamed.revision + 1);
-    let persisted = repo
-        .read_snapshot("conversation-b", Some(project_path))
-        .expect("read")
-        .expect("snapshot");
-    assert_eq!(persisted["segments"][0]["id"], "segment-stream");
-    assert_eq!(persisted["flow_run_requests"][0]["id"], "request-a");
-    assert_eq!(persisted["revision"], artifact.revision);
-
-    // The artifact commit's result is the artifact row and the summary it
-    // changed, never a snapshot of the conversation.
-    assert_eq!(artifact.changes.rows.len(), 2);
-    let row = changed(&artifact, EntityKind::Artifact, "request-a");
-    assert_eq!(row.collection.as_deref(), Some("flow_run_requests"));
-    assert_eq!(row.revision, artifact.revision);
-}
-
-#[test]
-fn commit_conversation_keeps_segment_orders_stable_for_late_updates() {
+fn provider_events_keep_segment_orders_stable_for_late_updates() {
     let project_path = "/projects/commit-orders";
     let (_temp, repo) = setup(project_path);
-
-    let commit = repo
-        .commit_conversation(
+    start(&repo, "conversation-c", project_path, "Run two tools");
+    for call_id in ["call-early", "call-late"] {
+        record(
+            &repo,
             "conversation-c",
             project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-                ConversationMutation::SegmentUpserted {
-                    segment: segment("segment-early", "turn-assistant", ORDER_UNASSIGNED),
-                },
-                ConversationMutation::SegmentUpserted {
-                    segment: segment("segment-late", "turn-assistant", ORDER_UNASSIGNED),
-                },
-            ],
+            json!({"kind": "tool_call_started", "tool_call": {"id": call_id}}),
         )
-        .expect("seed commit");
+        .expect("started");
+    }
+    let started = snapshot(&repo, "conversation-c")["revision"]
+        .as_i64()
+        .unwrap();
 
-    // A late update targeting the older segment keeps its original order even
-    // though newer segments now exist.
-    let mut updated = segment("segment-early", "turn-assistant", ORDER_UNASSIGNED);
-    updated.status = "complete".to_string();
-    updated.content = "final".to_string();
-    let late = repo
-        .commit_conversation(
-            "conversation-c",
-            project_path,
-            commit.revision,
-            vec![ConversationMutation::SegmentUpserted { segment: updated }],
-        )
-        .expect("late update");
+    // A late completion of the older tool keeps its original order even
+    // though a newer segment now exists.
+    let late = record_tool(&repo, "conversation-c", project_path, "call-early", "final");
 
     let persisted = repo
         .read_snapshot("conversation-c", Some(project_path))
         .expect("read")
         .expect("snapshot");
     let segments = persisted["segments"].as_array().expect("segments");
-    let early = segments
-        .iter()
-        .find(|segment| segment["id"] == "segment-early")
-        .expect("early segment");
+    let find = |id: &str| {
+        segments
+            .iter()
+            .find(|segment| segment["id"] == id)
+            .unwrap_or_else(|| panic!("segment {id}"))
+    };
+    let early = find(&tool_segment_id("call-early"));
     assert_eq!(early["order"], 1);
     assert_eq!(early["status"], "complete");
-    let late_segment = segments
-        .iter()
-        .find(|segment| segment["id"] == "segment-late")
-        .expect("late segment");
-    assert_eq!(late_segment["order"], 2);
-    assert_eq!(late.revision, commit.revision + 1);
+    assert_eq!(early["tool_call"]["output"], "final");
+    assert_eq!(find(&tool_segment_id("call-late"))["order"], 2);
+    assert_eq!(late.revision, started + 1);
 }
 
+/// Commit notices name the segments a commit ends and the executions it
+/// settles or removes, so a listener can retire their display text. A return
+/// that only waits for an answer settles nothing.
 #[test]
-fn commit_conversation_rejects_empty_batches_unknown_bases_and_orphan_segments() {
+fn commit_notices_name_ended_segments_and_settled_executions() {
+    let project_path = "/projects/commit-notices";
+    let (_temp, repo) = setup(project_path);
+    let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CommitNotice>::new()));
+    let sink = notices.clone();
+    repo.store()
+        .set_commit_listener(std::sync::Arc::new(move |notice: &CommitNotice| {
+            sink.lock().unwrap().push(notice.clone());
+        }));
+    let since = |count: usize| notices.lock().unwrap()[count..].to_vec();
+    let event = |conversation_id: &str, value: Value, held: &BTreeMap<String, String>| {
+        repo.record_provider_event(
+            conversation_id,
+            project_path,
+            "turn-assistant",
+            &serde_json::from_value(value).expect("provider event"),
+            held,
+        )
+        .expect("record event")
+    };
+    let delta = json!({"kind": "content_delta", "channel": "assistant",
+        "content_delta": "Let", "source": {"item_id": "item-1"}});
+    let mine = |segment_id: &str| {
+        (
+            "conversation-n".to_string(),
+            "turn-assistant".to_string(),
+            segment_id.to_string(),
+        )
+    };
+    start(&repo, "conversation-n", project_path, "Ask first");
+
+    // Opening a segment ends nothing; its end names it.
+    let count = notices.lock().unwrap().len();
+    let (segment_id, committed) = event("conversation-n", delta.clone(), &BTreeMap::new())
+        .opened
+        .expect("opened");
+    assert_eq!(committed, "");
+    let held = BTreeMap::from([(segment_id.clone(), "Let me ask.".to_string())]);
+    let ended = event(
+        "conversation-n",
+        json!({"kind": "content_completed", "channel": "assistant",
+            "message": "Let me ask.", "source": {"item_id": "item-1"}}),
+        &held,
+    );
+    assert_eq!(ended.ended, [segment_id.clone()]);
+    let closed: Vec<_> = since(count)
+        .into_iter()
+        .flat_map(|notice| notice.closed_segments)
+        .collect();
+    assert_eq!(closed, [mine(&segment_id)]);
+
+    // A question-only return keeps the execution open.
+    event(
+        "conversation-n",
+        json!({"kind": "request_user_input_requested", "source": {"item_id": "input-1"},
+            "request_user_input": {"itemId": "input-1", "questions": [{"id": "decision",
+                "header": "Approve", "question": "Approve?", "isOther": false,
+                "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}}),
+        &BTreeMap::new(),
+    );
+    let count = notices.lock().unwrap().len();
+    let waiting = repo
+        .settle_execution(
+            "conversation-n",
+            project_path,
+            "turn-assistant",
+            ExecutionOutcome::Returned {
+                final_text: None,
+                token_usage: None,
+                token_usage_breakdown: None,
+                app_thread_id: None,
+                app_turn_id: None,
+                thread_resume_failure: None,
+                continued_question: None,
+            },
+            &BTreeMap::new(),
+        )
+        .expect("question-only return");
+    assert!(!waiting.settled);
+    assert!(since(count)
+        .iter()
+        .all(|notice| notice.settled_executions.is_empty()));
+
+    // The answer's continuation settles it, once.
+    let (_, answer) = repo
+        .answer_question(
+            "conversation-n",
+            project_path,
+            "decision",
+            &BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+        )
+        .expect("answer");
+    assert!(matches!(answer, Answer::Answered(_)), "{answer:?}");
+    let count = notices.lock().unwrap().len();
+    assert!(settle(&repo, "conversation-n", project_path).settled);
+    let settled: Vec<_> = since(count)
+        .into_iter()
+        .flat_map(|notice| notice.settled_executions)
+        .collect();
+    assert_eq!(
+        settled,
+        [("conversation-n".to_string(), "turn-assistant".to_string())]
+    );
+
+    // Deleting a conversation removes its open execution.
+    start(
+        &repo,
+        "conversation-gone",
+        project_path,
+        "Stream then vanish",
+    );
+    event("conversation-gone", delta, &BTreeMap::new());
+    let count = notices.lock().unwrap().len();
+    repo.delete_conversation("conversation-gone", project_path)
+        .expect("delete");
+    let removed = since(count);
+    assert_eq!(removed.len(), 1);
+    assert_eq!(
+        removed[0].settled_executions,
+        [(
+            "conversation-gone".to_string(),
+            "turn-assistant".to_string()
+        )]
+    );
+}
+
+/// A provider error naming no item, as Codex reports one, ends every open
+/// segment of the turn with the text held for it and the failure
+/// lifecycle, and its commit names them all. The execution stays open
+/// until the backend's outcome settles it.
+#[test]
+fn a_provider_error_ends_every_open_segment_but_not_the_execution() {
+    let project_path = "/projects/commit-error";
+    let (_temp, repo) = setup(project_path);
+    let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CommitNotice>::new()));
+    let sink = notices.clone();
+    repo.store()
+        .set_commit_listener(std::sync::Arc::new(move |notice: &CommitNotice| {
+            sink.lock().unwrap().push(notice.clone());
+        }));
+    start(&repo, "conversation-e", project_path, "Work");
+    let event = |value: Value, held: &BTreeMap<String, String>| {
+        repo.record_provider_event(
+            "conversation-e",
+            project_path,
+            "turn-assistant",
+            &serde_json::from_value(value).expect("provider event"),
+            held,
+        )
+        .expect("record event")
+    };
+    let mut held = BTreeMap::new();
+    for (delta, text) in [
+        (
+            json!({"kind": "content_delta", "channel": "reasoning", "content_delta": "Th",
+                "source": {"item_id": "reasoning-1"}}),
+            "Thinking",
+        ),
+        (
+            json!({"kind": "content_delta", "channel": "assistant", "content_delta": "Wo",
+                "source": {"item_id": "message-1"}}),
+            "Working",
+        ),
+    ] {
+        let (segment_id, _) = event(delta, &BTreeMap::new()).opened.expect("opened");
+        held.insert(segment_id, text.to_string());
+    }
+    event(
+        json!({"kind": "tool_call_started", "tool_call": {"id": "call-1"}}),
+        &BTreeMap::new(),
+    );
+    let (tool, _) = event(
+        json!({"kind": "tool_call_updated", "content_delta": "out",
+            "source": {"item_id": "call-1"}}),
+        &BTreeMap::new(),
+    )
+    .opened
+    .expect("tool output opened");
+    assert_eq!(tool, tool_segment_id("call-1"));
+    held.insert(tool.clone(), "output so far".to_string());
+    let count = notices.lock().unwrap().len();
+
+    let outcome = event(
+        json!({"kind": "error", "error": "stream disconnected",
+            "source": {"backend": "codex-app-server", "raw_kind": "error"}}),
+        &held,
+    );
+
+    let mut ended = outcome.ended.clone();
+    ended.sort();
+    assert_eq!(ended, held.keys().cloned().collect::<Vec<_>>());
+    let notices = notices.lock().unwrap()[count..].to_vec();
+    let closed: Vec<_> = notices
+        .iter()
+        .flat_map(|notice| notice.closed_segments.iter().map(|(_, _, id)| id.clone()))
+        .collect();
+    for segment_id in held.keys() {
+        assert!(closed.contains(segment_id), "{segment_id}: {closed:?}");
+    }
+    assert!(notices
+        .iter()
+        .all(|notice| notice.settled_executions.is_empty()));
+    let persisted = snapshot(&repo, "conversation-e");
+    for (segment_id, text) in &held {
+        let segment = persisted["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| &segment["id"] == segment_id)
+            .unwrap_or_else(|| panic!("segment {segment_id}"));
+        assert_eq!(segment["status"], "failed", "{segment}");
+        assert!(segment["completed_at"].is_string(), "{segment}");
+        let stored = if segment_id == &tool {
+            assert_eq!(
+                segment["tool_call"]["error_code"],
+                "tool_completion_missing"
+            );
+            &segment["tool_call"]["output"]
+        } else {
+            &segment["content"]
+        };
+        assert_eq!(stored, text.as_str(), "{segment}");
+    }
+    let assistant = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    assert_eq!(assistant["error"], "stream disconnected", "{assistant}");
+
+    let settlement = repo
+        .settle_execution(
+            "conversation-e",
+            project_path,
+            "turn-assistant",
+            ExecutionOutcome::Failed {
+                message: "stream disconnected".to_string(),
+                error_code: None,
+                details: None,
+            },
+            &BTreeMap::new(),
+        )
+        .expect("settle");
+    assert!(settlement.settled);
+}
+
+/// A question-only return waits for its answer's continuation even with
+/// its provider turn boundary recorded after the question; the continuation's
+/// own return settles, failing when it brought no final answer.
+#[test]
+fn a_question_only_return_waits_for_its_continuation_which_settles() {
+    let project_path = "/projects/commit-continuation";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-q", project_path, "Ask first");
+    record(
+        &repo,
+        "conversation-q",
+        project_path,
+        json!({"kind": "request_user_input_requested", "source": {"item_id": "input-1"},
+            "request_user_input": {"itemId": "input-1", "questions": [{"id": "decision",
+                "header": "Approve", "question": "Approve?", "isOther": false,
+                "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}}),
+    );
+    record(
+        &repo,
+        "conversation-q",
+        project_path,
+        json!({"kind": "turn_completed", "status": "completed",
+            "source": {"app_turn_id": "app-turn", "raw_kind": "turn_completed"}}),
+    );
+    let (_, answer) = repo
+        .answer_question(
+            "conversation-q",
+            project_path,
+            "decision",
+            &BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+        )
+        .expect("answer");
+    let Answer::Answered(answered) = answer else {
+        panic!("{answer:?}");
+    };
+    let returned = |continued_question: Option<String>| {
+        repo.settle_execution(
+            "conversation-q",
+            project_path,
+            "turn-assistant",
+            ExecutionOutcome::Returned {
+                final_text: None,
+                token_usage: None,
+                token_usage_breakdown: None,
+                app_thread_id: None,
+                app_turn_id: None,
+                thread_resume_failure: None,
+                continued_question,
+            },
+            &BTreeMap::new(),
+        )
+        .expect("return")
+        .settled
+    };
+
+    assert!(!returned(None), "the original return waits");
+    assert!(returned(Some(answered.segment_id.clone())));
+    let persisted = snapshot(&repo, "conversation-q");
+    let assistant = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    // Settled once: a late return changes nothing.
+    assert!(!returned(Some(answered.segment_id)));
+}
+
+/// A steer the running turn accepted but ended without reading fails on the
+/// provider's report, though no delivered event came and the execution never
+/// held its row. Text held when it was accepted stays before it, and the
+/// turn still settles.
+#[test]
+fn a_steer_the_turn_never_read_fails_on_the_providers_report() {
+    let project_path = "/projects/commit-steer";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-s", project_path, "Start");
+    let opened = repo
+        .record_provider_event(
+            "conversation-s",
+            project_path,
+            "turn-assistant",
+            &serde_json::from_value(json!({"kind": "content_delta", "channel": "assistant",
+                "content_delta": "Work", "source": {"item_id": "item-1"}}))
+            .expect("event"),
+            &BTreeMap::new(),
+        )
+        .expect("delta");
+    let (open_segment, _) = opened.opened.expect("opened");
+    let mut steer = message("turn-steer", "unused", "Also do this");
+    steer.admission = Admission::Send;
+    let (_, accepted) = repo
+        .accept_message("conversation-s", project_path, steer)
+        .expect("steer");
+    assert!(
+        matches!(accepted, Accepted::DeliveryPending { .. }),
+        "{accepted:?}"
+    );
+    repo.record_message_delivery("conversation-s", project_path, "turn-steer", true)
+        .expect("handed to the provider");
+
+    let held = BTreeMap::from([(open_segment.clone(), "Working".to_string())]);
+    record(
+        &repo,
+        "conversation-s",
+        project_path,
+        json!({"kind": "user_message_not_delivered", "source": {"item_id": "turn-steer"},
+            "message": "Not sent: the turn ended before the agent read it."}),
+    )
+    .expect("report commit");
+    repo.record_provider_event(
+        "conversation-s",
+        project_path,
+        "turn-assistant",
+        &serde_json::from_value(json!({"kind": "content_completed", "channel": "assistant",
+            "message": "Working", "source": {"item_id": "item-1"}}))
+        .expect("event"),
+        &held,
+    )
+    .expect("completion");
+    assert!(settle(&repo, "conversation-s", project_path).settled);
+
+    let persisted = snapshot(&repo, "conversation-s");
+    let segment = |id: &str| {
+        persisted["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| segment["id"] == id)
+            .unwrap_or_else(|| panic!("segment {id}: {persisted}"))
+            .clone()
+    };
+    let steer = segment("segment-user-message-turn-steer");
+    assert_eq!(steer["status"], "failed", "{steer}");
+    assert_eq!(
+        steer["error"],
+        "Not sent: the turn ended before the agent read it."
+    );
+    assert_eq!(steer["content"], "Also do this");
+    assert_eq!(segment(&open_segment)["content"], "Working");
+    let assistant = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "complete", "{assistant}");
+}
+
+/// Delivery reports outlive their execution: after it settles they still
+/// record delivery truth, and never revive it. The same outcome again
+/// changes nothing. A delivered message the turn ended without reading
+/// fails; a delivery after that, an unknown message or a report from
+/// another execution is rejected and recreates nothing.
+#[test]
+fn delivery_reports_after_settlement_record_only_delivery_truth() {
+    let project_path = "/projects/commit-delivery";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-d", project_path, "Start");
+    for id in ["turn-read", "turn-unread"] {
+        let mut steer = message(id, "unused", "Also do this");
+        steer.admission = Admission::Send;
+        let (_, accepted) = repo
+            .accept_message("conversation-d", project_path, steer)
+            .expect("steer");
+        assert!(
+            matches!(accepted, Accepted::DeliveryPending { .. }),
+            "{accepted:?}"
+        );
+        repo.record_message_delivery("conversation-d", project_path, id, true)
+            .expect("handed to the provider");
+    }
+    assert!(settle(&repo, "conversation-d", project_path).settled);
+    let report = |kind: &str, message_id: &str, turn_id: &str| {
+        repo.record_provider_event(
+            "conversation-d",
+            project_path,
+            turn_id,
+            &serde_json::from_value(json!({"kind": kind, "source": {"item_id": message_id},
+                "message": "Not sent."}))
+            .expect("event"),
+            &BTreeMap::new(),
+        )
+    };
+    let row = |collection: &str, id: &str| {
+        snapshot(&repo, "conversation-d")[collection]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .cloned()
+    };
+
+    assert!(
+        report("user_message_delivered", "turn-read", "turn-assistant")
+            .expect("late delivered report")
+            .commit
+            .is_some()
+    );
+    assert!(report(
+        "user_message_not_delivered",
+        "turn-unread",
+        "turn-assistant"
+    )
+    .expect("late not-delivered report")
+    .commit
+    .is_some());
+    let assistant = row("turns", "turn-assistant").unwrap();
+    assert_eq!(assistant["status"], "complete", "{assistant}");
+    assert_eq!(assistant["content"], "Done.", "{assistant}");
+    assert!(!settle(&repo, "conversation-d", project_path).settled);
+
+    for (kind, message_id) in [
+        ("user_message_delivered", "turn-read"),
+        ("user_message_not_delivered", "turn-unread"),
+    ] {
+        let repeated = report(kind, message_id, "turn-assistant").expect("same outcome");
+        assert!(repeated.commit.is_none(), "{kind} {message_id}");
+    }
+    for (kind, message_id, turn_id) in [
+        ("user_message_delivered", "turn-unread", "turn-assistant"),
+        ("user_message_delivered", "turn-missing", "turn-assistant"),
+        ("user_message_delivered", "turn-read", "turn-other"),
+    ] {
+        let error = report(kind, message_id, turn_id).expect_err("rejected report");
+        assert!(
+            matches!(error, StorageError::ConversationCommitRejected { .. }),
+            "{kind} {message_id} {turn_id}: {error:?}"
+        );
+    }
+    let error = repo
+        .record_message_delivery("conversation-d", project_path, "turn-missing", false)
+        .expect_err("no such accepted message");
+    assert!(
+        matches!(error, StorageError::ConversationCommitRejected { .. }),
+        "{error:?}"
+    );
+
+    assert!(row("segments", "segment-user-message-turn-missing").is_none());
+    let read = row("segments", "segment-user-message-turn-read").unwrap();
+    assert_eq!(read["status"], "complete", "{read}");
+    assert!(read["delivered_at"].is_string(), "{read}");
+    let unread = row("segments", "segment-user-message-turn-unread").unwrap();
+    assert_eq!(unread["status"], "failed", "{unread}");
+    assert_eq!(unread["error"], "Not sent.", "{unread}");
+    assert!(unread.get("delivered_at").is_none(), "{unread}");
+
+    // The turn ended without reading the message it took.
+    assert!(
+        report("user_message_not_delivered", "turn-read", "turn-assistant")
+            .expect("not read")
+            .commit
+            .is_some()
+    );
+    let unread_after_reading = row("segments", "segment-user-message-turn-read").unwrap();
+    assert_eq!(unread_after_reading["status"], "failed");
+    assert_eq!(
+        unread_after_reading["order"], read["order"],
+        "keeps its place"
+    );
+    report("user_message_delivered", "turn-read", "turn-assistant")
+        .expect_err("delivered after not delivered");
+}
+
+/// Operations on a conversation that does not exist, or on a turn that owns
+/// no execution, write nothing.
+#[test]
+fn operations_on_missing_conversations_or_turns_write_nothing() {
     let project_path = "/projects/commit-rejects";
     let (_temp, repo) = setup(project_path);
+    let watermark = || {
+        repo.store()
+            .database()
+            .read(|read| Ok(read.watermark()))
+            .unwrap()
+    };
+    let event = || -> spark_common::events::TurnStreamEvent {
+        serde_json::from_value(json!({"kind": "tool_call_started", "tool_call": {"id": "x"}}))
+            .unwrap()
+    };
 
     let error = repo
-        .commit_conversation("conversation-d", project_path, 0, Vec::new())
-        .expect_err("empty batch");
-    assert!(matches!(
-        error,
-        StorageError::ConversationCommitRejected { .. }
-    ));
-
-    let error = repo
-        .commit_conversation(
+        .record_provider_event(
             "conversation-d",
             project_path,
-            7,
-            vec![ConversationMutation::TurnUpserted {
-                turn: user_turn("turn-user", "hello"),
-            }],
+            "turn-assistant",
+            &event(),
+            &BTreeMap::new(),
         )
-        .expect_err("unknown conversation with non-zero base");
+        .expect_err("event for an unknown conversation");
     assert!(matches!(
         error,
         StorageError::ConversationCommitRejected { .. }
     ));
-
     let error = repo
-        .commit_conversation(
+        .change_artifacts(
             "conversation-d",
             project_path,
-            0,
-            vec![ConversationMutation::SegmentUpserted {
-                segment: segment("segment-x", "turn-missing", ORDER_UNASSIGNED),
-            }],
+            Vec::new(),
+            Some("flow launched".to_string()),
         )
-        .expect_err("segment targeting unknown turn");
+        .expect_err("artifacts of an unknown conversation");
     assert!(matches!(
         error,
         StorageError::ConversationCommitRejected { .. }
     ));
+    assert_eq!(watermark(), 0);
     assert!(repo
         .read_snapshot("conversation-d", Some(project_path))
         .expect("read")
         .is_none());
+
+    // An event for a turn that owns no execution is ignored: no revision.
+    repo.touch_conversation("conversation-d", project_path)
+        .expect("create");
+    let before = snapshot(&repo, "conversation-d");
+    let mark = watermark();
+    let outcome = repo
+        .record_provider_event(
+            "conversation-d",
+            project_path,
+            "turn-missing",
+            &event(),
+            &BTreeMap::new(),
+        )
+        .expect("ignored event");
+    assert!(outcome.commit.is_none());
+    assert_eq!(watermark(), mark);
+    assert_eq!(snapshot(&repo, "conversation-d"), before);
 }
 
 #[test]
-fn commit_conversation_applies_metadata_patches_and_workflow_events() {
+fn settings_updates_and_workflow_events_commit_as_rows() {
     let project_path = "/projects/commit-metadata";
     let (_temp, repo) = setup(project_path);
 
-    let commit = repo
-        .commit_conversation(
+    let (commit, _) = repo
+        .update_settings(
             "conversation-e",
             project_path,
-            0,
-            vec![
-                ConversationMutation::MetadataUpdated {
-                    patch: ConversationMetadataPatch {
-                        chat_mode: Some("plan".to_string()),
-                        provider: Some("codex".to_string()),
-                        model: Some(Some("gpt-5.3-codex".to_string())),
-                        ..ConversationMetadataPatch::default()
-                    },
-                },
-                ConversationMutation::WorkflowEventAppended {
-                    event: json!({"message": "flow launched", "timestamp": "2026-01-01T00:00:02Z"}),
-                },
-            ],
+            None,
+            ConversationMetadataPatch {
+                chat_mode: Some("plan".to_string()),
+                provider: Some("codex".to_string()),
+                model: Some(Some("gpt-5.3-codex".to_string())),
+                ..ConversationMetadataPatch::default()
+            },
         )
-        .expect("metadata commit");
+        .expect("settings commit");
+    let commit = commit.expect("commit");
     assert_eq!(commit.revision, 1);
-    // The metadata travels as the conversation row; the workflow event as its own row.
+    // The metadata travels as the conversation row; the mode change as a turn.
     let metadata = &changed(&commit, EntityKind::Conversation, "conversation-e")
         .payload
         .as_ref()
         .unwrap()["metadata"];
     assert_eq!(metadata["chat_mode"], "plan");
     assert_eq!(metadata["model"], "gpt-5.3-codex");
+    let settings_revision = metadata["settings_revision"].as_i64().unwrap();
+    assert_eq!(settings_revision, commit.revision);
     assert!(commit
+        .changes
+        .rows
+        .iter()
+        .any(|row| row.kind == EntityKind::Turn
+            && row.payload.as_ref().unwrap()["kind"] == "mode_change"));
+
+    // The workflow event is its own row.
+    let (event, outcome) = repo
+        .change_artifacts(
+            "conversation-e",
+            project_path,
+            Vec::new(),
+            Some("flow launched".to_string()),
+        )
+        .expect("event commit");
+    assert_eq!(outcome, ArtifactOutcome::Changed(Vec::new()));
+    assert!(event
+        .expect("event commit")
         .changes
         .rows
         .iter()
         .any(|row| row.kind == EntityKind::Artifact
             && row.collection.as_deref() == Some("event_log")));
 
-    let cleared = repo
-        .commit_conversation(
+    let (cleared, _) = repo
+        .update_settings(
             "conversation-e",
             project_path,
-            commit.revision,
-            vec![ConversationMutation::MetadataUpdated {
-                patch: ConversationMetadataPatch {
-                    model: Some(None),
-                    ..ConversationMetadataPatch::default()
-                },
-            }],
+            Some(settings_revision),
+            ConversationMetadataPatch {
+                model: Some(None),
+                ..ConversationMetadataPatch::default()
+            },
         )
         .expect("clear model");
     assert_eq!(
-        changed(&cleared, EntityKind::Conversation, "conversation-e")
-            .payload
-            .as_ref()
-            .unwrap()["metadata"]["model"],
+        changed(
+            &cleared.expect("clear commit"),
+            EntityKind::Conversation,
+            "conversation-e"
+        )
+        .payload
+        .as_ref()
+        .unwrap()["metadata"]["model"],
         Value::Null
     );
 
@@ -440,148 +974,250 @@ fn commit_conversation_applies_metadata_patches_and_workflow_events() {
 }
 
 #[test]
-fn commit_conversation_externalizes_oversized_tool_outputs() {
+fn tool_events_externalize_oversized_outputs() {
     let project_path = "/projects/commit-tool-output";
     let (temp, repo) = setup(project_path);
     let big_output = format!(
         "line\u{2014}{}",
         "y".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2)
     );
+    let segment_id = tool_segment_id("call-1");
+    let read_output = |segment_id: &str| {
+        repo.read_segment_tool_output("conversation-h", Some(project_path), segment_id)
+            .expect("read output")
+    };
 
-    let mut tool_segment = segment("segment-tool-call-1", "turn-assistant", ORDER_UNASSIGNED);
-    tool_segment.kind = "tool_call".to_string();
-    tool_segment.tool_call = Some(json!({"id": "call-1", "output": big_output}));
-    let mut unsafe_segment = segment("../escape", "turn-assistant", ORDER_UNASSIGNED);
-    unsafe_segment.kind = "tool_call".to_string();
-    unsafe_segment.tool_call = Some(json!({"id": "call-2", "output": big_output}));
+    start(&repo, "conversation-h", project_path, "Run tools");
+    let commit = record_tool(&repo, "conversation-h", project_path, "call-1", &big_output);
+    record_tool(
+        &repo,
+        "conversation-h",
+        project_path,
+        "../escape",
+        &big_output,
+    );
 
-    let commit = repo
-        .commit_conversation(
-            "conversation-h",
-            project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-                ConversationMutation::SegmentUpserted {
-                    segment: tool_segment,
-                },
-                ConversationMutation::SegmentUpserted {
-                    segment: unsafe_segment,
-                },
-            ],
-        )
-        .expect("commit");
-
-    // Persisted transcript and journal line both carry the bounded preview.
-    let persisted = repo
-        .read_snapshot("conversation-h", Some(project_path))
-        .expect("read")
-        .expect("snapshot");
-    let stored = persisted["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .find(|segment| segment["id"] == "segment-tool-call-1")
-        .expect("tool segment")["tool_call"]
-        .clone();
+    // The persisted transcript and the commit both carry the bounded preview.
+    let persisted = snapshot(&repo, "conversation-h");
+    let stored_segment = |id: &str| {
+        persisted["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .find(|segment| segment["id"] == id)
+            .unwrap_or_else(|| panic!("segment {id}"))["tool_call"]
+            .clone()
+    };
+    let stored = stored_segment(&segment_id);
     assert_eq!(stored["output_truncated"], true);
     assert_eq!(
         stored["output_size"].as_u64().expect("size") as usize,
         big_output.len()
     );
     assert!(stored["output"].as_str().expect("preview").len() <= TOOL_OUTPUT_INLINE_LIMIT_BYTES);
-    let changed_segment = changed(&commit, EntityKind::Segment, "segment-tool-call-1");
     assert_eq!(
-        changed_segment.payload.as_ref().unwrap()["tool_call"]["output_truncated"],
+        changed(&commit, EntityKind::Segment, &segment_id)
+            .payload
+            .as_ref()
+            .unwrap()["tool_call"]["output_truncated"],
         true
     );
 
     // An immutable blob holds the full output and serves the read path.
     let artifact = stored["output_artifact"].as_str().expect("artifact");
     assert!(
-        artifact.starts_with("tool-output/segment-tool-call-1."),
+        artifact.starts_with(&format!("tool-output/{segment_id}.")),
         "{artifact}"
     );
     let sidecar = conversation_dir(&temp, project_path, "conversation-h").join(artifact);
     assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), big_output);
-    assert_eq!(
-        repo.read_segment_tool_output("conversation-h", Some(project_path), "segment-tool-call-1")
-            .expect("read output"),
-        Some(big_output.clone())
-    );
+    assert_eq!(read_output(&segment_id), Some(big_output.clone()));
 
     // Unsafe segment ids stay inline and never touch the filesystem.
-    let unsafe_stored = persisted["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .find(|segment| segment["id"] == "../escape")
-        .expect("unsafe segment")["tool_call"]
-        .clone();
+    let unsafe_id = tool_segment_id("../escape");
+    let unsafe_stored = stored_segment(&unsafe_id);
     assert!(unsafe_stored.get("output_truncated").is_none());
     assert_eq!(unsafe_stored["output"], json!(big_output));
-    assert_eq!(
-        repo.read_segment_tool_output("conversation-h", Some(project_path), "../escape")
-            .expect("unsafe read"),
-        None
-    );
+    assert_eq!(read_output(&unsafe_id), None);
 
-    // Re-upserting the segment with its preview (a client echo) must not
-    // overwrite the blob with truncated content or drop its reference.
-    let mut echoed = segment("segment-tool-call-1", "turn-assistant", ORDER_UNASSIGNED);
-    echoed.kind = "tool_call".to_string();
-    echoed.tool_call = Some(json!({
-        "id": "call-1",
-        "output": stored["output"],
-        "output_size": stored["output_size"],
-        "output_truncated": true,
-        "status": "complete",
-    }));
-    repo.commit_conversation(
+    // An event echoing the preview must not overwrite the blob with
+    // truncated content or drop its reference.
+    record(
+        &repo,
         "conversation-h",
         project_path,
-        commit.revision,
-        vec![ConversationMutation::SegmentUpserted { segment: echoed }],
-    )
-    .expect("echo commit");
-    assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), big_output);
-    assert_eq!(
-        repo.read_segment_tool_output("conversation-h", Some(project_path), "segment-tool-call-1")
-            .expect("read output after echo"),
-        Some(big_output.clone())
+        tool_event(json!({
+            "id": "call-1",
+            "output": stored["output"],
+            "output_size": stored["output_size"],
+            "output_truncated": true,
+            "status": "complete",
+        })),
     );
+    assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), big_output);
+    assert_eq!(read_output(&segment_id), Some(big_output.clone()));
 
     // A new output version gets a new blob; the old bytes stay until cleanup.
-    let mut replaced = segment("segment-tool-call-1", "turn-assistant", ORDER_UNASSIGNED);
-    replaced.kind = "tool_call".to_string();
     let second_output = "z".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
-    replaced.tool_call = Some(json!({"id": "call-1", "output": second_output}));
-    let replaced = repo
-        .commit_conversation(
-            "conversation-h",
-            project_path,
-            0,
-            vec![ConversationMutation::SegmentUpserted { segment: replaced }],
-        )
-        .expect("replace output");
-    let new_artifact = changed(&replaced, EntityKind::Segment, "segment-tool-call-1")
-        .payload
-        .as_ref()
-        .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
-        .expect("new artifact")
-        .to_string();
-    assert_ne!(new_artifact, artifact);
+    let replaced = record_tool(
+        &repo,
+        "conversation-h",
+        project_path,
+        "call-1",
+        &second_output,
+    );
+    assert_ne!(output_artifact(&replaced, "call-1"), artifact);
     assert_eq!(
         fs::read_to_string(&sidecar).expect("old blob kept"),
         big_output
     );
-    assert_eq!(
-        repo.read_segment_tool_output("conversation-h", Some(project_path), "segment-tool-call-1")
-            .expect("read replaced"),
-        Some(second_output)
+    assert_eq!(read_output(&segment_id), Some(second_output));
+}
+
+/// A launch or recovery result is recorded only while its target still
+/// waits for it; a newer decision or an earlier result keeps its state.
+#[test]
+fn results_apply_only_to_artifacts_still_waiting_for_them() {
+    let project_path = "/projects/commit-artifact-results";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-r", project_path, "Plan it");
+    settle(&repo, "conversation-r", project_path);
+    let change = |change: ArtifactChange| {
+        repo.change_artifacts("conversation-r", project_path, vec![change], None)
+            .expect("artifact operation")
+            .1
+    };
+    let create = |collection: ArtifactCollection, id: &str, status: &str| {
+        let outcome = change(ArtifactChange::Create {
+            collection,
+            artifact: json!({"id": id, "status": status}),
+            owner: None,
+            anchor_kind: "artifact".to_string(),
+        });
+        assert!(
+            matches!(outcome, ArtifactOutcome::Changed(_)),
+            "{outcome:?}"
+        );
+    };
+    let refused = |outcome: ArtifactOutcome, expected: &str| match outcome {
+        ArtifactOutcome::NotAllowed { status, .. } => assert_eq!(status, expected),
+        outcome => panic!("expected a refusal in {expected}: {outcome:?}"),
+    };
+    let launched = |collection, artifact_id: &str, result: Result<&str, &str>| {
+        change(ArtifactChange::LaunchResult {
+            collection,
+            artifact_id: artifact_id.to_string(),
+            result: result.map(str::to_string).map_err(str::to_string),
+        })
+    };
+    create(ArtifactCollection::FlowRunRequests, "request-r", "pending");
+    create(ArtifactCollection::FlowLaunches, "launch-r", "pending");
+    create(
+        ArtifactCollection::ProposedPlans,
+        "plan-r",
+        "pending_review",
     );
+    create(ArtifactCollection::RunRecoveries, "recovery-r", "pending");
+
+    // An approved request's late result does not replace its rejection.
+    change(ArtifactChange::ApproveFlowRequest {
+        request_id: "request-r".to_string(),
+        message: "Go.".to_string(),
+        approval: FlowRequestApproval {
+            flow_name: "ops/review".to_string(),
+            ..FlowRequestApproval::default()
+        },
+    });
+    change(ArtifactChange::RejectFlowRequest {
+        request_id: "request-r".to_string(),
+        message: "Stop.".to_string(),
+    });
+    refused(
+        launched(
+            ArtifactCollection::FlowRunRequests,
+            "request-r",
+            Ok("run-1"),
+        ),
+        "rejected",
+    );
+    // A direct launch and a recovery take one result.
+    assert!(matches!(
+        launched(ArtifactCollection::FlowLaunches, "launch-r", Ok("run-2")),
+        ArtifactOutcome::Changed(_)
+    ));
+    refused(
+        launched(ArtifactCollection::FlowLaunches, "launch-r", Err("late")),
+        "launched",
+    );
+    let recovered = || {
+        change(ArtifactChange::RecoveryResult {
+            recovery_id: "recovery-r".to_string(),
+            status: "started".to_string(),
+            result_run_id: "run-3".to_string(),
+            error: None,
+        })
+    };
+    assert!(matches!(recovered(), ArtifactOutcome::Changed(_)));
+    refused(recovered(), "started");
+    // An approved plan's failed launch fails the plan and its launch once;
+    // the plan cannot be reviewed again.
+    let ArtifactOutcome::Changed(approved) = change(ArtifactChange::ApprovePlan {
+        plan_id: "plan-r".to_string(),
+        note: None,
+        change_request_path: "/projects/change.md".to_string(),
+        flow_launch: json!({"id": "launch-plan", "status": "pending"}),
+    }) else {
+        panic!("plan approved");
+    };
+    assert_eq!(approved[1]["source_turn_id"], approved[0]["source_turn_id"]);
+    refused(
+        change(ArtifactChange::RejectPlan {
+            plan_id: "plan-r".to_string(),
+            note: None,
+        }),
+        "approved",
+    );
+    assert!(matches!(
+        launched(
+            ArtifactCollection::ProposedPlans,
+            "plan-r",
+            Err("no runner")
+        ),
+        ArtifactOutcome::Changed(_)
+    ));
+    refused(
+        launched(ArtifactCollection::ProposedPlans, "plan-r", Ok("run-4")),
+        "launch_failed",
+    );
+
+    let after = snapshot(&repo, "conversation-r");
+    let artifact = |collection: &str, id: &str| {
+        after[collection]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{collection} {id}"))
+    };
+    let request = artifact("flow_run_requests", "request-r");
+    assert_eq!(request["status"], "rejected");
+    assert!(request.get("run_id").is_none());
+    let launch = artifact("flow_launches", "launch-r");
+    assert_eq!(
+        (&launch["status"], &launch["run_id"]),
+        (&json!("launched"), &json!("run-2"))
+    );
+    assert!(launch.get("launch_error").is_none());
+    let recovery = artifact("run_recoveries", "recovery-r");
+    assert_eq!(recovery["status"], "started");
+    assert_eq!(recovery["result_run_id"], "run-3");
+    let plan = artifact("proposed_plans", "plan-r");
+    assert_eq!(plan["status"], "launch_failed");
+    assert_eq!(plan["launch_error"], "no runner");
+    let plan_launch = artifact("flow_launches", "launch-plan");
+    assert_eq!(plan_launch["status"], "launch_failed");
+    assert!(plan_launch.get("run_id").is_none());
 }
 
 #[test]
@@ -589,101 +1225,89 @@ fn commit_snapshot_projection_round_trips_read_snapshot_output() {
     let project_path = "/projects/commit-roundtrip";
     let (_temp, repo) = setup(project_path);
 
-    let mut anchored = segment("segment-anchor", "turn-assistant", ORDER_UNASSIGNED);
-    anchored.kind = "flow_run_request".to_string();
-    anchored.artifact_id = Some("request-a".to_string());
-    anchored
-        .extra
-        .insert("event_kind".to_string(), json!("session_start"));
-    repo.commit_conversation(
+    start(&repo, "conversation-f", project_path, "Round trip");
+    record(
+        &repo,
         "conversation-f",
         project_path,
-        0,
-        vec![
-            ConversationMutation::TurnUpserted {
-                turn: user_turn("turn-user", "Round trip"),
-            },
-            ConversationMutation::TurnUpserted {
-                turn: assistant_turn("turn-assistant", "complete"),
-            },
-            ConversationMutation::SegmentUpserted { segment: anchored },
-            ConversationMutation::ArtifactUpserted {
+        json!({"kind": "session_start"}),
+    )
+    .expect("agent event");
+    settle(&repo, "conversation-f", project_path);
+    let (_, outcome) = repo
+        .change_artifacts(
+            "conversation-f",
+            project_path,
+            vec![ArtifactChange::Create {
                 collection: ArtifactCollection::FlowRunRequests,
                 artifact: json!({"id": "request-a", "status": "pending_review"}),
-            },
-        ],
-    )
-    .expect("commit");
+                owner: None,
+                anchor_kind: "flow_run_request".to_string(),
+            }],
+            None,
+        )
+        .expect("artifact commit");
+    assert!(
+        matches!(outcome, ArtifactOutcome::Changed(_)),
+        "{outcome:?}"
+    );
 
     let snapshot = repo
         .read_snapshot("conversation-f", Some(project_path))
         .expect("read")
         .expect("snapshot");
     let record = record_from_snapshot(&snapshot).expect("record");
-    assert_eq!(
-        record.transcript.segments[0].extra["event_kind"],
-        json!("session_start")
-    );
-    assert_eq!(
-        record.transcript.segments[0].artifact_id.as_deref(),
-        Some("request-a")
-    );
+    let segments = &record.transcript.segments;
+    assert!(segments
+        .iter()
+        .any(|segment| segment.extra.get("event_kind") == Some(&json!("session_start"))));
+    let anchor = segments
+        .iter()
+        .find(|segment| segment.artifact_id.as_deref() == Some("request-a"))
+        .expect("anchor segment");
+    assert_eq!(anchor.kind, "flow_run_request");
+    assert_eq!(anchor.turn_id, "turn-assistant");
     let reprojected = snapshot_from_record(&record);
     assert_eq!(reprojected, snapshot);
 }
 
 #[test]
-fn transient_stream_events_are_never_appended_to_the_journal() {
+fn transient_stream_events_are_never_stored() {
     let project_path = "/projects/commit-transient";
-    let (temp, repo) = setup(project_path);
-    repo.commit_conversation(
-        "conversation-g",
-        project_path,
-        0,
-        vec![ConversationMutation::TurnUpserted {
-            turn: assistant_turn("turn-assistant", "streaming"),
-        }],
-    )
-    .expect("seed");
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-g", project_path, "Stream");
 
-    // Transient events carry a stream sequence instead of a revision, so the
-    // journal appender refuses them even if a caller tries.
+    // Transient events carry a stream sequence instead of a revision.
     let transient = TransientStreamEvent {
         conversation_id: "conversation-g".to_string(),
         turn_id: "turn-assistant".to_string(),
         stream_sequence: 4,
         base_revision: 1,
-        body: TransientStreamBody::SegmentDelta {
-            segment: segment("segment-live", "turn-assistant", 1),
+        body: TransientStreamBody::SegmentText {
+            segment_id: "segment-live".to_string(),
+            text: "partial".to_string(),
         },
     };
     let payload = serde_json::to_value(&transient).expect("serialize");
     assert!(payload.get("revision").is_none());
 
-    // Only the committed turn is stored.
+    // Only the committed turns are stored.
     let stored = repo
         .store()
         .database()
         .read(|read| read.conversation("conversation-g"))
         .expect("rows")
         .expect("conversation");
-    assert_eq!(stored.turns.len(), 1);
+    assert_eq!(stored.turns.len(), 2);
     assert!(stored.segments.is_empty());
-    let _ = temp;
 }
 
 #[test]
-fn concurrent_commits_serialize_revision_allocation_and_keep_all_turns() {
-    let (temp, repository) = setup("/projects/concurrent-commit");
+fn concurrent_operations_serialize_revision_allocation_and_keep_all_turns() {
+    let project_path = "/projects/concurrent-commit";
+    let (_temp, repository) = setup(project_path);
     repository
-        .commit_conversation(
-            "conversation-concurrent",
-            "/projects/concurrent-commit",
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: user_turn("initial", "Initial"),
-            }],
-        )
+        .append_system_turn("conversation-concurrent", project_path, "notice", "Initial")
         .unwrap();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {
@@ -694,15 +1318,14 @@ fn concurrent_commits_serialize_revision_allocation_and_keep_all_turns() {
                 scope.spawn(move || {
                     barrier.wait();
                     repository
-                        .commit_conversation(
+                        .append_system_turn(
                             "conversation-concurrent",
-                            "/projects/concurrent-commit",
-                            1,
-                            vec![ConversationMutation::TurnUpserted {
-                                turn: user_turn(&format!("turn-{i}"), "Concurrent turn"),
-                            }],
+                            project_path,
+                            "notice",
+                            &format!("Concurrent turn {i}"),
                         )
                         .unwrap()
+                        .expect("commit")
                 })
             })
             .collect();
@@ -713,59 +1336,38 @@ fn concurrent_commits_serialize_revision_allocation_and_keep_all_turns() {
         assert_eq!(revisions.len(), 8);
     });
     let snapshot = repository
-        .read_snapshot(
-            "conversation-concurrent",
-            Some("/projects/concurrent-commit"),
-        )
+        .read_snapshot("conversation-concurrent", Some(project_path))
         .unwrap()
         .unwrap();
     assert_eq!(snapshot["turns"].as_array().unwrap().len(), 9);
-    let _ = temp;
 }
 
 #[test]
-fn competing_mode_updates_conflict_without_changing_history_and_events_still_rebase() {
-    let project_path = "/projects/mode-conflict";
-    let (temp, repo) = setup(project_path);
-    let initial = repo
-        .commit_conversation(
-            "chat",
-            project_path,
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: user_turn("user", "Preserve this transcript"),
-            }],
-        )
-        .unwrap();
-    let mode_update = |mode: &str| {
-        vec![
-            ConversationMutation::TurnUpserted {
-                turn: TranscriptTurn {
-                    id: format!("mode-{mode}"),
-                    kind: Some("mode_change".into()),
-                    content: mode.into(),
-                    ..user_turn("unused", "")
-                },
-            },
-            ConversationMutation::MetadataUpdated {
-                patch: ConversationMetadataPatch {
-                    chat_mode: Some(mode.into()),
-                    ..Default::default()
-                },
-            },
-        ]
-    };
+fn competing_settings_updates_conflict_without_changing_history() {
+    let project_path = "/projects/settings-conflict";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "chat", project_path, "Preserve this transcript");
+    settle(&repo, "chat", project_path);
+    let patches = [
+        ConversationMetadataPatch {
+            chat_mode: Some("plan".into()),
+            ..Default::default()
+        },
+        ConversationMetadataPatch {
+            model: Some(Some("gpt-5.3-codex".into())),
+            ..Default::default()
+        },
+    ];
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let writers: Vec<_> = ["plan", "chat"]
-        .into_iter()
-        .map(|mode| {
+    let writers: Vec<_> = patches
+        .iter()
+        .cloned()
+        .map(|patch| {
             let repo = repo.clone();
             let barrier = barrier.clone();
-            let mutations = mode_update(mode);
-            let revision = initial.revision;
             std::thread::spawn(move || {
                 barrier.wait();
-                repo.commit_conversation("chat", project_path, revision, mutations)
+                repo.update_settings("chat", project_path, Some(0), patch)
             })
         })
         .collect();
@@ -777,13 +1379,16 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(StorageError::SettingsConflict { .. })))
+            .filter(|result| matches!(result, Err(StorageError::ConversationCommitRejected { .. })))
             .count(),
         1
     );
-    let winner = results.into_iter().find_map(Result::ok).unwrap();
     let winner_snapshot = snapshot(&repo, "chat");
-    assert_eq!(winner_snapshot["turns"].as_array().unwrap().len(), 2);
+    let mode_changes = usize::from(winner_snapshot["chat_mode"] == "plan");
+    assert_eq!(
+        winner_snapshot["turns"].as_array().unwrap().len(),
+        2 + mode_changes
+    );
     let rows = || {
         repo.store()
             .database()
@@ -791,107 +1396,48 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
             .unwrap()
     };
     let before = rows();
-    assert!(matches!(
-        repo.commit_conversation("chat", project_path, initial.revision, mode_update("plan")),
-        Err(StorageError::SettingsConflict { .. })
-    ));
-    assert_eq!(rows(), before);
-    let _ = &temp;
-    assert_eq!(
-        repo.read_snapshot("chat", Some(project_path))
-            .unwrap()
-            .unwrap(),
-        winner_snapshot
-    );
-    let _ = winner;
-    let operational = repo
-        .commit_conversation(
+    for patch in patches {
+        assert!(matches!(
+            repo.update_settings("chat", project_path, Some(0), patch),
+            Err(StorageError::ConversationCommitRejected { .. })
+        ));
+    }
+    // A message whose execution settings came from the old settings writes
+    // nothing either.
+    let (commit, accepted) = repo
+        .accept_message(
             "chat",
             project_path,
-            initial.revision,
-            vec![ConversationMutation::TurnUpserted {
-                turn: assistant_turn("assistant", "complete"),
-            }],
+            message("turn-user-2", "turn-assistant-2", "Next"),
         )
         .unwrap();
-    assert!(operational.rebased);
+    assert_eq!(accepted, Accepted::SettingsChanged);
+    assert!(commit.is_none());
+    assert_eq!(rows(), before);
+    assert_eq!(snapshot(&repo, "chat"), winner_snapshot);
+
+    // Operations without settings still commit on top of the winner.
+    repo.append_system_turn("chat", project_path, "notice", "Still here")
+        .unwrap()
+        .expect("commit");
     let after = snapshot(&repo, "chat");
     assert_eq!(after["chat_mode"], winner_snapshot["chat_mode"]);
+    assert_eq!(after["model"], winner_snapshot["model"]);
+    let winner_turns = winner_snapshot["turns"].as_array().unwrap();
     assert_eq!(
-        after["turns"].as_array().unwrap()[..2],
-        winner_snapshot["turns"].as_array().unwrap()[..]
+        after["turns"].as_array().unwrap()[..winner_turns.len()],
+        winner_turns[..]
     );
 }
 
+/// A failed transaction leaves the database at the previous revision;
+/// nothing staged becomes visible.
 #[test]
-fn read_snapshot_derives_plan_segment_artifact_id_from_plan_record() {
-    let project_path = "/projects/plan-link";
-    let (temp, repo) = setup(project_path);
-    let mut plan_segment = segment("segment-plan-1", "turn-1", 1);
-    plan_segment.kind = "plan".to_string();
-    plan_segment.status = "complete".to_string();
-    repo.commit_conversation(
-        "conversation-plan-link",
-        project_path,
-        0,
-        vec![
-            ConversationMutation::TurnUpserted {
-                turn: assistant_turn("turn-1", "complete"),
-            },
-            ConversationMutation::SegmentUpserted {
-                segment: plan_segment,
-            },
-            ConversationMutation::ArtifactUpserted {
-                collection: ArtifactCollection::ProposedPlans,
-                artifact: json!({
-                    "id": "proposed-plan-1",
-                    "status": "pending_review",
-                    "source_segment_id": "segment-plan-1",
-                }),
-            },
-        ],
-    )
-    .expect("commit");
-
-    let snapshot = repo
-        .read_snapshot("conversation-plan-link", Some(project_path))
-        .expect("read")
-        .expect("snapshot");
-    let segment = snapshot["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .find(|segment| segment["id"] == "segment-plan-1")
-        .expect("plan segment");
-    assert_eq!(segment["artifact_id"], "proposed-plan-1");
-
-    // Derived at read time only; the stored segment is not rewritten.
-    let stored = repo
-        .store()
-        .database()
-        .read(|read| read.conversation("conversation-plan-link"))
-        .expect("rows")
-        .expect("conversation");
-    assert!(stored.segments[0].get("artifact_id").is_none());
-    let _ = temp;
-}
-
-/// A failed transaction leaves both the database and the loaded state at the
-/// previous revision; nothing staged becomes visible.
-#[test]
-fn failed_transactions_roll_back_rows_and_memory() {
+fn failed_transactions_roll_back_rows() {
     let project_path = "/projects/rollback";
     let (temp, repo) = setup(project_path);
-    let first = repo
-        .commit_conversation(
-            "conversation-rollback",
-            project_path,
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: user_turn("turn-user", "Hello"),
-            }],
-        )
-        .expect("seed");
+    start(&repo, "conversation-rollback", project_path, "Hello");
+    settle(&repo, "conversation-rollback", project_path);
     let rows = || {
         repo.store()
             .database()
@@ -900,66 +1446,72 @@ fn failed_transactions_roll_back_rows_and_memory() {
     };
     let before = rows();
     let before_snapshot = snapshot(&repo, "conversation-rollback");
-    // A non-object event violates the row constraint inside the transaction.
+    let plan = ConversationMetadataPatch {
+        chat_mode: Some("plan".to_string()),
+        ..Default::default()
+    };
+    // The mode change is staged before the unknown attachment rejects the
+    // message inside the transaction.
     let error = repo
-        .commit_conversation(
+        .accept_message(
             "conversation-rollback",
             project_path,
-            first.revision,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: user_turn("turn-second", "Second"),
-                },
-                ConversationMutation::WorkflowEventAppended {
-                    event: json!("not an object"),
-                },
-            ],
+            MessageInput {
+                attachments: Some(json!([{"id": "att-missing"}])),
+                settings: plan.clone(),
+                ..message("turn-second", "turn-answer", "Second")
+            },
         )
-        .expect_err("constraint violation");
+        .expect_err("unknown attachment");
     assert!(
-        matches!(error, StorageError::ConversationDatabase(_)),
+        matches!(error, StorageError::ConversationCommitRejected { .. }),
         "{error}"
     );
     assert_eq!(rows(), before);
-    let snapshot = repo
-        .read_snapshot("conversation-rollback", Some(project_path))
-        .unwrap()
-        .unwrap();
-    assert_eq!(snapshot, before_snapshot);
+    assert_eq!(snapshot(&repo, "conversation-rollback"), before_snapshot);
 
-    // Retrying the valid part, even twice, commits the turn once.
-    let second = vec![ConversationMutation::TurnUpserted {
-        turn: user_turn("turn-second", "Second"),
-    }];
-    let retried = repo
-        .commit_conversation(
+    // Retrying the valid part, even twice, commits the message once.
+    let retry = || {
+        repo.accept_message(
             "conversation-rollback",
             project_path,
-            first.revision,
-            second.clone(),
+            MessageInput {
+                settings: plan.clone(),
+                ..message("turn-second", "turn-answer", "Second")
+            },
         )
-        .unwrap();
-    repo.commit_conversation(
-        "conversation-rollback",
-        project_path,
-        retried.revision,
-        second,
-    )
-    .unwrap();
-    // The cache that survived the rollback matches what SQL reloads.
-    let cached = self::snapshot(&repo, "conversation-rollback");
+        .unwrap()
+    };
+    let (first, accepted) = retry();
+    assert!(matches!(accepted, Accepted::Started { .. }), "{accepted:?}");
+    assert!(first.is_some());
+    let (again, _) = retry();
+    assert!(again.is_none());
+    // What a reopened store reads matches the committed state.
+    let committed = self::snapshot(&repo, "conversation-rollback");
     drop(repo);
     let repo = ConversationRepository::new(
         ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
     );
-    assert_eq!(self::snapshot(&repo, "conversation-rollback"), cached);
-    let turns: Vec<_> = cached["turns"]
+    assert_eq!(self::snapshot(&repo, "conversation-rollback"), committed);
+    let turns: Vec<_> = committed["turns"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|turn| turn["kind"] == "message")
         .map(|turn| turn["id"].as_str().unwrap())
         .collect();
-    assert_eq!(turns, vec!["turn-user", "turn-second"]);
+    assert_eq!(
+        turns,
+        vec!["turn-user", "turn-assistant", "turn-second", "turn-answer"]
+    );
+    let mode_changes = committed["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["kind"] == "mode_change")
+        .count();
+    assert_eq!(mode_changes, 1);
 }
 
 /// Externalized output is read from its blob; inline output has no blob;
@@ -968,71 +1520,53 @@ fn failed_transactions_roll_back_rows_and_memory() {
 fn segment_tool_output_distinguishes_inline_present_and_missing_bytes() {
     let project_path = "/projects/tool-output-reads";
     let (temp, repo) = setup(project_path);
-    let tool = |id: &str, tool_call: Value| {
-        let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
-        segment.kind = "tool_call".to_string();
-        segment.tool_call = Some(tool_call);
-        ConversationMutation::SegmentUpserted { segment }
-    };
     let root = conversation_dir(&temp, project_path, "conversation-reads");
     fs::create_dir_all(root.join("tool-output")).unwrap();
     fs::write(root.join("tool-output/present.txt"), "full present output").unwrap();
-    repo.commit_conversation(
-        "conversation-reads",
-        project_path,
-        0,
-        vec![
-            ConversationMutation::TurnUpserted {
-                turn: assistant_turn("turn-assistant", "complete"),
-            },
-            tool(
-                "segment-inline",
-                json!({"id": "a", "output": "inline output"}),
-            ),
-            tool(
-                "segment-present",
-                json!({"id": "b", "output": "PREVIEW", "output_truncated": true,
-                    "output_size": 19, "output_artifact": "tool-output/present.txt"}),
-            ),
-            tool(
-                "segment-missing",
-                json!({"id": "c", "output": "ONLY PREVIEW", "output_truncated": true,
-                    "output_size": 100000, "output_artifact": "tool-output/missing.txt"}),
-            ),
-        ],
-    )
-    .unwrap();
-    let read = |segment: &str| {
-        repo.read_segment_tool_output("conversation-reads", Some(project_path), segment)
+    start(&repo, "conversation-reads", project_path, "Read outputs");
+    for tool_call in [
+        json!({"id": "inline", "output": "inline output"}),
+        json!({"id": "present", "output": "PREVIEW", "output_truncated": true,
+            "output_size": 19, "output_artifact": "tool-output/present.txt"}),
+        json!({"id": "missing", "output": "ONLY PREVIEW", "output_truncated": true,
+            "output_size": 100000, "output_artifact": "tool-output/missing.txt"}),
+    ] {
+        record(
+            &repo,
+            "conversation-reads",
+            project_path,
+            tool_event(tool_call),
+        )
+        .expect("tool commit");
+    }
+    let read = |call_id: &str| {
+        repo.read_segment_tool_output(
+            "conversation-reads",
+            Some(project_path),
+            &tool_segment_id(call_id),
+        )
     };
-    assert_eq!(read("segment-inline").unwrap(), None);
+    assert_eq!(read("inline").unwrap(), None);
     assert_eq!(
-        read("segment-present").unwrap().as_deref(),
+        read("present").unwrap().as_deref(),
         Some("full present output")
     );
     assert!(matches!(
-        read("segment-missing"),
+        read("missing"),
         Err(StorageError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
     ));
 }
 
 /// Recovery collects tool-output blobs nothing needs, only behind the
-/// cleanup barrier: an output version a commit replaced, a tombstoned
+/// cleanup barrier: an output version a later event replaced, a tombstoned
 /// segment's output, and a publication whose transaction failed. Live bytes
-/// and bytes a retained provider trace still needs for replay stay; a
-/// deferred barrier keeps everything until the next startup retries.
+/// stay; a deferred barrier keeps everything until the next startup retries.
 #[test]
 fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
     let project_path = "/projects/tool-output-garbage";
     let (temp, repo) = setup(project_path);
     let conversation = "conversation-garbage";
     let root = conversation_dir(&temp, project_path, conversation);
-    let tool = |id: &str, output: &str| {
-        let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
-        segment.kind = "tool_call".to_string();
-        segment.tool_call = Some(json!({"id": id, "output": output}));
-        ConversationMutation::SegmentUpserted { segment }
-    };
     let blobs = || -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(root.join("tool-output"))
             .unwrap()
@@ -1041,75 +1575,55 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
         names.sort();
         names
     };
-    let big = |fill: &str| fill.repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
 
-    let first = repo
-        .commit_conversation(
-            conversation,
-            project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-                tool("segment-replaced", &big("a")),
-                tool("segment-removed", &big("b")),
-            ],
-        )
-        .unwrap();
-    let replaced = blobs();
-    assert_eq!(replaced.len(), 2);
-    // A new version replaces the first; the other segment is tombstoned.
-    let second = repo
-        .commit_conversation(
-            conversation,
-            project_path,
-            first.revision,
-            vec![
-                tool("segment-replaced", &big("c")),
-                ConversationMutation::SegmentTombstoned {
-                    turn_id: "turn-assistant".to_string(),
-                    segment_id: "segment-removed".to_string(),
-                },
-            ],
-        )
-        .unwrap();
-    // A publication whose transaction fails leaves its blob unreferenced.
-    repo.commit_conversation(
+    start(&repo, conversation, project_path, "Run tools");
+    record_tool(
+        &repo,
         conversation,
         project_path,
-        second.revision,
-        vec![
-            tool("segment-abandoned", &big("d")),
-            ConversationMutation::WorkflowEventAppended {
-                event: json!("not an object"),
-            },
-        ],
+        "replaced",
+        &big_output("a"),
+    );
+    record_tool(
+        &repo,
+        conversation,
+        project_path,
+        "removed",
+        &big_output("b"),
+    );
+    assert_eq!(blobs().len(), 2);
+    // A new version replaces the first; the other segment is tombstoned.
+    let second = record_tool(
+        &repo,
+        conversation,
+        project_path,
+        "replaced",
+        &big_output("c"),
+    );
+    write_rows(repo.store(), |tx, revision| {
+        let removed = tool_segment_id("removed");
+        tx.execute(
+            "UPDATE blob_references SET deleted = 1, revision = ?1 WHERE conversation_id = ?2 \
+             AND owner_kind = 'tool_output' AND owner_id = ?3",
+            rusqlite::params![revision, conversation, removed],
+        )?;
+        tx.execute(
+            "UPDATE segments SET deleted = 1, revision = ?1 WHERE conversation_id = ?2 \
+             AND segment_id = ?3",
+            rusqlite::params![revision, conversation, removed],
+        )
+    });
+    // A publication whose transaction failed leaves its blob unreferenced.
+    fs::write(
+        root.join("tool-output/segment-abandoned.0.txt"),
+        big_output("d"),
     )
-    .expect_err("constraint violation");
-    // A provider event recorded but not yet projected needs its blob for replay.
-    let mut event = serde_json::from_value(json!({
-        "kind": "tool_call_completed",
-        "tool_call": {"id": "call-replay", "output": big("e")},
-    }))
     .unwrap();
-    let traced = repo
-        .append_provider_event(conversation, project_path, "turn-assistant", &mut event)
-        .unwrap();
-    let replay_blob = traced.event["tool_call"]["output_artifact"]
-        .as_str()
-        .unwrap()
-        .trim_start_matches("tool-output/")
-        .to_string();
-    let live_blob = changed(&second, EntityKind::Segment, "segment-replaced")
-        .payload
-        .as_ref()
-        .and_then(|segment| segment["tool_call"]["output_artifact"].as_str())
-        .unwrap()
+    let live_blob = output_artifact(&second, "replaced")
         .trim_start_matches("tool-output/")
         .to_string();
     let before = blobs();
-    assert_eq!(before.len(), 5, "{before:?}");
+    assert_eq!(before.len(), 4, "{before:?}");
 
     // A busy barrier removes nothing.
     repo.store()
@@ -1126,19 +1640,15 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
     let repo = ConversationRepository::new(
         ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
     );
-    let mut kept = vec![live_blob, replay_blob];
-    kept.sort();
-    assert_eq!(blobs(), kept);
+    assert_eq!(blobs(), vec![live_blob]);
     assert_eq!(
-        repo.read_segment_tool_output(conversation, Some(project_path), "segment-replaced")
-            .unwrap(),
-        Some(big("c"))
-    );
-    assert_eq!(
-        repo.unapplied_provider_events(conversation, project_path, "turn-assistant")
-            .unwrap()
-            .len(),
-        1
+        repo.read_segment_tool_output(
+            conversation,
+            Some(project_path),
+            &tool_segment_id("replaced")
+        )
+        .unwrap(),
+        Some(big_output("c"))
     );
     assert_eq!(repo.store().collect_tool_output_garbage().unwrap(), 0);
 }
@@ -1148,15 +1658,7 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
 fn open_store_checkpoints_writes_periodically() {
     let project_path = "/projects/periodic-checkpoint";
     let (_temp, repo) = setup(project_path);
-    repo.commit_conversation(
-        "conversation-periodic",
-        project_path,
-        0,
-        vec![ConversationMutation::TurnUpserted {
-            turn: user_turn("turn-user", "Hello"),
-        }],
-    )
-    .unwrap();
+    start(&repo, "conversation-periodic", project_path, "Hello");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while repo.store().database().checkpoint_pending() {
         assert!(
@@ -1209,78 +1711,28 @@ fn shared_conversation_id_collection_child() {
     let (live_project, other_project) = ("/projects/shared-a", "/projects/shared-b");
     let (temp, repo) = setup(live_project);
     let id = "conversation-shared";
-    let big = |fill: &str| fill.repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
-    let mut tool = segment("segment-tool", "turn-assistant", ORDER_UNASSIGNED);
-    tool.kind = "tool_call".to_string();
-    tool.tool_call = Some(json!({"id": "call-live", "output": big("a")}));
-    let commit = repo
-        .commit_conversation(
-            id,
-            live_project,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-                ConversationMutation::SegmentUpserted { segment: tool },
-            ],
-        )
-        .unwrap();
-    let mut event = serde_json::from_value(json!({
-        "kind": "tool_call_completed",
-        "tool_call": {"id": "call-replay", "output": big("b")},
-    }))
-    .unwrap();
-    let traced = repo
-        .append_provider_event(id, live_project, "turn-assistant", &mut event)
-        .unwrap();
+    start(&repo, id, live_project, "Run a tool");
+    let commit = record_tool(&repo, id, live_project, "live", &big_output("a"));
     let live_root = conversation_dir(&temp, live_project, id);
-    let live_blob = live_root.join(
-        changed(&commit, EntityKind::Segment, "segment-tool")
-            .payload
-            .as_ref()
-            .unwrap()["tool_call"]["output_artifact"]
-            .as_str()
-            .unwrap(),
-    );
-    let replay_blob = live_root.join(
-        traced.event["tool_call"]["output_artifact"]
-            .as_str()
-            .unwrap(),
-    );
+    let live_blob = live_root.join(output_artifact(&commit, "live"));
     // Abandoned blobs under the same id: one beside the live conversation,
     // one in another registered project's directory of that id.
     let abandoned_here = live_root.join("tool-output/segment-gone.0.txt");
-    fs::write(&abandoned_here, big("c")).unwrap();
+    fs::write(&abandoned_here, big_output("c")).unwrap();
     let other_root = conversation_dir(&temp, other_project, id);
     fs::create_dir_all(other_root.join("tool-output")).unwrap();
     let abandoned_there = other_root.join("tool-output/segment-gone.1.txt");
-    fs::write(&abandoned_there, big("d")).unwrap();
+    fs::write(&abandoned_there, big_output("d")).unwrap();
 
     assert_eq!(repo.store().collect_tool_output_garbage().unwrap(), 2);
     assert!(!abandoned_here.exists() && !abandoned_there.exists());
-    fs::write(&abandoned_there, big("d")).unwrap();
+    fs::write(&abandoned_there, big_output("d")).unwrap();
     drop(repo);
-    let repo = ConversationRepository::new(
+    let _repo = ConversationRepository::new(
         ConversationStore::open(temp.path().join("spark-home")).expect("reopen"),
     );
     assert!(!abandoned_there.exists());
-    assert_eq!(fs::read_to_string(&live_blob).unwrap(), big("a"));
-    assert_eq!(fs::read_to_string(&replay_blob).unwrap(), big("b"));
-    assert_eq!(
-        repo.unapplied_provider_events(id, live_project, "turn-assistant")
-            .unwrap()
-            .len(),
-        1
-    );
-}
-
-/// A tool-call segment carrying `output` (externalized when large).
-fn tool_segment(id: &str, output: &str) -> ConversationMutation {
-    let mut segment = segment(id, "turn-assistant", ORDER_UNASSIGNED);
-    segment.kind = "tool_call".to_string();
-    segment.tool_call = Some(json!({"id": id, "output": output}));
-    ConversationMutation::SegmentUpserted { segment }
+    assert_eq!(fs::read_to_string(&live_blob).unwrap(), big_output("a"));
 }
 
 fn big_output(fill: &str) -> String {
@@ -1322,43 +1774,15 @@ fn replaced_output_bytes_survive_every_failed_checkpoint_barrier() {
     let (temp, repo) = setup(project_path);
     let conversation = "conversation-barrier";
     let root = conversation_dir(&temp, project_path, conversation);
-    let output = |commit: &spark_storage::conversation::ConversationCommit| {
-        root.join(
-            changed(commit, EntityKind::Segment, "segment-tool")
-                .payload
-                .as_ref()
-                .unwrap()["tool_call"]["output_artifact"]
-                .as_str()
-                .unwrap(),
-        )
-    };
-    let a = repo
-        .commit_conversation(
-            conversation,
-            project_path,
-            0,
-            vec![
-                ConversationMutation::TurnUpserted {
-                    turn: assistant_turn("turn-assistant", "streaming"),
-                },
-                tool_segment("segment-tool", &big_output("a")),
-            ],
-        )
-        .unwrap();
-    let blob_a = output(&a);
+    start(&repo, conversation, project_path, "Run a tool");
+    let a = record_tool(&repo, conversation, project_path, "tool", &big_output("a"));
+    let blob_a = root.join(output_artifact(&a, "tool"));
     repo.store()
         .database()
         .after_checkpoint(|_| Ok(()))
         .unwrap();
-    let b = repo
-        .commit_conversation(
-            conversation,
-            project_path,
-            a.revision,
-            vec![tool_segment("segment-tool", &big_output("b"))],
-        )
-        .unwrap();
-    let blob_b = output(&b);
+    let b = record_tool(&repo, conversation, project_path, "tool", &big_output("b"));
+    let blob_b = root.join(output_artifact(&b, "tool"));
     assert_ne!(blob_a, blob_b);
 
     for fault in [
@@ -1384,159 +1808,13 @@ fn replaced_output_bytes_survive_every_failed_checkpoint_barrier() {
     );
     assert_live_references_exist(repo.store(), conversation, &root);
     assert_eq!(
-        repo.read_segment_tool_output(conversation, Some(project_path), "segment-tool")
+        repo.read_segment_tool_output(conversation, Some(project_path), &tool_segment_id("tool"))
             .unwrap(),
         Some(big_output("b"))
     );
 }
 
-/// Trace pruning: a projection whose transaction fails moves no cursor; a
-/// failed barrier prunes nothing; restart replays nothing settled; pruning
-/// keeps an older active turn's unapplied records; per-turn cursors and
-/// runtime sessions of different providers stay independent; and the
-/// allocator stays above every pruned or truncated sequence across restarts.
-#[test]
-fn trace_pruning_waits_for_the_barrier_and_keeps_an_older_active_turn() {
-    use spark_storage::conversation::{CheckpointFault, RuntimeSession};
-    let project_path = "/projects/trace-barrier";
-    let (temp, repo) = setup(project_path);
-    let home = temp.path().join("spark-home");
-    let conversation = "conversation-trace";
-    let trace = conversation_dir(&temp, project_path, conversation)
-        .join(spark_storage::conversation::PROVIDER_TRACE_FILE_NAME);
-    let turn = |id: &str, status: &str| ConversationMutation::TurnUpserted {
-        turn: assistant_turn(id, status),
-    };
-    let append = |repo: &ConversationRepository, turn_id: &str| {
-        let mut event = serde_json::from_value(
-            json!({"kind": "content_delta", "channel": "assistant", "message": "x"}),
-        )
-        .unwrap();
-        repo.append_provider_event(conversation, project_path, turn_id, &mut event)
-            .unwrap()
-            .sequence
-    };
-    let project = |repo: &ConversationRepository, turn_id: &str, mutations| {
-        repo.commit_conversation_projecting(conversation, project_path, 0, mutations, Some(turn_id))
-    };
-    let unapplied = |repo: &ConversationRepository, turn_id: &str| -> Vec<u64> {
-        repo.unapplied_provider_events(conversation, project_path, turn_id)
-            .unwrap()
-            .iter()
-            .map(|record| record.sequence)
-            .collect()
-    };
-    let applied = |repo: &ConversationRepository| -> Vec<(String, u64)> {
-        repo.store()
-            .database()
-            .read(|read| read.conversation(conversation))
-            .unwrap()
-            .unwrap()
-            .turns
-            .into_iter()
-            .map(|(id, _, applied, _)| (id, applied))
-            .collect()
-    };
-    let traced = || -> Vec<u64> {
-        fs::read_to_string(&trace)
-            .unwrap()
-            .lines()
-            .map(|line| {
-                serde_json::from_str::<Value>(line).unwrap()["sequence"]
-                    .as_u64()
-                    .unwrap()
-            })
-            .collect()
-    };
-
-    repo.commit_conversation(
-        conversation,
-        project_path,
-        0,
-        vec![turn("turn-old", "streaming"), turn("turn-new", "streaming")],
-    )
-    .unwrap();
-    assert_eq!(append(&repo, "turn-old"), 1);
-    project(&repo, "turn-old", vec![turn("turn-old", "streaming")]).unwrap();
-    assert_eq!(append(&repo, "turn-old"), 2);
-    assert_eq!(append(&repo, "turn-new"), 3);
-    assert_eq!(append(&repo, "turn-new"), 4);
-    let session = |provider: &str| RuntimeSession {
-        schema_version: spark_storage::conversation::RUNTIME_SESSION_SCHEMA_VERSION,
-        provider: provider.to_string(),
-        thread_id: Some(format!("{provider}-thread")),
-        established_at: "2026-01-01T00:00:00Z".to_string(),
-        last_turn_id: None,
-        resume_failed: false,
-        updated_at: "2026-01-01T00:00:00Z".to_string(),
-    };
-    for provider in ["codex_app_server", "claude_code"] {
-        repo.write_runtime_session(conversation, project_path, &session(provider))
-            .unwrap();
-    }
-
-    // A projection whose transaction fails leaves both cursors where they were.
-    project(
-        &repo,
-        "turn-new",
-        vec![
-            turn("turn-new", "complete"),
-            ConversationMutation::WorkflowEventAppended {
-                event: json!("not an object"),
-            },
-        ],
-    )
-    .expect_err("constraint violation");
-    assert_eq!(unapplied(&repo, "turn-new"), vec![3, 4]);
-    let expected = vec![("turn-old".to_string(), 1), ("turn-new".to_string(), 0)];
-    assert_eq!(applied(&repo), expected);
-
-    // Settling turn-new commits, but no failed barrier truncates the trace.
-    for fault in [
-        CheckpointFault::Busy,
-        CheckpointFault::Incomplete,
-        CheckpointFault::NoWal,
-        CheckpointFault::Error,
-    ] {
-        repo.store().database().fail_next_checkpoints([fault]);
-        project(&repo, "turn-new", vec![turn("turn-new", "complete")]).unwrap();
-        assert_eq!(traced(), vec![1, 2, 3, 4], "{fault:?}");
-    }
-    let expected = vec![("turn-old".to_string(), 1), ("turn-new".to_string(), 4)];
-    assert_eq!(applied(&repo), expected);
-
-    // Restart: the settled turn's leftover records are ignored, not replayed.
-    let revision = snapshot(&repo, conversation)["revision"].clone();
-    drop(repo);
-    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    assert_eq!(snapshot(&repo, conversation)["revision"], revision);
-    assert_eq!(unapplied(&repo, "turn-new"), Vec::<u64>::new());
-    assert_eq!(unapplied(&repo, "turn-old"), vec![2]);
-    assert_eq!(
-        repo.read_runtime_session(conversation, Some(project_path))
-            .unwrap(),
-        Some(session("claude_code"))
-    );
-
-    // A barrier that succeeds prunes everything except turn-old's record
-    // above its cursor.
-    project(&repo, "turn-new", vec![turn("turn-new", "complete")]).unwrap();
-    assert_eq!(traced(), vec![2]);
-    assert_eq!(applied(&repo), expected);
-    drop(repo);
-    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    assert_eq!(unapplied(&repo, "turn-old"), vec![2]);
-    // The allocator stays above the pruned records 3 and 4.
-    assert_eq!(append(&repo, "turn-old"), 5);
-    project(&repo, "turn-old", vec![turn("turn-old", "complete")]).unwrap();
-    assert_eq!(fs::read(&trace).unwrap(), Vec::<u8>::new(), "settled trace");
-    drop(repo);
-    // And above the truncated record 5 after another restart.
-    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    assert_eq!(append(&repo, "turn-old"), 6);
-}
-
-/// Collection running beside commits that keep replacing an output never
+/// Collection running beside events that keep replacing an output never
 /// removes bytes a live row references.
 #[test]
 fn references_survive_collection_running_beside_commits() {
@@ -1544,15 +1822,7 @@ fn references_survive_collection_running_beside_commits() {
     let (temp, repo) = setup(project_path);
     let conversation = "conversation-concurrent";
     let root = conversation_dir(&temp, project_path, conversation);
-    repo.commit_conversation(
-        conversation,
-        project_path,
-        0,
-        vec![ConversationMutation::TurnUpserted {
-            turn: assistant_turn("turn-assistant", "streaming"),
-        }],
-    )
-    .unwrap();
+    start(&repo, conversation, project_path, "Run a tool");
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -1561,22 +1831,19 @@ fn references_survive_collection_running_beside_commits() {
             }
         });
         for index in 0..40 {
-            repo.commit_conversation(
+            record_tool(
+                &repo,
                 conversation,
                 project_path,
-                0,
-                vec![tool_segment(
-                    "segment-tool",
-                    &big_output(&format!("{index:02}")),
-                )],
-            )
-            .unwrap();
+                "tool",
+                &big_output(&format!("{index:02}")),
+            );
             assert_live_references_exist(repo.store(), conversation, &root);
         }
         done.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     assert_eq!(
-        repo.read_segment_tool_output(conversation, Some(project_path), "segment-tool")
+        repo.read_segment_tool_output(conversation, Some(project_path), &tool_segment_id("tool"))
             .unwrap(),
         Some(big_output("39"))
     );
@@ -1601,16 +1868,17 @@ fn conversation_with_attachments(temp: &tempfile::TempDir, conversation: &str) -
     let draft = repo
         .create_attachment(conversation, project_path, "draft.txt", b"draft")
         .unwrap();
-    let mut turn = user_turn("turn-sent", "Here");
-    turn.extra
-        .insert("attachments".into(), json!([{"id": sent.id}]));
-    repo.commit_conversation(
-        conversation,
-        project_path,
-        0,
-        vec![ConversationMutation::TurnUpserted { turn }],
-    )
-    .unwrap();
+    let (_, accepted) = repo
+        .accept_message(
+            conversation,
+            project_path,
+            MessageInput {
+                attachments: Some(json!([{"id": sent.id}])),
+                ..message("turn-sent", "turn-assistant", "Here")
+            },
+        )
+        .unwrap();
+    assert!(matches!(accepted, Accepted::Started { .. }), "{accepted:?}");
     vec![sent.id, draft.id]
 }
 
@@ -1662,15 +1930,7 @@ fn a_directory_with_a_live_reference_survives_the_prune() {
     let project_path = "/projects/live-reference";
     let conversation = "conversation-live-reference";
     let (temp, repo) = setup(project_path);
-    repo.commit_conversation(
-        conversation,
-        project_path,
-        0,
-        vec![ConversationMutation::TurnUpserted {
-            turn: user_turn("turn-user", "Hello"),
-        }],
-    )
-    .unwrap();
+    start(&repo, conversation, project_path, "Hello");
     let attachments = conversation_dir(&temp, project_path, conversation).join("attachments");
     let referenced = attachments.join("att-referenced");
     let unreferenced = attachments.join("att-unreferenced");
@@ -1684,10 +1944,9 @@ fn a_directory_with_a_live_reference_survives_the_prune() {
         .unwrap()
         .to_string_lossy()
         .replace('\\', "/");
-    repo.store()
-        .database()
-        .write(|tx| tx.put_blob_reference(conversation, "attachment", "att-other", &blob))
-        .unwrap();
+    write_rows(repo.store(), |tx, revision| {
+        put_blob_reference(tx, revision, conversation, "attachment", "att-other", &blob)
+    });
 
     let removed = repo
         .prune_attachments(
@@ -1707,15 +1966,7 @@ fn a_conversation_with_an_unsupported_settings_schema_version_does_not_load() {
     for (version, shown) in [("1 + 1", "2"), ("NULL", "0")] {
         let (temp, repo) = setup(project_path);
         let conversation = "conversation-settings-version";
-        repo.commit_conversation(
-            conversation,
-            project_path,
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: user_turn("turn-user", "Hello"),
-            }],
-        )
-        .unwrap();
+        start(&repo, conversation, project_path, "Hello");
         drop(repo);
         let home = temp.path().join("spark-home");
         let raw = rusqlite::Connection::open(
@@ -1736,14 +1987,21 @@ fn a_conversation_with_an_unsupported_settings_schema_version_does_not_load() {
         assert_eq!(updated.unwrap(), 1);
         drop(raw);
         let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-        let error = repo
-            .read_snapshot(conversation, None)
-            .expect_err("an unsupported version fails");
-        let message = error.to_string();
-        assert!(
-            message.contains(conversation)
-                && message.contains(&format!("settings_schema_version {shown}")),
-            "{message}"
+        let names_version = |error: StorageError| {
+            let message = error.to_string();
+            assert!(
+                message.contains(conversation)
+                    && message.contains(&format!("settings_schema_version {shown}")),
+                "{message}"
+            );
+        };
+        names_version(
+            repo.append_system_turn(conversation, project_path, "notice", "Hello")
+                .expect_err("an operation on an unsupported version fails"),
+        );
+        names_version(
+            repo.read_snapshot(conversation, None)
+                .expect_err("reading an unsupported version fails"),
         );
     }
 }
@@ -1751,9 +2009,8 @@ fn a_conversation_with_an_unsupported_settings_schema_version_does_not_load() {
 const CRASH_CHILD_ENV: &str = "SPARK_CONVERSATION_CRASH_CHILD_HOME";
 
 /// A process killed (aborted) in the middle of a SQL transaction, after
-/// publishing its blob and after appending a trace record it never
-/// projected. This is a process-crash check, not a power-loss check: the OS
-/// still writes everything the process handed it.
+/// publishing its blob. This is a process-crash check, not a power-loss
+/// check: the OS still writes everything the process handed it.
 #[test]
 fn a_killed_process_keeps_committed_state_and_abandons_the_rest() {
     let temp = tempfile::tempdir().unwrap();
@@ -1788,6 +2045,8 @@ fn a_killed_process_keeps_committed_state_and_abandons_the_rest() {
         .unwrap();
     let turns: Vec<_> = stored.turns.iter().map(|(id, ..)| id.as_str()).collect();
     assert_eq!(turns, vec!["turn-user", "turn-assistant"]);
+    // The event committed before the crash is kept.
+    assert_eq!(stored.turns[1].2["status"], "streaming");
     assert!(stored.segments.is_empty());
     // The aborted transaction's revision was never allocated.
     let watermark = repo
@@ -1796,33 +2055,15 @@ fn a_killed_process_keeps_committed_state_and_abandons_the_rest() {
         .read(|read| Ok(read.watermark()))
         .unwrap();
     assert_eq!(watermark, 2);
-    assert_eq!(stored.turns[1].2, 1, "applied cursor");
-    let unapplied: Vec<_> = repo
-        .unapplied_provider_events(conversation, project_path, "turn-assistant")
-        .unwrap()
-        .iter()
-        .map(|record| record.sequence)
-        .collect();
-    assert_eq!(unapplied, vec![2]);
-    let mut event = serde_json::from_value(
-        json!({"kind": "content_delta", "channel": "assistant", "message": "after"}),
+    // The next operation takes the next revision.
+    let next = record(
+        &repo,
+        conversation,
+        project_path,
+        json!({"kind": "tool_call_started", "tool_call": {"id": "call-after"}}),
     )
-    .unwrap();
-    let next = repo
-        .append_provider_event(conversation, project_path, "turn-assistant", &mut event)
-        .unwrap();
-    assert_eq!(next.sequence, 3);
-    let commit = repo
-        .commit_conversation(
-            conversation,
-            project_path,
-            watermark,
-            vec![ConversationMutation::TurnUpserted {
-                turn: assistant_turn("turn-assistant", "complete"),
-            }],
-        )
-        .unwrap();
-    assert_eq!(commit.revision, 3);
+    .expect("next commit");
+    assert_eq!(next.revision, 3);
 }
 
 #[test]
@@ -1833,41 +2074,14 @@ fn process_kill_child() {
     let project_path = "/projects/killed";
     let conversation = "conversation-killed";
     let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
-    repo.commit_conversation(
+    start(&repo, conversation, project_path, "Hello");
+    record(
+        &repo,
         conversation,
         project_path,
-        0,
-        vec![
-            ConversationMutation::TurnUpserted {
-                turn: user_turn("turn-user", "Hello"),
-            },
-            ConversationMutation::TurnUpserted {
-                turn: assistant_turn("turn-assistant", "streaming"),
-            },
-        ],
+        json!({"kind": "token_usage_updated", "token_usage": {"total_tokens": 1}}),
     )
-    .unwrap();
-    let append = || {
-        let mut event = serde_json::from_value(
-            json!({"kind": "content_delta", "channel": "assistant", "message": "x"}),
-        )
-        .unwrap();
-        repo.append_provider_event(conversation, project_path, "turn-assistant", &mut event)
-            .unwrap()
-    };
-    append();
-    repo.commit_conversation_projecting(
-        conversation,
-        project_path,
-        1,
-        vec![ConversationMutation::TurnUpserted {
-            turn: assistant_turn("turn-assistant", "streaming"),
-        }],
-        Some("turn-assistant"),
-    )
-    .unwrap();
-    // Appended, never projected.
-    append();
+    .expect("event commit");
     // A publication: durable blob first, then a transaction that never commits.
     let root = ProjectRegistry::new(&home)
         .project_paths(project_path)
@@ -1878,18 +2092,28 @@ fn process_kill_child() {
     fs::create_dir_all(blob.parent().unwrap()).unwrap();
     fs::write(&blob, big_output("z")).unwrap();
     let store = repo.store();
-    let _ = store.database().write(|tx| -> spark_storage::Result<()> {
-        let mut abandoned = assistant_turn("turn-abandoned", "streaming");
-        abandoned.content = "never committed".to_string();
-        tx.put_turn(&spark_storage::conversation::TurnRow {
-            conversation_id: conversation.to_string(),
-            id: "turn-abandoned".to_string(),
-            position: 2,
-            status: "streaming".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-            payload: serde_json::to_value(&abandoned).unwrap(),
-        })?;
-        tx.put_blob_reference(
+    write_rows(store, |tx, revision| -> rusqlite::Result<()> {
+        tx.execute(
+            "INSERT INTO turns (conversation_id, turn_id, role, kind, position, status, \
+             updated_at, revision, payload) VALUES (?1, 'turn-abandoned', 'assistant', \
+             'message', 2, 'streaming', '2026-01-01T00:00:00Z', ?2, ?3)",
+            rusqlite::params![
+                conversation,
+                revision,
+                json!({
+                    "id": "turn-abandoned",
+                    "role": "assistant",
+                    "kind": "message",
+                    "content": "never committed",
+                    "status": "streaming",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                })
+                .to_string(),
+            ],
+        )?;
+        put_blob_reference(
+            tx,
+            revision,
             conversation,
             "tool_output",
             "segment-abandoned",

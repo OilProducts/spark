@@ -226,10 +226,14 @@ export interface ConversationStreamDeltaEventResponse {
     turn_id: string
     stream_sequence: number
     base_revision: number
-    delta_kind: 'turn_delta' | 'segment_delta' | 'token_usage' | 'thinking'
-    turn?: ConversationTurnResponse
-    segment?: ConversationSegmentResponse
-    token_usage?: Record<string, unknown>
+    delta_kind: 'segment_text' | 'thinking'
+    /** `segment_text`: the open segment the frame's text belongs to. */
+    segment_id?: string
+    /**
+     * `segment_text`: the segment's whole display text so far, replacing what it showed: a tool
+     * call's output, else its content. Never an appended fragment.
+     */
+    text?: string
     active?: boolean
     estimated_tokens?: number | null
     elapsed_ms?: number | null
@@ -709,7 +713,7 @@ function parseConversationRowPayload(value: unknown, endpoint: string): Conversa
     const effective = asUnknownRecord(record.effective) ?? {}
     const field = (key: string) => asOptionalNullableString(effective[key]) ?? asOptionalNullableString(metadata[key]) ?? null
     const modelSettingsView = record.settings == null ? undefined : parseModelSettingsView(record.settings, endpoint)
-    const metadataRevision = typeof metadata.revision === 'number' ? String(metadata.revision) : metadata.revision
+    const settingsRevision = typeof metadata.settings_revision === 'number' ? String(metadata.settings_revision) : metadata.settings_revision
     return {
         handle: asOptionalNullableString(record.handle) ?? null,
         project_path: expectString(record.project_path, endpoint, 'project_path'),
@@ -728,7 +732,7 @@ function parseConversationRowPayload(value: unknown, endpoint: string): Conversa
         reasoning_effort: field('reasoning_effort'),
         model_settings_view: modelSettingsView,
         settings_revision: modelSettingsView?.revision
-            ?? (metadataRevision == null ? null : expectDecimal(metadataRevision, endpoint, 'metadata.revision')),
+            ?? (settingsRevision == null ? null : expectDecimal(settingsRevision, endpoint, 'metadata.settings_revision')),
         ...('standing_role' in record ? { standing_role: parseStandingRole(record.standing_role) } : {}),
         placeholder: record.placeholder === true,
     }
@@ -1001,17 +1005,10 @@ export function parseConversationStreamDeltaEventResponse(
         stream_sequence: record.stream_sequence,
         base_revision: record.base_revision,
     }
-    if (record.delta_kind === 'turn_delta') {
-        const turn = parseConversationTurnResponse(record.turn)
-        return turn ? { ...base, delta_kind: 'turn_delta', turn } : null
-    }
-    if (record.delta_kind === 'segment_delta') {
-        const segment = parseConversationSegmentResponse(record.segment)
-        return segment ? { ...base, delta_kind: 'segment_delta', segment } : null
-    }
-    if (record.delta_kind === 'token_usage') {
-        const tokenUsage = asUnknownRecord(record.token_usage)
-        return tokenUsage ? { ...base, delta_kind: 'token_usage', token_usage: tokenUsage } : null
+    if (record.delta_kind === 'segment_text') {
+        return typeof record.segment_id === 'string' && typeof record.text === 'string'
+            ? { ...base, delta_kind: 'segment_text', segment_id: record.segment_id, text: record.text }
+            : null
     }
     if (record.delta_kind === 'thinking') {
         return typeof record.active === 'boolean'

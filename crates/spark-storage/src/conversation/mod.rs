@@ -1,42 +1,43 @@
 //! Typed conversation record model, the app-owned SQLite store, and the
 //! single commit boundary.
 //!
-//! Every conversation entity is a row in the home's conversation database;
-//! attachment and tool-output bytes are immutable blobs it references, and a
-//! per-conversation provider trace holds unprojected provider events for
-//! crash recovery. Services construct [`ConversationMutation`] batches and
-//! commit them through [`crate::ConversationRepository::commit_conversation`];
-//! they never allocate revisions or hand-build journal payloads.
+//! Every conversation entity is a row in the home's conversation database,
+//! the only authority for conversation state; attachment and tool-output
+//! bytes are immutable blobs it references. Services change a conversation
+//! only through the typed operations on [`crate::ConversationRepository`]
+//! (see [`operations`]); each reads, validates and writes current rows in
+//! one transaction.
 
 mod attachments;
 mod commit;
 mod database;
+#[cfg(test)]
+mod database_tests;
 mod identity;
-mod loaded;
-mod mutations;
+pub mod operations;
 mod projection;
-mod provider_trace;
 mod records;
 mod runtime_session;
 mod store;
 mod tool_output;
 mod transient;
 
-pub(crate) use loaded::LoadedConversation;
-pub(crate) use provider_trace::{append_trace, read_trace};
+pub(crate) use commit::{
+    completed_replies, derived_title, parse_json, parse_meta, payload, payloads, Open,
+};
 pub(crate) use store::remove_dir_if_exists;
+pub(crate) use store::{open_executions, EVENT_LOG_COLLECTION};
 pub(crate) use tool_output::{
-    externalize_conversation_tool_output, externalize_segment_tool_output, externalize_tool_output,
-    is_safe_segment_file_id, safe_tool_output_artifact,
+    externalize_segment_tool_output, externalize_tool_output, is_safe_segment_file_id,
+    safe_tool_output_artifact,
 };
 
 pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
 pub use commit::ConversationCommit;
 pub use database::{
-    ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, CheckpointFault,
-    CheckpointedView, ConversationDatabase, ConversationRow, EntityKind, EntityRow, PageCursor,
-    PageRead, ProjectDeletionMarker, ReadTransaction, ResetReason, SegmentRow, StoredConversation,
-    TurnPage, TurnRow, WriteTransaction, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
+    CatchUp, ChangeBatch, ChangeScope, CheckpointFault, CheckpointedView, ConversationDatabase,
+    EntityKind, EntityRow, PageCursor, PageRead, ProjectDeletionMarker, ReadTransaction,
+    ResetReason, StoredConversation, TurnPage, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
     CONVERSATION_DATABASE_FILE_NAME, CONVERSATION_DATABASE_SCHEMA_VERSION,
 };
 pub use identity::{
@@ -44,9 +45,12 @@ pub use identity::{
     model_tool_segment_id, plan_segment_id, reasoning_segment_id, request_user_input_segment_id,
     segment_source, tool_call_id, tool_segment_id,
 };
-pub use mutations::{ConversationMetadataPatch, ConversationMutation};
+pub use operations::{
+    Accepted, Admission, Answer, AnsweredQuestion, ArtifactChange, ArtifactOutcome,
+    ConversationMetadataPatch, Delivery, EventOutcome, ExecutionOutcome, FlowRequestApproval,
+    MessageInput, Settlement,
+};
 pub use projection::{record_from_snapshot, snapshot_from_record};
-pub use provider_trace::{ProviderTraceRecord, PROVIDER_TRACE_FILE_NAME};
 pub use records::{
     ArtifactCollection, BoundaryMeta, ConversationArtifacts, ConversationMeta, ConversationRecord,
     Transcript, TranscriptSegment, TranscriptTurn, ORDER_UNASSIGNED, SEGMENT_KIND_AGENT_EVENT,

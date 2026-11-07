@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, StorageError};
+use crate::error::Result;
 use crate::ConversationRepository;
 
 pub const RUNTIME_SESSION_SCHEMA_VERSION: i64 = 1;
@@ -42,38 +42,5 @@ impl ConversationRepository {
             .read(|read| read.runtime_session(conversation_id))?
             .and_then(|payload| serde_json::from_value::<RuntimeSession>(payload).ok())
             .filter(|session| session.schema_version == RUNTIME_SESSION_SCHEMA_VERSION))
-    }
-
-    /// Record a runtime session for a live conversation; a deleted or unknown
-    /// conversation rejects it.
-    pub fn write_runtime_session(
-        &self,
-        conversation_id: &str,
-        project_path: &str,
-        session: &RuntimeSession,
-    ) -> Result<()> {
-        let store = self.store();
-        let project_path = store.registry().project_paths(project_path)?.project_path;
-        let gate = store.project_gate(&project_path);
-        let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
-        let payload = serde_json::to_value(session).map_err(|source| StorageError::JsonWrite {
-            path: store.home_dir().to_path_buf(),
-            source,
-        })?;
-        store.with_conversation(conversation_id, |loaded| {
-            if loaded
-                .as_ref()
-                .is_none_or(|loaded| loaded.meta.project_path != project_path)
-            {
-                return Err(StorageError::ConversationCommitRejected {
-                    conversation_id: conversation_id.to_string(),
-                    reason: "conversation does not exist or was deleted".to_string(),
-                });
-            }
-            store
-                .database()
-                .write(|tx| tx.put_runtime_session(conversation_id, &session.provider, &payload))?;
-            Ok(())
-        })
     }
 }

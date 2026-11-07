@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rand::seq::SliceRandom;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spark_common::debug::CODEX_JSONRPC_TRACE_FILE_NAME;
-use spark_common::events::TurnStreamEvent;
 use time::OffsetDateTime;
 
-use crate::conversation::{ConversationStore, EntityRow, ProviderTraceRecord};
+use crate::conversation::{ConversationRecord, ConversationStore, EntityRow};
 use crate::error::{Result, StorageError};
 use crate::{append_jsonl_record, ProjectPaths};
 
@@ -252,7 +252,7 @@ impl ConversationRepository {
             .map(|root| root.join(CODEX_JSONRPC_TRACE_FILE_NAME)))
     }
 
-    /// The full snapshot of a live conversation, from its loaded state: only
+    /// The full snapshot of a live conversation, from its current rows: only
     /// for explicit history and export consumers. `None` when it is unknown,
     /// deleted, or bound to another project.
     pub fn read_snapshot(
@@ -260,8 +260,15 @@ impl ConversationRepository {
         conversation_id: &str,
         project_path: Option<&str>,
     ) -> Result<Option<Value>> {
-        self.read_loaded(conversation_id, project_path, |loaded| {
-            crate::conversation::snapshot_from_record(&loaded.record())
+        let expected = self.expected_project(project_path)?;
+        self.store.database().read(|read| {
+            Ok(read_record(
+                read.connection(),
+                conversation_id,
+                expected.as_deref(),
+                false,
+            )?
+            .map(|record| crate::conversation::snapshot_from_record(&record)))
         })
     }
 
@@ -269,102 +276,97 @@ impl ConversationRepository {
     /// pending, streaming and queued turns with their segments and artifacts,
     /// and artifacts awaiting review. Accepting a message or projecting a
     /// running turn reads this, never history. Adds `derived_title` and
-    /// `completed_replies` for title generation, and `settings_revision`.
+    /// `completed_replies` (counted up to 2) for title generation, and
+    /// `settings_revision`.
     pub fn read_head(
         &self,
         conversation_id: &str,
         project_path: Option<&str>,
     ) -> Result<Option<Value>> {
-        self.read_loaded(conversation_id, project_path, |loaded| {
-            let mut head = crate::conversation::snapshot_from_record(&loaded.head());
-            head["derived_title"] = Value::from(loaded.derived_title());
-            // The last committed change: draft uploads and summary touches
-            // move the row revision, never this.
-            head["settings_revision"] = Value::from(loaded.meta.revision);
-            head["completed_replies"] = Value::from(loaded.completed_replies());
-            head
+        let expected = self.expected_project(project_path)?;
+        self.store.database().read(|read| {
+            let connection = read.connection();
+            let Some(record) = read_record(connection, conversation_id, expected.as_deref(), true)?
+            else {
+                return Ok(None);
+            };
+            let mut head = crate::conversation::snapshot_from_record(&record);
+            head["derived_title"] = Value::from(crate::conversation::derived_title(
+                connection,
+                conversation_id,
+            )?);
+            head["settings_revision"] = Value::from(record.meta.settings_revision);
+            head["completed_replies"] = Value::from(crate::conversation::completed_replies(
+                connection,
+                conversation_id,
+            )?);
+            Ok(Some(head))
         })
     }
 
     /// One turn of a live conversation, by id.
     pub fn read_turn(&self, conversation_id: &str, turn_id: &str) -> Result<Option<Value>> {
-        Ok(self
-            .read_loaded(conversation_id, None, |loaded| {
-                loaded.turn(turn_id).map(serde_json::to_value)
-            })?
-            .flatten()
-            .transpose()
-            .map_err(|source| StorageError::JsonWrite {
-                path: PathBuf::from(conversation_id),
-                source,
-            })?)
+        self.store.database().read(|read| {
+            crate::conversation::payload(
+                read.connection(),
+                "SELECT payload FROM turns WHERE conversation_id = ?1 AND turn_id = ?2 \
+                 AND deleted = 0",
+                [conversation_id, turn_id],
+            )
+        })
     }
 
     /// One segment of a live conversation, by id.
     pub fn read_segment(&self, conversation_id: &str, segment_id: &str) -> Result<Option<Value>> {
-        Ok(self
-            .read_loaded(conversation_id, None, |loaded| {
-                loaded.segment(segment_id).map(serde_json::to_value)
-            })?
-            .flatten()
-            .transpose()
-            .map_err(|source| StorageError::JsonWrite {
-                path: PathBuf::from(conversation_id),
-                source,
-            })?)
+        self.store.database().read(|read| {
+            crate::conversation::payload(
+                read.connection(),
+                "SELECT payload FROM segments WHERE conversation_id = ?1 AND segment_id = ?2 \
+                 AND deleted = 0",
+                [conversation_id, segment_id],
+            )
+        })
+    }
+
+    /// One artifact of a live conversation, by collection and id.
+    pub fn read_artifact(
+        &self,
+        conversation_id: &str,
+        collection: crate::conversation::ArtifactCollection,
+        artifact_id: &str,
+    ) -> Result<Option<Value>> {
+        self.store.database().read(|read| {
+            crate::conversation::payload(
+                read.connection(),
+                "SELECT payload FROM artifacts WHERE conversation_id = ?1 AND collection = ?2 \
+                 AND artifact_id = ?3 AND deleted = 0",
+                [conversation_id, collection.key(), artifact_id],
+            )
+        })
     }
 
     /// Re-deliver a conversation's summary row to summary subscribers, when
     /// something outside the database decorates it (a standing role's state).
-    /// A conversation with no live row yet gets a placeholder revision.
+    /// A conversation with no row yet is created, so its summary is a SQL row.
     pub fn touch_conversation(&self, conversation_id: &str, project_path: &str) -> Result<()> {
-        let Some(project_path) = self.conversation_project_path(conversation_id)? else {
-            let project_path = self
-                .store
-                .registry()
-                .project_paths(project_path)?
-                .project_path;
-            return self.store.touch_placeholder(conversation_id, &project_path);
-        };
-        let revision = self.store.with_conversation(conversation_id, |loaded| {
-            let Some(loaded) = loaded.as_mut() else {
-                return Ok(None);
-            };
-            let (revision, ()) = self
-                .store
-                .database()
-                .write(|tx| tx.touch(conversation_id))?;
-            loaded.revision = revision;
-            Ok(Some(revision))
-        })?;
-        if let Some(revision) = revision {
-            self.store
-                .notify_commit(revision, vec![(conversation_id.to_string(), project_path)]);
-        }
+        self.operate(
+            conversation_id,
+            Some(project_path),
+            crate::conversation::Open::Create,
+            |op| {
+                op.touch();
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
-    fn read_loaded<T>(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-        read: impl FnOnce(&crate::conversation::LoadedConversation) -> T,
-    ) -> Result<Option<T>> {
-        let expected = project_path
+    fn expected_project(&self, project_path: Option<&str>) -> Result<Option<String>> {
+        Ok(project_path
             .and_then(non_empty_str)
             .map(|path| self.store.registry().project_paths(path))
             .transpose()?
-            .map(|paths| paths.project_path);
-        self.store.with_conversation(conversation_id, |loaded| {
-            Ok(loaded
-                .as_ref()
-                .filter(|loaded| {
-                    expected
-                        .as_deref()
-                        .is_none_or(|expected| loaded.meta.project_path == expected)
-                })
-                .map(|loaded| read(loaded)))
-        })
+            .map(|paths| paths.project_path))
     }
 
     /// `read_snapshot` for a known project.
@@ -386,18 +388,17 @@ impl ConversationRepository {
         project_path: Option<&str>,
         segment_id: &str,
     ) -> Result<Option<String>> {
-        let Some(snapshot) = self.read_snapshot(conversation_id, project_path)? else {
+        let expected = self.expected_project(project_path)?;
+        let Some(project_path) = self.conversation_project_path(conversation_id)? else {
             return Ok(None);
         };
-        let Some(tool_call) = snapshot["segments"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|segment| segment["id"] == segment_id)
-            .map(|segment| &segment["tool_call"])
-        else {
+        if expected.is_some_and(|expected| expected != project_path) {
+            return Ok(None);
+        }
+        let Some(segment) = self.read_segment(conversation_id, segment_id)? else {
             return Ok(None);
         };
+        let tool_call = &segment["tool_call"];
         let missing = |path: PathBuf| {
             StorageError::io(
                 "read segment tool output",
@@ -415,12 +416,10 @@ impl ConversationRepository {
                 Ok(None)
             };
         };
-        let Some(root) =
-            self.conversation_root(conversation_id, snapshot["project_path"].as_str())?
-        else {
-            return Ok(None);
-        };
-        let path = root.join(artifact);
+        let path = self
+            .store
+            .conversation_root(&project_path, conversation_id)?
+            .join(artifact);
         match fs::read_to_string(&path) {
             Ok(output) => Ok(Some(output)),
             Err(source) => Err(StorageError::io("read segment tool output", &path, source)),
@@ -468,111 +467,6 @@ impl ConversationRepository {
         }
     }
 
-    /// Append and sync one normalized provider event to the conversation's
-    /// provider trace before it is projected. Oversized tool output moves to
-    /// an immutable blob first. Fails for a conversation that is not live, so
-    /// a late provider callback cannot recreate deleted state.
-    pub fn append_provider_event(
-        &self,
-        conversation_id: &str,
-        project_path: &str,
-        turn_id: &str,
-        event: &mut TurnStreamEvent,
-    ) -> Result<ProviderTraceRecord> {
-        let project_path = self
-            .store
-            .registry()
-            .project_paths(project_path)?
-            .project_path;
-        let gate = self.store.project_gate(&project_path);
-        let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
-        self.store.admit_project(&project_path)?;
-        let root = self
-            .store
-            .conversation_root(&project_path, conversation_id)?;
-        self.store.with_conversation(conversation_id, |loaded| {
-            let Some(loaded) = loaded
-                .as_mut()
-                .filter(|loaded| loaded.meta.project_path == project_path)
-            else {
-                return Err(StorageError::ConversationCommitRejected {
-                    conversation_id: conversation_id.to_string(),
-                    reason: "conversation does not exist or was deleted".to_string(),
-                });
-            };
-            if matches!(
-                event.kind,
-                spark_common::events::TurnStreamEventKind::ToolCallCompleted
-                    | spark_common::events::TurnStreamEventKind::ToolCallFailed
-            ) {
-                if let Some(artifact_id) = event.tool_call.as_ref().map(|tool_call| {
-                    spark_common::segments::tool_segment_id(turn_id, event, tool_call)
-                }) {
-                    if let Some(tool_call) = event.tool_call.as_mut().and_then(Value::as_object_mut)
-                    {
-                        crate::conversation::externalize_conversation_tool_output(
-                            &root,
-                            &artifact_id,
-                            tool_call,
-                        )?;
-                    }
-                }
-            }
-            let record = ProviderTraceRecord {
-                sequence: loaded.next_trace_sequence,
-                turn_id: turn_id.to_string(),
-                recorded_at: iso_now(),
-                event: serde_json::to_value(&*event).map_err(|source| StorageError::JsonWrite {
-                    path: root.clone(),
-                    source,
-                })?,
-            };
-            if let Err(error) = crate::conversation::append_trace(&root, &record) {
-                // The append may or may not have landed: rescan before
-                // allocating again so no sequence is reused.
-                if let Ok(records) = crate::conversation::read_trace(&root) {
-                    let max = records
-                        .iter()
-                        .map(|record| record.sequence)
-                        .max()
-                        .unwrap_or(0);
-                    loaded.next_trace_sequence = loaded.next_trace_sequence.max(max + 1);
-                }
-                return Err(error);
-            }
-            loaded.next_trace_sequence = record.sequence + 1;
-            loaded
-                .trace_last_by_turn
-                .insert(turn_id.to_string(), record.sequence);
-            Ok(record)
-        })
-    }
-
-    /// The retained provider events of `turn_id` its committed state has not
-    /// projected yet, in sequence order, for crash recovery.
-    pub fn unapplied_provider_events(
-        &self,
-        conversation_id: &str,
-        project_path: &str,
-        turn_id: &str,
-    ) -> Result<Vec<ProviderTraceRecord>> {
-        let root = self
-            .store
-            .conversation_root(project_path, conversation_id)?;
-        let applied = self.store.with_conversation(conversation_id, |loaded| {
-            Ok(loaded
-                .as_ref()
-                .and_then(|loaded| loaded.applied_trace.get(turn_id).copied())
-                .unwrap_or(0))
-        })?;
-        let mut records: Vec<_> = crate::conversation::read_trace(&root)?
-            .into_iter()
-            .filter(|record| record.turn_id == turn_id && record.sequence > applied)
-            .collect();
-        records.sort_by_key(|record| record.sequence);
-        Ok(records)
-    }
-
     /// Tombstone one conversation and everything it owns, then remove its
     /// directory once the cleanup barrier allows. A deferred or failed
     /// cleanup leaves unreferenced garbage, never a live reference.
@@ -581,27 +475,37 @@ impl ConversationRepository {
         let gate = self.store.project_gate(&project_paths.project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
         let root = project_paths.conversations_dir.join(conversation_id);
-        let deleted = self.store.with_conversation(conversation_id, |loaded| {
-            if loaded.is_none() {
-                return Ok(None);
-            }
-            let (revision, _) = self
-                .store
-                .database()
-                .write(|tx| tx.delete_conversation(conversation_id))?;
-            *loaded = None;
-            Ok(Some(revision))
-        })?;
-        self.store.evict(&[conversation_id.to_string()]);
-        if let Some(revision) = deleted {
-            self.store.notify_commit(
-                revision,
-                vec![(
-                    conversation_id.to_string(),
-                    project_paths.project_path.clone(),
-                )],
-            );
-        }
+        self.store.database().write_if_changed(
+            |tx| {
+                let live = tx.connection().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 \
+                         AND project_path = ?2 AND deleted = 0)",
+                    [conversation_id, project_paths.project_path.as_str()],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !live {
+                    return Ok(Vec::new());
+                }
+                let open = crate::conversation::open_executions(
+                    tx.connection(),
+                    &project_paths.project_path,
+                    Some(conversation_id),
+                )?;
+                tx.delete_conversation(conversation_id)?;
+                Ok(open)
+            },
+            |revision, open| {
+                self.store.notify_commit(crate::conversation::CommitNotice {
+                    revision,
+                    conversations: vec![(
+                        conversation_id.to_string(),
+                        project_paths.project_path.clone(),
+                    )],
+                    closed_segments: Vec::new(),
+                    settled_executions: open.clone(),
+                })
+            },
+        )?;
         let cleanup = self.store.database().after_checkpoint(|view| {
             if view.conversation_is_live(conversation_id)? {
                 return Ok(());
@@ -672,36 +576,211 @@ impl ConversationRepository {
         conversation_id: &str,
         preferred: Option<&str>,
     ) -> Result<String> {
-        if let Some(handle) = self.store.with_conversation(conversation_id, |loaded| {
-            Ok(loaded
-                .as_ref()
-                .map(|loaded| loaded.meta.conversation_handle.clone()))
-        })? {
-            return Ok(handle);
-        }
-        let preferred = self
-            .store
-            .reserved_handle(conversation_id)
-            .or(preferred.map(str::to_string));
-        let handle = free_handle(&self.store, conversation_id, preferred.as_deref())?;
-        self.store.reserve_handle(conversation_id, &handle);
-        Ok(handle)
+        self.store.database().read(|read| {
+            let connection = read.connection();
+            if let Some(handle) = connection
+                .query_row(
+                    "SELECT handle FROM conversations WHERE id = ?1 AND deleted = 0",
+                    [conversation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                return Ok(handle);
+            }
+            let preferred = self
+                .store
+                .reserved_handle(conversation_id)
+                .or(preferred.map(str::to_string));
+            let handle = free_handle(
+                connection,
+                self.store.home_dir(),
+                conversation_id,
+                preferred.as_deref(),
+            )?;
+            self.store.reserve_handle(conversation_id, &handle);
+            Ok(handle)
+        })
     }
+}
+
+/// A live conversation's typed record from its current rows: all of them, or
+/// only its head. `None` when it is unknown, deleted or in another project.
+fn read_record(
+    connection: &Connection,
+    conversation_id: &str,
+    expected_project: Option<&str>,
+    head: bool,
+) -> Result<Option<ConversationRecord>> {
+    use crate::conversation::{parse_json, payloads};
+    let Some((project_path, handle, metadata, revision)) = connection
+        .query_row(
+            "SELECT project_path, handle, metadata, revision FROM conversations \
+             WHERE id = ?1 AND deleted = 0",
+            [conversation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if expected_project.is_some_and(|expected| expected != project_path) {
+        return Ok(None);
+    }
+    let mut meta = crate::conversation::parse_meta(conversation_id, &metadata)?;
+    let invalid = |reason: String| StorageError::InvalidConversationState {
+        path: PathBuf::from(conversation_id),
+        reason,
+    };
+    meta.conversation_id = conversation_id.to_string();
+    meta.project_path = project_path;
+    meta.conversation_handle = handle;
+    meta.revision = revision;
+    let (turns, segments, artifacts) = if head {
+        let turns = payloads(
+            connection,
+            "SELECT payload FROM turns INDEXED BY turns_status \
+             WHERE status IN ('pending', 'streaming', 'queued') AND conversation_id = ?1 \
+             AND deleted = 0 ORDER BY position, turn_id",
+            [conversation_id],
+        )?;
+        let mut segments = Vec::new();
+        let mut artifacts: Vec<(String, String, i64, Value)> = Vec::new();
+        let mut artifact_rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<()> {
+            let mut statement = connection.prepare_cached(sql)?;
+            let rows = statement
+                .query_map(params, |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<(String, String, i64, String)>>>()?;
+            for (collection, id, position, payload) in rows {
+                if !artifacts
+                    .iter()
+                    .any(|(c, i, _, _)| *c == collection && *i == id)
+                {
+                    artifacts.push((collection, id, position, parse_json(&payload)?));
+                }
+            }
+            Ok(())
+        };
+        for turn in &turns {
+            let turn_id = turn["id"].as_str().unwrap_or_default();
+            segments.extend(payloads(
+                connection,
+                "SELECT payload FROM segments WHERE conversation_id = ?1 AND turn_id = ?2 \
+                 AND deleted = 0 ORDER BY sort_order, segment_id",
+                [conversation_id, turn_id],
+            )?);
+            artifact_rows(
+                "SELECT collection, artifact_id, position, payload FROM artifacts \
+                 INDEXED BY artifacts_owner WHERE conversation_id = ?1 AND turn_id = ?2 \
+                 AND deleted = 0",
+                &[&conversation_id, &turn_id],
+            )?;
+        }
+        artifact_rows(
+            "SELECT collection, artifact_id, position, payload FROM artifacts \
+             INDEXED BY artifacts_pending WHERE conversation_id = ?1 \
+             AND status IN ('pending', 'pending_review') AND deleted = 0",
+            &[&conversation_id],
+        )?;
+        artifacts.sort_by(|a, b| (&a.0, a.2).cmp(&(&b.0, b.2)));
+        (turns, segments, artifacts)
+    } else {
+        let turns = payloads(
+            connection,
+            "SELECT payload FROM turns WHERE conversation_id = ?1 AND deleted = 0 \
+             ORDER BY position, turn_id",
+            [conversation_id],
+        )?;
+        let segments = payloads(
+            connection,
+            "SELECT s.payload FROM segments s JOIN turns t \
+             ON t.conversation_id = s.conversation_id AND t.turn_id = s.turn_id \
+             WHERE s.conversation_id = ?1 AND s.deleted = 0 \
+             ORDER BY t.position, s.sort_order, s.segment_id",
+            [conversation_id],
+        )?;
+        let mut statement = connection.prepare_cached(
+            "SELECT collection, artifact_id, position, payload FROM artifacts \
+             WHERE conversation_id = ?1 AND deleted = 0 ORDER BY collection, position",
+        )?;
+        let artifacts = statement
+            .query_map([conversation_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, String, i64, String)>>>()?
+            .into_iter()
+            .map(|(collection, id, position, payload)| {
+                Ok((collection, id, position, parse_json(&payload)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        (turns, segments, artifacts)
+    };
+    let mut record = ConversationRecord::new(conversation_id, &meta.project_path);
+    record.meta = meta;
+    record.transcript.turns = turns
+        .into_iter()
+        .map(|turn| {
+            serde_json::from_value(turn).map_err(|error| invalid(format!("Invalid turn: {error}")))
+        })
+        .collect::<Result<_>>()?;
+    record.transcript.segments = segments
+        .into_iter()
+        .map(|segment| {
+            serde_json::from_value(segment)
+                .map_err(|error| invalid(format!("Invalid segment: {error}")))
+        })
+        .collect::<Result<_>>()?;
+    for (collection, _, _, payload) in artifacts {
+        let target = match collection.as_str() {
+            crate::conversation::EVENT_LOG_COLLECTION => &mut record.artifacts.event_log,
+            "flow_run_requests" => &mut record.artifacts.flow_run_requests,
+            "flow_launches" => &mut record.artifacts.flow_launches,
+            "run_recoveries" => &mut record.artifacts.run_recoveries,
+            "proposed_plans" => &mut record.artifacts.proposed_plans,
+            _ => continue,
+        };
+        target.push(payload);
+    }
+    Ok(Some(record))
 }
 
 /// `preferred` when no other live conversation holds it, else a random free
 /// handle.
 pub(crate) fn free_handle(
-    store: &ConversationStore,
+    connection: &Connection,
+    home_dir: &std::path::Path,
     conversation_id: &str,
     preferred: Option<&str>,
 ) -> Result<String> {
     let preferred = normalize_conversation_handle(preferred.unwrap_or(""));
     let free = |candidate: &str| -> Result<bool> {
-        Ok(store
-            .database()
-            .read(|read| read.conversation_by_handle(candidate))?
-            .is_none_or(|(owner, _)| owner == conversation_id))
+        let owner: Option<String> = connection
+            .query_row(
+                "SELECT id FROM conversations WHERE handle = ?1 AND deleted = 0",
+                [candidate],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(owner.is_none_or(|owner| owner == conversation_id))
     };
     if !preferred.is_empty() && free(&preferred)? {
         return Ok(preferred);
@@ -713,7 +792,7 @@ pub(crate) fn free_handle(
         }
     }
     Err(StorageError::InvalidRepositoryPath {
-        path: store.home_dir().to_path_buf(),
+        path: home_dir.to_path_buf(),
         reason: "Could not allocate a unique conversation handle.".to_string(),
     })
 }

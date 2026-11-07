@@ -1176,6 +1176,7 @@ pub(crate) async fn workspace_live_events(
     let service = WorkspaceConversationService::new((*settings).clone(), store.clone());
     // Read after subscribing, so a change from here on also arrives as a frame.
     let active_thinking = live_hub.active_thinking_envelopes(&query);
+    let segment_frames = live_hub.segment_frame_envelopes(&query);
     let (initial, scopes) = {
         let (service, query) = (service.clone(), query.clone());
         tokio::task::spawn_blocking(move || {
@@ -1183,6 +1184,7 @@ pub(crate) async fn workspace_live_events(
             let (conversation, scopes) = initialize_live_scopes(&service, &query)?;
             envelopes.splice(0..0, conversation);
             envelopes.extend(active_thinking);
+            envelopes.extend(segment_frames);
             Ok::<_, WorkspaceError>((envelopes, scopes))
         })
         .await
@@ -1209,49 +1211,52 @@ pub(crate) async fn workspace_live_events(
                 yield Ok::<Bytes, Infallible>(Bytes::from_static(b": keepalive\n\n"));
                 continue;
             };
-            let catch_up = tokio::select! {
+            let (catch_up, replay) = tokio::select! {
                 received = subscriber.recv() => match received {
                     Received::Envelope(envelope) => {
                         yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
-                        false
+                        (false, Vec::new())
                     }
                     Received::Lagged(_) => {
                         // This subscriber's queue overflowed: other resources
-                        // refetch, conversation scopes catch up from rows.
+                        // refetch, conversation scopes catch up from rows, and
+                        // open segments' latest frames follow those rows.
                         for envelope in lagged_resync_envelopes(&query) {
                             yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
                         }
-                        true
+                        (true, live_hub.segment_frame_envelopes(&query))
                     }
-                    Received::Changed => true,
+                    Received::Changed => (true, Vec::new()),
                 },
                 _ = interval.tick() => {
                     yield Ok::<Bytes, Infallible>(Bytes::from_static(b": keepalive\n\n"));
                     // Closes a commit-to-notification gap.
-                    true
+                    (true, Vec::new())
                 }
             };
-            if !catch_up || (scopes.conversation.is_none() && scopes.summaries.is_none()) {
-                continue;
-            }
-            let service = service.clone();
-            let caught_up = tokio::task::spawn_blocking(move || {
-                let envelopes = catch_up_live_scopes(&service, &mut scopes);
-                (scopes, envelopes)
-            })
-            .await;
-            let Ok((returned, envelopes)) = caught_up else {
-                break;
-            };
-            scopes = returned;
-            match envelopes {
-                Ok(envelopes) => {
-                    for envelope in envelopes {
-                        yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+            if catch_up && (scopes.conversation.is_some() || scopes.summaries.is_some()) {
+                let service = service.clone();
+                let caught_up = tokio::task::spawn_blocking(move || {
+                    let envelopes = catch_up_live_scopes(&service, &mut scopes);
+                    (scopes, envelopes)
+                })
+                .await;
+                let Ok((returned, envelopes)) = caught_up else {
+                    break;
+                };
+                scopes = returned;
+                match envelopes {
+                    Ok(envelopes) => {
+                        for envelope in envelopes {
+                            yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+                        }
                     }
+                    // A failed read retries at the next wakeup or heartbeat.
+                    Err(error) => eprintln!("Live conversation catch-up failed: {error}"),
                 }
-                // A failed read retries at the next wakeup or heartbeat.
-                Err(error) => eprintln!("Live conversation catch-up failed: {error}"),
+            }
+            for envelope in replay {
+                yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
             }
         }
     };

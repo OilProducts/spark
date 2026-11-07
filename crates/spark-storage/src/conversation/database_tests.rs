@@ -1,10 +1,15 @@
+//! The database layer's own contracts: its storage-private row writes are
+//! reachable only from inside the crate.
+
 use serde_json::json;
-use spark_storage::conversation::{
+
+use super::database::{
     ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, ConversationDatabase,
     ConversationRow, EntityKind, PageRead, ResetReason, SegmentRow, TurnPage, TurnRow,
     CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS, CONVERSATION_DATABASE_FILE_NAME,
+    CONVERSATION_DATABASE_SCHEMA_VERSION,
 };
-use spark_storage::StorageError;
+use crate::StorageError;
 
 fn open() -> (tempfile::TempDir, ConversationDatabase) {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -32,7 +37,10 @@ fn turn(conversation_id: &str, id: &str, position: i64) -> TurnRow {
     TurnRow {
         conversation_id: conversation_id.to_string(),
         id: id.to_string(),
+        role: "user".to_string(),
+        kind: "message".to_string(),
         position,
+        settled: true,
         status: "complete".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
         payload: json!({"id": id, "role": "user"}),
@@ -44,6 +52,7 @@ fn segment(conversation_id: &str, id: &str, turn_id: &str, order: i64) -> Segmen
         conversation_id: conversation_id.to_string(),
         id: id.to_string(),
         turn_id: turn_id.to_string(),
+        kind: "assistant_message".to_string(),
         order,
         status: "complete".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
@@ -90,7 +99,7 @@ fn batch(database: &ConversationDatabase, scope: ChangeScope<'_>, since: i64) ->
 
 fn page(
     database: &ConversationDatabase,
-    before: Option<&spark_storage::conversation::PageCursor>,
+    before: Option<&crate::conversation::PageCursor>,
 ) -> TurnPage {
     match database
         .read(|read| read.page("c1", 2, before))
@@ -147,13 +156,17 @@ fn unsupported_schema_version_fails_open_without_wiping_rows() {
             error,
             StorageError::UnsupportedConversationDatabase {
                 found: 99,
-                expected: 1,
+                expected: CONVERSATION_DATABASE_SCHEMA_VERSION,
                 ..
             }
         ),
         "{error}"
     );
-    assert!(error.to_string().contains("remove it to reset"));
+    let message = error.to_string();
+    assert!(
+        message.contains("stop every Spark server") && message.contains("remove exactly"),
+        "{message}"
+    );
     let rows: i64 = raw
         .query_row("SELECT count(*) FROM conversations", [], |row| row.get(0))
         .unwrap();
@@ -201,6 +214,10 @@ fn constraints_reject_orphans_duplicate_live_handles_and_invalid_values() {
         database
             .write(|write| write.put_blob_reference("c1", "unknown", "x", "blobs/x"))
             .map(drop),
+        // Sessions belong to live conversations only.
+        database
+            .write(|write| write.put_runtime_session("missing", "codex", &json!({})))
+            .map(drop),
     ];
     for (index, result) in rejected.into_iter().enumerate() {
         assert!(result.is_err(), "write {index} should be rejected");
@@ -243,7 +260,7 @@ fn failed_transaction_rolls_back_rows_and_revision_allocation() {
     assert_eq!(first, 1);
 
     let error = database
-        .write(|write| -> spark_storage::Result<()> {
+        .write(|write| -> crate::Result<()> {
             write.put_turn(&turn("c1", "t1", 0))?;
             write.put_conversation(&conversation("c1", "/p", "t2"))?;
             Err(StorageError::ConversationCommitRejected {
@@ -589,7 +606,7 @@ fn listing_returns_live_summaries_in_update_order() {
             write.put_conversation(&flagged)
         })
         .unwrap();
-    let ids = |rows: Vec<spark_storage::conversation::EntityRow>| {
+    let ids = |rows: Vec<crate::conversation::EntityRow>| {
         rows.into_iter().map(|row| row.id).collect::<Vec<_>>()
     };
     assert_eq!(
@@ -752,8 +769,8 @@ const MEASURE_ID: &str = "conversation-measure";
 const MEASURE_PROJECT: &str = "/projects/measure";
 
 /// Manual growth/latency measurement; no thresholds. Run with
-/// `cargo test --release --all-features -p spark-storage --test contracts -- --ignored --exact
-/// conversation_database_contracts::measure_conversation_growth_and_acceptance --nocapture`.
+/// `cargo test --release --all-features -p spark-storage --lib -- --ignored --exact
+/// conversation::database_tests::measure_conversation_growth_and_acceptance --nocapture`.
 /// `SPARK_MEASURE_TURNS` (default `100,10000,100000`), `SPARK_MEASURE_SYNC`
 /// (default `NORMAL,FULL`) and `SPARK_MEASURE_REPS` (default 200) select the
 /// workload. Each configuration seeds a fresh home in one process and
@@ -789,7 +806,7 @@ fn measure_conversation_growth_and_acceptance() {
                     .args([
                         "--ignored",
                         "--exact",
-                        "conversation_database_contracts::measure_conversation_growth_and_acceptance",
+                        "conversation::database_tests::measure_conversation_growth_and_acceptance",
                         "--nocapture",
                     ])
                     .env(MEASURE_PHASE_ENV, phase)
@@ -830,7 +847,7 @@ fn percentiles(samples: &mut [std::time::Duration]) -> serde_json::Value {
     json!({"p50_us": at(0.50), "p95_us": at(0.95), "p99_us": at(0.99), "n": samples.len()})
 }
 
-fn payload_bytes(rows: &[spark_storage::conversation::EntityRow]) -> usize {
+fn payload_bytes(rows: &[crate::conversation::EntityRow]) -> usize {
     rows.iter()
         .map(|row| {
             row.payload
@@ -844,12 +861,8 @@ const MEASURE_TEXT: &str = "lorem ipsum dolor sit amet lorem ipsum dolor sit ame
     dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit \
     amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet";
 
-fn measure_turn(
-    id: String,
-    role: &str,
-    status: &str,
-) -> spark_storage::conversation::TranscriptTurn {
-    spark_storage::conversation::TranscriptTurn {
+fn measure_turn(id: String, role: &str, status: &str) -> crate::conversation::TranscriptTurn {
+    crate::conversation::TranscriptTurn {
         id,
         role: role.to_string(),
         kind: Some("message".to_string()),
@@ -860,7 +873,7 @@ fn measure_turn(
     }
 }
 
-fn measure_segment(turn_id: &str) -> spark_storage::conversation::TranscriptSegment {
+fn measure_segment(turn_id: &str) -> crate::conversation::TranscriptSegment {
     serde_json::from_value(json!({
         "id": format!("segment-{turn_id}"), "turn_id": turn_id, "order": 0,
         "kind": "assistant_message", "role": "assistant", "status": "complete",
@@ -870,33 +883,28 @@ fn measure_segment(turn_id: &str) -> spark_storage::conversation::TranscriptSegm
     .unwrap()
 }
 
-/// One commit creates the conversation; its `turns` of history (alternating
-/// user and assistant turns, each answer with one segment) are SQL rows
-/// written in a single transaction rather than repeated commits.
+/// The conversation's `turns` of history (alternating user and assistant
+/// turns, each answer with one segment) are SQL rows written in a single
+/// transaction rather than repeated operations.
 fn seed_measured_conversation(home: &std::path::Path, turns: usize) {
-    use spark_storage::conversation::ConversationMutation;
-    use spark_storage::{ConversationRepository, ConversationStore};
+    use crate::{ConversationRepository, ConversationStore};
     let store = ConversationStore::open(home).unwrap();
     ConversationRepository::new(store.clone())
-        .commit_conversation(
-            MEASURE_ID,
-            MEASURE_PROJECT,
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: measure_turn("turn-h0".into(), "user", "complete"),
-            }],
-        )
+        .touch_conversation(MEASURE_ID, MEASURE_PROJECT)
         .unwrap();
     store
         .database()
         .write(|tx| {
-            for index in 1..turns {
+            for index in 0..turns {
                 let turn_id = format!("turn-h{index}");
                 let role = if index % 2 == 1 { "assistant" } else { "user" };
                 tx.put_turn(&TurnRow {
                     conversation_id: MEASURE_ID.into(),
                     id: turn_id.clone(),
+                    role: role.into(),
+                    kind: "message".into(),
                     position: index as i64,
+                    settled: true,
                     status: "complete".into(),
                     updated_at: "2026-01-01T00:00:00Z".into(),
                     payload: serde_json::to_value(measure_turn(turn_id.clone(), role, "complete"))
@@ -907,6 +915,7 @@ fn seed_measured_conversation(home: &std::path::Path, turns: usize) {
                         conversation_id: MEASURE_ID.into(),
                         id: format!("segment-{turn_id}"),
                         turn_id: turn_id.clone(),
+                        kind: "assistant_message".into(),
                         order: 0,
                         status: "complete".into(),
                         updated_at: "2026-01-01T00:00:00Z".into(),
@@ -927,8 +936,8 @@ fn measure_storage(
     sync: &str,
     reps: usize,
 ) -> serde_json::Value {
-    use spark_storage::conversation::ConversationMutation;
-    use spark_storage::{ConversationRepository, ConversationStore};
+    use crate::conversation::{Accepted, Admission, ExecutionOutcome, MessageInput};
+    use crate::{ConversationRepository, ConversationStore};
     use std::time::Instant;
     let (id, project) = (MEASURE_ID, MEASURE_PROJECT);
     let database_bytes = std::fs::metadata(home.join(CONVERSATION_DATABASE_FILE_NAME))
@@ -965,59 +974,61 @@ fn measure_storage(
     let rss_after_open = rss_kib();
 
     // Acceptance: a user turn and its pending answer. The answer settles in
-    // a second, unmeasured commit, as a finished provider turn would.
+    // a second, unmeasured operation, as a finished provider turn would.
     let mut position = 0;
-    let mut accept = |base: i64, measured_status: &str, settle: bool| {
+    let mut accept = || {
         position += 1;
         let assistant = format!("turn-a{position}");
         let started = Instant::now();
-        let commit = repo
-            .commit_conversation(
+        let (commit, accepted) = repo
+            .accept_message(
                 id,
                 project,
-                base,
-                vec![
-                    ConversationMutation::TurnUpserted {
-                        turn: measure_turn(format!("turn-u{position}"), "user", "complete"),
-                    },
-                    ConversationMutation::TurnUpserted {
-                        turn: measure_turn(assistant.clone(), "assistant", measured_status),
-                    },
-                ],
+                MessageInput {
+                    admission: Admission::Start,
+                    user_turn_id: format!("turn-u{position}"),
+                    content: MEASURE_TEXT.to_string(),
+                    attachments: None,
+                    client_request_sha256: None,
+                    expected_settings_revision: 0,
+                    settings: Default::default(),
+                    held: false,
+                    assistant_turn_id: assistant.clone(),
+                    execution_settings: json!({}),
+                },
             )
             .unwrap();
         let elapsed = started.elapsed();
-        let mut revision = commit.revision;
-        if settle {
-            revision = repo
-                .commit_conversation(
-                    id,
-                    project,
-                    commit.revision,
-                    vec![
-                        ConversationMutation::TurnUpserted {
-                            turn: measure_turn(assistant.clone(), "assistant", "complete"),
-                        },
-                        ConversationMutation::SegmentUpserted {
-                            segment: measure_segment(&assistant),
-                        },
-                    ],
-                )
-                .unwrap()
-                .revision;
-        }
-        (elapsed, commit, revision)
+        assert!(matches!(accepted, Accepted::Started { .. }), "{accepted:?}");
+        (elapsed, commit.expect("acceptance commit"), assistant)
     };
-    let base = store.database().read(|read| Ok(read.watermark())).unwrap();
-    // Cold first acceptance loads the whole conversation into memory.
-    let (cold_accept, _, mut base) = accept(base, "pending", true);
-    let rss_after_cold_load = rss_kib();
+    let settle = |assistant: &str| {
+        repo.settle_execution(
+            id,
+            project,
+            assistant,
+            ExecutionOutcome::Returned {
+                final_text: Some(MEASURE_TEXT.to_string()),
+                token_usage: None,
+                token_usage_breakdown: None,
+                app_thread_id: None,
+                app_turn_id: None,
+                thread_resume_failure: None,
+                continued_question: None,
+            },
+            &Default::default(),
+        )
+        .unwrap();
+    };
+    let (cold_accept, _, assistant) = accept();
+    settle(&assistant);
+    let rss_after_first_acceptance = rss_kib();
 
     let mut warm = Vec::with_capacity(reps);
     let (mut accepted_rows, mut accepted_payload, mut accepted_json) = (0, 0, 0);
     for _ in 0..reps {
-        let (elapsed, commit, next) = accept(base, "pending", true);
-        base = next;
+        let (elapsed, commit, assistant) = accept();
+        settle(&assistant);
         warm.push(elapsed);
         accepted_rows = accepted_rows.max(commit.changes.rows.len());
         accepted_payload = accepted_payload.max(payload_bytes(&commit.changes.rows));
@@ -1035,9 +1046,9 @@ fn measure_storage(
     let mut frames = Vec::new();
     for _ in 0..20 {
         store.database().passive_checkpoint_frames().unwrap();
-        let (_, _, next) = accept(base, "complete", false);
-        base = next;
+        let (_, _, assistant) = accept();
         frames.push(store.database().passive_checkpoint_frames().unwrap().1);
+        settle(&assistant);
     }
     frames.sort();
     let acceptance_wal_frames = frames[frames.len() / 2] as u64;
@@ -1054,7 +1065,10 @@ fn measure_storage(
                     tx.put_turn(&TurnRow {
                         conversation_id: id.into(),
                         id: turn_id.clone(),
+                        role: role.into(),
+                        kind: "message".into(),
                         position: (turns + 1_000_000 + 2 * index + offset) as i64,
+                        settled: true,
                         status: "complete".into(),
                         updated_at: "2026-01-01T00:00:00Z".into(),
                         payload: serde_json::to_value(measure_turn(turn_id, role, "complete"))
@@ -1072,38 +1086,20 @@ fn measure_storage(
     let wal = home.join(format!("{CONVERSATION_DATABASE_FILE_NAME}-wal"));
     let wal_bytes = std::fs::metadata(&wal).map_or(0, |meta| meta.len());
     store.database().passive_checkpoint_frames().unwrap();
-    let (_, _, base) = accept(base, "complete", false);
+    let (_, _, assistant) = accept();
     let started = Instant::now();
     store.database().after_checkpoint(|_| Ok(())).unwrap();
     let full_barrier_us = started.elapsed().as_micros() as u64;
-    accept(base, "complete", false);
+    settle(&assistant);
+    store.database().passive_checkpoint_frames().unwrap();
+    let (_, _, assistant) = accept();
     let started = Instant::now();
     store.database().checkpoint_if_written().unwrap();
     let passive_us = started.elapsed().as_micros() as u64;
+    settle(&assistant);
     let (warm_page, _) = read_page();
     let rss_end = rss_kib();
 
-    // Rows and bytes the cold load read, counted last so this extra full
-    // read does not inflate the memory readings above.
-    let loaded = store
-        .database()
-        .read(|read| read.conversation(id))
-        .unwrap()
-        .unwrap();
-    let cold_load_rows = 1 + turns + turns / 2;
-    let cold_load_bytes: usize = loaded
-        .turns
-        .iter()
-        .filter(|(turn_id, ..)| turn_id.starts_with("turn-h"))
-        .map(|(.., payload)| payload.to_string().len())
-        .chain(
-            loaded
-                .segments
-                .iter()
-                .filter(|segment| segment["turn_id"].as_str().unwrap().starts_with("turn-h"))
-                .map(|payload| payload.to_string().len()),
-        )
-        .sum::<usize>();
     json!({
         "turns": turns,
         "synchronous": sync,
@@ -1116,8 +1112,6 @@ fn measure_storage(
         "page_payload_bytes": page_payload_bytes,
         "page_json_bytes": page_json_bytes,
         "cold_first_acceptance_us": cold_accept.as_micros() as u64,
-        "cold_load_rows_read": cold_load_rows,
-        "cold_load_payload_bytes_read": cold_load_bytes,
         "warm_acceptance": percentiles(&mut warm),
         "acceptance_rows_written": accepted_rows,
         "acceptance_payload_bytes_written": accepted_payload,
@@ -1129,6 +1123,6 @@ fn measure_storage(
         "full_barrier_after_one_acceptance_us": full_barrier_us,
         "passive_checkpoint_after_one_acceptance_us": passive_us,
         "rss_kib": {"before_open": rss_before_open, "after_open_and_page": rss_after_open,
-            "after_cold_load": rss_after_cold_load, "end": rss_end},
+            "after_first_acceptance": rss_after_first_acceptance, "end": rss_end},
     })
 }

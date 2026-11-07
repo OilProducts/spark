@@ -11,9 +11,7 @@ use spark_common::events::{
 };
 use spark_common::settings::{resolve_settings_with_env, SettingsOverrides, SparkSettings};
 use spark_storage::conversation::CommitNotice;
-use spark_storage::conversation::{ConversationMetadataPatch, ConversationMutation};
 use spark_storage::settings::{load_core_settings, read_settings_document};
-use spark_storage::ConversationRepository;
 use spark_workspace::live::{
     conversation_changes_envelope, conversations_changes_envelope, lagged_resync_envelopes,
     validate_live_query,
@@ -169,13 +167,19 @@ fn service_with_updates(
     settings: SparkSettings,
 ) -> (WorkspaceConversationService, mpsc::Receiver<CommitNotice>) {
     let (sender, receiver) = mpsc::channel();
-    let sender = std::sync::Mutex::new(sender);
+    let (notices, notice_receiver) = mpsc::channel::<CommitNotice>();
+    let notices = std::sync::Mutex::new(notices);
     let service = crate::conversations_with_backend(settings, Arc::new(ReplyBackend));
     let store = Arc::downgrade(service.store());
-    let titles = std::sync::Mutex::new(std::collections::HashMap::<String, Value>::new());
+    // A listener must not reenter the store: titles are read on another thread.
     service
         .store()
         .set_commit_listener(Arc::new(move |notice: &CommitNotice| {
+            let _ = notices.lock().unwrap().send(notice.clone());
+        }));
+    std::thread::spawn(move || {
+        let mut titles = std::collections::HashMap::<String, Value>::new();
+        for notice in notice_receiver {
             let Some(store) = store.upgrade() else {
                 return;
             };
@@ -188,15 +192,13 @@ fn service_with_updates(
                 };
                 let title = row.payload.map(|payload| payload["title"].clone());
                 let title = title.unwrap_or(Value::Null);
-                let previous = titles
-                    .lock()
-                    .unwrap()
-                    .insert(conversation_id.clone(), title.clone());
+                let previous = titles.insert(conversation_id.clone(), title.clone());
                 if previous.is_some_and(|previous| previous != title) {
-                    let _ = sender.lock().unwrap().send(notice.clone());
+                    let _ = sender.send(notice.clone());
                 }
             }
-        }));
+        }
+    });
     (service, receiver)
 }
 
@@ -487,19 +489,18 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     let (_temp, settings) = fixture();
     let calls = fake_claude(&settings, "Generated", "0", 0);
     let (service, updates) = service_with_updates(settings.clone());
-    ConversationRepository::new(crate::shared_store(settings.data_dir.clone()))
-        .commit_conversation(
-            "named",
-            PROJECT,
-            0,
-            vec![ConversationMutation::MetadataUpdated {
-                patch: ConversationMetadataPatch {
-                    title: Some("Named by hand".into()),
-                    ..Default::default()
-                },
-            }],
-        )
-        .unwrap();
+    crate::conversation_seed::seed_conversation_snapshot(
+        &crate::shared_store(&settings.data_dir),
+        &json!({
+            "schema_version": 5,
+            "revision": 1,
+            "conversation_id": "named",
+            "project_path": PROJECT,
+            "title": "Named by hand",
+            "turns": [],
+            "segments": [],
+        }),
+    );
     turn(&service, "named", "first question");
     assert!(updates.recv_timeout(Duration::from_millis(500)).is_err());
     assert_eq!(stored_title(&service, "named"), "Named by hand");

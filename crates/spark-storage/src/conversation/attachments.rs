@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rand::Rng;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -10,8 +11,10 @@ use time::OffsetDateTime;
 use crate::error::{Result, StorageError};
 use crate::{write_atomic, ConversationRepository};
 
-use super::database::AttachmentRow;
-use super::store::{remove_dir_if_exists, LoadedConversation, StoredAttachment};
+use super::commit::{commit_rejected, iso_now, missing, parse_json, readable, to_object};
+use super::database::{AttachmentRow, ConversationRow};
+use super::records::ConversationMeta;
+use super::store::{remove_dir_if_exists, CommitNotice};
 use super::tool_output::is_safe_segment_file_id;
 
 pub const ATTACHMENTS_DIR_NAME: &str = "attachments";
@@ -29,19 +32,6 @@ pub struct ConversationAttachment {
     pub stored_name: String,
 }
 
-impl StoredAttachment {
-    pub(crate) fn path(&self, home_dir: &Path) -> PathBuf {
-        home_dir.join(&self.blob_path)
-    }
-
-    /// Whether the referenced bytes exist with the recorded size.
-    pub(crate) fn readable(&self, home_dir: &Path) -> bool {
-        fs::File::open(self.path(home_dir))
-            .and_then(|file| file.metadata())
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == self.record.size_bytes)
-    }
-}
-
 impl ConversationRepository {
     fn attachments_dir(&self, conversation_id: &str, project_path: &str) -> Result<PathBuf> {
         if !is_safe_segment_file_id(conversation_id) {
@@ -56,11 +46,12 @@ impl ConversationRepository {
             .join(ATTACHMENTS_DIR_NAME))
     }
 
-    /// Store `bytes` as a new draft attachment: the blob is written and
-    /// synced before the transaction that records it. The media type is
-    /// detected from the content; the client filename never becomes part of
-    /// a path. A conversation that does not exist yet is created bound to
-    /// `project_path`, with no transcript.
+    /// Store `bytes` as a new draft attachment: the blob is written before
+    /// the transaction that records it. The media type is detected from the
+    /// content; the client filename never becomes part of a path. A
+    /// conversation that does not exist yet is created bound to
+    /// `project_path`, with no transcript, and stays unlisted until its first
+    /// message.
     pub fn create_attachment(
         &self,
         conversation_id: &str,
@@ -91,77 +82,61 @@ impl ConversationRepository {
         };
         let blob = dir.join(&record.stored_name);
         let blob_path = store.home_relative(&blob);
+        let payload = to_object(&record)?;
         let gate = store.project_gate(&project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
         store.admit_project(&project_path)?;
-        let revision = store.with_conversation(conversation_id, |slot| {
-            let mut created = match slot.as_ref() {
-                Some(loaded) if loaded.meta.project_path != project_path => {
-                    return Err(StorageError::ConversationCommitRejected {
-                        conversation_id: conversation_id.to_string(),
-                        reason: "Conversation is already bound to a different project path."
-                            .to_string(),
-                    })
-                }
-                Some(_) => None,
-                None => {
-                    if store
-                        .database()
-                        .read(|read| read.conversation_location(conversation_id))?
-                        .is_some()
-                    {
-                        return Err(StorageError::ConversationCommitRejected {
-                            conversation_id: conversation_id.to_string(),
-                            reason: "conversation does not exist or was deleted".to_string(),
-                        });
+        store.database().write_if_changed(
+            |tx| {
+                let connection = tx.connection();
+                let existing: Option<(String, bool)> = connection
+                    .query_row(
+                        "SELECT project_path, deleted FROM conversations WHERE id = ?1",
+                        [conversation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let created = match existing {
+                    Some((_, true)) => return Err(missing(conversation_id)),
+                    Some((bound, false)) if bound != project_path => {
+                        return Err(commit_rejected(
+                            conversation_id,
+                            "Conversation is already bound to a different project path.",
+                        ))
                     }
-                    let mut loaded = LoadedConversation::new(conversation_id, &project_path);
-                    let now = super::commit::iso_now();
-                    loaded.meta.created_at = now.clone();
-                    loaded.meta.updated_at = now;
-                    loaded.meta.conversation_handle = crate::workspace_conversations::free_handle(
-                        &store,
-                        conversation_id,
-                        store.reserved_handle(conversation_id).as_deref(),
-                    )?;
-                    Some(loaded)
-                }
-            };
-            let is_new = created.is_some();
-            // Admitted: register a new conversation's project, then publish the
-            // blob before the transaction that references it, all under the
-            // project gate and conversation lock.
-            if is_new {
-                store.registry().ensure_project_paths(&project_path)?;
-            }
-            write_atomic(&blob, bytes)?;
-            let loaded = match created.as_mut() {
-                Some(loaded) => loaded,
-                None => slot.as_mut().expect("checked above"),
-            };
-            let meta = &loaded.meta;
-            let payload =
-                serde_json::to_value(&record).map_err(|source| StorageError::JsonWrite {
-                    path: blob.clone(),
-                    source,
-                })?;
-            let conversation_row = is_new.then(|| super::database::ConversationRow {
-                id: conversation_id.to_string(),
-                project_path: project_path.clone(),
-                handle: meta.conversation_handle.clone(),
-                created_at: meta.created_at.clone(),
-                updated_at: meta.updated_at.clone(),
-                title: meta.title.clone(),
-                preview: String::new(),
-                running: false,
-                needs_attention: false,
-                launched_run_ids: Vec::new(),
-                metadata: serde_json::to_value(meta).unwrap_or_default(),
-            });
-            let (revision, ()) = store.database().write(|tx| {
-                if let Some(row) = &conversation_row {
-                    tx.put_conversation(row)?;
-                }
+                    Some(_) => false,
+                    None => {
+                        store.registry().ensure_project_paths(&project_path)?;
+                        let mut meta = ConversationMeta::new(conversation_id, &project_path);
+                        let now = iso_now();
+                        meta.created_at = now.clone();
+                        meta.updated_at = now;
+                        meta.conversation_handle = crate::workspace_conversations::free_handle(
+                            connection,
+                            store.home_dir(),
+                            conversation_id,
+                            store.reserved_handle(conversation_id).as_deref(),
+                        )?;
+                        // Revision 0 in the metadata keeps a draft-only
+                        // conversation out of listings.
+                        tx.put_conversation(&ConversationRow {
+                            id: conversation_id.to_string(),
+                            project_path: project_path.clone(),
+                            handle: meta.conversation_handle.clone(),
+                            created_at: meta.created_at.clone(),
+                            updated_at: meta.updated_at.clone(),
+                            title: meta.title.clone(),
+                            preview: String::new(),
+                            running: false,
+                            needs_attention: false,
+                            launched_run_ids: Vec::new(),
+                            metadata: to_object(&meta)?,
+                        })?;
+                        true
+                    }
+                };
+                // Admitted: publish the blob before the row that references it.
+                write_atomic(&blob, bytes)?;
                 tx.put_attachment(&AttachmentRow {
                     conversation_id: conversation_id.to_string(),
                     id: record.id.clone(),
@@ -170,24 +145,20 @@ impl ConversationRepository {
                     updated_at: record.created_at.clone(),
                     payload: payload.clone(),
                 })?;
-                tx.put_blob_reference(conversation_id, "attachment", &record.id, &blob_path)
-            })?;
-            loaded.attachments.insert(
-                record.id.clone(),
-                StoredAttachment {
-                    record: record.clone(),
-                    blob_path: blob_path.clone(),
-                    attached: false,
-                },
-            );
-            loaded.revision = revision;
-            if let Some(loaded) = created {
-                store.release_handle(conversation_id);
-                *slot = Some(loaded);
-            }
-            Ok(revision)
-        })?;
-        store.notify_commit(revision, vec![(conversation_id.to_string(), project_path)]);
+                tx.put_blob_reference(conversation_id, "attachment", &record.id, &blob_path)?;
+                Ok(created)
+            },
+            |revision, created| {
+                if *created {
+                    store.release_handle(conversation_id);
+                }
+                store.notify_commit(CommitNotice {
+                    revision,
+                    conversations: vec![(conversation_id.to_string(), project_path.clone())],
+                    ..CommitNotice::default()
+                });
+            },
+        )?;
         Ok(record)
     }
 
@@ -205,20 +176,29 @@ impl ConversationRepository {
             .registry()
             .project_paths(project_path)?
             .project_path;
-        let home_dir = self.store().home_dir().to_path_buf();
-        self.store().with_conversation(conversation_id, |slot| {
-            Ok(slot
-                .as_ref()
-                .filter(|loaded| loaded.meta.project_path == project_path)
-                .and_then(|loaded| loaded.attachments.get(attachment_id))
-                .filter(|attachment| attachment.readable(&home_dir))
-                .map(|attachment| (attachment.record.clone(), attachment.path(&home_dir))))
-        })
+        let home_dir = self.store().home_dir();
+        Ok(self
+            .store()
+            .database()
+            .read(|read| {
+                attachment_rows(
+                    read.connection(),
+                    conversation_id,
+                    &project_path,
+                    Some(attachment_id),
+                )
+            })?
+            .into_iter()
+            .find(|(record, blob_path, _)| readable(home_dir, blob_path, record.size_bytes))
+            .map(|(record, blob_path, _)| (record, home_dir.join(blob_path))))
     }
 
-    /// An attachment's record and bytes, read under the project gate and the
-    /// conversation lock, so cleanup cannot remove the bytes mid-download.
-    /// `None` when the attachment is unknown or its bytes are unreadable.
+    /// An attachment's record and bytes, read while the database is held, so
+    /// cleanup, which removes bytes only behind its barrier, cannot remove
+    /// them mid-download. `None` when the attachment is unknown or its bytes
+    /// are unreadable.
+    // ponytail: holds the database for one bounded upload's read; stream
+    // outside it under a per-blob pin if downloads grow large.
     pub fn read_attachment_bytes(
         &self,
         conversation_id: &str,
@@ -227,22 +207,22 @@ impl ConversationRepository {
     ) -> Result<Option<(ConversationAttachment, Vec<u8>)>> {
         let store = self.store();
         let project_path = store.registry().project_paths(project_path)?.project_path;
-        let home_dir = store.home_dir().to_path_buf();
-        let gate = store.project_gate(&project_path);
-        let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
-        store.with_conversation(conversation_id, |slot| {
-            let Some(attachment) = slot
-                .as_ref()
-                .filter(|loaded| loaded.meta.project_path == project_path)
-                .and_then(|loaded| loaded.attachments.get(attachment_id))
-                .filter(|attachment| attachment.readable(&home_dir))
-            else {
+        let home_dir = store.home_dir();
+        store.database().read(|read| {
+            let Some((record, blob_path, _)) = attachment_rows(
+                read.connection(),
+                conversation_id,
+                &project_path,
+                Some(attachment_id),
+            )?
+            .into_iter()
+            .find(|(record, blob_path, _)| readable(home_dir, blob_path, record.size_bytes)) else {
                 return Ok(None);
             };
-            let path = attachment.path(&home_dir);
+            let path = home_dir.join(blob_path);
             let bytes = fs::read(&path)
                 .map_err(|source| StorageError::io("read attachment", &path, source))?;
-            Ok(Some((attachment.record.clone(), bytes)))
+            Ok(Some((record, bytes)))
         })
     }
 
@@ -256,19 +236,13 @@ impl ConversationRepository {
             .registry()
             .project_paths(project_path)?
             .project_path;
-        self.store().with_conversation(conversation_id, |slot| {
-            Ok(slot
-                .as_ref()
-                .filter(|loaded| loaded.meta.project_path == project_path)
-                .map(|loaded| {
-                    loaded
-                        .attachments
-                        .values()
-                        .map(|attachment| attachment.record.clone())
-                        .collect()
-                })
-                .unwrap_or_default())
-        })
+        Ok(self
+            .store()
+            .database()
+            .read(|read| attachment_rows(read.connection(), conversation_id, &project_path, None))?
+            .into_iter()
+            .map(|(record, _, _)| record)
+            .collect())
     }
 
     /// Delete one attachment no turn references. Returns whether it existed;
@@ -279,15 +253,15 @@ impl ConversationRepository {
         project_path: &str,
         attachment_id: &str,
     ) -> Result<bool> {
-        let removed = self.remove_draft_attachments(conversation_id, project_path, |id, attachment| {
-            if id != attachment_id {
+        let removed = self.remove_draft_attachments(conversation_id, project_path, |record, attached| {
+            if record.id != attachment_id {
                 return Ok(false);
             }
-            if attachment.attached {
-                return Err(StorageError::ConversationCommitRejected {
-                    conversation_id: conversation_id.to_string(),
-                    reason: "This attachment belongs to a sent message and stays until the conversation is deleted.".to_string(),
-                });
+            if attached {
+                return Err(commit_rejected(
+                    conversation_id,
+                    "This attachment belongs to a sent message and stays until the conversation is deleted.",
+                ));
             }
             Ok(true)
         }, None)?;
@@ -306,25 +280,25 @@ impl ConversationRepository {
         self.remove_draft_attachments(
             conversation_id,
             project_path,
-            |_, attachment| {
-                Ok(!attachment.attached
-                    && OffsetDateTime::parse(&attachment.record.created_at, &Rfc3339)
+            |record, attached| {
+                Ok(!attached
+                    && OffsetDateTime::parse(&record.created_at, &Rfc3339)
                         .is_ok_and(|created_at| created_at < cutoff))
             },
             Some(cutoff),
         )
     }
 
-    /// Tombstone the matching draft rows and their blob references, then,
-    /// behind the cleanup barrier and a recheck of live references, remove
-    /// their bytes; with `orphans_before`, also unreferenced attachment
-    /// directories older than it. Runs under the project gate and
-    /// conversation lock so no commit can start referencing them meanwhile.
+    /// Tombstone the matching draft rows and their blob references in one
+    /// transaction, then, behind the cleanup barrier and a recheck of live
+    /// references, remove their bytes; with `orphans_before`, also
+    /// unreferenced attachment directories older than it. A commit that
+    /// references one first keeps it.
     fn remove_draft_attachments(
         &self,
         conversation_id: &str,
         project_path: &str,
-        mut select: impl FnMut(&str, &StoredAttachment) -> Result<bool>,
+        mut select: impl FnMut(&ConversationAttachment, bool) -> Result<bool>,
         orphans_before: Option<OffsetDateTime>,
     ) -> Result<Vec<String>> {
         let store = self.store().clone();
@@ -332,89 +306,120 @@ impl ConversationRepository {
         let dir = self.attachments_dir(conversation_id, &project_path)?;
         let gate = store.project_gate(&project_path);
         let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
-        store.with_conversation(conversation_id, |slot| {
-            let Some(loaded) = slot
-                .as_mut()
-                .filter(|loaded| loaded.meta.project_path == project_path)
-            else {
-                return Ok(Vec::new());
-            };
-            let mut selected = Vec::new();
-            for (id, attachment) in &loaded.attachments {
-                if select(id, attachment)? {
-                    selected.push(id.clone());
-                }
-            }
-            if !selected.is_empty() {
-                let (revision, ()) = store.database().write(|tx| {
-                    for id in &selected {
-                        let attachment = &loaded.attachments[id];
-                        tx.delete_attachment(conversation_id, id)?;
+        let (_, (selected, live)) = store.database().write_if_changed(
+            |tx| {
+                let rows = attachment_rows(tx.connection(), conversation_id, &project_path, None)?;
+                let mut selected = Vec::new();
+                let mut live = Vec::new();
+                for (record, blob_path, attached) in rows {
+                    if select(&record, attached)? {
+                        tx.delete_attachment(conversation_id, &record.id)?;
                         tx.delete_blob_reference(
                             conversation_id,
                             "attachment",
-                            id,
-                            &attachment.blob_path,
+                            &record.id,
+                            &blob_path,
                         )?;
+                        selected.push(record.id);
+                    } else {
+                        live.push(record.id);
                     }
-                    Ok(())
-                })?;
-                for id in &selected {
-                    loaded.attachments.remove(id);
                 }
-                loaded.revision = revision;
-                store.notify_commit(
+                Ok((selected, live))
+            },
+            |revision, _| {
+                store.notify_commit(CommitNotice {
                     revision,
-                    vec![(conversation_id.to_string(), project_path.clone())],
-                );
-            }
-            let mut candidates: Vec<PathBuf> = selected.iter().map(|id| dir.join(id)).collect();
-            if let Some(cutoff) = orphans_before {
-                for entry in read_dir_or_empty(&dir)? {
-                    let name = entry
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("");
-                    let old = fs::metadata(&entry)
-                        .and_then(|metadata| metadata.modified())
-                        .is_ok_and(|modified| OffsetDateTime::from(modified) < cutoff);
-                    if old && !loaded.attachments.contains_key(name) && !candidates.contains(&entry)
-                    {
-                        candidates.push(entry);
-                    }
+                    conversations: vec![(conversation_id.to_string(), project_path.clone())],
+                    ..CommitNotice::default()
+                })
+            },
+        )?;
+        let mut candidates: Vec<PathBuf> = selected.iter().map(|id| dir.join(id)).collect();
+        if let Some(cutoff) = orphans_before {
+            for entry in read_dir_or_empty(&dir)? {
+                let name = entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                let old = fs::metadata(&entry)
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|modified| OffsetDateTime::from(modified) < cutoff);
+                if old && !live.iter().any(|id| id == name) && !candidates.contains(&entry) {
+                    candidates.push(entry);
                 }
             }
-            if candidates.is_empty() {
-                return Ok(selected);
-            }
-            let cleanup = store.database().after_checkpoint(|view| {
-                for candidate in &candidates {
-                    if !view.has_live_reference_under(&store.home_relative(candidate))? {
-                        remove_dir_if_exists(candidate, "delete attachment")?;
-                    }
+        }
+        if candidates.is_empty() {
+            return Ok(selected);
+        }
+        let cleanup = store.database().after_checkpoint(|view| {
+            for candidate in &candidates {
+                if !view.has_live_reference_under(&store.home_relative(candidate))? {
+                    remove_dir_if_exists(candidate, "delete attachment")?;
                 }
-                Ok(())
-            });
-            // The rows are gone either way; unremoved bytes are retried garbage.
-            if let Err(error) = cleanup {
-                eprintln!("Deferred attachment cleanup in {}: {error}", dir.display());
             }
-            Ok(selected
-                .into_iter()
-                .chain(candidates.iter().filter_map(|candidate| {
-                    candidate
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .map(str::to_string)
-                }))
-                .fold(Vec::new(), |mut ids, id| {
-                    if !ids.contains(&id) {
-                        ids.push(id);
-                    }
-                    ids
-                }))
-        })
+            Ok(())
+        });
+        // The rows are gone either way; unremoved bytes are retried garbage.
+        if let Err(error) = cleanup {
+            eprintln!("Deferred attachment cleanup in {}: {error}", dir.display());
+        }
+        Ok(selected
+            .into_iter()
+            .chain(candidates.iter().filter_map(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            }))
+            .fold(Vec::new(), |mut ids, id| {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+                ids
+            }))
     }
+}
+
+/// A live conversation's live attachments in `project_path`, or the one
+/// named: (record, blob path, attached).
+fn attachment_rows(
+    connection: &Connection,
+    conversation_id: &str,
+    project_path: &str,
+    attachment_id: Option<&str>,
+) -> Result<Vec<(ConversationAttachment, String, bool)>> {
+    let mut statement = connection.prepare_cached(
+        "SELECT a.attachment_id, a.blob_path, a.status, a.payload FROM attachments a JOIN conversations c \
+         ON c.id = a.conversation_id WHERE a.conversation_id = ?1 AND c.project_path = ?2 \
+         AND c.deleted = 0 AND a.deleted = 0 AND (?3 IS NULL OR a.attachment_id = ?3) \
+         ORDER BY a.attachment_id",
+    )?;
+    let rows = statement
+        .query_map(
+            params![conversation_id, project_path, attachment_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(id, blob_path, status, payload)| {
+            let record = serde_json::from_value(parse_json(&payload)?).map_err(|error| {
+                StorageError::InvalidConversationState {
+                    path: PathBuf::from(conversation_id),
+                    reason: format!("Invalid attachment {id}: {error}"),
+                }
+            })?;
+            Ok((record, blob_path, status == "attached"))
+        })
+        .collect()
 }
 
 /// The ids in a turn's `attachments` references.

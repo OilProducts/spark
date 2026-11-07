@@ -525,9 +525,11 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
                 .expect("turns")
                 .iter()
                 .any(|turn| {
+                    // The error commits as it happens; the usage, when the
+                    // call returns.
                     turn["role"] == "assistant"
                         && turn["status"] == "failed"
-                        && turn["error"] == "route backend stream failed"
+                        && turn["token_usage"].is_object()
                 })
         },
     )
@@ -1567,50 +1569,31 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
             .0
             .assistant_turn_id
     };
-    let log = |conversation_id: &str, turn_id: &str, mut event: TurnStreamEvent| {
+    let log = |conversation_id: &str, turn_id: &str, event: TurnStreamEvent| {
         repository
-            .append_provider_event(conversation_id, project, turn_id, &mut event)
+            .record_provider_event(
+                conversation_id,
+                project,
+                turn_id,
+                &event,
+                &Default::default(),
+            )
             .unwrap();
     };
 
-    // Left streaming: one completed unit logged, one tool still running.
+    // Left streaming: one completed unit committed, one tool still running.
     let interrupted = start("left-streaming");
     let mut commentary =
         content_completed(TurnStreamChannel::Assistant, "Halfway.", "app-1", "note");
     commentary.phase = Some("commentary".into());
     log("left-streaming", &interrupted, commentary);
-    let snapshot = service
-        .get_snapshot("left-streaming", Some(project))
-        .unwrap();
-    let mut streaming_turn = snapshot["turns"][1].clone();
-    streaming_turn["status"] = json!("streaming");
-    repository
-        .commit_conversation(
-            "left-streaming",
-            project,
-            snapshot["revision"].as_i64().unwrap(),
-            vec![
-                spark_storage::conversation::ConversationMutation::TurnUpserted {
-                    turn: serde_json::from_value(streaming_turn).unwrap(),
-                },
-                spark_storage::conversation::ConversationMutation::SegmentUpserted {
-                    segment: serde_json::from_value(json!({
-                        "id": "segment-tool-running",
-                        "turn_id": interrupted,
-                        "order": 1,
-                        "kind": "tool_call",
-                        "role": "system",
-                        "status": "running",
-                        "timestamp": "2026-09-29T00:00:00Z",
-                        "tool_call": {"id": "exec", "kind": "command_execution", "status": "running", "title": "Run"},
-                    }))
-                    .unwrap(),
-                },
-            ],
-        )
-        .unwrap();
+    log(
+        "left-streaming",
+        &interrupted,
+        tool_event(TurnStreamEventKind::ToolCallStarted, "exec", "running", ""),
+    );
 
-    // Left pending with its TurnCompleted already logged.
+    // Left with its TurnCompleted already committed.
     let completed = start("left-completed");
     log(
         "left-completed",
@@ -1628,40 +1611,9 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
     let mut asked = content_completed(TurnStreamChannel::Assistant, "Asking.", "app-3", "note");
     asked.phase = Some("commentary".into());
     log("left-asking", &asking, asked);
-    let snapshot = service.get_snapshot("left-asking", Some(project)).unwrap();
-    let mut asking_turn = snapshot["turns"][1].clone();
-    asking_turn["status"] = json!("streaming");
-    repository
-        .commit_conversation(
-            "left-asking",
-            project,
-            snapshot["revision"].as_i64().unwrap(),
-            vec![
-                spark_storage::conversation::ConversationMutation::TurnUpserted {
-                    turn: serde_json::from_value(asking_turn).unwrap(),
-                },
-                spark_storage::conversation::ConversationMutation::SegmentUpserted {
-                    segment: serde_json::from_value(json!({
-                        "id": "segment-question",
-                        "turn_id": asking,
-                        "order": 2,
-                        "kind": "request_user_input",
-                        "role": "system",
-                        "status": "pending",
-                        "timestamp": "2026-09-29T00:00:00Z",
-                        "request_user_input": {
-                            "request_id": "request-1",
-                            "status": "pending",
-                            "questions": [{"id": "q", "header": "Q", "question": "Which?", "options": []}],
-                        },
-                    }))
-                    .unwrap(),
-                },
-            ],
-        )
-        .unwrap();
+    log("left-asking", &asking, request_user_input_event());
 
-    // Left pending with only commentary before its logged TurnCompleted.
+    // Left with only commentary before its committed TurnCompleted.
     let commentary_only = start("left-commentary-only");
     let mut note = content_completed(TurnStreamChannel::Assistant, "Noted.", "app-4", "note");
     note.phase = Some("commentary".into());
@@ -1699,8 +1651,17 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         .any(|segment| {
             segment["turn_id"] == interrupted.as_str() && segment["content"] == "Halfway."
         }));
+    let of_kind = |snapshot: &Value, turn_id: &str, kind: &str| {
+        snapshot["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| segment["turn_id"] == turn_id && segment["kind"] == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("{kind} segment in {snapshot:#}"))
+    };
     assert_eq!(
-        find(&settled, "segments", "segment-tool-running")["status"],
+        of_kind(&settled, &interrupted, "tool_call")["status"],
         "failed"
     );
 
@@ -1713,7 +1674,7 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
 
     let asked = service.get_snapshot("left-asking", Some(project)).unwrap();
     assert_eq!(find(&asked, "turns", &asking)["status"], "failed");
-    let question = find(&asked, "segments", "segment-question");
+    let question = of_kind(&asked, &asking, "request_user_input");
     assert_eq!(question["status"], "failed");
     assert_eq!(question["request_user_input"]["status"], "expired");
     assert!(asked["segments"]
@@ -1924,56 +1885,33 @@ fn measure_message(id: String, role: &str) -> spark_storage::conversation::Trans
     }
 }
 
-/// One commit creates the conversation; its history is SQL rows written in
-/// a single transaction: alternating user and assistant turns, each answer
-/// with one segment.
+/// The history is SQL rows written in a single transaction: alternating
+/// user and assistant turns, each answer with one segment.
 fn seed_http_measurement(settings: &SparkSettings, turns: usize) {
-    use spark_storage::conversation::{ConversationMutation, SegmentRow, TurnRow};
-    let store = crate::shared_store(&settings.data_dir);
-    spark_storage::ConversationRepository::new(store.clone())
-        .commit_conversation(
-            MEASURE_ID,
-            MEASURE_PROJECT,
-            0,
-            vec![ConversationMutation::TurnUpserted {
-                turn: measure_message("turn-h0".into(), "user"),
-            }],
-        )
-        .unwrap();
-    store
-        .database()
-        .write(|tx| {
-            for index in 1..turns {
-                let turn_id = format!("turn-h{index}");
-                let role = if index % 2 == 1 { "assistant" } else { "user" };
-                tx.put_turn(&TurnRow {
-                    conversation_id: MEASURE_ID.into(),
-                    id: turn_id.clone(),
-                    position: index as i64,
-                    status: "complete".into(),
-                    updated_at: "2026-01-01T00:00:00Z".into(),
-                    payload: serde_json::to_value(measure_message(turn_id.clone(), role)).unwrap(),
-                })?;
-                if role == "assistant" {
-                    tx.put_segment(&SegmentRow {
-                        conversation_id: MEASURE_ID.into(),
-                        id: format!("segment-{turn_id}"),
-                        turn_id: turn_id.clone(),
-                        order: 0,
-                        status: "complete".into(),
-                        updated_at: "2026-01-01T00:00:00Z".into(),
-                        payload: json!({
-                            "id": format!("segment-{turn_id}"), "turn_id": turn_id, "order": 0,
-                            "kind": "assistant_message", "role": "assistant",
-                            "status": "complete", "timestamp": "2026-01-01T00:00:00Z",
-                            "updated_at": "2026-01-01T00:00:00Z", "content": MEASURE_TEXT,
-                        }),
-                    })?;
-                }
-            }
-            Ok(())
-        })
-        .unwrap();
+    let mut turn_values = Vec::with_capacity(turns);
+    let mut segments = Vec::new();
+    for index in 0..turns {
+        let turn_id = format!("turn-h{index}");
+        let role = if index % 2 == 1 { "assistant" } else { "user" };
+        turn_values.push(serde_json::to_value(measure_message(turn_id.clone(), role)).unwrap());
+        if role == "assistant" {
+            segments.push(json!({
+                "id": format!("segment-{turn_id}"), "turn_id": turn_id, "order": 1,
+                "kind": "assistant_message", "role": "assistant",
+                "status": "complete", "timestamp": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z", "content": MEASURE_TEXT,
+            }));
+        }
+    }
+    crate::seed_conversation(
+        &settings.data_dir,
+        &json!({
+            "schema_version": 5, "revision": 1, "conversation_id": MEASURE_ID,
+            "project_path": MEASURE_PROJECT, "title": "Measured",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "turns": turn_values, "segments": segments,
+        }),
+    );
 }
 
 /// Answers every turn at once and keeps no requests, so memory readings

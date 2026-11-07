@@ -2,7 +2,6 @@ import {
     compareRevisions,
     type ConversationRow,
     type ConversationSummaryResponse,
-    type ConversationTurnResponse,
 } from '@/lib/workspaceClient'
 import type { ConversationTimelineEntry } from './types'
 
@@ -43,25 +42,6 @@ export function mergeConversationRows(rows: ConversationRows, incoming: Conversa
         next[key] = row
     }
     return next
-}
-
-export function sanitizeStreamingTurnUpsert(
-    currentTurn: ConversationTurnResponse | null,
-    incomingTurn: ConversationTurnResponse,
-): ConversationTurnResponse {
-    if (incomingTurn.role !== 'assistant') {
-        return incomingTurn
-    }
-    if (incomingTurn.status !== 'pending' && incomingTurn.status !== 'streaming') {
-        return incomingTurn
-    }
-    if (incomingTurn.content.trim().length > 0) {
-        return incomingTurn
-    }
-    return {
-        ...incomingTurn,
-        content: currentTurn?.content ?? '',
-    }
 }
 
 /** Standing roles first, the Coordinator leading; then newest first. */

@@ -187,6 +187,6 @@ it('shows live thinking from a transient delta and clears it when thinking ends 
     expect(thinking()).toBeUndefined()
     liveThinking(delta(true, 10, 4, 'turn-1'))
     // The settled turn's check runs on the chat's next live event.
-    live('conversation.stream_delta', { type: 'stream_delta', conversation_id: 'chat', turn_id: 'turn-1', stream_sequence: 5, base_revision: 3, delta_kind: 'token_usage', token_usage: {} })
+    live('conversation.stream_delta', { type: 'stream_delta', conversation_id: 'chat', turn_id: 'turn-1', stream_sequence: 5, base_revision: 3, delta_kind: 'segment_text', segment_id: 'segment-1', text: 'Late' })
     expect(thinking()).toBeUndefined()
 })
