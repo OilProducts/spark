@@ -729,9 +729,9 @@ impl WorkspaceConversationService {
         {
             summary.title = role.title.clone();
             summary.standing_role = Some(StandingRoleSummary {
+                state: role.state_beside(summary.running),
                 name: role.name,
                 title: role.title,
-                state: role.state,
             });
         }
         summary

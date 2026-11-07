@@ -984,8 +984,11 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
     .await;
     assert_eq!(posted.status(), StatusCode::OK);
 
+    // A catch-up that reads the finished turn may be sent before the
+    // deltas queued meanwhile, so read until both have arrived.
     let mut envelopes = Vec::new();
     let mut turn_completed = false;
+    let mut streamed = false;
     for _ in 0..60 {
         let envelope = next_envelope(&mut live_stream).await;
         if carried(std::slice::from_ref(&envelope), "turn")
@@ -994,8 +997,10 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
         {
             turn_completed = true;
         }
+        streamed |= envelope["type"] == "conversation.stream_delta"
+            && envelope["payload"]["text"] == "Streaming.";
         envelopes.push(envelope);
-        if turn_completed {
+        if turn_completed && streamed {
             break;
         }
     }
@@ -1279,26 +1284,24 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     assert!(mid_turn_status == "pending" || mid_turn_status == "streaming");
 
     // Live updates keep flowing after those commits, each newer for its turn,
-    // until the turn's final state is committed.
+    // and the turn's final state is committed. A catch-up reading the
+    // finished turn may be sent before deltas queued meanwhile.
     open_gate.send(()).expect("open gate");
     let mut late_deltas = Vec::new();
-    loop {
+    let (mut completed, mut streamed) = (false, false);
+    while !(completed && streamed) {
         let envelope = next_envelope(&mut live_stream).await;
         if envelope["type"] == "conversation.stream_delta"
             && envelope["payload"]["turn_id"] == turn_id.as_str()
         {
+            streamed |= envelope["payload"]["delta_kind"] == "segment_text"
+                && envelope["payload"]["text"] == "Half done. All done.";
             late_deltas.push(envelope["payload"].clone());
         }
-        if carried(std::slice::from_ref(&envelope), "turn")
+        completed |= carried(std::slice::from_ref(&envelope), "turn")
             .iter()
-            .any(|turn| turn["id"] == turn_id.as_str() && turn["status"] == "complete")
-        {
-            break;
-        }
+            .any(|turn| turn["id"] == turn_id.as_str() && turn["status"] == "complete");
     }
-    assert!(late_deltas.iter().any(|delta| {
-        delta["delta_kind"] == "segment_text" && delta["text"] == "Half done. All done."
-    }));
     for delta in &late_deltas {
         let sequence = delta["stream_sequence"].as_i64().expect("sequence");
         assert!(

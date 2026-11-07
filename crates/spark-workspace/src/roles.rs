@@ -52,6 +52,17 @@ pub struct RoleRecord {
     pub budget: RoleBudget,
 }
 
+impl RoleRecord {
+    /// The state a summary row shows beside its own `running`: the role is
+    /// read after the row, so a turn that ended in between still works here.
+    pub(crate) fn state_beside(&self, running: bool) -> RoleState {
+        match self.state {
+            RoleState::Idle if running => RoleState::Working,
+            state => state,
+        }
+    }
+}
+
 fn stored(role: &RoleRecord) -> Value {
     let mut value = serde_json::to_value(role).unwrap();
     for key in ["conversation_id", "title", "state", "budget"] {

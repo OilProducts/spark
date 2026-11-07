@@ -1675,8 +1675,9 @@ fn listed_summary_rows(
             }
             if let Some(role) = roles.conversation_role(&project_path, &row.id) {
                 payload["title"] = json!(role.title);
+                let state = role.state_beside(payload["running"] == true);
                 payload["standing_role"] =
-                    json!({"name": role.name, "title": role.title, "state": role.state});
+                    json!({"name": role.name, "title": role.title, "state": state});
             }
             Some(row)
         })

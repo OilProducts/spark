@@ -432,6 +432,128 @@ fn commit_notices_name_ended_segments_and_settled_executions() {
     );
 }
 
+/// A provider error naming no item, as Codex reports one, ends every open
+/// segment of the turn with the text held for it and the failure
+/// lifecycle, and its commit names them all. The execution stays open
+/// until the backend's outcome settles it.
+#[test]
+fn a_provider_error_ends_every_open_segment_but_not_the_execution() {
+    let project_path = "/projects/commit-error";
+    let (_temp, repo) = setup(project_path);
+    let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CommitNotice>::new()));
+    let sink = notices.clone();
+    repo.store()
+        .set_commit_listener(std::sync::Arc::new(move |notice: &CommitNotice| {
+            sink.lock().unwrap().push(notice.clone());
+        }));
+    start(&repo, "conversation-e", project_path, "Work");
+    let event = |value: Value, held: &BTreeMap<String, String>| {
+        repo.record_provider_event(
+            "conversation-e",
+            project_path,
+            "turn-assistant",
+            &serde_json::from_value(value).expect("provider event"),
+            held,
+        )
+        .expect("record event")
+    };
+    let mut held = BTreeMap::new();
+    for (delta, text) in [
+        (
+            json!({"kind": "content_delta", "channel": "reasoning", "content_delta": "Th",
+                "source": {"item_id": "reasoning-1"}}),
+            "Thinking",
+        ),
+        (
+            json!({"kind": "content_delta", "channel": "assistant", "content_delta": "Wo",
+                "source": {"item_id": "message-1"}}),
+            "Working",
+        ),
+    ] {
+        let (segment_id, _) = event(delta, &BTreeMap::new()).opened.expect("opened");
+        held.insert(segment_id, text.to_string());
+    }
+    event(
+        json!({"kind": "tool_call_started", "tool_call": {"id": "call-1"}}),
+        &BTreeMap::new(),
+    );
+    let (tool, _) = event(
+        json!({"kind": "tool_call_updated", "content_delta": "out",
+            "source": {"item_id": "call-1"}}),
+        &BTreeMap::new(),
+    )
+    .opened
+    .expect("tool output opened");
+    assert_eq!(tool, tool_segment_id("call-1"));
+    held.insert(tool.clone(), "output so far".to_string());
+    let count = notices.lock().unwrap().len();
+
+    let outcome = event(
+        json!({"kind": "error", "error": "stream disconnected",
+            "source": {"backend": "codex-app-server", "raw_kind": "error"}}),
+        &held,
+    );
+
+    let mut ended = outcome.ended.clone();
+    ended.sort();
+    assert_eq!(ended, held.keys().cloned().collect::<Vec<_>>());
+    let notices = notices.lock().unwrap()[count..].to_vec();
+    let closed: Vec<_> = notices
+        .iter()
+        .flat_map(|notice| notice.closed_segments.iter().map(|(_, _, id)| id.clone()))
+        .collect();
+    for segment_id in held.keys() {
+        assert!(closed.contains(segment_id), "{segment_id}: {closed:?}");
+    }
+    assert!(notices
+        .iter()
+        .all(|notice| notice.settled_executions.is_empty()));
+    let persisted = snapshot(&repo, "conversation-e");
+    for (segment_id, text) in &held {
+        let segment = persisted["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| &segment["id"] == segment_id)
+            .unwrap_or_else(|| panic!("segment {segment_id}"));
+        assert_eq!(segment["status"], "failed", "{segment}");
+        assert!(segment["completed_at"].is_string(), "{segment}");
+        let stored = if segment_id == &tool {
+            assert_eq!(
+                segment["tool_call"]["error_code"],
+                "tool_completion_missing"
+            );
+            &segment["tool_call"]["output"]
+        } else {
+            &segment["content"]
+        };
+        assert_eq!(stored, text.as_str(), "{segment}");
+    }
+    let assistant = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    assert_eq!(assistant["error"], "stream disconnected", "{assistant}");
+
+    let settlement = repo
+        .settle_execution(
+            "conversation-e",
+            project_path,
+            "turn-assistant",
+            ExecutionOutcome::Failed {
+                message: "stream disconnected".to_string(),
+                error_code: None,
+                details: None,
+            },
+            &BTreeMap::new(),
+        )
+        .expect("settle");
+    assert!(settlement.settled);
+}
+
 /// A question-only return waits for its answer's continuation even with
 /// its provider turn boundary recorded after the question; the continuation's
 /// own return settles, failing when it brought no final answer.

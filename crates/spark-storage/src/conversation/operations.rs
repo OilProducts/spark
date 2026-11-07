@@ -976,7 +976,11 @@ impl Op<'_> {
                 self.materialize(turn_id, &event, None)?;
             }
             TurnStreamEventKind::Error => {
+                // The error ends the turn's open output, which may name no
+                // item: each open segment fails with the text held for it.
+                // The execution settles only on the backend's outcome.
                 self.store_held(held, false)?;
+                self.finalize_open(turn_id, false)?;
                 let message = event
                     .error
                     .clone()
