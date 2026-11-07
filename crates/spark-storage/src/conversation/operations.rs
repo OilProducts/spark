@@ -2199,6 +2199,40 @@ impl ConversationRepository {
         })
     }
 
+    /// Restore a launched run that a crash left out of a live
+    /// conversation's roster, at its original launch time when known, so the
+    /// roster stays in launch order. Skipped when the inbox already holds the
+    /// run's finished report `reported`: the run was registered before, and
+    /// the roster may have dropped it on purpose. Returns whether it was new.
+    pub fn restore_inbox_run(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        flow_name: &str,
+        summary: &str,
+        launched_at: Option<&str>,
+        reported: Option<&str>,
+    ) -> Result<bool> {
+        let launched_at = launched_at.map_or_else(launch_time, str::to_string);
+        self.write_inbox(conversation_id, |connection| {
+            Ok(connection.execute(
+                "INSERT INTO inbox_runs (conversation_id, run_id, flow_name, summary, \
+                 launched_at, status) SELECT ?1, ?2, ?3, ?4, ?5, 'running' \
+                 WHERE NOT EXISTS (SELECT 1 FROM inbox_events \
+                 WHERE conversation_id = ?1 AND event_id = ?6) \
+                 ON CONFLICT (conversation_id, run_id) DO NOTHING",
+                params![
+                    conversation_id,
+                    run_id,
+                    flow_name,
+                    summary,
+                    launched_at,
+                    reported
+                ],
+            )? > 0)
+        })
+    }
+
     /// Record a roster run's reconciled status. A finished run keeps its
     /// final status. Returns whether it changed.
     pub fn set_inbox_run_status(

@@ -728,6 +728,102 @@ fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs()
 }
 
 #[test]
+fn restarts_keep_trimmed_runs_out_of_the_roster_and_restore_missing_ones_in_launch_order() {
+    let harness = Harness::new();
+    harness
+        .roles
+        .start(&harness.project, CHIEF_OF_STAFF)
+        .unwrap();
+    harness.request(0);
+    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.agent.release(1000);
+    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let launch = |run_id: &str| {
+        let mut record = attractor_core::RunRecord::new(run_id, &harness.project);
+        record.flow_name = "work/seeded".into();
+        record.status = "running".into();
+        record.started_at = attractor_runtime::utc_timestamp();
+        record.launch_context = Some(
+            [(
+                "context.spark_owner".to_string(),
+                json!({ "conversation_id": conversation }),
+            )]
+            .into(),
+        );
+        store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    // 52 runs launched from the role finish and are reported; the roster
+    // keeps the newest 50.
+    let mut lost_started_at = String::new();
+    for index in 0..52 {
+        if index == 30 {
+            lost_started_at = attractor_runtime::utc_timestamp();
+        }
+        let run = format!("run-{index:02}");
+        let paths = launch(&run);
+        repository
+            .register_inbox_run(&conversation, &run, "work/seeded", "Seeded work")
+            .unwrap();
+        let mut record = store.read_run_record(&paths).unwrap().unwrap();
+        record.status = "completed".into();
+        store.write_run_record(&paths, &record).unwrap();
+        store
+            .write_result(
+                &paths,
+                &attractor_core::RunResult::unavailable(&run, "completed"),
+            )
+            .unwrap();
+        assert!(crate::deliver_run_events(&harness.settings, &run));
+    }
+    wait_for("every report consumed", || {
+        repository
+            .pending_inbox_events(&conversation)
+            .unwrap()
+            .is_empty()
+            && harness.get(CHIEF_OF_STAFF).state != RoleState::Working
+    });
+    let roster = |repository: &spark_storage::ConversationRepository| {
+        repository
+            .inbox_runs(&conversation)
+            .unwrap()
+            .into_iter()
+            .map(|run| run.run_id)
+            .collect::<Vec<_>>()
+    };
+    let kept: Vec<String> = (2..52).map(|index| format!("run-{index:02}")).collect();
+    assert_eq!(roster(&repository), kept);
+    // A run launched between run-29 and run-30 that a crash left out of the
+    // roster, still running.
+    let lost = launch("run-lost");
+    let mut record = store.read_run_record(&lost).unwrap().unwrap();
+    record.started_at = lost_started_at;
+    store.write_run_record(&lost, &record).unwrap();
+    let turns = harness.agent.requests.lock().unwrap().len();
+    let mut expected = kept.clone();
+    expected.insert(28, "run-lost".to_string());
+    for _ in 0..2 {
+        crate::recover(&harness.settings);
+        assert_eq!(roster(&repository), expected);
+        assert_eq!(repository.inbox_events(&conversation).unwrap().len(), 52);
+        assert_eq!(harness.agent.requests.lock().unwrap().len(), turns);
+    }
+    assert!(harness
+        .get(CHIEF_OF_STAFF)
+        .inbox
+        .runs
+        .iter()
+        .any(|run| run.run_id == "run-lost" && run.in_flight()));
+}
+
+#[test]
 fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
     let harness = Harness::new();
     let name = "release_manager";

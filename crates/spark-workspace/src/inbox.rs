@@ -474,9 +474,10 @@ pub fn deliver_run_events(
     Ok(changed)
 }
 
-/// Startup recovery, once orphaned turns are settled: adds owned root runs
-/// a crash left out of their roster, reconciles every in-flight roster run,
-/// then processes every live conversation with pending events.
+/// Startup recovery, once orphaned turns are settled: restores owned root
+/// runs a crash left out of their roster (not finished runs already
+/// reported, which a roster may have trimmed), reconciles every in-flight
+/// roster run, then processes every live conversation with pending events.
 pub fn recover(settings: &SparkSettings, store: &Arc<ConversationStore>) -> WorkspaceResult<()> {
     let repository = ConversationRepository::new(store.clone());
     let runs = attractor_runtime::RunStore::for_settings(settings);
@@ -493,12 +494,17 @@ pub fn recover(settings: &SparkSettings, store: &Arc<ConversationStore>) -> Work
             .conversation_project_path(&conversation_id)?
             .is_some()
         {
-            let summary = record.title.clone().unwrap_or_default();
-            let _ = repository.register_inbox_run(
+            let status = attractor_runtime::normalize_run_status(record.status.trim());
+            let reported = TERMINAL_RUN_STATUSES
+                .contains(&status.as_str())
+                .then(|| report_id(&record.run_id, &status));
+            let _ = repository.restore_inbox_run(
                 &conversation_id,
                 &record.run_id,
                 &record.flow_name,
-                &summary,
+                record.title.as_deref().unwrap_or_default(),
+                Some(record.started_at.trim()).filter(|started| !started.is_empty()),
+                reported.as_deref(),
             );
         }
     }
@@ -511,6 +517,11 @@ pub fn recover(settings: &SparkSettings, store: &Arc<ConversationStore>) -> Work
         let _ = process_conversation(settings, store, &conversation_id);
     }
     Ok(())
+}
+
+/// The id of a run tree's terminal or recovery-wait report.
+fn report_id(root_id: &str, status: &str) -> String {
+    format!("{root_id}:{status}")
 }
 
 /// Reconciles an owned run tree into its owner's inbox: appends its
@@ -592,7 +603,7 @@ pub(crate) fn reconcile_run(
                 store,
                 conversation_id,
                 InboxPost {
-                    id: Some(format!("{root_id}:{status}")),
+                    id: Some(report_id(root_id, &status)),
                     kind: kind.into(),
                     source: Some(root_id.clone()),
                     payload: json!({"status": status, "flow_name": record.flow_name, "outcome": record.outcome, "error": record.last_error}),
