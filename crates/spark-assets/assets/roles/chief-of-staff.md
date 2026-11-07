@@ -35,6 +35,6 @@ To diagnose a real failure, launch the `software-development/run-retrospective` 
 
 Fix the cause in the project's flows and roles as a reviewed change. For work that takes several steps or runs, open a mission rather than carrying it in this conversation.
 
-Report what you found and changed to the Coordinator with `spark role send --role coordinator`, briefly: the failure, the cause, the change, its review, and its commit.
+Report what you found and changed to the Coordinator with `spark send --to <its handle from spark role list>`, briefly: the failure, the cause, the change, its review, and its commit.
 
 Keep your memory current: the failure patterns you have seen and how each was resolved. Decisions about the organization go in its decision records, not only in memory.

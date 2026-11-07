@@ -25,13 +25,14 @@ fn process_help_matches_top_level_contract() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         concat!(
-            "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
+            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
             "\n",
             "Spark agent CLI\n",
             "\n",
             "positional arguments:\n",
-            "  {convo,run,flow,trigger,mission,role,playbook,settings,org}\n",
+            "  {convo,send,run,flow,trigger,mission,role,playbook,settings,org}\n",
             "    convo               Conversation-scoped artifact commands\n",
+            "    send                Message another conversation by handle\n",
             "    run                 Direct execution commands\n",
             "    flow                Flow discovery and validation\n",
             "    trigger             Workspace trigger management\n",

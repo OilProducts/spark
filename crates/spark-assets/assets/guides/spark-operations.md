@@ -486,7 +486,6 @@ spark mission create --project /absolute/project --json mission.json
 spark mission create --conversation <handle> --json mission.json
 spark mission update --project /absolute/project --id mission-ID --json - < update.json
 spark mission start --project /absolute/project --id mission-ID
-spark mission send --project /absolute/project --id mission-ID --message "Prefer the smaller fix"
 spark mission close --project /absolute/project --id mission-ID --status done --reason "Shipped and verified"
 ```
 
@@ -506,7 +505,7 @@ Create with `--conversation <handle>` instead of `--project` to make a mission f
 
 Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID; `GET /workspace/api/missions` without `project_path` lists every project's missions.
 
-Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.question`, `run.waiting` (recovery decisions), and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_owner` (`{"kind": "mission", "id": ...}`), so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
+Creating a mission also creates its conversation (`conversation_id`, the mission ID) and handle, without starting a turn, so a draft can be messaged with `spark send`. A draft holds its inbox: messages and mission-targeted trigger deliveries wait until start, which sends the objective as the first turn together with them. From then on, the mission's inbox (see Conversation inboxes) delivers its events to that conversation as new turns, including while the mission waits; a closed mission still records events but never wakes. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
 
 Questions from all descendants return to the mission with their owning run ID. List open questions with `spark run questions --run <id>`. Answer using `spark run answer --run <owning run id> --question <question id> --option <value>` or `--text <text>`. The mission agent answers every question itself when the objective, playbook, run results and logs, and the repository give it the information, stating its reasoning; only when that information is missing does it ask the user for exactly what is missing, end the turn, and relay their reply without guessing. A mission is Running during its question-handling turn and Needs you if it ends with an unanswered question. Answers from the Runs view also clear the roster wait.
 
@@ -537,7 +536,6 @@ A standing role is a role file (`roles/<name>.md`, resolved from the project's d
 spark role list --project /absolute/project
 spark role start --project /absolute/project --role chief-of-staff
 spark role stop --project /absolute/project --role chief-of-staff
-spark role send --project /absolute/project --role coordinator --conversation <sender handle> --message "Fixed the review flow"
 ```
 
 Only a role whose file declares `standing: true` can be started; the bundled `coordinator` and `chief-of-staff` do. The Coordinator is standing in every project whatever its file says. The role file also sets the role's launch limit:
@@ -548,8 +546,22 @@ budget:
   concurrent_runs: 4
 ```
 
-`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only runtime state: inbox, runs, and whether the role is stopped.
+`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only whether the role is stopped; its inbox and run roster belong to its conversation, which is created by the role's first inbox write. `spark role list` shows each role's `conversation_handle` once that conversation exists; message a role with `spark send --to <that handle>`.
 
-The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop|send?project_path=...` (`send` takes `{"conversation_handle", "message"}`).
+The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop?project_path=...`.
 
-A role wakes on a new turn when the user writes in its conversation, when a run launched from it reports back (launches carry `context.spark_owner` with `kind` `role`), when a `role`-mode trigger fires, when a mission created from its conversation closes, and when another conversation sends it a message; a message from another role names that role. Launches count against the role file's `budget`; a refused launch names the limit it hit. A stopped role still records events but delivers none until it starts again; its triggers stay enabled, and a `role` trigger skips runs the role launched itself and runs of other projects. A role file's `execution` settings apply to its conversation below the conversation's own model settings and above the project's.
+A role wakes on a new turn when the user writes in its conversation, when a run launched from it reports back, when a `role`-mode trigger fires, when a mission created from its conversation closes, and when another conversation sends it a message. Launches count against the role file's `budget`; a refused launch names the limit it hit. A stopped role still records events and messages but delivers none until it starts again, when it takes everything held; its triggers stay enabled, and a `role` trigger skips runs the role launched itself and runs of other projects. A role file's `execution` settings apply to its conversation below the conversation's own model settings and above the project's.
+
+## Conversation inboxes
+
+Every conversation, whether a chat, mission or standing role, has an inbox in the conversation store. Run reports, trigger deliveries and messages from other conversations arrive there and reach the conversation as turns: one marked batch per turn, oldest first, at most one turn in flight. An idle conversation starts a turn for a batch; a busy one takes it into the running turn when the provider accepts live input, and otherwise keeps it for the next turn. A batch is about earlier work or relays a message: it is not a new request from the user, and an agent assesses it against the user's latest instructions. A mission or standing role delivers through its own gate (draft, closed, stopped); a chat always does.
+
+A run launched from a conversation (with `spark convo run-request`, an approved run request, or an approved proposed plan) belongs to that conversation for good: Spark records `context.spark_owner` as `{"conversation_id": ...}` at launch and replaces any owner a caller supplies. Child runs report to their root's owner. Completion, failure, cancellation, questions and recovery-decision waits each arrive once; ordinary progress does not wake anyone. A report wakes its own conversation even after the user moved on to another topic or thread; it does not move to the thread on screen. A run launched with no conversation is unowned and reports nowhere. If the owner conversation is deleted, its reports are dropped.
+
+Message any conversation by handle:
+
+```sh
+spark send --to <recipient handle> --conversation <your handle> --message "The review flow is fixed"
+```
+
+The same request is `POST /workspace/api/conversations/by-handle/{recipient handle}/messages` with `{"conversation_handle": "<your handle>", "message": "<text>"}`; it answers 202 once the message is stored, not once the recipient replies. Each call is a new message, so a repeated send arrives twice. The recipient sees your handle, your project and, for a mission or standing role, its label; it replies with `spark send --to <your handle>`. Handles work across projects, and a conversation can message itself. Find a standing role's handle with `spark role list`, a mission's with `spark mission get`, and your own in your instructions.

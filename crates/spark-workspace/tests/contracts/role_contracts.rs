@@ -1,11 +1,12 @@
 use super::mission_contracts::{project, tool_flow, wait_for, wait_terminal, GatedAgent};
-use super::review_artifact_contracts::{settings, write_native_execution_profile};
-use serde_json::{json, Value};
+use super::review_artifact_contracts::{
+    seed_conversation, settings, write_native_execution_profile,
+};
+use serde_json::json;
 use spark_agent_adapter::{AgentTurnRequest, AGENT_INSTRUCTIONS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
-use spark_storage::workspace_records::RecordRepository;
 use spark_workspace::{
-    inbox::{install_runtime, InboxPost, InboxRuntime},
+    inbox::{install_runtime, InboxRuntime, ThreadMessageRequest},
     roles::{RoleRecord, RoleState, WorkspaceRoleService, CHIEF_OF_STAFF, COORDINATOR},
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
     WorkspaceConversationService, WorkspaceError,
@@ -16,6 +17,9 @@ const COORDINATOR_FILE: &str = include_str!("../../../spark-assets/assets/roles/
 const ASSISTANT_FILE: &str = include_str!("../../../spark-assets/assets/roles/assistant.md");
 const CHIEF_OF_STAFF_FILE: &str =
     include_str!("../../../spark-assets/assets/roles/chief-of-staff.md");
+
+/// The handle of the chat that `Harness::message` sends from.
+const SENDER: &str = "amber-anchor";
 
 /// Spark writes the bundled library on start; tests seed its roles.
 pub(crate) fn seed_bundled_roles(settings: &SparkSettings) {
@@ -36,10 +40,11 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let settings = settings(temp.path());
+        let settings = settings(&temp.path().canonicalize().unwrap());
         let project = project(&settings);
         write_native_execution_profile(&settings);
         seed_bundled_roles(&settings);
+        seed_conversation(&settings, &project, "chat-sender");
         let agent = Arc::new(GatedAgent::default());
         install_runtime(
             &settings,
@@ -89,18 +94,33 @@ impl Harness {
             .unwrap()
             .to_string()
     }
+    /// A `spark send` to the role from the sender chat. The role's
+    /// conversation must exist first; the test stands in for the first inbox
+    /// write that creates it.
     fn message(&self, name: &str, text: &str) -> RoleRecord {
-        self.roles
-            .post(
-                &self.project,
-                name,
-                InboxPost {
-                    kind: "role.message".into(),
-                    payload: json!({"from": "a test", "message": text}),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
+        let store = crate::shared_store(&self.settings.data_dir);
+        let conversation_id = self.get(name).conversation_id;
+        spark_storage::ConversationRepository::new(store.clone())
+            .touch_conversation(&conversation_id, &self.project)
+            .unwrap();
+        spark_workspace::inbox::send_message(
+            &self.settings,
+            &store,
+            &self.handle(name),
+            ThreadMessageRequest {
+                conversation_handle: SENDER.into(),
+                message: text.into(),
+            },
+        )
+        .unwrap();
+        self.get(name)
+    }
+    /// How a `message` from the sender chat reads in a batch.
+    fn sent(&self, text: &str) -> String {
+        format!(
+            "Message from conversation {SENDER}, project {}:\n{text}",
+            self.project
+        )
     }
     /// The role's `spark convo run-request` from inside its turn.
     fn launch(&self, name: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
@@ -115,19 +135,6 @@ impl Harness {
                 },
             )
             .map(|response| response["run_id"].as_str().unwrap().to_string())
-    }
-    fn edit_record(&self, name: &str, edit: impl FnOnce(&mut Value)) {
-        let root = spark_storage::ProjectRegistry::new(&self.settings.data_dir)
-            .ensure_project_paths(&self.project)
-            .unwrap()
-            .root;
-        RecordRepository::roles(&root)
-            .transact::<WorkspaceError>(name, |value| {
-                let mut value = value.unwrap();
-                edit(&mut value);
-                Ok(value)
-            })
-            .unwrap();
     }
     fn org_role(&self, name: &str, text: &str) {
         let roles = spark_common::project::definitions_dir(std::path::Path::new(&self.project))
@@ -318,9 +325,39 @@ fn the_coordinator_exists_unsaved_until_its_first_write() {
         harness.roles.get(&harness.project, CHIEF_OF_STAFF),
         Err(WorkspaceError::NotFound(_))
     ));
-    harness.message(COORDINATOR, "Hello");
-    assert!(root.join("roles/coordinator.json").exists());
-    harness.request(0);
+    // Its first inbox write creates its conversation, not its record.
+    let coordinator = listed[0].conversation_id.clone();
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
+    assert!(repository
+        .conversation_project_path(&coordinator)
+        .unwrap()
+        .is_none());
+    let delivered = harness
+        .roles
+        .deliver_trigger(&spark_triggers::TriggerActivationRequest {
+            trigger_id: "trigger-nightly".into(),
+            project_path: harness.project.clone(),
+            trigger_name: "Nightly".into(),
+            source_type: "schedule".into(),
+            action: serde_json::from_value(
+                json!({"mode": "role", "role": COORDINATOR, "static_context": {}}),
+            )
+            .unwrap(),
+            source_payload: json!({}),
+            delivery_id: None,
+        })
+        .unwrap();
+    assert!(!delivered.no_op);
+    assert!(repository
+        .conversation_project_path(&coordinator)
+        .unwrap()
+        .is_some());
+    assert!(!root.join("roles/coordinator.json").exists());
+    assert!(harness
+        .request(0)
+        .prompt
+        .contains("Trigger fired: \"Nightly\""));
     harness.finish_turn(COORDINATOR);
     let threads = harness
         .conversations()
@@ -357,22 +394,20 @@ fn a_run_the_role_launched_reports_back_as_a_turn() {
         .read_run_record(&store.find_run_root(&run).unwrap().unwrap())
         .unwrap()
         .unwrap();
+    let role = harness.get(CHIEF_OF_STAFF);
     assert_eq!(
         json!(record.launch_context)["context.spark_owner"],
-        json!({"kind": "role", "id": CHIEF_OF_STAFF})
+        json!({"conversation_id": role.conversation_id})
     );
     // Its run is in flight, so the role stays working after the turn ends.
     harness.agent.release(1);
     wait_terminal(&harness.settings, &run);
-    spark_workspace::inbox::deliver_run_events(
-        &harness.settings,
-        &crate::shared_store(&harness.settings.data_dir),
-        &run,
-    )
-    .unwrap();
+    crate::deliver_run_events(&harness.settings, &run);
     assert_eq!(
-        harness.request(1).prompt,
-        format!("Run {run} (work/ok, \"Build it\") ended completed.")
+        crate::batch_events(&harness.request(1).prompt),
+        [format!(
+            "Run {run} (work/ok, \"Build it\") ended completed."
+        )]
     );
     harness.finish_turn(CHIEF_OF_STAFF);
     assert_eq!(
@@ -404,8 +439,8 @@ fn a_stopped_role_records_events_and_delivers_them_when_started_again() {
         .start(&harness.project, CHIEF_OF_STAFF)
         .unwrap();
     assert_eq!(
-        harness.request(1).prompt,
-        "Message from a test: While you were out"
+        crate::batch_events(&harness.request(1).prompt),
+        [harness.sent("While you were out")]
     );
     harness.finish_turn(CHIEF_OF_STAFF);
 }
@@ -443,10 +478,18 @@ fn launches_over_the_role_file_budget_are_refused() {
             && refused.to_string().contains("roles/chief-of-staff.md"),
         "{refused}"
     );
-    harness.edit_record(CHIEF_OF_STAFF, |role| {
-        // The record holds no budget, only runtime state.
-        assert!(role.get("budget").is_none(), "{role}");
-    });
+    let root = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
+        .ensure_project_paths(&harness.project)
+        .unwrap()
+        .root;
+    let record = spark_storage::workspace_records::RecordRepository::roles(&root)
+        .read(CHIEF_OF_STAFF)
+        .unwrap()
+        .unwrap();
+    // The record holds no budget and no inbox, only whether it is stopped.
+    for key in ["budget", "runs", "cursor", "event_seq"] {
+        assert!(record.get(key).is_none(), "{record}");
+    }
     let role = harness.get(CHIEF_OF_STAFF);
     assert!(role.inbox.runs.is_empty());
     assert_eq!(role.budget.concurrent_runs, 0);
@@ -481,31 +524,57 @@ fn a_message_from_another_role_names_its_sender() {
     harness.request(0);
     harness.finish_turn(CHIEF_OF_STAFF);
     let handle = harness.handle(CHIEF_OF_STAFF);
-    harness
-        .roles
-        .send(&harness.project, COORDINATOR, &handle, "Fixed the flow")
-        .unwrap();
-    let request = harness.request(1);
+    let send = |to: &str, sender: &str| {
+        spark_workspace::inbox::send_message(
+            &harness.settings,
+            &crate::shared_store(&harness.settings.data_dir),
+            to,
+            ThreadMessageRequest {
+                conversation_handle: sender.into(),
+                message: " Fixed the flow ".into(),
+            },
+        )
+    };
+    harness.message(COORDINATOR, "Hello");
+    harness.request(1);
+    harness.finish_turn(COORDINATOR);
+    send(&harness.handle(COORDINATOR), &handle).unwrap();
+    let request = harness.request(2);
     assert_eq!(
-        request.prompt,
-        "Message from the chief-of-staff role: Fixed the flow"
+        crate::batch_events(&request.prompt),
+        [format!(
+            "Message from conversation {handle} (standing role chief-of-staff), project {}:\nFixed the flow",
+            harness.project
+        )]
+    );
+    assert!(
+        request.prompt.contains(&format!("from role-")),
+        "{}",
+        request.prompt
     );
     assert_eq!(
         request.conversation_id,
         harness.get(COORDINATOR).conversation_id
     );
     harness.finish_turn(COORDINATOR);
-    assert!(harness
-        .roles
-        .send(&harness.project, COORDINATOR, "no-such-handle", "Hi")
-        .is_err());
+    assert!(matches!(
+        send("no-such-handle", &handle),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    assert!(matches!(
+        send(&harness.handle(COORDINATOR), "no-such-handle"),
+        Err(WorkspaceError::NotFound(_))
+    ));
 }
 
 #[test]
 fn a_changed_persona_is_announced_once() {
     let harness = Harness::new();
     harness.message(COORDINATOR, "One");
-    assert_eq!(harness.request(0).prompt, "Message from a test: One");
+    assert_eq!(
+        crate::batch_events(&harness.request(0).prompt),
+        [harness.sent("One")]
+    );
     harness.finish_turn(COORDINATOR);
     harness.org_role(
         COORDINATOR,
@@ -520,11 +589,14 @@ fn a_changed_persona_is_announced_once() {
         "{}",
         changed.prompt
     );
-    assert!(changed.prompt.ends_with("Message from a test: Two"));
+    assert!(changed.prompt.ends_with(&harness.sent("Two")));
     assert!(frame(&changed).starts_with("You are a terse coordinator."));
     harness.finish_turn(COORDINATOR);
     harness.message(COORDINATOR, "Three");
-    assert_eq!(harness.request(2).prompt, "Message from a test: Three");
+    assert_eq!(
+        crate::batch_events(&harness.request(2).prompt),
+        [harness.sent("Three")]
+    );
     harness.finish_turn(COORDINATOR);
 }
 
@@ -538,44 +610,23 @@ fn recovery_delivers_a_role_runs_missing_terminal_event() {
     harness.request(0);
     harness.finish_turn(CHIEF_OF_STAFF);
     // A run failed before a restart while its result was still pending.
-    harness.edit_record(CHIEF_OF_STAFF, |role| {
-        role["runs"] = json!([{"run_id": "run-lost", "flow_name": "work/seeded", "summary": "Seeded work", "launched_at": "t", "status": "running"}]);
-    });
-    let mut record = attractor_core::RunRecord::new("run-lost", &harness.project);
-    record.status = "failed".into();
-    record.launch_context = Some(
-        [(
-            "context.spark_owner".to_string(),
-            json!({"kind": "role", "id": CHIEF_OF_STAFF}),
-        )]
-        .into(),
+    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    crate::owned_run(
+        &harness.settings,
+        &harness.project,
+        &conversation,
+        "run-lost",
+        "failed",
     );
-    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record,
-            ..Default::default()
-        })
-        .unwrap();
-    store
-        .write_result(
-            &paths,
-            &attractor_core::RunResult::pending("run-lost", "failed"),
-        )
-        .unwrap();
-    assert!(harness
-        .roles
-        .deliver_run_events("run-lost")
-        .unwrap()
-        .is_none());
-    harness.roles.recover().unwrap();
+    assert!(!crate::deliver_run_events(&harness.settings, "run-lost"));
+    crate::recover(&harness.settings);
     assert_eq!(
-        harness.request(1).prompt,
-        "Run run-lost (work/seeded, \"Seeded work\") ended failed."
+        crate::batch_events(&harness.request(1).prompt),
+        ["Run run-lost (work/seeded, \"Seeded work\") ended failed."]
     );
     harness.finish_turn(CHIEF_OF_STAFF);
     assert_eq!(harness.get(CHIEF_OF_STAFF).inbox.runs[0].status, "failed");
-    harness.roles.recover().unwrap();
+    crate::recover(&harness.settings);
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
 }
 
@@ -588,25 +639,15 @@ fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instruc
         .unwrap();
     harness.request(0);
     harness.finish_turn(CHIEF_OF_STAFF);
-    harness.edit_record(CHIEF_OF_STAFF, |role| {
-        role["runs"] = json!([{"run_id": "run-asks", "flow_name": "work/seeded", "summary": "Seeded work", "launched_at": "t", "status": "running"}]);
-    });
-    let mut record = attractor_core::RunRecord::new("run-asks", &harness.project);
-    record.status = "running".into();
-    record.launch_context = Some(
-        [(
-            "context.spark_owner".to_string(),
-            json!({"kind": "role", "id": CHIEF_OF_STAFF}),
-        )]
-        .into(),
+    crate::owned_run(
+        &harness.settings,
+        &harness.project,
+        &harness.get(CHIEF_OF_STAFF).conversation_id,
+        "run-asks",
+        "running",
     );
     let store = attractor_runtime::RunStore::for_settings(&harness.settings);
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record,
-            ..Default::default()
-        })
-        .unwrap();
+    let paths = store.find_run_root("run-asks").unwrap().unwrap();
     store
         .append_event(
             &paths,
@@ -621,12 +662,7 @@ fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instruc
             ),
         )
         .unwrap();
-    spark_workspace::inbox::deliver_run_events(
-        &harness.settings,
-        &crate::shared_store(&harness.settings.data_dir),
-        "run-asks",
-    )
-    .unwrap();
+    crate::deliver_run_events(&harness.settings, "run-asks");
     let turn = harness.request(1);
     assert!(turn.prompt.contains("Which branch?"), "{}", turn.prompt);
     assert!(turn.prompt.contains("q-1"), "{}", turn.prompt);
@@ -649,39 +685,32 @@ fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs()
         .unwrap();
     harness.request(0);
     harness.finish_turn(CHIEF_OF_STAFF);
-    harness.edit_record(CHIEF_OF_STAFF, |role| {
-        let entry = |id: String, status: &str| json!({"run_id": id, "flow_name": "work/seeded", "summary": "Seeded work", "launched_at": "t", "status": status});
-        let mut runs: Vec<Value> = (0..50)
-            .map(|index| entry(format!("run-done-{index}"), "completed"))
-            .collect();
-        runs.insert(10, entry("run-other".into(), "running"));
-        runs.push(entry("run-lost".into(), "running"));
-        role["runs"] = json!(runs);
-    });
-    let mut record = attractor_core::RunRecord::new("run-lost", &harness.project);
-    record.status = "failed".into();
-    record.launch_context = Some(
-        [(
-            "context.spark_owner".to_string(),
-            json!({"kind": "role", "id": CHIEF_OF_STAFF}),
-        )]
-        .into(),
+    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    let repository =
+        spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
+    for index in 0..50 {
+        let run = format!("run-done-{index}");
+        repository
+            .register_inbox_run(&conversation, &run, "work/seeded", "Seeded work")
+            .unwrap();
+        repository
+            .set_inbox_run_status(&conversation, &run, "completed")
+            .unwrap();
+        if index == 10 {
+            repository
+                .register_inbox_run(&conversation, "run-other", "work/seeded", "Seeded work")
+                .unwrap();
+        }
+    }
+    crate::owned_run(
+        &harness.settings,
+        &harness.project,
+        &conversation,
+        "run-lost",
+        "failed",
     );
-    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record,
-            ..Default::default()
-        })
-        .unwrap();
-    store
-        .write_result(
-            &paths,
-            &attractor_core::RunResult::pending("run-lost", "failed"),
-        )
-        .unwrap();
     // Recovery reconciles the run to its terminal status, which trims.
-    harness.roles.recover().unwrap();
+    crate::recover(&harness.settings);
     harness.request(1);
     let runs = harness.get(CHIEF_OF_STAFF).inbox.runs;
     let ids: Vec<&str> = runs.iter().map(|run| run.run_id.as_str()).collect();
@@ -718,8 +747,8 @@ fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
     harness.message(name, "Cut the release");
     harness.roles.start(&harness.project, name).unwrap();
     assert_eq!(
-        harness.request(1).prompt,
-        "Message from a test: Cut the release"
+        crate::batch_events(&harness.request(1).prompt),
+        [harness.sent("Cut the release")]
     );
     harness.finish_turn(name);
     for unsafe_name in ["../outside", ".hidden", "a/b"] {

@@ -1231,7 +1231,7 @@ async fn wait_for_mission(app: &axum::Router, uri: &str, status: &str) -> Value 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn role_routes_list_start_send_and_stop_standing_roles() {
+async fn role_routes_list_start_and_stop_roles_that_take_messages_by_handle() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let roles = settings.bundled_dir().join("roles");
@@ -1289,23 +1289,40 @@ async fn role_routes_list_start_send_and_stop_standing_roles() {
     .await;
     let handle = conversation["conversation_handle"].as_str().unwrap();
     assert!(!handle.is_empty());
-    let sent = request_json(
+    // Roles take messages through their conversation, not a role control.
+    let removed = request_json(
         app.clone(),
         "POST",
-        &at("/coordinator/send"),
+        &at("/chief-of-staff/send"),
         Some(json!({"conversation_handle": handle, "message": "Fixed it"})),
     )
     .await;
-    assert_eq!(sent.0, StatusCode::OK, "{}", sent.1);
-    assert_eq!(sent.1["event_seq"], 1);
-    let unsent = request_json(
+    assert_eq!(removed.0, StatusCode::NOT_FOUND);
+    let messages = format!("/workspace/api/conversations/by-handle/{handle}/messages");
+    let message = json!({"conversation_handle": handle, "message": "Fixed it"});
+    for _ in 0..2 {
+        let sent = request_json(app.clone(), "POST", &messages, Some(message.clone())).await;
+        assert_eq!(sent.0, StatusCode::ACCEPTED, "{}", sent.1);
+    }
+    let listed = request_json(app.clone(), "GET", &at(""), None).await;
+    assert_eq!(listed.1["roles"][1]["event_seq"], 2, "{}", listed.1);
+    for bad in [
+        json!({"message": "No sender"}),
+        json!({"conversation_handle": handle, "message": "  "}),
+        json!({"conversation_handle": handle, "message": 7}),
+        json!({"conversation_handle": handle, "message": "Hi", "id": "retry-1"}),
+    ] {
+        let rejected = request_json(app.clone(), "POST", &messages, Some(bad.clone())).await;
+        assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{bad}: {}", rejected.1);
+    }
+    let unknown = request_json(
         app.clone(),
         "POST",
-        &at("/coordinator/send"),
-        Some(json!({"message": "No sender"})),
+        "/workspace/api/conversations/by-handle/no-such-handle/messages",
+        Some(message),
     )
     .await;
-    assert_eq!(unsent.0, StatusCode::BAD_REQUEST);
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
     let stopped = request_json(app.clone(), "POST", &at("/chief-of-staff/stop"), None).await;
     assert_eq!(stopped.0, StatusCode::OK, "{}", stopped.1);
     assert_eq!(stopped.1["state"], "stopped");

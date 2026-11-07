@@ -126,6 +126,25 @@ impl ConversationRepository {
     }
 }
 
+impl ConversationRepository {
+    /// Run `apply` on a live conversation's inbox rows under its project's
+    /// lifecycle gate, in one transaction that allocates no revision.
+    pub(crate) fn write_inbox<T>(
+        &self,
+        conversation_id: &str,
+        apply: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        let store = self.store().clone();
+        let Some(project_path) = self.conversation_project_path(conversation_id)? else {
+            return Err(missing(conversation_id));
+        };
+        let gate = store.project_gate(&project_path);
+        let _gate = gate.read().unwrap_or_else(|poison| poison.into_inner());
+        store.admit_project(&project_path)?;
+        store.database().write_inbox(conversation_id, apply)
+    }
+}
+
 /// One operation's view of a conversation inside its transaction. Reads see
 /// every earlier write of the same transaction.
 pub(crate) struct Op<'a> {

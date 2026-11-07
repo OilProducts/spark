@@ -15,13 +15,14 @@ use spark_cli::{
 };
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
+    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,mission,role,playbook,settings,org}\n",
+    "  {convo,send,run,flow,trigger,mission,role,playbook,settings,org}\n",
     "    convo               Conversation-scoped artifact commands\n",
+    "    send                Message another conversation by handle\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
@@ -79,7 +80,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
 spark: error: unrecognized arguments: --image direct-selection\n"
     );
 }
@@ -694,6 +695,81 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
 }
 
 #[test]
+fn send_messages_a_conversation_by_handle_and_replaces_the_role_and_mission_sends() {
+    let env = BTreeMap::new();
+    let plan = spark_cli::request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "send",
+            "--to",
+            "brisk-otter",
+            "--conversation",
+            "amber-anchor",
+            "--message",
+            "Prefer small diffs",
+            "--base-url",
+            "http://localhost:8000",
+        ],
+        &env,
+        "",
+    )
+    .unwrap();
+    assert_eq!(plan.method, HttpMethod::Post);
+    assert_eq!(
+        plan.path,
+        "/workspace/api/conversations/by-handle/brisk-otter/messages"
+    );
+    assert_eq!(
+        plan.body.unwrap(),
+        serde_json::json!({"conversation_handle": "amber-anchor", "message": "Prefer small diffs"})
+    );
+    for missing in ["--to", "--conversation", "--message"] {
+        let mut args = vec!["spark", "send", "--base-url", "http://localhost:8000"];
+        for (flag, value) in [
+            ("--to", "brisk-otter"),
+            ("--conversation", "amber-anchor"),
+            ("--message", "Hi"),
+        ] {
+            if flag != missing {
+                args.extend([flag, value]);
+            }
+        }
+        assert!(
+            spark_cli::request_plan_with_args_env_and_stdin(args, &env, "").is_err(),
+            "{missing}"
+        );
+    }
+    for removed in [
+        &[
+            "spark",
+            "role",
+            "send",
+            "--project",
+            "/p",
+            "--role",
+            "coordinator",
+        ][..],
+        &[
+            "spark",
+            "mission",
+            "send",
+            "--project",
+            "/p",
+            "--id",
+            "mission-1",
+        ][..],
+    ] {
+        let output = run_with_args_and_env(removed.iter().copied(), &env);
+        assert_eq!(output.exit_code, 2, "{output:?}");
+        assert!(
+            output.stderr.contains("Unknown command"),
+            "{}",
+            output.stderr
+        );
+    }
+}
+
+#[test]
 fn flow_format_is_not_a_command() {
     let output = run_with_args_and_env(["spark", "flow", "format", "--dir", "x"], &BTreeMap::new());
 
@@ -894,7 +970,7 @@ fn flow_validate_dir_and_flow_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
 spark: error: argument --dir: not allowed with argument --flow\n"
     );
 }
@@ -1270,7 +1346,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n\
 spark: error: argument --goal-file: not allowed with argument --goal\n"
     );
 }
@@ -1569,16 +1645,6 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
         "/workspace/api/missions/mission-1/wait?project_path=%2Fp"
     );
     assert_eq!(waiting.body.unwrap()["reason"], "Review pending");
-    let send = scoped("send", &["--message", "Prefer small diffs"]);
-    assert_eq!(send.method, HttpMethod::Post);
-    assert_eq!(
-        send.path,
-        "/workspace/api/missions/mission-1/events?project_path=%2Fp"
-    );
-    assert_eq!(
-        send.body.unwrap(),
-        serde_json::json!({"kind":"human.message","source":"assistant","payload":{"message":"Prefer small diffs"}})
-    );
     let close = scoped("close", &["--status", "done", "--reason", "Shipped"]);
     assert_eq!(close.method, HttpMethod::Post);
     assert_eq!(
@@ -1607,7 +1673,7 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
         args.extend_from_slice(invalid);
         assert!(request_plan_with_args_env_and_stdin(args, &env, "").is_err());
     }
-    for removed in ["events", "pause", "resume"] {
+    for removed in ["events", "pause", "resume", "send"] {
         assert!(request_plan_with_args_env_and_stdin(
             [
                 "spark",

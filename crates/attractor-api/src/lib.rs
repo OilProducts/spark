@@ -3091,7 +3091,14 @@ fn dispatch_attractor_route(
             service.list_runs_for_project(query_string(&query, "project_path").as_deref())
         }
         ("POST", "/pipelines") => match serde_json::from_str::<PipelineStartRequest>(body) {
-            Ok(req) => service.start_pipeline(req),
+            Ok(mut req) => {
+                // Only the workspace sets a run's owner conversation, from the
+                // conversation that launches it.
+                if let Some(context) = req.launch_context.as_mut() {
+                    context.remove("context.spark_owner");
+                }
+                service.start_pipeline(req)
+            }
             Err(error) => RuntimeRouteResponse::json(
                 400,
                 json!({"detail": format!("Invalid pipeline start request JSON: {error}")}),

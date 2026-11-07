@@ -170,6 +170,11 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
         .as_str()
         .expect("run id")
         .starts_with("run-"));
+    crate::assert_owned(
+        &settings,
+        launched["run_id"].as_str().expect("run id"),
+        "conversation-launch",
+    );
     let failed = review("request-broken", "approved");
     let failed = request_by_id(&failed, "request-broken");
     assert_eq!(failed["status"], "launch_failed");
@@ -471,6 +476,11 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     assert_eq!(launch["flow_name"], "software-development/implement-change");
     assert_eq!(launch["status"], "launched");
     assert_eq!(launch["run_id"], plan["run_id"]);
+    crate::assert_owned(
+        &settings_for_project(&project_path, temp.path()),
+        plan["run_id"].as_str().expect("run id"),
+        "conversation-plan-approved",
+    );
 }
 
 pub(super) fn seed_conversation(

@@ -174,6 +174,52 @@ fn unsupported_schema_version_fails_open_without_wiping_rows() {
 }
 
 #[test]
+fn inbox_tables_arrive_with_a_new_schema_version_and_older_databases_fail_closed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let database = ConversationDatabase::open(&home).expect("open");
+    database
+        .write(|write| write.put_conversation(&conversation("c1", "/p", "t1")))
+        .expect("write");
+    drop(database);
+
+    let raw = rusqlite::Connection::open(home.join(CONVERSATION_DATABASE_FILE_NAME)).unwrap();
+    let names: Vec<String> = raw
+        .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'inbox_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        names,
+        ["inbox_events", "inbox_events_pending", "inbox_runs"]
+    );
+
+    // A database of the previous version is rejected, never wiped or migrated.
+    raw.execute(
+        "UPDATE store_meta SET schema_version = ?1",
+        [CONVERSATION_DATABASE_SCHEMA_VERSION - 1],
+    )
+    .unwrap();
+    let error = ConversationDatabase::open(&home)
+        .err()
+        .expect("an older schema must fail");
+    assert!(
+        matches!(
+            error,
+            StorageError::UnsupportedConversationDatabase { found, .. }
+                if found == CONVERSATION_DATABASE_SCHEMA_VERSION - 1
+        ),
+        "{error}"
+    );
+    let rows: i64 = raw
+        .query_row("SELECT count(*) FROM conversations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[test]
 fn constraints_reject_orphans_duplicate_live_handles_and_invalid_values() {
     let (_temp, database) = open();
     database

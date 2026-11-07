@@ -4,6 +4,8 @@ mod conversation_repository_contracts;
 mod conversation_seed;
 #[path = "contracts/history_index_contracts.rs"]
 mod history_index_contracts;
+#[path = "contracts/inbox_contracts.rs"]
+mod inbox_contracts;
 #[path = "../../test-fixtures/isolated_spark_env.rs"]
 mod isolated_spark_env;
 #[path = "contracts/mission_contracts.rs"]
@@ -120,4 +122,105 @@ fn triggers(
 ) -> spark_workspace::WorkspaceTriggerService {
     let store = shared_store(&settings.data_dir);
     spark_workspace::WorkspaceTriggerService::new(settings, store)
+}
+
+/// The server's terminal publish hook: hands a run's state to its owner
+/// conversation; whether that inbox changed.
+#[allow(dead_code)]
+fn deliver_run_events(settings: &spark_common::settings::SparkSettings, run_id: &str) -> bool {
+    spark_workspace::inbox::deliver_run_events(settings, &shared_store(&settings.data_dir), run_id)
+        .unwrap()
+}
+
+/// Server startup: settle orphaned turns, then recover every inbox.
+#[allow(dead_code)]
+fn recover(settings: &spark_common::settings::SparkSettings) {
+    conversations(settings.clone())
+        .settle_orphaned_turns()
+        .unwrap();
+    spark_workspace::inbox::recover(settings, &shared_store(&settings.data_dir)).unwrap();
+}
+
+/// Seeds a root run record owned by `conversation_id`, in its roster, with
+/// the pending result `create_run` writes.
+#[allow(dead_code)]
+fn owned_run(
+    settings: &spark_common::settings::SparkSettings,
+    project: &str,
+    conversation_id: &str,
+    run_id: &str,
+    status: &str,
+) {
+    spark_storage::ConversationRepository::new(shared_store(&settings.data_dir))
+        .register_inbox_run(conversation_id, run_id, "work/seeded", "Seeded work")
+        .unwrap();
+    let mut record = attractor_core::RunRecord::new(run_id, project);
+    record.status = status.into();
+    record.launch_context = Some(
+        [(
+            "context.spark_owner".to_string(),
+            serde_json::json!({ "conversation_id": conversation_id }),
+        )]
+        .into(),
+    );
+    let store = attractor_runtime::RunStore::for_settings(settings);
+    let paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .write_result(&paths, &attractor_core::RunResult::pending(run_id, status))
+        .unwrap();
+}
+
+/// An inbox batch prompt's rendered events, without its header and markers.
+#[allow(dead_code)]
+fn batch_events(prompt: &str) -> Vec<String> {
+    prompt
+        .split("\n\n")
+        .filter(|part| !part.starts_with("[Inbox: "))
+        .map(|part| {
+            part.strip_prefix("[event ")
+                .and_then(|rest| rest.split_once("]\n"))
+                .map_or(part, |(_, body)| body)
+                .to_string()
+        })
+        .collect()
+}
+
+/// The owner a run was launched with, or null for an unowned run.
+#[allow(dead_code)]
+fn run_owner(settings: &spark_common::settings::SparkSettings, run_id: &str) -> serde_json::Value {
+    let store = attractor_runtime::RunStore::for_settings(settings);
+    let paths = store.find_run_root(run_id).unwrap().unwrap();
+    store
+        .read_run_record(&paths)
+        .unwrap()
+        .unwrap()
+        .launch_context
+        .and_then(|context| context.get("context.spark_owner").cloned())
+        .unwrap_or_default()
+}
+
+/// Asserts `conversation_id` owns `run_id` and lists it in its roster.
+#[allow(dead_code)]
+fn assert_owned(
+    settings: &spark_common::settings::SparkSettings,
+    run_id: &str,
+    conversation_id: &str,
+) {
+    assert_eq!(
+        run_owner(settings, run_id),
+        serde_json::json!({ "conversation_id": conversation_id })
+    );
+    assert!(
+        spark_storage::ConversationRepository::new(shared_store(&settings.data_dir))
+            .inbox_runs(conversation_id)
+            .unwrap()
+            .iter()
+            .any(|run| run.run_id == run_id),
+        "{run_id} is not in the roster of {conversation_id}"
+    );
 }
