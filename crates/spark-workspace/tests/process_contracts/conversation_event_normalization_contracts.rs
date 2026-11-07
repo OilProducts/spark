@@ -4329,6 +4329,63 @@ impl AgentTurnBackend for GatedAgentTurnBackend {
     }
 }
 
+/// Holds the first turn open like [`GatedAgentTurnBackend`] and keeps every
+/// request. With `error_first`, that turn reports a provider error at once
+/// and, once released, returns with nothing more.
+#[derive(Default)]
+struct HeldFirstTurnBackend {
+    gate: GatedAgentTurnBackend,
+    requests: Mutex<Vec<AgentTurnRequest>>,
+    error_first: bool,
+}
+
+impl AgentTurnBackend for HeldFirstTurnBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let sink = event_sink.expect("conversation turns stream");
+        let failing = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request.clone());
+            self.error_first && requests.len() == 1
+        };
+        if failing {
+            sink(stream_error_event("The provider failed."));
+        }
+        let output = self.gate.run_turn(request)?;
+        if failing {
+            return Ok(AgentTurnOutput::default());
+        }
+        for event in &output.events {
+            sink(event.clone());
+        }
+        Ok(output)
+    }
+}
+
+/// Waits until the conversation's first assistant turn shows `status`.
+fn wait_for_turn_status(
+    service: &WorkspaceConversationService,
+    id: &str,
+    project: &str,
+    status: &str,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while turn_status(service, id, project).as_deref() != Some(status) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the turn never showed {status}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Sends a message while a turn runs. Returns its acceptance and the
 /// conversation read right after it.
 fn send(
@@ -4477,6 +4534,178 @@ fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
     assert!(message_turns(&completed)
         .iter()
         .all(|(_, status, _)| status == "complete"));
+}
+
+/// The picker switches provider before the running turn reports its thread:
+/// the thread stays with the provider that ran it, and the new provider
+/// never resumes it.
+#[test]
+fn a_thread_reported_after_a_provider_switch_stays_with_the_provider_that_ran_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let backend = Arc::new(HeldFirstTurnBackend::default());
+    let service = crate::conversations_with_backend(settings.clone(), backend.clone());
+    let project = "/projects/provider-switch";
+    let running = start_gated_turn(&service, "provider-switch", project);
+    let revision = service
+        .get_snapshot("provider-switch", Some(project))
+        .unwrap()["settings_revision"]
+        .to_string();
+    service
+        .update_conversation_settings(
+            "provider-switch",
+            ConversationSettingsUpdate {
+                project_path: project.to_string(),
+                provider: Some("claude-code".to_string()),
+                model: Some(String::new()),
+                expected_revision: Some(revision),
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .expect("the picker switches provider while the turn runs");
+    backend.gate.release();
+    running.join().unwrap().unwrap();
+
+    let session = ConversationRepository::new(crate::shared_store(&settings.data_dir))
+        .read_runtime_session("provider-switch", Some(project))
+        .unwrap()
+        .expect("session");
+    assert_eq!(session.provider, "codex_app_server");
+    assert_eq!(session.thread_id.as_deref(), Some("app-thread"));
+
+    service
+        .execute_turn(
+            "provider-switch",
+            ConversationTurnRequest {
+                project_path: project.to_string(),
+                message: "next".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("claude-code turn");
+    let requests = backend.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[1]
+            .metadata
+            .contains_key("spark.runtime.claude_code.session_id"),
+        "{:?}",
+        requests[1].metadata
+    );
+}
+
+/// A message sent after a provider error failed the turn, before its backend
+/// call returns, queues behind that execution and runs once it settles.
+#[test]
+fn a_message_sent_between_a_provider_error_and_the_return_runs_after_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(HeldFirstTurnBackend {
+        error_first: true,
+        ..HeldFirstTurnBackend::default()
+    });
+    let service = crate::conversations_with_backend(settings(temp.path()), backend.clone());
+    let project = "/projects/error-gap";
+    let running = start_gated_turn(&service, "error-gap", project);
+    // The error shows while the backend call still runs.
+    wait_for_turn_status(&service, "error-gap", project, "failed");
+
+    let (sent, snapshot) = send(&service, "error-gap", project, "second");
+    assert_eq!((sent.status, sent.assistant_turn_id), ("queued", None));
+    let turn = |role: &str, status: &str, content: &str| {
+        (role.to_string(), status.to_string(), content.to_string())
+    };
+    assert_eq!(
+        message_turns(&snapshot),
+        vec![
+            turn("user", "complete", "first"),
+            turn("assistant", "failed", ""),
+            turn("user", "queued", "second"),
+        ]
+    );
+
+    backend.gate.release();
+    running.join().unwrap().unwrap();
+    assert_eq!(*backend.gate.prompts.lock().unwrap(), ["first", "second"]);
+    assert_eq!(
+        message_turns(&service.get_snapshot("error-gap", Some(project)).unwrap()),
+        vec![
+            turn("user", "complete", "first"),
+            turn("assistant", "failed", ""),
+            turn("user", "complete", "second"),
+            turn("assistant", "complete", "Re: second"),
+        ]
+    );
+}
+
+/// A mission message that arrives between a provider error and the return
+/// queues, and its inbox leaves it for the settling execution to start.
+#[test]
+fn a_mission_message_between_a_provider_error_and_the_return_runs_after_it() {
+    use spark_workspace::inbox::{install_runtime, InboxPost, InboxRuntime};
+
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let config = settings(temp.path());
+    let backend = Arc::new(HeldFirstTurnBackend {
+        error_first: true,
+        ..HeldFirstTurnBackend::default()
+    });
+    install_runtime(
+        &config,
+        InboxRuntime {
+            agent_turn_backend: backend.clone(),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    let missions = crate::missions(config.clone());
+    let mission = missions
+        .create(
+            &project,
+            serde_json::from_value(json!({"fields": {"title": "Error gap"}})).unwrap(),
+        )
+        .unwrap();
+    let service = crate::conversations(config.clone());
+    missions.start(&project, &mission.id).unwrap();
+    wait_for_turn_status(&service, &mission.id, &project, "failed");
+
+    missions
+        .post_event(
+            &project,
+            &mission.id,
+            InboxPost {
+                kind: "human.message".into(),
+                payload: json!({"message": "Also check the docs."}),
+                ..InboxPost::default()
+            },
+        )
+        .unwrap();
+    let statuses = || {
+        message_turns(&service.get_snapshot(&mission.id, Some(&project)).unwrap())
+            .into_iter()
+            .map(|(role, status, _)| format!("{role} {status}"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        statuses(),
+        ["user complete", "assistant failed", "user queued"]
+    );
+    backend.gate.release();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !statuses().contains(&"assistant complete".to_string()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the message never ran"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let prompts = backend.gate.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].contains("Also check the docs."), "{prompts:?}");
 }
 
 /// Runs a Claude turn with the fake CLI in `mode`, sends "Also check the

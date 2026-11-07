@@ -352,13 +352,13 @@ impl<'a> Op<'a> {
         Ok(turns)
     }
 
-    /// The newest pending or streaming assistant turn.
+    /// The newest assistant turn whose execution is unsettled, including one
+    /// a provider error already failed before its backend call returned.
     pub(crate) fn active_assistant_turn(&self) -> Result<Option<Value>> {
         payload(
             self.connection(),
             "SELECT payload FROM turns WHERE conversation_id = ?1 AND role = 'assistant' \
-             AND status IN ('pending', 'streaming') AND deleted = 0 \
-             ORDER BY position DESC LIMIT 1",
+             AND settled = 0 AND deleted = 0 ORDER BY position DESC LIMIT 1",
             params![self.conversation_id],
         )
     }

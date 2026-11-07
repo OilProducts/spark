@@ -232,7 +232,8 @@ pub enum ArtifactChange {
     /// A launch's run id or error, recorded only while its target still
     /// waits for it: an approved flow run request, a pending flow launch,
     /// or an approved plan with its pending flow launch. A newer decision
-    /// keeps its state.
+    /// keeps its state, except that a run started before a request's
+    /// rejection is recorded on it.
     LaunchResult {
         collection: ArtifactCollection,
         artifact_id: String,
@@ -356,8 +357,8 @@ fn reported_delivery(event: &TurnStreamEvent) -> Option<bool> {
     }
 }
 
-fn runtime_provider(meta: &ConversationMeta) -> &'static str {
-    if meta.provider == "claude-code" {
+fn runtime_provider(provider: Option<&str>) -> &'static str {
+    if provider == Some("claude-code") {
         "claude_code_cli"
     } else {
         "codex_app_server"
@@ -790,14 +791,18 @@ impl Op<'_> {
                 |row| row.get(0),
             )
             .optional()?;
-        let running = self
-            .active_assistant_turn()?
-            .and_then(|turn| text(&turn, "id"));
+        let active = self.active_assistant_turn()?;
         let starting_queued = input.admission == Admission::StartQueued;
         if starting_queued && queued_ahead.as_deref() != Some(input.user_turn_id.as_str()) {
             return Ok(Accepted::NotQueued);
         }
-        let busy = input.held || running.is_some() || (queued_ahead.is_some() && !starting_queued);
+        let busy = input.held || active.is_some() || (queued_ahead.is_some() && !starting_queued);
+        // Only a pending or streaming turn takes a message: one sent after a
+        // provider error failed the turn, before its execution settles,
+        // queues behind it.
+        let running = active
+            .filter(|turn| matches!(turn["status"].as_str(), Some("pending" | "streaming")))
+            .and_then(|turn| text(&turn, "id"));
         if busy && input.admission != Admission::Send {
             return Ok(Accepted::Busy { held: input.held });
         }
@@ -1316,8 +1321,13 @@ impl Op<'_> {
         self.put_runtime_session(&session.provider, &payload)
     }
 
-    /// The provider thread a turn observed becomes the resumable session.
+    /// The provider thread a turn observed becomes the resumable session,
+    /// filed under the provider its execution was accepted with, whatever
+    /// the settings say by now.
     fn record_session(&mut self, turn_id: &str, thread_id: &str) -> Result<()> {
+        let provider = self
+            .turn(turn_id)?
+            .and_then(|turn| text(&turn["execution_settings"], "provider"));
         let existing = self.runtime_session()?;
         let same_thread = existing.as_ref().filter(|session| {
             !session.resume_failed && session.thread_id.as_deref() == Some(thread_id)
@@ -1331,7 +1341,7 @@ impl Op<'_> {
             .unwrap_or_else(|| self.now.clone());
         let session = RuntimeSession {
             schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
-            provider: runtime_provider(&self.meta).to_string(),
+            provider: runtime_provider(provider.as_deref()).to_string(),
             thread_id: Some(thread_id.to_string()),
             established_at,
             last_turn_id: non_empty_string(turn_id),
@@ -1913,7 +1923,15 @@ impl Op<'_> {
                 result,
             } => match collection {
                 FlowRunRequests => {
-                    self.transition(collection, &artifact_id, &["approved"], |request| {
+                    // Only an approval launches, and a rejected request is
+                    // never approved again: a run started before a rejection
+                    // still links to its request.
+                    let from: &[&str] = if result.is_ok() {
+                        &["approved", "rejected"]
+                    } else {
+                        &["approved"]
+                    };
+                    self.transition(collection, &artifact_id, from, |request| {
                         launch_result(request, &result)
                     })
                 }
