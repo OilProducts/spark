@@ -532,3 +532,120 @@ fn a_deleted_owner_discards_its_runs_reports() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn a_mission_whose_conversation_cannot_be_created_is_not_created() {
+    let h = Harness::new();
+    let published = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let sink = published.clone();
+    install_runtime(
+        &h.settings,
+        InboxRuntime {
+            agent_turn_backend: h.agent.clone(),
+            publish: Arc::new(move |envelope| {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::to_value(envelope).unwrap())
+            }),
+        },
+    );
+    // The store refuses every new mission conversation.
+    crate::conversation_seed::write_rows(&crate::shared_store(&h.settings.data_dir), |tx, _| {
+        tx.execute_batch(
+            "CREATE TRIGGER refuse_mission_conversations BEFORE INSERT ON conversations \
+             WHEN NEW.id LIKE 'mission-%' \
+             BEGIN SELECT RAISE(ABORT, 'injected materialization failure'); END;",
+        )
+    });
+    let missions = crate::missions(h.settings.clone());
+    let error = missions
+        .create(
+            &h.project,
+            serde_json::from_value(json!({"fields": {"title": "Unaddressable"}})).unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("injected materialization failure"),
+        "{error}"
+    );
+    assert!(missions.list(&h.project).unwrap().is_empty());
+    let records = ProjectRegistry::new(&h.settings.data_dir)
+        .project_paths(&h.project)
+        .unwrap()
+        .root
+        .join("missions");
+    assert!(std::fs::read_dir(&records)
+        .map(|entries| entries
+            .filter_map(Result::ok)
+            .all(|entry| entry.path().extension().is_none_or(|ext| ext != "json")))
+        .unwrap_or(true));
+    assert!(published.lock().unwrap().is_empty());
+    assert!(h.requests().is_empty());
+}
+
+#[test]
+fn recovery_registers_an_owned_run_a_crash_left_out_of_its_roster_and_reports_it_once() {
+    let h = Harness::new();
+    h.agent.gated.release(10);
+    let chat = "chat-crashed";
+    h.chat(chat, &h.project);
+    // The launch recorded its owner, then the process died before the
+    // roster registration; the run finished with its result still pending.
+    let mut record = RunRecord::new("run-crashed", &h.project);
+    record.flow_name = "work/crashed".into();
+    record.title = Some("Crashed work".into());
+    record.status = "completed".into();
+    record.launch_context = Some(
+        [(
+            "context.spark_owner".to_string(),
+            json!({"conversation_id": chat}),
+        )]
+        .into(),
+    );
+    let store = RunStore::for_settings(&h.settings);
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .write_result(&paths, &RunResult::pending("run-crashed", "completed"))
+        .unwrap();
+    assert!(h.repository().inbox_runs(chat).unwrap().is_empty());
+
+    crate::recover(&h.settings);
+    let report = "Run run-crashed (work/crashed, \"Crashed work\") ended completed.";
+    h.wait_prompt(chat, report);
+    let runs = h.repository().inbox_runs(chat).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        (runs[0].run_id.as_str(), runs[0].status.as_str()),
+        ("run-crashed", "completed")
+    );
+    wait_for("the report turn to end", || {
+        h.repository()
+            .pending_inbox_events(chat)
+            .unwrap()
+            .is_empty()
+            && h.agent.gated.requests.lock().unwrap().len() == 1
+    });
+    // A second start finds nothing new.
+    crate::recover(&h.settings);
+    let events = h.repository().inbox_events(chat).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, "run-crashed:completed");
+    assert_eq!(
+        h.requests()
+            .iter()
+            .filter(|request| request.prompt.contains(report))
+            .count(),
+        1
+    );
+    assert!(h
+        .requests()
+        .iter()
+        .all(|request| request.conversation_id == chat));
+}
