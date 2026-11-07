@@ -10,6 +10,8 @@ use spark_storage::conversation::{
 };
 use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry, StorageError};
 
+use crate::conversation_seed::{put_blob_reference, write_rows};
+
 fn setup(project_path: &str) -> (tempfile::TempDir, ConversationRepository) {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
@@ -157,6 +159,7 @@ fn settle(repo: &ConversationRepository, conversation_id: &str, project_path: &s
             app_thread_id: None,
             app_turn_id: None,
             thread_resume_failure: None,
+            continued_question: None,
         },
         &BTreeMap::new(),
     )
@@ -376,6 +379,7 @@ fn commit_notices_name_ended_segments_and_settled_executions() {
                 app_thread_id: None,
                 app_turn_id: None,
                 thread_resume_failure: None,
+                continued_question: None,
             },
             &BTreeMap::new(),
         )
@@ -426,6 +430,75 @@ fn commit_notices_name_ended_segments_and_settled_executions() {
             "turn-assistant".to_string()
         )]
     );
+}
+
+/// A question-only return waits for its answer's continuation even with
+/// its provider turn boundary recorded after the question; the continuation's
+/// own return settles, failing when it brought no final answer.
+#[test]
+fn a_question_only_return_waits_for_its_continuation_which_settles() {
+    let project_path = "/projects/commit-continuation";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-q", project_path, "Ask first");
+    record(
+        &repo,
+        "conversation-q",
+        project_path,
+        json!({"kind": "request_user_input_requested", "source": {"item_id": "input-1"},
+            "request_user_input": {"itemId": "input-1", "questions": [{"id": "decision",
+                "header": "Approve", "question": "Approve?", "isOther": false,
+                "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}}),
+    );
+    record(
+        &repo,
+        "conversation-q",
+        project_path,
+        json!({"kind": "turn_completed", "status": "completed",
+            "source": {"app_turn_id": "app-turn", "raw_kind": "turn_completed"}}),
+    );
+    let (_, answer) = repo
+        .answer_question(
+            "conversation-q",
+            project_path,
+            "decision",
+            &BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+        )
+        .expect("answer");
+    let Answer::Answered(answered) = answer else {
+        panic!("{answer:?}");
+    };
+    let returned = |continued_question: Option<String>| {
+        repo.settle_execution(
+            "conversation-q",
+            project_path,
+            "turn-assistant",
+            ExecutionOutcome::Returned {
+                final_text: None,
+                token_usage: None,
+                token_usage_breakdown: None,
+                app_thread_id: None,
+                app_turn_id: None,
+                thread_resume_failure: None,
+                continued_question,
+            },
+            &BTreeMap::new(),
+        )
+        .expect("return")
+        .settled
+    };
+
+    assert!(!returned(None), "the original return waits");
+    assert!(returned(Some(answered.segment_id.clone())));
+    let persisted = snapshot(&repo, "conversation-q");
+    let assistant = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "failed", "{assistant}");
+    // Settled once: a late return changes nothing.
+    assert!(!returned(Some(answered.segment_id)));
 }
 
 /// A steer the running turn accepted but ended without reading fails on the
@@ -507,6 +580,121 @@ fn a_steer_the_turn_never_read_fails_on_the_providers_report() {
         .find(|turn| turn["id"] == "turn-assistant")
         .unwrap();
     assert_eq!(assistant["status"], "complete", "{assistant}");
+}
+
+/// Delivery reports outlive their execution: after it settles they still
+/// record delivery truth, and never revive it. The same outcome again
+/// changes nothing. A delivered message the turn ended without reading
+/// fails; a delivery after that, an unknown message or a report from
+/// another execution is rejected and recreates nothing.
+#[test]
+fn delivery_reports_after_settlement_record_only_delivery_truth() {
+    let project_path = "/projects/commit-delivery";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-d", project_path, "Start");
+    for id in ["turn-read", "turn-unread"] {
+        let mut steer = message(id, "unused", "Also do this");
+        steer.admission = Admission::Send;
+        let (_, accepted) = repo
+            .accept_message("conversation-d", project_path, steer)
+            .expect("steer");
+        assert!(
+            matches!(accepted, Accepted::DeliveryPending { .. }),
+            "{accepted:?}"
+        );
+        repo.record_message_delivery("conversation-d", project_path, id, true)
+            .expect("handed to the provider");
+    }
+    assert!(settle(&repo, "conversation-d", project_path).settled);
+    let report = |kind: &str, message_id: &str, turn_id: &str| {
+        repo.record_provider_event(
+            "conversation-d",
+            project_path,
+            turn_id,
+            &serde_json::from_value(json!({"kind": kind, "source": {"item_id": message_id},
+                "message": "Not sent."}))
+            .expect("event"),
+            &BTreeMap::new(),
+        )
+    };
+    let row = |collection: &str, id: &str| {
+        snapshot(&repo, "conversation-d")[collection]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .cloned()
+    };
+
+    assert!(
+        report("user_message_delivered", "turn-read", "turn-assistant")
+            .expect("late delivered report")
+            .commit
+            .is_some()
+    );
+    assert!(report(
+        "user_message_not_delivered",
+        "turn-unread",
+        "turn-assistant"
+    )
+    .expect("late not-delivered report")
+    .commit
+    .is_some());
+    let assistant = row("turns", "turn-assistant").unwrap();
+    assert_eq!(assistant["status"], "complete", "{assistant}");
+    assert_eq!(assistant["content"], "Done.", "{assistant}");
+    assert!(!settle(&repo, "conversation-d", project_path).settled);
+
+    for (kind, message_id) in [
+        ("user_message_delivered", "turn-read"),
+        ("user_message_not_delivered", "turn-unread"),
+    ] {
+        let repeated = report(kind, message_id, "turn-assistant").expect("same outcome");
+        assert!(repeated.commit.is_none(), "{kind} {message_id}");
+    }
+    for (kind, message_id, turn_id) in [
+        ("user_message_delivered", "turn-unread", "turn-assistant"),
+        ("user_message_delivered", "turn-missing", "turn-assistant"),
+        ("user_message_delivered", "turn-read", "turn-other"),
+    ] {
+        let error = report(kind, message_id, turn_id).expect_err("rejected report");
+        assert!(
+            matches!(error, StorageError::ConversationCommitRejected { .. }),
+            "{kind} {message_id} {turn_id}: {error:?}"
+        );
+    }
+    let error = repo
+        .record_message_delivery("conversation-d", project_path, "turn-missing", false)
+        .expect_err("no such accepted message");
+    assert!(
+        matches!(error, StorageError::ConversationCommitRejected { .. }),
+        "{error:?}"
+    );
+
+    assert!(row("segments", "segment-user-message-turn-missing").is_none());
+    let read = row("segments", "segment-user-message-turn-read").unwrap();
+    assert_eq!(read["status"], "complete", "{read}");
+    assert!(read["delivered_at"].is_string(), "{read}");
+    let unread = row("segments", "segment-user-message-turn-unread").unwrap();
+    assert_eq!(unread["status"], "failed", "{unread}");
+    assert_eq!(unread["error"], "Not sent.", "{unread}");
+    assert!(unread.get("delivered_at").is_none(), "{unread}");
+
+    // The turn ended without reading the message it took.
+    assert!(
+        report("user_message_not_delivered", "turn-read", "turn-assistant")
+            .expect("not read")
+            .commit
+            .is_some()
+    );
+    let unread_after_reading = row("segments", "segment-user-message-turn-read").unwrap();
+    assert_eq!(unread_after_reading["status"], "failed");
+    assert_eq!(
+        unread_after_reading["order"], read["order"],
+        "keeps its place"
+    );
+    report("user_message_delivered", "turn-read", "turn-assistant")
+        .expect_err("delivered after not delivered");
 }
 
 /// Operations on a conversation that does not exist, or on a turn that owns
@@ -1143,10 +1331,19 @@ fn recovery_collects_unreferenced_tool_outputs_behind_the_barrier() {
         "replaced",
         &big_output("c"),
     );
-    repo.store()
-        .database()
-        .write(|tx| tx.delete_segment(conversation, &tool_segment_id("removed")))
-        .unwrap();
+    write_rows(repo.store(), |tx, revision| {
+        let removed = tool_segment_id("removed");
+        tx.execute(
+            "UPDATE blob_references SET deleted = 1, revision = ?1 WHERE conversation_id = ?2 \
+             AND owner_kind = 'tool_output' AND owner_id = ?3",
+            rusqlite::params![revision, conversation, removed],
+        )?;
+        tx.execute(
+            "UPDATE segments SET deleted = 1, revision = ?1 WHERE conversation_id = ?2 \
+             AND segment_id = ?3",
+            rusqlite::params![revision, conversation, removed],
+        )
+    });
     // A publication whose transaction failed leaves its blob unreferenced.
     fs::write(
         root.join("tool-output/segment-abandoned.0.txt"),
@@ -1478,10 +1675,9 @@ fn a_directory_with_a_live_reference_survives_the_prune() {
         .unwrap()
         .to_string_lossy()
         .replace('\\', "/");
-    repo.store()
-        .database()
-        .write(|tx| tx.put_blob_reference(conversation, "attachment", "att-other", &blob))
-        .unwrap();
+    write_rows(repo.store(), |tx, revision| {
+        put_blob_reference(tx, revision, conversation, "attachment", "att-other", &blob)
+    });
 
     let removed = repo
         .prune_attachments(
@@ -1627,26 +1823,28 @@ fn process_kill_child() {
     fs::create_dir_all(blob.parent().unwrap()).unwrap();
     fs::write(&blob, big_output("z")).unwrap();
     let store = repo.store();
-    let _ = store.database().write(|tx| -> spark_storage::Result<()> {
-        tx.put_turn(&spark_storage::conversation::TurnRow {
-            conversation_id: conversation.to_string(),
-            id: "turn-abandoned".to_string(),
-            role: "assistant".to_string(),
-            kind: "message".to_string(),
-            position: 2,
-            settled: false,
-            status: "streaming".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-            payload: json!({
-                "id": "turn-abandoned",
-                "role": "assistant",
-                "kind": "message",
-                "content": "never committed",
-                "status": "streaming",
-                "timestamp": "2026-01-01T00:00:00Z",
-            }),
-        })?;
-        tx.put_blob_reference(
+    write_rows(store, |tx, revision| -> rusqlite::Result<()> {
+        tx.execute(
+            "INSERT INTO turns (conversation_id, turn_id, role, kind, position, status, \
+             updated_at, revision, payload) VALUES (?1, 'turn-abandoned', 'assistant', \
+             'message', 2, 'streaming', '2026-01-01T00:00:00Z', ?2, ?3)",
+            rusqlite::params![
+                conversation,
+                revision,
+                json!({
+                    "id": "turn-abandoned",
+                    "role": "assistant",
+                    "kind": "message",
+                    "content": "never committed",
+                    "status": "streaming",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                })
+                .to_string(),
+            ],
+        )?;
+        put_blob_reference(
+            tx,
+            revision,
             conversation,
             "tool_output",
             "segment-abandoned",

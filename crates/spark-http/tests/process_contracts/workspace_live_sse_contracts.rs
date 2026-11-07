@@ -3929,10 +3929,20 @@ async fn disconnected_clients_catch_up_with_changed_rows_and_tombstones() {
         "conversation-away",
         "turn-while-away",
     );
-    crate::shared_store(&settings.data_dir)
-        .database()
-        .write(|tx| tx.delete_segment("conversation-away", "segment-live"))
-        .unwrap();
+    crate::conversation_seed::write_rows(
+        &crate::shared_store(&settings.data_dir),
+        |tx, revision| {
+            tx.execute(
+                "UPDATE segments SET deleted = 1, revision = ?1 \
+                 WHERE conversation_id = 'conversation-away' AND segment_id = 'segment-live'",
+                [revision],
+            )?;
+            tx.execute(
+                "UPDATE conversations SET revision = ?1 WHERE id = 'conversation-away'",
+                [revision],
+            )
+        },
+    );
     let back = request(
         app.clone(),
         "GET",
@@ -4034,10 +4044,16 @@ async fn a_commit_without_a_notice_arrives_at_the_next_heartbeat() {
         json!([])
     );
     // Committed behind the store's back: no notice is published.
-    let (revision, ()) = crate::shared_store(&settings.data_dir)
-        .database()
-        .write(|tx| tx.touch("conversation-quiet"))
-        .unwrap();
+    let revision = crate::conversation_seed::write_rows(
+        &crate::shared_store(&settings.data_dir),
+        |tx, revision| {
+            tx.execute(
+                "UPDATE conversations SET revision = ?1 WHERE id = 'conversation-quiet'",
+                [revision],
+            )?;
+            Ok(revision)
+        },
+    );
     let arrived = next_envelope(&mut stream).await;
     assert_eq!(arrived["type"], "conversation.changes");
     assert_eq!(watermark(&arrived), revision as u64);
@@ -4187,27 +4203,27 @@ async fn summary_catch_up_over_the_limit_resets_to_a_cursorless_snapshot() {
     let (generation, high) = store_cursor(&settings);
     let project = registered_path(&settings, &project_path);
     let count = spark_storage::conversation::CATCH_UP_MAX_ROWS + 1;
-    crate::shared_store(&settings.data_dir)
-        .database()
-        .write(|tx| {
+    crate::conversation_seed::write_rows(
+        &crate::shared_store(&settings.data_dir),
+        |tx, revision| {
             for index in 0..count {
-                tx.put_conversation(&spark_storage::conversation::ConversationRow {
-                    id: format!("bulk-{index:04}"),
-                    project_path: project.clone(),
-                    handle: format!("bulk-{index:04}"),
-                    created_at: "2026-01-01T00:00:00Z".into(),
-                    updated_at: "2026-01-01T00:00:00Z".into(),
-                    title: "Bulk".into(),
-                    preview: String::new(),
-                    running: false,
-                    needs_attention: false,
-                    launched_run_ids: Vec::new(),
-                    metadata: json!({"revision": 1, "conversation_id": format!("bulk-{index:04}")}),
-                })?;
+                let id = format!("bulk-{index:04}");
+                tx.execute(
+                    "INSERT INTO conversations (id, project_path, handle, created_at, \
+                     updated_at, revision, title, preview, running, needs_attention, \
+                     launched_run_ids, metadata) VALUES (?1, ?2, ?1, '2026-01-01T00:00:00Z', \
+                     '2026-01-01T00:00:00Z', ?3, 'Bulk', '', 0, 0, '[]', ?4)",
+                    rusqlite::params![
+                        id,
+                        project,
+                        revision,
+                        json!({"revision": 1, "conversation_id": id}).to_string(),
+                    ],
+                )?;
             }
             Ok(())
-        })
-        .unwrap();
+        },
+    );
     let mut stream = request(
         app.clone(),
         "GET",

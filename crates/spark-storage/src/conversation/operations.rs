@@ -131,7 +131,7 @@ pub enum Accepted {
 pub enum Delivery {
     Accepted,
     Queued,
-    /// Already resolved, or unknown: nothing changed.
+    /// Already resolved: nothing changed.
     Unchanged,
 }
 
@@ -157,6 +157,8 @@ pub enum ExecutionOutcome {
         app_turn_id: Option<String>,
         /// (message, error code, details) of a lost provider thread.
         thread_resume_failure: Option<(String, Option<String>, Option<Value>)>,
+        /// The question segment whose answer this call continued, if any.
+        continued_question: Option<String>,
     },
     Failed {
         message: String,
@@ -278,6 +280,15 @@ fn is_final_answer_phase(phase: Option<&str>) -> bool {
     phase.is_some_and(|phase| phase.trim().eq_ignore_ascii_case("final_answer"))
 }
 
+/// Whether an event reports a message delivered, or not delivered.
+fn reported_delivery(event: &TurnStreamEvent) -> Option<bool> {
+    match &event.kind {
+        TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => Some(true),
+        TurnStreamEventKind::Other(kind) if kind == "user_message_not_delivered" => Some(false),
+        _ => None,
+    }
+}
+
 fn runtime_provider(meta: &ConversationMeta) -> &'static str {
     if meta.provider == "claude-code" {
         "claude_code_cli"
@@ -347,7 +358,10 @@ impl ConversationRepository {
         self.operate(conversation_id, Some(project_path), Open::Existing, |op| {
             let segment_id = format!("segment-user-message-{message_id}");
             let Some(mut segment) = op.segment(&segment_id)? else {
-                return Ok(Delivery::Unchanged);
+                return Err(commit_rejected(
+                    conversation_id,
+                    "No message accepted into a running turn has that id.",
+                ));
             };
             if delivered {
                 if segment["status"] != "delivery_pending" {
@@ -458,6 +472,11 @@ impl ConversationRepository {
         let (commit, (opened, ended)) =
             self.operate(conversation_id, Some(project_path), Open::Existing, |op| {
                 if !op.owns_execution(turn_id)? {
+                    // Delivery truth outlives the execution, which it never
+                    // revives.
+                    if let Some(delivered) = reported_delivery(event) {
+                        op.record_delivery(turn_id, event, delivered, &BTreeMap::new())?;
+                    }
                     return Ok((None, Vec::new()));
                 }
                 let opened = op.provider_event(turn_id, event, held)?;
@@ -988,22 +1007,10 @@ impl Op<'_> {
                 self.materialize(turn_id, event, Some(sequence))?;
             }
             TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => {
-                self.deliver_message(turn_id, event, held)?;
+                self.record_delivery(turn_id, event, true, held)?;
             }
             TurnStreamEventKind::Other(kind) if kind == "user_message_not_delivered" => {
-                let Some(message_id) = event.source.item_id.as_deref() else {
-                    return Ok(None);
-                };
-                let segment_id = format!("segment-user-message-{message_id}");
-                let error = event.message.clone().unwrap_or_default();
-                // The provider's report wins, even over an earlier delivered
-                // event. A message with no record has nothing to fail.
-                if let Some(mut segment) = self.segment(&segment_id)? {
-                    set(&mut segment, "status", "failed");
-                    set(&mut segment, "error", error);
-                    set(&mut segment, "updated_at", self.now.clone());
-                    self.put_segment(segment)?;
-                }
+                self.record_delivery(turn_id, event, false, held)?;
             }
             TurnStreamEventKind::RequestUserInputRequested => {
                 // Answered or expired input never becomes pending again.
@@ -1108,46 +1115,71 @@ impl Op<'_> {
         self.store_held(&earlier, true)
     }
 
-    /// A user message delivered into the running turn: the turn's open text
-    /// ends before it, and it takes its place after everything so far.
-    fn deliver_message(
+    /// A provider's report that a message accepted into the execution
+    /// `turn_id` was delivered or not. It changes only the message's
+    /// delivery fields; a delivered message takes its place after the
+    /// output so far, whose open text `held` ends before it. A turn that
+    /// took a message can still end without reading it, as Claude Code
+    /// reports, so only not delivered is final. The same outcome again
+    /// changes nothing; a report on no message accepted into that
+    /// execution, or a delivery after a final not delivered, is rejected.
+    fn record_delivery(
         &mut self,
         turn_id: &str,
         event: &TurnStreamEvent,
+        delivered: bool,
         held: &BTreeMap<String, String>,
     ) -> Result<()> {
-        let Some(message_id) = event.source.item_id.as_deref() else {
-            return Ok(());
+        let segment_id = format!(
+            "segment-user-message-{}",
+            event.source.item_id.as_deref().unwrap_or_default()
+        );
+        let Some(mut segment) = self
+            .segment(&segment_id)?
+            .filter(|segment| segment["kind"] == "user_message" && segment["turn_id"] == turn_id)
+        else {
+            return Err(commit_rejected(
+                &self.conversation_id,
+                "The delivery report names no message accepted into this turn.",
+            ));
         };
-        let parts = held
-            .iter()
-            .filter(|(segment_id, _)| {
-                segment_id.starts_with("segment-reasoning-")
-                    || segment_id.starts_with("segment-assistant-")
-            })
-            .map(|(id, text)| (id.clone(), text.clone()))
-            .collect::<BTreeMap<_, _>>();
-        self.store_held(&parts, true)?;
-        let segment_id = format!("segment-user-message-{message_id}");
-        match self.segment(&segment_id)? {
-            Some(segment) if segment.get("delivered_at").is_some() => {}
-            Some(mut segment) => {
-                let order = self.next_segment_order(turn_id)?;
-                set(&mut segment, "order", order);
-                set(&mut segment, "status", "complete");
-                set(&mut segment, "delivered_at", self.now.clone());
-                set(&mut segment, "updated_at", self.now.clone());
-                unset(&mut segment, "error");
-                self.put_segment(segment)?;
+        // A `complete` status alone only says the backend took the message.
+        if segment["status"] == "failed" {
+            if delivered {
+                return Err(commit_rejected(
+                    &self.conversation_id,
+                    "The message was already reported not delivered.",
+                ));
             }
-            None => {
-                self.materialize(turn_id, event, None)?;
-                if let Some(mut segment) = self.segment(&segment_id)? {
-                    set(&mut segment, "delivered_at", self.now.clone());
-                    self.put_segment(segment)?;
-                }
-            }
+            return Ok(());
         }
+        if delivered && segment.get("delivered_at").is_some() {
+            return Ok(());
+        }
+        if delivered {
+            let parts = held
+                .iter()
+                .filter(|(segment_id, _)| {
+                    segment_id.starts_with("segment-reasoning-")
+                        || segment_id.starts_with("segment-assistant-")
+                })
+                .map(|(id, text)| (id.clone(), text.clone()))
+                .collect::<BTreeMap<_, _>>();
+            self.store_held(&parts, true)?;
+            let order = self.next_segment_order(turn_id)?;
+            set(&mut segment, "order", order);
+            set(&mut segment, "status", "complete");
+            set(&mut segment, "delivered_at", self.now.clone());
+        } else {
+            set(&mut segment, "status", "failed");
+            set(
+                &mut segment,
+                "error",
+                event.message.clone().unwrap_or_default(),
+            );
+        }
+        set(&mut segment, "updated_at", self.now.clone());
+        self.put_segment(segment)?;
         Ok(())
     }
 
@@ -1367,8 +1399,12 @@ impl Op<'_> {
     }
 
     /// Whether a turn without output waits for a question's answer: its
-    /// latest question is pending, or answered with nothing after it.
-    fn awaits_answer(&self, turn_id: &str) -> Result<bool> {
+    /// latest question is pending, or answered with no output after it, its
+    /// continuation still to come. A call continuing that answer does not
+    /// wait for it. Provider bookkeeping, such as a turn boundary, is not output.
+    // ponytail: an answer delivered live to a call that then returns with no
+    // output also waits, until stop or restart recovery settles the turn.
+    fn awaits_answer(&self, turn_id: &str, continued_question: Option<&str>) -> Result<bool> {
         let segments = self.turn_segments(turn_id, None)?;
         let Some((index, question)) = segments
             .iter()
@@ -1380,7 +1416,10 @@ impl Op<'_> {
         };
         Ok(question["status"] == "pending"
             || (question["request_user_input"]["status"] == "answered"
-                && index + 1 == segments.len()))
+                && question["id"].as_str() != continued_question
+                && segments[index + 1..]
+                    .iter()
+                    .all(|segment| segment["kind"] == "agent_event")))
     }
 
     fn settle_execution(&mut self, turn_id: &str, outcome: ExecutionOutcome) -> Result<bool> {
@@ -1399,6 +1438,7 @@ impl Op<'_> {
                 app_thread_id,
                 app_turn_id,
                 thread_resume_failure,
+                continued_question,
             } => {
                 self.update_turn(turn_id, |turn| {
                     if let Some(usage) = token_usage {
@@ -1424,7 +1464,13 @@ impl Op<'_> {
                 }
                 // A backend that recovered in a fresh thread replaces it.
                 self.record_app_ids(turn_id, app_thread_id.as_deref(), app_turn_id.as_deref())?;
-                if !self.complete_returned(turn_id, final_text, thread_resume_failure, false)? {
+                if !self.complete_returned(
+                    turn_id,
+                    final_text,
+                    thread_resume_failure,
+                    false,
+                    continued_question.as_deref(),
+                )? {
                     return Ok(false);
                 }
             }
@@ -1465,6 +1511,7 @@ impl Op<'_> {
         final_text: Option<String>,
         thread_resume_failure: Option<(String, Option<String>, Option<Value>)>,
         terminal: bool,
+        continued_question: Option<&str>,
     ) -> Result<bool> {
         let final_text = final_text.as_deref().and_then(non_empty_string);
         if let Some((message, error_code, details)) = thread_resume_failure {
@@ -1489,7 +1536,10 @@ impl Op<'_> {
             self.persist_plan(turn_id, plan)?;
         }
         if answer.is_none() && plan.is_none() {
-            if final_text.is_none() && !terminal && self.awaits_answer(turn_id)? {
+            if final_text.is_none()
+                && !terminal
+                && self.awaits_answer(turn_id, continued_question)?
+            {
                 return Ok(false);
             }
             self.fail_turn(turn_id, MISSING_FINAL_ANSWER_ERROR, None, None)?;
@@ -1653,7 +1703,7 @@ impl Op<'_> {
                 // The committed TurnCompleted is authoritative even without a final answer.
                 self.update_turn(&turn_id, |turn| set(turn, "status", "complete"))?;
             } else if turn_completed {
-                self.complete_returned(&turn_id, None, None, true)?;
+                self.complete_returned(&turn_id, None, None, true, None)?;
             } else {
                 self.finalize_open(&turn_id, false)?;
                 self.fail_turn(&turn_id, RESTARTED_TURN_ERROR, None, None)?;

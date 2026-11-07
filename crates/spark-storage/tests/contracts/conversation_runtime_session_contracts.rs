@@ -69,6 +69,7 @@ fn returned(
         app_thread_id: app_thread_id.map(str::to_string),
         app_turn_id: None,
         thread_resume_failure,
+        continued_question: None,
     }
 }
 
@@ -88,16 +89,7 @@ fn session(thread_id: &str) -> serde_json::Value {
 #[test]
 fn runtime_session_round_trips_and_missing_session_reads_as_none() {
     let project_path = "/projects/runtime-session";
-    let (_temp, store, repo) = setup(project_path);
-    // Sessions belong to live conversations only.
-    assert!(store
-        .database()
-        .write(|tx| tx.put_runtime_session(
-            "conversation-a",
-            "codex_app_server",
-            &session("thread-early")
-        ))
-        .is_err());
+    let (_temp, _store, repo) = setup(project_path);
     start(&repo, "conversation-a", project_path, "1");
 
     assert_eq!(
@@ -172,16 +164,13 @@ fn runtime_session_presence_never_changes_snapshot_reads() {
         .expect("read")
         .expect("snapshot");
 
-    store
-        .database()
-        .write(|tx| {
-            tx.put_runtime_session(
-                "conversation-b",
-                "codex_app_server",
-                &session("thread-beta"),
-            )
-        })
-        .expect("write session");
+    crate::conversation_seed::write_rows(&store, |tx, revision| {
+        tx.execute(
+            "INSERT INTO runtime_sessions (conversation_id, provider, revision, payload) \
+             VALUES ('conversation-b', 'codex_app_server', ?1, ?2)",
+            rusqlite::params![revision, session("thread-beta").to_string()],
+        )
+    });
     assert!(repo
         .read_runtime_session("conversation-b", Some(project_path))
         .expect("read session")

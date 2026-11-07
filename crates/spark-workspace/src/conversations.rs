@@ -1882,18 +1882,21 @@ impl WorkspaceConversationService {
             &project_path,
             assistant_turn_id,
             output,
+            None,
         )?;
         self.get_snapshot(conversation_id, Some(&project_path))
     }
 
     /// Records a returned call's events, none of which were recorded yet,
     /// then how it returned, on the execution `assistant_turn_id` owns.
+    /// `continued_question` names the question whose answer the call continued.
     fn ingest_agent_turn_output_inner(
         &self,
         conversation_id: &str,
         project_path: &str,
         assistant_turn_id: &str,
         mut output: AgentTurnOutput,
+        continued_question: Option<String>,
     ) -> WorkspaceResult<()> {
         let mut execution = ExecutionState::new(
             self.repository(),
@@ -1905,7 +1908,7 @@ impl WorkspaceConversationService {
         for event in std::mem::take(&mut output.events) {
             execution.ingest(event)?;
         }
-        self.settle_execution(&mut execution, Ok(output))
+        self.settle_execution(&mut execution, Ok(output), continued_question)
     }
 
     /// Records how an execution's call returned, with the text it holds;
@@ -1914,6 +1917,7 @@ impl WorkspaceConversationService {
         &self,
         execution: &mut ExecutionState,
         output: Result<AgentTurnOutput, AgentError>,
+        continued_question: Option<String>,
     ) -> WorkspaceResult<()> {
         let outcome = match output {
             Ok(output) => ExecutionOutcome::Returned {
@@ -1925,6 +1929,7 @@ impl WorkspaceConversationService {
                 thread_resume_failure: output
                     .thread_resume_failure
                     .map(|failure| (failure.message, failure.error_code, failure.details)),
+                continued_question,
             },
             Err(error) => ExecutionOutcome::Failed {
                 message: non_empty_string(&error.message)
@@ -2060,6 +2065,7 @@ impl WorkspaceConversationService {
                         retryable: true,
                         raw: None,
                     }),
+                    None,
                 );
                 return Err(error);
             }
@@ -2127,6 +2133,7 @@ impl WorkspaceConversationService {
                     retryable: true,
                     raw: None,
                 }),
+                None,
             );
             return Err(error.into());
         }
@@ -2137,6 +2144,7 @@ impl WorkspaceConversationService {
                 events: Vec::new(),
                 ..output
             }),
+            None,
         )
     }
 
@@ -2433,6 +2441,7 @@ impl WorkspaceConversationService {
             &project_path,
             &answered.assistant_turn_id,
             output,
+            Some(answered.segment_id.clone()),
         )
     }
 

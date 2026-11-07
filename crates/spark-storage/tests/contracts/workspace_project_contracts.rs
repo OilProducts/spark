@@ -460,6 +460,7 @@ fn settle(
             app_thread_id: Some("thread".into()),
             app_turn_id: None,
             thread_resume_failure: None,
+            continued_question: None,
         },
         &BTreeMap::new(),
     )

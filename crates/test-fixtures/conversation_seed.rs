@@ -1,19 +1,17 @@
 //! Test fixture: stores one conversation's rows exactly as a snapshot gives
-//! them (ids, timestamps, statuses), through the database's low-level write.
-//! Contract tests only: Spark itself changes conversation state through the
-//! repository's typed operations. Loaded with `#[path]` by the test binaries
-//! that seed fixtures.
+//! them (ids, timestamps, statuses), writing the database file directly as
+//! an outside writer. Spark itself changes conversation state only through
+//! the repository's typed operations; it has no row writer to call. Loaded
+//! with `#[path]` by the test binaries that seed fixtures.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use rusqlite::{params, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
-use spark_storage::conversation::{
-    record_from_snapshot, ArtifactCollection, ArtifactRow, ConversationRow, SegmentRow, TurnRow,
-    ORDER_UNASSIGNED,
-};
+use spark_storage::conversation::{record_from_snapshot, ArtifactCollection, ORDER_UNASSIGNED};
 use spark_storage::{ConversationRepository, ConversationStore, ProjectRegistry};
 
 const COLLECTIONS: [ArtifactCollection; 4] = [
@@ -89,115 +87,179 @@ pub fn seed_conversation_snapshot(store: &Arc<ConversationStore>, snapshot: &Val
         })
     };
     let updated_at = meta.updated_at.clone();
-    store
-        .database()
-        .write(|tx| {
-            meta.revision = tx.revision();
-            // The seeded settings were written with the conversation.
-            if snapshot.get("settings_revision").is_none() {
-                meta.settings_revision = meta.revision;
-            }
-            tx.put_conversation(&ConversationRow {
-                id: id.clone(),
-                project_path: meta.project_path.clone(),
-                handle: meta.conversation_handle.clone(),
-                created_at: meta.created_at.clone(),
-                updated_at: updated_at.clone(),
-                title: meta.title.clone(),
-                preview: preview.clone(),
+    write_rows(store, |tx, revision| {
+        meta.revision = revision;
+        // The seeded settings were written with the conversation.
+        if snapshot.get("settings_revision").is_none() {
+            meta.settings_revision = meta.revision;
+        }
+        tx.execute(
+            "INSERT INTO conversations (id, project_path, handle, created_at, updated_at, \
+             revision, title, preview, running, needs_attention, launched_run_ids, metadata) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                id,
+                meta.project_path,
+                meta.conversation_handle,
+                meta.created_at,
+                updated_at,
+                revision,
+                meta.title,
+                preview,
                 running,
                 needs_attention,
-                launched_run_ids: launched_run_ids.clone(),
-                metadata: serde_json::to_value(&meta).expect("metadata"),
-            })?;
-            for (position, turn) in turns.iter().enumerate() {
-                let unsettled = turn.role == "assistant"
-                    && (matches!(turn.status.as_str(), "pending" | "streaming" | "queued")
-                        || pending_question(&turn.id));
-                tx.put_turn(&TurnRow {
-                    conversation_id: id.clone(),
-                    id: turn.id.clone(),
-                    role: turn.role.clone(),
-                    kind: turn.kind.clone().unwrap_or_else(|| "message".to_string()),
-                    position: position as i64,
-                    settled: !unsettled,
-                    status: turn.status.clone(),
-                    updated_at: updated_at.clone(),
-                    payload: serde_json::to_value(turn).expect("turn"),
-                })?;
+                json!(launched_run_ids).to_string(),
+                serde_json::to_value(&meta).expect("metadata").to_string(),
+            ],
+        )?;
+        for (position, turn) in turns.iter().enumerate() {
+            let unsettled = turn.role == "assistant"
+                && (matches!(turn.status.as_str(), "pending" | "streaming" | "queued")
+                    || pending_question(&turn.id));
+            tx.execute(
+                "INSERT INTO turns (conversation_id, turn_id, role, kind, position, settled, \
+                 status, updated_at, revision, payload) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    id,
+                    turn.id,
+                    turn.role,
+                    turn.kind.as_deref().unwrap_or("message"),
+                    position as i64,
+                    !unsettled,
+                    turn.status,
+                    updated_at,
+                    revision,
+                    serde_json::to_string(turn).expect("turn"),
+                ],
+            )?;
+        }
+        let mut next_order: HashMap<String, i64> = HashMap::new();
+        for segment in segments {
+            let mut segment = segment.clone();
+            let next = next_order.entry(segment.turn_id.clone()).or_insert(1);
+            if segment.order == ORDER_UNASSIGNED {
+                segment.order = *next;
             }
-            let mut next_order: HashMap<String, i64> = HashMap::new();
-            for segment in segments {
-                let mut segment = segment.clone();
-                let next = next_order.entry(segment.turn_id.clone()).or_insert(1);
-                if segment.order == ORDER_UNASSIGNED {
-                    segment.order = *next;
-                }
-                *next = (*next).max(segment.order + 1);
-                let payload = serde_json::to_value(&segment).expect("segment");
-                tx.put_segment(&SegmentRow {
-                    conversation_id: id.clone(),
-                    id: segment.id.clone(),
-                    turn_id: segment.turn_id.clone(),
-                    kind: segment.kind.clone(),
-                    order: segment.order,
-                    status: segment.status.clone(),
-                    updated_at: updated_at.clone(),
-                    payload: payload.clone(),
-                })?;
-                if let Some(output) = payload["tool_call"]["output_artifact"].as_str() {
-                    let blob = root.join(output);
-                    tx.put_blob_reference(
-                        &id,
-                        "tool_output",
-                        &segment.id,
-                        &home_relative(store.home_dir(), &blob),
-                    )?;
-                }
+            *next = (*next).max(segment.order + 1);
+            let payload = serde_json::to_value(&segment).expect("segment");
+            tx.execute(
+                "INSERT INTO segments (conversation_id, segment_id, turn_id, kind, sort_order, \
+                 status, updated_at, revision, payload) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    segment.id,
+                    segment.turn_id,
+                    segment.kind,
+                    segment.order,
+                    segment.status,
+                    updated_at,
+                    revision,
+                    payload.to_string(),
+                ],
+            )?;
+            if let Some(output) = payload["tool_call"]["output_artifact"].as_str() {
+                let blob = home_relative(store.home_dir(), &root.join(output));
+                put_blob_reference(tx, revision, &id, "tool_output", &segment.id, &blob)?;
             }
-            let owner = |artifact_id: &str, artifact: &Value| {
-                artifact["source_turn_id"]
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| {
-                        segments
-                            .iter()
-                            .find(|segment| segment.artifact_id.as_deref() == Some(artifact_id))
-                            .map(|segment| segment.turn_id.clone())
-                    })
-                    .filter(|turn_id| turns.iter().any(|turn| &turn.id == turn_id))
-            };
-            let collections = COLLECTIONS
-                .iter()
-                .map(|collection| (collection.key(), artifacts.collection(*collection)))
-                .chain([("event_log", &artifacts.event_log)]);
-            for (collection, entries) in collections {
-                for (index, artifact) in entries.iter().enumerate() {
-                    let mut artifact = artifact.clone();
-                    let artifact_id = match artifact["id"].as_str() {
-                        Some(artifact_id) if collection != "event_log" => artifact_id.to_string(),
-                        _ => {
-                            let artifact_id = format!("artifact-{collection}-{index}");
-                            if collection != "event_log" {
-                                artifact["id"] = json!(artifact_id);
-                            }
-                            artifact_id
+        }
+        let owner = |artifact_id: &str, artifact: &Value| {
+            artifact["source_turn_id"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| {
+                    segments
+                        .iter()
+                        .find(|segment| segment.artifact_id.as_deref() == Some(artifact_id))
+                        .map(|segment| segment.turn_id.clone())
+                })
+                .filter(|turn_id| turns.iter().any(|turn| &turn.id == turn_id))
+        };
+        let collections = COLLECTIONS
+            .iter()
+            .map(|collection| (collection.key(), artifacts.collection(*collection)))
+            .chain([("event_log", &artifacts.event_log)]);
+        for (collection, entries) in collections {
+            for (index, artifact) in entries.iter().enumerate() {
+                let mut artifact = artifact.clone();
+                let artifact_id = match artifact["id"].as_str() {
+                    Some(artifact_id) if collection != "event_log" => artifact_id.to_string(),
+                    _ => {
+                        let artifact_id = format!("artifact-{collection}-{index}");
+                        if collection != "event_log" {
+                            artifact["id"] = json!(artifact_id);
                         }
-                    };
-                    tx.put_artifact(&ArtifactRow {
-                        conversation_id: id.clone(),
-                        collection: collection.to_string(),
-                        id: artifact_id.clone(),
-                        turn_id: owner(&artifact_id, &artifact),
-                        status: artifact["status"].as_str().unwrap_or_default().to_string(),
-                        updated_at: updated_at.clone(),
-                        payload: artifact,
-                    })?;
-                }
+                        artifact_id
+                    }
+                };
+                tx.execute(
+                    "INSERT INTO artifacts (conversation_id, collection, artifact_id, turn_id, \
+                     position, status, updated_at, revision, payload) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        id,
+                        collection,
+                        artifact_id,
+                        owner(&artifact_id, &artifact),
+                        index as i64 + 1,
+                        artifact["status"].as_str().unwrap_or_default(),
+                        updated_at,
+                        revision,
+                        artifact.to_string(),
+                    ],
+                )?;
             }
-            Ok(())
-        })
-        .expect("seed conversation");
+        }
+        Ok(())
+    });
+}
+
+/// Run `apply` in one transaction on the conversation database file, with
+/// a newly allocated revision. It writes behind the store's back, so no
+/// commit notice is published.
+pub fn write_rows<T>(
+    store: &ConversationStore,
+    apply: impl FnOnce(&Transaction<'_>, i64) -> rusqlite::Result<T>,
+) -> T {
+    let mut connection =
+        rusqlite::Connection::open(store.database().path()).expect("open conversation database");
+    connection
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .expect("busy timeout");
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys");
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .expect("write transaction");
+    let revision = tx
+        .query_row(
+            "UPDATE store_meta SET next_revision = next_revision + 1 \
+             WHERE singleton = 1 RETURNING next_revision - 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("revision");
+    let value = apply(&tx, revision).expect("write rows");
+    tx.commit().expect("commit rows");
+    value
+}
+
+/// A live reference from `owner_id` to bytes under the Spark home.
+pub fn put_blob_reference(
+    tx: &Transaction<'_>,
+    revision: i64,
+    conversation_id: &str,
+    owner_kind: &str,
+    owner_id: &str,
+    blob_path: &str,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "INSERT INTO blob_references (conversation_id, owner_kind, owner_id, blob_path, revision) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![conversation_id, owner_kind, owner_id, blob_path, revision],
+    )
 }
 
 fn home_relative(home: &Path, path: &Path) -> String {

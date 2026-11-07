@@ -310,7 +310,7 @@ pub struct ProjectDeletionMarker {
 
 /// Conversation metadata and summary columns.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConversationRow {
+pub(crate) struct ConversationRow {
     pub id: String,
     pub project_path: String,
     pub handle: String,
@@ -325,7 +325,7 @@ pub struct ConversationRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TurnRow {
+pub(crate) struct TurnRow {
     pub conversation_id: String,
     pub id: String,
     pub role: String,
@@ -338,7 +338,7 @@ pub struct TurnRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SegmentRow {
+pub(crate) struct SegmentRow {
     pub conversation_id: String,
     pub id: String,
     pub turn_id: String,
@@ -350,7 +350,7 @@ pub struct SegmentRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArtifactRow {
+pub(crate) struct ArtifactRow {
     pub conversation_id: String,
     pub collection: String,
     pub id: String,
@@ -361,7 +361,7 @@ pub struct ArtifactRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AttachmentRow {
+pub(crate) struct AttachmentRow {
     pub conversation_id: String,
     pub id: String,
     pub blob_path: String,
@@ -462,7 +462,7 @@ pub enum PageRead {
 
 /// A write transaction holding its allocated revision. Dropping it without
 /// commit rolls back every change and the revision allocation.
-pub struct WriteTransaction<'a> {
+pub(crate) struct WriteTransaction<'a> {
     tx: rusqlite::Transaction<'a>,
     revision: i64,
 }
@@ -642,10 +642,10 @@ impl ConversationDatabase {
 
     /// Run `apply` in one immediate transaction with one newly allocated
     /// revision. An error from `apply` or the commit rolls everything back,
-    /// including the revision allocation. Low-level contract tests only:
+    /// including the revision allocation. Low-level unit tests only:
     /// conversation state changes go through the typed operations.
-    #[doc(hidden)]
-    pub fn write<T>(
+    #[cfg(test)]
+    pub(crate) fn write<T>(
         &self,
         apply: impl FnOnce(&WriteTransaction<'_>) -> Result<T>,
     ) -> Result<(i64, T)> {
@@ -801,7 +801,7 @@ fn configure(connection: &Connection, path: &Path) -> Result<()> {
 
 impl WriteTransaction<'_> {
     /// Revision stamped on every row this transaction changes.
-    pub fn revision(&self) -> i64 {
+    pub(crate) fn revision(&self) -> i64 {
         self.revision
     }
 
@@ -810,7 +810,7 @@ impl WriteTransaction<'_> {
         &self.tx
     }
 
-    pub fn put_conversation(&self, row: &ConversationRow) -> Result<()> {
+    pub(crate) fn put_conversation(&self, row: &ConversationRow) -> Result<()> {
         self.tx.execute(
             "INSERT INTO conversations (id, project_path, handle, created_at, updated_at, \
              revision, title, preview, running, needs_attention, launched_run_ids, metadata) \
@@ -840,7 +840,7 @@ impl WriteTransaction<'_> {
     }
 
     /// Tombstone a conversation and every live child row, releasing its handle.
-    pub fn delete_conversation(&self, conversation_id: &str) -> Result<bool> {
+    pub(crate) fn delete_conversation(&self, conversation_id: &str) -> Result<bool> {
         for table in [
             "turns",
             "segments",
@@ -864,7 +864,7 @@ impl WriteTransaction<'_> {
         Ok(changed > 0)
     }
 
-    pub fn put_turn(&self, row: &TurnRow) -> Result<()> {
+    pub(crate) fn put_turn(&self, row: &TurnRow) -> Result<()> {
         self.touch(&row.conversation_id)?;
         // Moving an existing turn invalidates older page cursors; appends do not.
         self.tx.execute(
@@ -893,7 +893,7 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn put_segment(&self, row: &SegmentRow) -> Result<()> {
+    pub(crate) fn put_segment(&self, row: &SegmentRow) -> Result<()> {
         self.touch(&row.conversation_id)?;
         self.tx.execute(
             "INSERT INTO segments (conversation_id, segment_id, turn_id, kind, sort_order, status, \
@@ -917,7 +917,7 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn put_artifact(&self, row: &ArtifactRow) -> Result<()> {
+    pub(crate) fn put_artifact(&self, row: &ArtifactRow) -> Result<()> {
         self.touch(&row.conversation_id)?;
         self.tx.execute(
             "INSERT INTO artifacts (conversation_id, collection, artifact_id, turn_id, status, \
@@ -942,7 +942,7 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn put_attachment(&self, row: &AttachmentRow) -> Result<()> {
+    pub(crate) fn put_attachment(&self, row: &AttachmentRow) -> Result<()> {
         self.touch(&row.conversation_id)?;
         self.tx.execute(
             "INSERT INTO attachments (conversation_id, attachment_id, blob_path, status, \
@@ -964,7 +964,7 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn put_blob_reference(
+    pub(crate) fn put_blob_reference(
         &self,
         conversation_id: &str,
         owner_kind: &str,
@@ -988,7 +988,7 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn put_runtime_session(
+    pub(crate) fn put_runtime_session(
         &self,
         conversation_id: &str,
         provider: &str,
@@ -1010,12 +1010,13 @@ impl WriteTransaction<'_> {
         Ok(())
     }
 
-    pub fn delete_turn(&self, conversation_id: &str, turn_id: &str) -> Result<bool> {
+    #[cfg(test)]
+    pub(crate) fn delete_turn(&self, conversation_id: &str, turn_id: &str) -> Result<bool> {
         self.tombstone("turns", "turn_id = ?3", conversation_id, &[turn_id])
     }
 
     /// Tombstone a segment and the tool-output references it owns.
-    pub fn delete_segment(&self, conversation_id: &str, segment_id: &str) -> Result<bool> {
+    pub(crate) fn delete_segment(&self, conversation_id: &str, segment_id: &str) -> Result<bool> {
         self.tombstone(
             "blob_references",
             "owner_kind = 'tool_output' AND owner_id = ?3",
@@ -1030,21 +1031,11 @@ impl WriteTransaction<'_> {
         )
     }
 
-    pub fn delete_artifact(
+    pub(crate) fn delete_attachment(
         &self,
         conversation_id: &str,
-        collection: &str,
-        artifact_id: &str,
+        attachment_id: &str,
     ) -> Result<bool> {
-        self.tombstone(
-            "artifacts",
-            "collection = ?3 AND artifact_id = ?4",
-            conversation_id,
-            &[collection, artifact_id],
-        )
-    }
-
-    pub fn delete_attachment(&self, conversation_id: &str, attachment_id: &str) -> Result<bool> {
         self.tombstone(
             "attachments",
             "attachment_id = ?3",
@@ -1053,7 +1044,7 @@ impl WriteTransaction<'_> {
         )
     }
 
-    pub fn delete_blob_reference(
+    pub(crate) fn delete_blob_reference(
         &self,
         conversation_id: &str,
         owner_kind: &str,
@@ -1068,18 +1059,9 @@ impl WriteTransaction<'_> {
         )
     }
 
-    pub fn delete_runtime_session(&self, conversation_id: &str, provider: &str) -> Result<bool> {
-        self.tombstone(
-            "runtime_sessions",
-            "provider = ?3",
-            conversation_id,
-            &[provider],
-        )
-    }
-
     /// Tombstone every live conversation of a project and record the
     /// pending filesystem cleanup. Returns the tombstoned conversation ids.
-    pub fn delete_project(&self, marker: &ProjectDeletionMarker) -> Result<Vec<String>> {
+    pub(crate) fn delete_project(&self, marker: &ProjectDeletionMarker) -> Result<Vec<String>> {
         let ids = {
             let mut statement = self.tx.prepare(
                 "SELECT id FROM conversations WHERE project_path = ?1 AND deleted = 0 ORDER BY id",
@@ -1129,7 +1111,7 @@ impl WriteTransaction<'_> {
 
     /// Every row this transaction changed in one conversation, tombstones
     /// included: the entity result of a mutation.
-    pub fn changed_rows(&self, conversation_id: &str) -> Result<Vec<EntityRow>> {
+    pub(crate) fn changed_rows(&self, conversation_id: &str) -> Result<Vec<EntityRow>> {
         entity_rows(
             &self.tx,
             CONVERSATION_CHANGES_SQL,
@@ -1155,7 +1137,7 @@ impl WriteTransaction<'_> {
     /// Stamp the owning conversation with this revision; children of a
     /// missing or deleted conversation are rejected. Alone, it re-delivers the
     /// conversation row, such as when a summary decoration changed.
-    pub fn touch(&self, conversation_id: &str) -> Result<()> {
+    pub(crate) fn touch(&self, conversation_id: &str) -> Result<()> {
         let changed = self.tx.execute(
             "UPDATE conversations SET revision = ?1 WHERE id = ?2 AND deleted = 0",
             params![self.revision, conversation_id],

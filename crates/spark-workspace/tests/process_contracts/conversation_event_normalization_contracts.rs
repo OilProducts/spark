@@ -2285,6 +2285,139 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     assert!(matches!(missing, WorkspaceError::NotFound(_)));
 }
 
+/// A question-only call that ends its provider turn returns while the user
+/// answers: the answer commits after the call's turn boundary and before the
+/// call's own return is recorded. That return still waits for the answer, so
+/// the continuation completes the same turn.
+#[test]
+fn an_answer_recorded_while_its_question_only_call_returns_is_continued() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = AnswerDuringReturnBackend::default();
+    let (asked, returned) = (backend.asked.clone(), backend.returned.clone());
+    let service = crate::conversations_with_backend(settings, Arc::new(backend));
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-answer-race",
+            ConversationTurnRequest {
+                project_path: "/projects/answer-race".to_string(),
+                message: "Need approval".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    let assistant_turn_id = prepared.assistant_turn_id.clone();
+    let original = {
+        let service = service.clone();
+        std::thread::spawn(move || {
+            let result = service.complete_started_turn_with_progress_payloads(prepared, |_| {});
+            returned.open();
+            result
+        })
+    };
+    // The answer's backend call releases the original return, after the
+    // answer commits, and continues only once that return is recorded.
+    asked.wait();
+    service
+        .submit_request_user_input_answer(
+            "conversation-answer-race",
+            "decision",
+            ConversationRequestUserInputAnswerRequest {
+                project_path: "/projects/answer-race".to_string(),
+                answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            },
+        )
+        .expect("answer");
+    original.join().unwrap().expect("original call");
+
+    let snapshot = service
+        .get_snapshot("conversation-answer-race", Some("/projects/answer-race"))
+        .expect("snapshot");
+    let assistant = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == assistant_turn_id.as_str())
+        .expect("assistant turn");
+    assert_eq!(assistant["status"], "complete", "{assistant}");
+    assert_eq!(assistant["content"], "Approved.");
+    let question = segment_by_kind(
+        snapshot["segments"].as_array().unwrap(),
+        "request_user_input",
+    );
+    assert_eq!(question["request_user_input"]["status"], "answered");
+    assert_eq!(
+        question["request_user_input"]["answers"]["decision"],
+        "Approve"
+    );
+}
+
+/// A gate one side opens and the other waits on.
+#[derive(Clone, Default)]
+struct Gate(Arc<(Mutex<bool>, Condvar)>);
+
+impl Gate {
+    fn open(&self) {
+        *self.0 .0.lock().unwrap() = true;
+        self.0 .1.notify_all();
+    }
+
+    fn wait(&self) {
+        let open = self.0 .0.lock().unwrap();
+        let (open, _) = self
+            .0
+             .1
+            .wait_timeout_while(open, Duration::from_secs(60), |open| !*open)
+            .unwrap();
+        assert!(*open, "timed out at a gate");
+    }
+}
+
+/// Asks a question and ends its provider turn, then returns question-only
+/// once the answer has committed; the answer continues in a new call after
+/// that return is recorded.
+#[derive(Default)]
+struct AnswerDuringReturnBackend {
+    asked: Gate,
+    released: Gate,
+    returned: Gate,
+}
+
+impl AgentTurnBackend for AnswerDuringReturnBackend {
+    fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        unreachable!("the turn runs with an event sink")
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        _request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let sink = event_sink.expect("event sink");
+        sink(request_user_input_event());
+        sink(processing_completed_event());
+        self.asked.open();
+        self.released.wait();
+        Ok(AgentTurnOutput::default())
+    }
+
+    fn answer_request_user_input(
+        &self,
+        _request: AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.released.open();
+        self.returned.wait();
+        Ok(AgentTurnOutput {
+            events: vec![
+                content_completed("assistant", "Approved.", "app-answer", "final-answer"),
+                processing_completed_event(),
+            ],
+            final_assistant_text: Some("Approved.".to_string()),
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
 #[test]
 fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_original_turn_finishes() {
     let temp = tempfile::tempdir().expect("tempdir");

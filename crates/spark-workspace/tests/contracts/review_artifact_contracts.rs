@@ -1069,23 +1069,27 @@ fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
         }),
     );
     // A previous turn established the thread.
-    crate::shared_store(&settings.data_dir)
-        .database()
-        .write(|tx| {
-            tx.put_runtime_session(
-                "conversation-resume",
-                "codex_app_server",
-                &json!({
-                    "schema_version": 1,
-                    "provider": "codex_app_server",
-                    "thread_id": "thread-existing",
-                    "established_at": "2026-01-01T00:00:00Z",
-                    "resume_failed": false,
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }),
+    crate::conversation_seed::write_rows(
+        &crate::shared_store(&settings.data_dir),
+        |tx, revision| {
+            tx.execute(
+                "INSERT INTO runtime_sessions (conversation_id, provider, revision, payload) \
+                 VALUES ('conversation-resume', 'codex_app_server', ?1, ?2)",
+                rusqlite::params![
+                    revision,
+                    json!({
+                        "schema_version": 1,
+                        "provider": "codex_app_server",
+                        "thread_id": "thread-existing",
+                        "established_at": "2026-01-01T00:00:00Z",
+                        "resume_failed": false,
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    })
+                    .to_string(),
+                ],
             )
-        })
-        .expect("seed runtime session");
+        },
+    );
     let _ = &project;
 
     let service = crate::conversations(settings.clone());
