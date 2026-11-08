@@ -281,6 +281,7 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         // Background tasks hold the turn open instead of being disabled.
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=\n",
         "BASH_MAX_TIMEOUT_MS=3600000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000",
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }

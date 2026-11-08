@@ -357,7 +357,10 @@ impl ClaudeCodeBackend {
         command
             .env_remove("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
             .env("BASH_DEFAULT_TIMEOUT_MS", "3600000")
-            .env("BASH_MAX_TIMEOUT_MS", "3600000");
+            .env("BASH_MAX_TIMEOUT_MS", "3600000")
+            // Compact well before the CLI's 1M default. A user's Claude
+            // settings `env` can still override this.
+            .env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "300000");
 
         // Attachments are read before spawning so a missing file fails cleanly.
         let content = match continuation {
