@@ -536,11 +536,11 @@ fn a_mission_opened_from_a_chat_reports_its_close_to_the_chat() {
 }
 
 #[test]
-fn a_mission_closed_or_canceled_during_a_turn_keeps_its_queued_batch_without_a_turn() {
+fn a_mission_closed_or_canceled_during_a_turn_fails_its_queued_batch() {
     for cancel in [false, true] {
         let h = Harness::new();
         // The completion thread's last step processes the mission, which
-        // publishes it: past that point no queued turn can still start.
+        // publishes it: by then the queued batch has been settled.
         let upserts = Arc::new(Mutex::new(0));
         let counted = upserts.clone();
         install_runtime(
@@ -602,7 +602,11 @@ fn a_mission_closed_or_canceled_during_a_turn_keeps_its_queued_batch_without_a_t
                     .is_some_and(|c| c.contains("Too late"))
             })
             .unwrap();
-        assert_eq!(queued["status"], "queued", "cancel: {cancel}");
+        assert_eq!(
+            (&queued["status"], &queued["error"]),
+            (&json!("failed"), &json!("Not sent: the mission closed.")),
+            "cancel: {cancel}"
+        );
         assert_eq!(
             missions.get(&h.project, &mission.id).unwrap().status,
             spark_workspace::missions::MissionStatus::Closed

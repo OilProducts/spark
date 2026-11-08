@@ -1303,7 +1303,8 @@ impl WorkspaceConversationService {
 
     /// Starts the oldest queued message once no turn runs. A queued message
     /// that cannot start is marked failed, never left behind. A stopped
-    /// role or a closed mission keeps its queued messages without a turn.
+    /// role keeps its queued messages without a turn; a closed mission's
+    /// fail, since it never takes another turn.
     pub(crate) fn start_queued_turn(
         &self,
         conversation_id: &str,
@@ -1318,13 +1319,21 @@ impl WorkspaceConversationService {
             };
             if active_assistant_turn_id(&head).is_some()
                 || self.role_stopped(project_path, conversation_id)
-                || self.mission_closed(project_path, conversation_id)
             {
                 return Ok(None);
             }
             let Some(queued) = first_queued_turn(&head).cloned() else {
                 return Ok(None);
             };
+            if self.mission_closed(project_path, conversation_id) {
+                repository.fail_queued_message(
+                    conversation_id,
+                    project_path,
+                    queued["id"].as_str().unwrap_or_default(),
+                    "Not sent: the mission closed.",
+                )?;
+                continue;
+            }
             let request = ConversationTurnRequest {
                 project_path: project_path.to_string(),
                 ..Default::default()
