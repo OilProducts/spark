@@ -21,7 +21,7 @@ use crate::error::{Result, StorageError};
 /// File name of the conversation database inside the Spark home.
 pub const CONVERSATION_DATABASE_FILE_NAME: &str = "conversations.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const CONVERSATION_DATABASE_SCHEMA_VERSION: i64 = 2;
+pub const CONVERSATION_DATABASE_SCHEMA_VERSION: i64 = 3;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -156,6 +156,29 @@ CREATE TABLE runtime_sessions (
     deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
     payload TEXT NOT NULL CHECK (json_type(payload) = 'object'),
     PRIMARY KEY (conversation_id, provider)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS inbox_events (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    seq INTEGER NOT NULL CHECK (seq >= 1),
+    event_id TEXT NOT NULL CHECK (length(event_id) > 0),
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload TEXT NOT NULL CHECK (json_valid(payload)),
+    delivered_at TEXT,
+    PRIMARY KEY (conversation_id, seq),
+    UNIQUE (conversation_id, event_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS inbox_events_pending ON inbox_events(conversation_id, seq) WHERE delivered_at IS NULL;
+CREATE TABLE IF NOT EXISTS inbox_runs (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+    flow_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    launched_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, run_id)
 ) WITHOUT ROWID;
 "#;
 
@@ -693,6 +716,27 @@ impl ConversationDatabase {
         Ok((Some(revision), value))
     }
 
+    /// Run `apply` on a live conversation's inbox rows in one immediate
+    /// transaction. Inbox rows are no transcript change, so no revision is
+    /// allocated; a missing or deleted conversation is rejected. The caller
+    /// holds the conversation's project gate.
+    pub(crate) fn write_inbox<T>(
+        &self,
+        conversation_id: &str,
+        apply: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        let mut connection = self.lock();
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        require_live(&tx, conversation_id)?;
+        let changes_before = tx.total_changes();
+        let value = apply(&tx)?;
+        if tx.total_changes() != changes_before {
+            tx.commit()?;
+            self.written_since_checkpoint.store(true, Ordering::SeqCst);
+        }
+        Ok(value)
+    }
+
     /// Run `read` against one coherent snapshot and its watermark.
     pub fn read<T>(&self, read: impl FnOnce(&ReadTransaction<'_>) -> Result<T>) -> Result<T> {
         let mut connection = self.lock();
@@ -778,6 +822,21 @@ fn require_complete(mode: &str, (busy, log, checkpointed): (i64, i64, i64)) -> R
     Ok(())
 }
 
+fn require_live(connection: &Connection, conversation_id: &str) -> Result<()> {
+    let live: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 AND deleted = 0)",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    if !live {
+        return Err(StorageError::ConversationCommitRejected {
+            conversation_id: conversation_id.to_string(),
+            reason: "conversation does not exist or was deleted".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn configure(connection: &Connection, path: &Path) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let journal_mode: String =
@@ -855,6 +914,13 @@ impl WriteTransaction<'_> {
                      WHERE conversation_id = ?2 AND deleted = 0"
                 ),
                 params![self.revision, conversation_id],
+            )?;
+        }
+        // Inbox rows are internal state with no tombstones to deliver.
+        for table in ["inbox_events", "inbox_runs"] {
+            self.tx.execute(
+                &format!("DELETE FROM {table} WHERE conversation_id = ?1"),
+                [conversation_id],
             )?;
         }
         let changed = self.tx.execute(
@@ -1120,18 +1186,7 @@ impl WriteTransaction<'_> {
     }
 
     fn require_live(&self, conversation_id: &str) -> Result<()> {
-        let live: bool = self.tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 AND deleted = 0)",
-            [conversation_id],
-            |row| row.get(0),
-        )?;
-        if !live {
-            return Err(StorageError::ConversationCommitRejected {
-                conversation_id: conversation_id.to_string(),
-                reason: "conversation does not exist or was deleted".to_string(),
-            });
-        }
-        Ok(())
+        require_live(&self.tx, conversation_id)
     }
 
     /// Stamp the owning conversation with this revision; children of a

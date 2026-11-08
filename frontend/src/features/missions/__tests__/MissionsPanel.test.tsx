@@ -144,7 +144,7 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
         turn('u1', 'user', 'Begin work on this mission.'),
         turn('a1', 'assistant', 'Launched the build.'),
         turn('u2', 'user', 'Run run-build (work/build.yaml, "Build") ended completed.\n\nUser: Prefer small diffs'),
-        turn('u3', 'user', `Run question: ${JSON.stringify(question)}`),
+        turn('u3', 'user', `Run question in run run-build (work/build.yaml, "Build"): ${JSON.stringify(question)}`),
         turn('a2', 'assistant', 'Should I ship the build?'),
     ])
     render(<MissionsPanel active />)

@@ -4638,7 +4638,7 @@ fn a_message_sent_between_a_provider_error_and_the_return_runs_after_it() {
 }
 
 /// A mission message that arrives between a provider error and the return
-/// queues, and its inbox leaves it for the settling execution to start.
+/// waits in the inbox, and runs once the execution settles.
 #[test]
 fn a_mission_message_between_a_provider_error_and_the_return_runs_after_it() {
     use spark_workspace::inbox::{install_runtime, InboxPost, InboxRuntime};
@@ -4690,9 +4690,13 @@ fn a_mission_message_between_a_provider_error_and_the_return_runs_after_it() {
             .map(|(role, status, _)| format!("{role} {status}"))
             .collect::<Vec<_>>()
     };
+    assert_eq!(statuses(), ["user complete", "assistant failed"]);
     assert_eq!(
-        statuses(),
-        ["user complete", "assistant failed", "user queued"]
+        spark_storage::ConversationRepository::new(crate::shared_store(&config.data_dir))
+            .pending_inbox_events(&mission.id)
+            .unwrap()
+            .len(),
+        1
     );
     backend.gate.release();
     let deadline = std::time::Instant::now() + Duration::from_secs(30);

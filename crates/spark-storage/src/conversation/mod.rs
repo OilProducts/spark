@@ -48,7 +48,8 @@ pub use identity::{
 pub use operations::{
     Accepted, Admission, Answer, AnsweredQuestion, ArtifactChange, ArtifactOutcome,
     ConversationMetadataPatch, Delivery, EventOutcome, ExecutionOutcome, FlowRequestApproval,
-    MessageInput, Settlement,
+    InboxAdmission, InboxEvent, InboxRun, MessageInput, NewInboxEvent, Settlement,
+    TERMINAL_RUN_STATUSES,
 };
 pub use projection::{record_from_snapshot, snapshot_from_record};
 pub use records::{

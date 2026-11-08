@@ -33,7 +33,7 @@ const transcript = (id: string) => ({
     turn('u1', 'user', id === 'mission-gate' ? `Objective:\n${longObjective}\n\nBegin work on this mission.` : 'Begin work on this mission.'),
     turn('a1', 'assistant', 'I launched **implement-change** for the ranking work and will report back when it finishes.'),
     turn('u2', 'user', 'Run run-build (software-development/implement-change.yaml, "Implement ranking") ended completed.\n\nUser: Keep the diff small.'),
-    ...(id === 'mission-gate' ? [turn('u3', 'user', `Run question: ${JSON.stringify(question)}`), turn('a2', 'assistant', 'The review asks whether to ship. That is your call.')] : []),
+    ...(id === 'mission-gate' ? [turn('u3', 'user', `Run question in run run-review (software-development/review-change.yaml, "Review ranking"): ${JSON.stringify(question)}`), turn('a2', 'assistant', 'The review asks whether to ship. That is your call.')] : []),
     ...(id === 'mission-closed' ? [turn('n1', 'system', `Closed as done: ${closingSummary}`, 'mission_notice')] : []),
   ],
 })
@@ -187,7 +187,7 @@ test('missions event lines stay one line for long titles, errors and questions',
   await stubMissions(page, {}, { question: longQuestion })
   await page.route('**/workspace/api/conversations/mission-gate?*', route => route.fulfill({ json: transcriptPage({ ...transcript('mission-gate'), turns: [
     turn('u1', 'user', `Run run-build (software-development/implement-change.yaml, "${long}") ended failed: ${long}\n\nstack trace follows.`),
-    turn('u2', 'user', `Run question: ${JSON.stringify(longQuestion)}`),
+    turn('u2', 'user', `Run question in run run-review (software-development/review-change.yaml, "Review ranking"): ${JSON.stringify(longQuestion)}`),
   ] }) }))
   await page.route('**/attractor/runs**', route => route.fulfill({ json: { runs: [] } }))
   await gotoWithRegisteredProject(page, project)

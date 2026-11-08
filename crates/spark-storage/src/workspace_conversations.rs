@@ -569,6 +569,20 @@ impl ConversationRepository {
         }))
     }
 
+    /// A live conversation's handle.
+    pub fn find_conversation_handle(&self, conversation_id: &str) -> Result<Option<String>> {
+        self.store.database().read(|read| {
+            Ok(read
+                .connection()
+                .query_row(
+                    "SELECT handle FROM conversations WHERE id = ?1 AND deleted = 0",
+                    [conversation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })
+    }
+
     /// A live conversation's handle, or for a new one the handle reserved for
     /// its first commit: `preferred` when free, else a fresh free one.
     pub fn conversation_handle(

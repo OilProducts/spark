@@ -78,6 +78,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
     assert_eq!(response["conversation_id"], "conversation-launch");
     let run_id = response["run_id"].as_str().expect("run id");
     let flow_launch_id = response["flow_launch_id"].as_str().expect("launch id");
+    crate::assert_owned(&settings, run_id, "conversation-launch");
 
     let snapshot = service
         .get_snapshot(

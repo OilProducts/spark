@@ -2,7 +2,7 @@
 //! the mission's runs, fed by the mission's inbox (see `inbox`). Status is
 //! derived on read.
 use crate::conversations::{RunLaunchRequest, WorkspaceConversationService};
-use crate::inbox::{self, decode, invalid, now, Inbox, InboxPost, Owner, RosterEntry};
+use crate::inbox::{self, decode, invalid, now, Inbox, InboxPost, RosterEntry};
 use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -104,12 +104,16 @@ pub struct MissionRecord {
     pub revision: u64,
     pub fields: MissionFields,
     pub activity: Vec<Value>,
-    /// The mission's conversation, created on Start.
+    /// The mission's conversation, the mission id, created with the mission.
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Derived on read: the conversation's handle, for `spark send --to`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub conversation_handle: Option<String>,
     /// The chat the mission was created from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_conversation_id: Option<String>,
+    /// Derived on read from the mission conversation's inbox; never stored.
     #[serde(flatten)]
     pub inbox: Inbox,
     #[serde(default)]
@@ -145,9 +149,17 @@ impl MissionRecord {
 
 fn stored(mission: &MissionRecord) -> Value {
     let mut value = serde_json::to_value(mission).unwrap();
-    value.as_object_mut().unwrap().remove("status");
-    value.as_object_mut().unwrap().remove("waiting");
-    value.as_object_mut().unwrap().remove("question");
+    for key in [
+        "status",
+        "waiting",
+        "question",
+        "conversation_handle",
+        "runs",
+        "cursor",
+        "event_seq",
+    ] {
+        value.as_object_mut().unwrap().remove(key);
+    }
     value
 }
 
@@ -191,6 +203,12 @@ impl WorkspaceMissionService {
     /// Draft until started and Closed once closed. An open mission Needs you
     /// after a turn ends with an open question or nothing in flight or pending.
     fn with_status(&self, mut mission: MissionRecord) -> MissionRecord {
+        let repository = spark_storage::ConversationRepository::new(self.store.clone());
+        mission.inbox = Inbox::read(&self.store, &mission.id).unwrap_or_default();
+        mission.conversation_handle = repository
+            .find_conversation_handle(&mission.id)
+            .ok()
+            .flatten();
         mission.status = if mission.closed.is_some() {
             MissionStatus::Closed
         } else if mission.started_at.is_none() {
@@ -233,11 +251,8 @@ impl WorkspaceMissionService {
                         .unwrap_or_default()
                 })
                 .collect();
-            mission.question = self
-                .scope(&mission.project_path)
-                .and_then(|scope| {
-                    inbox::read_events(&RecordRepository::missions(&scope.root), &mission.id)
-                })
+            mission.question = repository
+                .inbox_events(&mission.id)
                 .unwrap_or_default()
                 .into_iter()
                 .rev()
@@ -407,7 +422,7 @@ impl WorkspaceMissionService {
             let now = now();
             let mut mission: MissionRecord = match previous {
                 Some(value) if !create => decode(value)?,
-                None if create => decode(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "source_conversation_id": source_conversation_id}))?,
+                None if create => decode(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "conversation_id": id, "source_conversation_id": source_conversation_id}))?,
                 _ => return Err(WorkspaceError::NotFound("Unknown project mission".into())),
             };
             if !create && mutation.revision != Some(mission.revision) { return Err(WorkspaceError::Conflict(format!("Mission changed; reload revision {} and reconcile your edits", mission.revision))); }
@@ -433,6 +448,12 @@ impl WorkspaceMissionService {
             }
             mission.fields = fields;
             mission.record_activity(&mutation.actor, &mutation.note, before);
+            // A draft is addressable from creation: its conversation and handle
+            // exist before the record does. Nothing starts until Start.
+            if create {
+                spark_storage::ConversationRepository::new(self.store.clone())
+                    .touch_conversation(id, &scope.project_path)?;
+            }
             Ok(stored(&mission))
         })?;
         let mission = self.with_status(decode(value)?);
@@ -443,8 +464,8 @@ impl WorkspaceMissionService {
                 source: Some("human".into()),
                 payload,
             };
-            return self.with_mission(project, id, |repo, mission| {
-                inbox::append(repo, &mission.id, &mut mission.inbox, post, "human").map(|_| ())
+            return self.with_mission(project, id, |_, mission| {
+                inbox::append(&self.store, &mission.id, post, "human").map(drop)
             });
         }
         self.publish(&mission);
@@ -464,10 +485,11 @@ impl WorkspaceMissionService {
         let mission =
             RecordRepository::missions(&scope.root).locked::<_, WorkspaceError>(|repo| {
                 let mut mission = Self::load(repo, &scope, id)?;
+                mission.inbox = Inbox::read(&self.store, &mission.id)?;
                 let before = stored(&mission);
                 work(repo, &mut mission)?;
                 if deliver {
-                    self.deliver_pending(repo, &mut mission, None)?;
+                    self.deliver_pending(&mut mission, None)?;
                 }
                 let after = stored(&mission);
                 if before != after {
@@ -492,7 +514,7 @@ impl WorkspaceMissionService {
     }
 
     /// Posts a message typed into the transcript; it reaches the agent as the
-    /// next turn.
+    /// next turn, or is held until a draft starts.
     pub fn post_event(
         &self,
         project: &str,
@@ -508,8 +530,8 @@ impl WorkspaceMissionService {
         {
             return Err(invalid("Message is required"));
         }
-        self.with_mission(project, id, |repo, mission| {
-            inbox::append(repo, &mission.id, &mut mission.inbox, post, "human").map(|_| ())
+        self.with_mission(project, id, |_, mission| {
+            inbox::append(&self.store, &mission.id, post, "human").map(drop)
         })
     }
 
@@ -536,21 +558,16 @@ impl WorkspaceMissionService {
         self.with_mission(
             &request.project_path,
             request.action.mission_id.as_deref().unwrap_or_default(),
-            |repo, mission| {
-                if mission.closed.is_some() || mission.started_at.is_none() {
+            |_, mission| {
+                if mission.closed.is_some() {
                     no_op = true;
-                    message = if mission.closed.is_some() {
-                        "Mission is closed; trigger delivery skipped."
-                    } else {
-                        "Mission is not started; trigger delivery skipped."
-                    }
-                    .into();
+                    message = "Mission is closed; trigger delivery skipped.".into();
                     return Ok(());
                 }
+                // A draft holds the delivery until it starts.
                 inbox::append(
-                    repo,
+                    &self.store,
                     &mission.id,
-                    &mut mission.inbox,
                     inbox::trigger_post(request),
                     "trigger",
                 )?;
@@ -580,13 +597,12 @@ impl WorkspaceMissionService {
                 None => None,
             };
             mission.started_at = Some(now());
-            mission.conversation_id = Some(mission.id.clone());
             mission.note("human", "Started mission");
-            // The objective is pinned in the frame; the transcript only starts the work.
-            let begin = "Begin work on this mission.".to_string();
             // The first turn's frame is built from the stored record.
             repo.write(&mission.id, &stored(mission))?;
-            self.deliver_pending(repo, mission, Some(begin))
+            // The objective is pinned in the frame; the transcript only starts
+            // the work, together with whatever the draft held.
+            self.deliver_pending(mission, Some("Begin work on this mission."))
         })
     }
     pub fn cancel(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
@@ -637,16 +653,11 @@ impl WorkspaceMissionService {
         self.report_close(&mission);
         Ok(mission)
     }
-    /// A mission opened from a standing role's conversation reports its close
-    /// to that role, once the mission lock is released.
+    /// A mission opened from a conversation reports its close to it, once
+    /// the mission lock is released. A deleted source gets nothing.
     fn report_close(&self, mission: &MissionRecord) {
         let (Some(closed), Some(source)) = (&mission.closed, &mission.source_conversation_id)
         else {
-            return;
-        };
-        let roles =
-            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone());
-        let Some(role) = roles.conversation_role(&mission.project_path, source) else {
             return;
         };
         let post = InboxPost {
@@ -655,7 +666,9 @@ impl WorkspaceMissionService {
             source: Some(mission.id.clone()),
             payload: json!({"mission_id": mission.id, "title": mission.fields.title, "status": closed.status, "reason": closed.reason}),
         };
-        let _ = roles.post(&mission.project_path, &role.name, post);
+        if inbox::append(&self.store, source, post, &mission.id).is_ok() {
+            let _ = inbox::process_conversation(&self.settings, &self.store, source);
+        }
     }
     /// Closes once and marks the close in the transcript.
     fn close_locked(
@@ -706,7 +719,7 @@ impl WorkspaceMissionService {
     }
 
     /// Launches a flow for the mission's agent: refuses a closed mission or a
-    /// launch over budget, and records the mission as the run's owner.
+    /// launch over budget. `start` makes the mission conversation the owner.
     pub(crate) fn launch(
         &self,
         project: &str,
@@ -726,8 +739,7 @@ impl WorkspaceMissionService {
                     "Mission budget reached: {limit}. Wait for a run to finish, or ask the user to raise the budget."
                 )));
             }
-            let owner = Owner::Mission(mission.id.clone());
-            response = inbox::launch_recorded(&mut mission.inbox, &owner, request, start)?;
+            response = start(request)?;
             Ok(())
         })?;
         Ok(response)
@@ -737,96 +749,22 @@ impl WorkspaceMissionService {
     /// under the project lock.
     fn deliver_pending(
         &self,
-        repo: &RecordRepository,
         mission: &mut MissionRecord,
-        begin: Option<String>,
+        begin: Option<&str>,
     ) -> WorkspaceResult<()> {
         if mission.started_at.is_none() || mission.closed.is_some() {
             return Ok(());
         }
-        let conversation = mission
-            .conversation_id
-            .get_or_insert_with(|| mission.id.clone())
-            .clone();
-        let service = self.clone();
-        let (project, id) = (mission.project_path.clone(), mission.id.clone());
         if inbox::deliver_inbox(
             &self.settings,
             &self.store,
-            repo,
             &mission.id,
-            &conversation,
             &mission.project_path,
-            &mut mission.inbox,
             begin,
-            move || {
-                // Events that arrived during the turn go out as the next one.
-                let _ = service.process(&project, &id);
-            },
         )? {
             mission.wait_reason = None;
         }
         Ok(())
-    }
-
-    /// Reconciles a mission-owned run tree and delivers questions once per owning run and question ID.
-    pub fn deliver_run_events(&self, run_id: &str) -> WorkspaceResult<Option<MissionRecord>> {
-        self.deliver(run_id, false)
-    }
-
-    /// `recovering` leaves delivery to the caller.
-    fn deliver(&self, run_id: &str, recovering: bool) -> WorkspaceResult<Option<MissionRecord>> {
-        let Some(owner) = inbox::run_owner(&self.settings, run_id)? else {
-            return Ok(None);
-        };
-        let Owner::Mission(id) = &owner.owner else {
-            return Ok(None);
-        };
-        let mut changed = false;
-        let mission = self.locked(&owner.project, id, !recovering, |repo, mission| {
-            changed = inbox::reconcile_run(
-                &self.settings,
-                repo,
-                &mission.id,
-                &mut mission.inbox,
-                &owner.paths,
-                recovering,
-            )?;
-            Ok(())
-        })?;
-        Ok(changed.then_some(mission))
-    }
-
-    /// Restart recovery: fail turns the previous process left in flight, post
-    /// missing terminal events for owned runs, then deliver anything pending.
-    pub fn recover(&self) -> WorkspaceResult<Vec<MissionRecord>> {
-        let mut recovered = vec![];
-        for project in
-            ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
-        {
-            let Ok(missions) = self.list(&project.project_path) else {
-                continue;
-            };
-            for mission in missions {
-                if mission.started_at.is_none() || mission.closed.is_some() {
-                    continue;
-                }
-                if let Some(conversation) = &mission.conversation_id {
-                    let _ = WorkspaceConversationService::new(
-                        self.settings.clone(),
-                        self.store.clone(),
-                    )
-                    .abandon_active_turn(conversation, &mission.project_path);
-                }
-                for run in mission.inbox.runs.iter().filter(|run| run.in_flight()) {
-                    let _ = self.deliver(&run.run_id, true);
-                }
-                if let Ok(mission) = self.process(&project.project_path, &mission.id) {
-                    recovered.push(mission);
-                }
-            }
-        }
-        Ok(recovered)
     }
 }
 

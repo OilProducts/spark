@@ -326,6 +326,8 @@ fn flow_event_trigger_keeps_static_context_nested() {
         json!({"context.request.problem": "static P"})
     );
     assert!(!context.contains_key("context.request.problem"));
+    // Trigger launches belong to no conversation.
+    assert!(!context.contains_key("context.spark_owner"));
 }
 
 #[test]
@@ -349,7 +351,13 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
     own.launch_context = Some(
         [(
             "context.spark_owner".to_string(),
-            json!({"kind": "role", "id": "coordinator"}),
+            json!({"conversation_id": spark_workspace::roles::conversation_id(
+                &spark_storage::ProjectRegistry::new(&settings.data_dir)
+                    .project_paths(&project)
+                    .unwrap()
+                    .project_id,
+                "coordinator",
+            )}),
         )]
         .into(),
     );

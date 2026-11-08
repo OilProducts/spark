@@ -2146,3 +2146,384 @@ fn process_kill_child() {
         std::process::abort()
     });
 }
+
+// ---- Inbox -----------------------------------------------------------------
+
+fn inbox_event(id: &str) -> spark_storage::conversation::NewInboxEvent {
+    spark_storage::conversation::NewInboxEvent {
+        id: id.to_string(),
+        kind: "run.completed".to_string(),
+        source: format!("run-{id}"),
+        payload: json!({"status": "completed"}),
+    }
+}
+
+fn pending_ids(repo: &ConversationRepository, conversation_id: &str) -> Vec<String> {
+    repo.pending_inbox_events(conversation_id)
+        .expect("pending")
+        .into_iter()
+        .map(|event| event.id)
+        .collect()
+}
+
+fn inbox_batch(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    user_turn_id: &str,
+    through_seq: i64,
+) -> spark_storage::Result<Option<spark_storage::conversation::InboxAdmission>> {
+    let mut input = message(user_turn_id, &format!("{user_turn_id}-assistant"), "");
+    input.admission = Admission::Deliver;
+    repo.accept_inbox_batch(conversation_id, project_path, through_seq, None, input)
+        .map(|(_, admission)| admission)
+}
+
+#[test]
+fn inbox_appends_deduplicate_by_id_and_reach_only_live_conversations() {
+    let project_path = "/projects/inbox-append";
+    let (_temp, repo) = setup(project_path);
+    assert!(
+        repo.append_inbox_event("inbox-a", inbox_event("e1"))
+            .is_err(),
+        "an address alone never creates a conversation"
+    );
+    assert_eq!(repo.conversation_project_path("inbox-a").unwrap(), None);
+
+    repo.touch_conversation("inbox-a", project_path).unwrap();
+    let watermark = |repo: &ConversationRepository| {
+        repo.store()
+            .database()
+            .read(|read| Ok(read.watermark()))
+            .unwrap()
+    };
+    let before = watermark(&repo);
+    assert_eq!(
+        repo.append_inbox_event("inbox-a", inbox_event("e1"))
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        repo.append_inbox_event("inbox-a", inbox_event("e1"))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        repo.append_inbox_event("inbox-a", inbox_event("e2"))
+            .unwrap(),
+        Some(2)
+    );
+    assert_eq!(watermark(&repo), before, "inbox rows allocate no revision");
+    assert_eq!(pending_ids(&repo, "inbox-a"), vec!["e1", "e2"]);
+    assert!(repo
+        .register_inbox_run("inbox-a", "run-1", "flow", "Summary")
+        .unwrap());
+
+    repo.delete_conversation("inbox-a", project_path).unwrap();
+    assert!(repo.inbox_events("inbox-a").unwrap().is_empty());
+    assert!(repo.inbox_runs("inbox-a").unwrap().is_empty());
+    // Late callbacks are rejected and recreate nothing.
+    assert!(repo
+        .append_inbox_event("inbox-a", inbox_event("e3"))
+        .is_err());
+    assert!(repo
+        .register_inbox_run("inbox-a", "run-2", "flow", "Summary")
+        .is_err());
+    assert!(repo
+        .set_inbox_run_status("inbox-a", "run-1", "completed")
+        .is_err());
+    assert!(repo.inbox_events("inbox-a").unwrap().is_empty());
+    assert!(repo.inbox_runs("inbox-a").unwrap().is_empty());
+    assert!(repo.pending_inbox_conversations().unwrap().is_empty());
+}
+
+#[test]
+fn deleting_a_project_removes_its_inboxes_and_rejects_appends() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("spark-home");
+    let project = temp.path().join("inbox-project");
+    fs::create_dir_all(&project).unwrap();
+    let project_path = project.to_string_lossy().to_string();
+    let registry = ProjectRegistry::new(&home);
+    registry.ensure_project_paths(&project_path).unwrap();
+    let store = ConversationStore::open(&home).unwrap();
+    let repo = ConversationRepository::new(store.clone());
+    repo.touch_conversation("inbox-p", &project_path).unwrap();
+    repo.append_inbox_event("inbox-p", inbox_event("e1"))
+        .unwrap();
+    repo.register_inbox_run("inbox-p", "run-1", "flow", "Summary")
+        .unwrap();
+    assert_eq!(repo.in_flight_inbox_runs().unwrap().len(), 1);
+
+    let deleted = registry.deletable_project(&project_path).unwrap();
+    store.delete_project(&deleted, &|_| {}).unwrap();
+    assert!(repo.inbox_events("inbox-p").unwrap().is_empty());
+    assert!(repo.in_flight_inbox_runs().unwrap().is_empty());
+    assert!(repo.pending_inbox_conversations().unwrap().is_empty());
+    assert!(repo
+        .append_inbox_event("inbox-p", inbox_event("e2"))
+        .is_err());
+}
+
+#[test]
+fn inbox_rosters_keep_final_statuses_and_the_newest_finished_runs() {
+    let project_path = "/projects/inbox-roster";
+    let (_temp, repo) = setup(project_path);
+    repo.touch_conversation("inbox-r", project_path).unwrap();
+    for run in ["run-1", "run-2", "run-3", "run-4"] {
+        assert!(repo
+            .register_inbox_run("inbox-r", run, "flow", run)
+            .unwrap());
+    }
+    assert!(!repo
+        .register_inbox_run("inbox-r", "run-1", "flow", "again")
+        .unwrap());
+    assert!(repo
+        .set_inbox_run_status("inbox-r", "run-1", "waiting")
+        .unwrap());
+    assert!(!repo
+        .set_inbox_run_status("inbox-r", "run-1", "waiting")
+        .unwrap());
+    for run in ["run-1", "run-2", "run-3"] {
+        assert!(repo
+            .set_inbox_run_status("inbox-r", run, "completed")
+            .unwrap());
+    }
+    // A finished run keeps its final status.
+    assert!(!repo
+        .set_inbox_run_status("inbox-r", "run-1", "running")
+        .unwrap());
+    repo.trim_inbox_runs("inbox-r", 2).unwrap();
+    let runs: Vec<(String, String)> = repo
+        .inbox_runs("inbox-r")
+        .unwrap()
+        .into_iter()
+        .map(|run| (run.run_id, run.status))
+        .collect();
+    assert_eq!(
+        runs,
+        vec![
+            ("run-2".to_string(), "completed".to_string()),
+            ("run-3".to_string(), "completed".to_string()),
+            ("run-4".to_string(), "running".to_string()),
+        ],
+        "launch order, newest finished kept"
+    );
+    assert_eq!(
+        repo.in_flight_inbox_runs().unwrap(),
+        vec![("inbox-r".to_string(), "run-4".to_string())]
+    );
+}
+
+#[test]
+fn inbox_batches_admit_exactly_the_pending_events_they_take() {
+    let project_path = "/projects/inbox-batch";
+    let (temp, repo) = setup(project_path);
+    repo.touch_conversation("inbox-b", project_path).unwrap();
+    assert!(
+        inbox_batch(&repo, "inbox-b", project_path, "turn-none", i64::MAX)
+            .unwrap()
+            .is_none()
+    );
+    repo.register_inbox_run("inbox-b", "run-e1", "implement", "Fix the bug")
+        .unwrap();
+    repo.append_inbox_event("inbox-b", inbox_event("e1"))
+        .unwrap();
+    repo.append_inbox_event("inbox-b", inbox_event("e2"))
+        .unwrap();
+    // Appended after the drain read its boundary.
+    repo.append_inbox_event("inbox-b", inbox_event("e3"))
+        .unwrap();
+
+    let admission = inbox_batch(&repo, "inbox-b", project_path, "turn-batch", 2)
+        .unwrap()
+        .expect("admitted");
+    assert!(
+        matches!(admission.accepted, Accepted::Started { .. }),
+        "{admission:?}"
+    );
+    let message = &admission.message;
+    assert!(
+        message.contains("[Inbox: 2 events delivered asynchronously"),
+        "{message}"
+    );
+    assert!(message.contains("[event e1 from run-e1]"), "{message}");
+    assert!(
+        message.contains("Run run-e1 (implement, \"Fix the bug\") ended completed."),
+        "{message}"
+    );
+    assert!(message.contains("[event e2 from run-e2]"), "{message}");
+    assert!(!message.contains("e3"), "{message}");
+    let persisted = snapshot(&repo, "inbox-b");
+    let user = persisted["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "turn-batch")
+        .expect("user turn");
+    assert_eq!(user["content"], json!(message));
+    assert_eq!(pending_ids(&repo, "inbox-b"), vec!["e3"]);
+    // The batch is taken: another drain through it finds no work.
+    assert!(inbox_batch(&repo, "inbox-b", project_path, "turn-again", 2)
+        .unwrap()
+        .is_none());
+
+    // After a restart the taken batch stays taken and the pending event
+    // waits for the next admission.
+    let home = temp.path().join("spark-home");
+    drop(repo);
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    assert_eq!(pending_ids(&repo, "inbox-b"), vec!["e3"]);
+    assert_eq!(
+        repo.pending_inbox_conversations().unwrap(),
+        vec![("inbox-b".to_string(), project_path.to_string())]
+    );
+}
+
+#[test]
+fn a_failed_inbox_admission_leaves_no_turn_and_its_events_pending() {
+    let project_path = "/projects/inbox-failure";
+    let (temp, repo) = setup(project_path);
+    repo.touch_conversation("inbox-f", project_path).unwrap();
+    repo.append_inbox_event("inbox-f", inbox_event("e1"))
+        .unwrap();
+    // Fail the second write, after the transcript admission.
+    let raw = rusqlite::Connection::open(
+        temp.path()
+            .join("spark-home")
+            .join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    raw.execute_batch(
+        "CREATE TRIGGER fail_inbox_consumption BEFORE UPDATE OF delivered_at ON inbox_events \
+         BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+    )
+    .unwrap();
+    let error = inbox_batch(&repo, "inbox-f", project_path, "turn-failed", 1).unwrap_err();
+    assert!(error.to_string().contains("injected failure"), "{error}");
+    assert!(repo.read_turn("inbox-f", "turn-failed").unwrap().is_none());
+    assert_eq!(pending_ids(&repo, "inbox-f"), vec!["e1"]);
+
+    raw.execute_batch("DROP TRIGGER fail_inbox_consumption;")
+        .unwrap();
+    // A held conversation admits nothing and takes nothing.
+    let mut held = message("turn-held", "turn-held-assistant", "");
+    held.admission = Admission::Deliver;
+    held.held = true;
+    let (commit, admission) = repo
+        .accept_inbox_batch("inbox-f", project_path, 1, None, held)
+        .unwrap();
+    assert!(commit.is_none());
+    assert_eq!(admission.unwrap().accepted, Accepted::Busy { held: true });
+    assert_eq!(pending_ids(&repo, "inbox-f"), vec!["e1"]);
+
+    assert!(matches!(
+        inbox_batch(&repo, "inbox-f", project_path, "turn-ok", 1)
+            .unwrap()
+            .unwrap()
+            .accepted,
+        Accepted::Started { .. }
+    ));
+    assert!(pending_ids(&repo, "inbox-f").is_empty());
+}
+
+#[test]
+fn busy_inbox_batches_steer_once_and_failed_deliveries_stay_taken() {
+    let project_path = "/projects/inbox-busy";
+    let (temp, repo) = setup(project_path);
+    start(&repo, "inbox-s", project_path, "Work");
+    repo.append_inbox_event("inbox-s", inbox_event("e1"))
+        .unwrap();
+    let admission = inbox_batch(&repo, "inbox-s", project_path, "turn-steer", 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        admission.accepted,
+        Accepted::DeliveryPending {
+            running_turn_id: "turn-assistant".to_string()
+        }
+    );
+    assert!(pending_ids(&repo, "inbox-s").is_empty());
+    // The provider rejected the live message: it queues behind the turn and
+    // the events are not put back.
+    repo.record_message_delivery("inbox-s", project_path, "turn-steer", false)
+        .unwrap();
+    let queued = repo.read_turn("inbox-s", "turn-steer").unwrap().unwrap();
+    assert_eq!(queued["status"], "queued");
+    assert!(pending_ids(&repo, "inbox-s").is_empty());
+
+    // With a message queued ahead, a batch waits in the inbox.
+    repo.append_inbox_event("inbox-s", inbox_event("e2"))
+        .unwrap();
+    let admission = inbox_batch(&repo, "inbox-s", project_path, "turn-wait", 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.accepted, Accepted::Busy { held: false });
+    assert_eq!(pending_ids(&repo, "inbox-s"), vec!["e2"]);
+    assert!(repo.read_turn("inbox-s", "turn-wait").unwrap().is_none());
+
+    // A delivery interrupted by a restart fails visibly; its events are not
+    // admitted again.
+    start(&repo, "inbox-i", project_path, "Work");
+    repo.append_inbox_event("inbox-i", inbox_event("e1"))
+        .unwrap();
+    assert!(matches!(
+        inbox_batch(&repo, "inbox-i", project_path, "turn-interrupted", 1)
+            .unwrap()
+            .unwrap()
+            .accepted,
+        Accepted::DeliveryPending { .. }
+    ));
+    let home = temp.path().join("spark-home");
+    drop(repo);
+    let repo = ConversationRepository::new(ConversationStore::open(&home).unwrap());
+    repo.recover_interrupted("inbox-i", project_path, true)
+        .unwrap();
+    let persisted = snapshot(&repo, "inbox-i");
+    let steer = persisted["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|segment| segment["id"] == "segment-user-message-turn-interrupted")
+        .expect("steer segment")
+        .clone();
+    assert_eq!(steer["status"], "failed", "{steer}");
+    assert!(pending_ids(&repo, "inbox-i").is_empty());
+    assert!(inbox_batch(&repo, "inbox-i", project_path, "turn-again", 1)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn racing_inbox_drains_take_each_event_once() {
+    let project_path = "/projects/inbox-race";
+    let (_temp, repo) = setup(project_path);
+    repo.touch_conversation("inbox-race", project_path).unwrap();
+    for id in ["e1", "e2"] {
+        repo.append_inbox_event("inbox-race", inbox_event(id))
+            .unwrap();
+    }
+    let barrier = std::sync::Barrier::new(3);
+    let (first, second) = std::thread::scope(|scope| {
+        let drain = |turn: &'static str| {
+            let (repo, barrier) = (&repo, &barrier);
+            scope.spawn(move || {
+                barrier.wait();
+                inbox_batch(repo, "inbox-race", project_path, turn, 2).unwrap()
+            })
+        };
+        let first = drain("turn-first");
+        let second = drain("turn-second");
+        let append = scope.spawn(|| {
+            barrier.wait();
+            repo.append_inbox_event("inbox-race", inbox_event("e3"))
+                .unwrap()
+        });
+        assert_eq!(append.join().unwrap(), Some(3));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let admitted: Vec<_> = [first, second].into_iter().flatten().collect();
+    assert_eq!(admitted.len(), 1, "{admitted:?}");
+    assert!(admitted[0].message.contains("[event e1") && admitted[0].message.contains("[event e2"));
+    assert_eq!(pending_ids(&repo, "inbox-race"), vec!["e3"]);
+}

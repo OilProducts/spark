@@ -148,7 +148,7 @@ impl Harness {
     /// server's terminal publish hook does.
     fn settle(&self, run_id: &str) {
         wait_terminal(&self.settings, run_id);
-        self.missions.deliver_run_events(run_id).unwrap();
+        crate::deliver_run_events(&self.settings, run_id);
     }
 }
 
@@ -176,42 +176,6 @@ fn mission_root(settings: &SparkSettings, project: &str) -> std::path::PathBuf {
         .ensure_project_paths(project)
         .unwrap()
         .root
-}
-
-/// Seeds a run record the mission owns, with the pending result `create_run` writes.
-fn owned_run(
-    settings: &SparkSettings,
-    project: &str,
-    mission_id: &str,
-    run_id: &str,
-    status: &str,
-) {
-    spark_storage::workspace_records::RecordRepository::missions(&mission_root(settings, project))
-        .transact::<WorkspaceError>(mission_id, |value| {
-            let mut value = value.unwrap();
-            value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"flow_name":"work/seeded","summary":"Seeded work","launched_at":"t","status":"running"}));
-            Ok(value)
-        })
-        .unwrap();
-    let mut record = attractor_core::RunRecord::new(run_id, project);
-    record.status = status.into();
-    record.launch_context = Some(
-        [(
-            "context.spark_owner".to_string(),
-            json!({"kind": "mission", "id": mission_id}),
-        )]
-        .into(),
-    );
-    let store = attractor_runtime::RunStore::for_settings(settings);
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record,
-            ..Default::default()
-        })
-        .unwrap();
-    store
-        .write_result(&paths, &attractor_core::RunResult::pending(run_id, status))
-        .unwrap();
 }
 
 pub(crate) fn tool_flow(command: &str) -> Value {
@@ -541,8 +505,10 @@ fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
     ));
 }
 
+/// A backend without live input takes the first batch during a turn as a
+/// queued message; later events wait behind it for one more batch.
 #[test]
-fn events_during_a_turn_are_delivered_as_one_next_turn() {
+fn events_during_a_turn_queue_one_batch_and_the_rest_wait_for_the_next() {
     let harness = Harness::new();
     harness.install("work/ok", simple_flow());
     harness.install("work/fail", tool_flow("exit 1"));
@@ -586,7 +552,7 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
         .launch_context;
     assert_eq!(
         json!(context)["context.spark_owner"],
-        json!({"kind": "mission", "id": mission.id})
+        json!({"conversation_id": mission.id})
     );
     harness.settle(&first);
     harness.settle(&second);
@@ -601,21 +567,25 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
         .unwrap();
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
     assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
-    harness.agent.release(2);
-    harness.wait_turns(2);
+    harness.agent.release(3);
+    harness.wait_turns(3);
     harness.wait_idle(&mission.id);
     let prompts = harness.agent.prompts();
-    assert_eq!(prompts.len(), 2);
-    let lines: Vec<_> = prompts[1].split("\n\n").collect();
-    assert_eq!(lines.len(), 3, "{}", prompts[1]);
+    assert_eq!(prompts.len(), 3);
+    assert!(prompts[1].starts_with("[Inbox: 1 event "), "{}", prompts[1]);
+    assert!(prompts[1].contains(&format!("[event {first}:completed from {first}]")));
     assert_eq!(
-        lines[0],
-        format!("Run {first} (work/ok, \"Build it\") ended completed.")
+        crate::batch_events(&prompts[1]),
+        [format!(
+            "Run {first} (work/ok, \"Build it\") ended completed."
+        )]
     );
-    assert!(lines[1].starts_with(&format!(
+    let lines = crate::batch_events(&prompts[2]);
+    assert_eq!(lines.len(), 2, "{}", prompts[2]);
+    assert!(lines[0].starts_with(&format!(
         "Run {second} (work/fail, \"Break it\") ended failed"
     )));
-    assert_eq!(lines[2], "User: Prefer the smaller fix");
+    assert_eq!(lines[1], "User: Prefer the smaller fix");
     let mission = harness.get(&mission.id);
     assert_eq!(mission.inbox.cursor, mission.inbox.event_seq);
     assert_eq!(mission.status, MissionStatus::NeedsYou);
@@ -696,7 +666,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     assert_eq!(bundle.record.unwrap().status, "cancel_requested");
     std::fs::write(&release, b"go").unwrap();
     assert_eq!(wait_terminal(&harness.settings, &run), "canceled");
-    harness.missions.deliver_run_events(&run).unwrap();
+    crate::deliver_run_events(&harness.settings, &run);
     let mission = harness.get(&mission.id);
     assert_eq!(mission.inbox.runs[0].status, "canceled");
     assert_eq!(mission.status, MissionStatus::Closed);
@@ -757,7 +727,7 @@ fn derived_status_covers_each_group_including_a_run_waiting_on_recovery() {
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
     assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
-    owned_run(
+    crate::owned_run(
         &harness.settings,
         &harness.project,
         &mission.id,
@@ -771,7 +741,7 @@ fn derived_status_covers_each_group_including_a_run_waiting_on_recovery() {
     record.status = "waiting".into();
     record.outcome_reason_code = Some("recovery_decision_required".into());
     store.write_run_record(&paths, &record).unwrap();
-    harness.missions.deliver_run_events("run-gate").unwrap();
+    crate::deliver_run_events(&harness.settings, "run-gate");
     harness.wait_turns(2);
     // An active turn can handle the wait before escalating to the user.
     assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
@@ -803,32 +773,27 @@ fn recovery_fails_stale_turns_and_delivers_missing_terminal_events() {
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
     // A run failed before a restart while its result was still pending.
-    owned_run(
+    crate::owned_run(
         &harness.settings,
         &harness.project,
         &mission.id,
         "run-lost",
         "failed",
     );
-    assert!(harness
-        .missions
-        .deliver_run_events("run-lost")
-        .unwrap()
-        .is_none());
+    assert!(!crate::deliver_run_events(&harness.settings, "run-lost"));
     harness.agent.release(1);
-    let recovered = harness.missions.recover().unwrap();
-    assert_eq!(recovered.len(), 1);
+    crate::recover(&harness.settings);
     harness.wait_turns(2);
     assert_eq!(
-        harness.agent.prompts()[1],
-        "Run run-lost (work/seeded, \"Seeded work\") ended failed."
+        crate::batch_events(&harness.agent.prompts()[1]),
+        ["Run run-lost (work/seeded, \"Seeded work\") ended failed."]
     );
     harness.wait_idle(&mission.id);
     let mission = harness.get(&mission.id);
     assert_eq!(mission.inbox.runs[0].status, "failed");
     assert_eq!(mission.status, MissionStatus::NeedsYou);
     // A second recovery finds nothing new to deliver.
-    harness.missions.recover().unwrap();
+    crate::recover(&harness.settings);
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
 }
 
@@ -838,23 +803,13 @@ fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
     super::role_contracts::seed_bundled_roles(&harness.settings);
     let roles = crate::roles(harness.settings.clone());
     let coordinator = roles.get(&harness.project, "coordinator").unwrap();
-    roles
-        .post(
-            &harness.project,
-            "coordinator",
-            serde_json::from_value(
-                json!({"kind": "role.message", "payload": {"from": "a test", "message": "Hi"}}),
-            )
-            .unwrap(),
-        )
+    spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir))
+        .touch_conversation(&coordinator.conversation_id, &harness.project)
         .unwrap();
-    harness.wait_turns(1);
-    harness.agent.release(1);
     let idle = || {
         roles.get(&harness.project, "coordinator").unwrap().state
             != spark_workspace::roles::RoleState::Working
     };
-    wait_for("an idle coordinator", idle);
     let mission = harness
         .missions
         .create_from_conversation(
@@ -871,10 +826,13 @@ fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
             serde_json::from_value(json!({"reason": "Shipped"})).unwrap(),
         )
         .unwrap();
-    harness.wait_turns(2);
+    harness.wait_turns(1);
     assert_eq!(
-        harness.agent.prompts()[1],
-        format!("Mission \"Ship\" ({}) closed as done: Shipped", mission.id)
+        crate::batch_events(&harness.agent.prompts()[0]),
+        [format!(
+            "Mission \"Ship\" ({}) closed as done: Shipped",
+            mission.id
+        )]
     );
     harness.agent.release(1);
     wait_for("an idle coordinator", idle);
@@ -907,7 +865,7 @@ fn missions_stay_inside_their_project() {
 }
 
 #[test]
-fn ordinary_conversations_launch_directly_without_mission_integration() {
+fn ordinary_conversations_own_their_runs_without_mission_integration() {
     let harness = Harness::new();
     harness.install("ops/review", simple_flow());
     seed_conversation(&harness.settings, &harness.project, "conversation-task");
@@ -925,12 +883,14 @@ fn ordinary_conversations_launch_directly_without_mission_integration() {
         .unwrap();
     let run_id = response["run_id"].as_str().unwrap();
     assert_eq!(response["conversation_id"], "conversation-task");
+    crate::assert_owned(&harness.settings, run_id, "conversation-task");
     wait_terminal(&harness.settings, run_id);
-    assert!(harness
-        .missions
-        .deliver_run_events(run_id)
-        .unwrap()
-        .is_none());
+    assert!(crate::deliver_run_events(&harness.settings, run_id));
+    harness.wait_turns(1);
+    assert!(
+        harness.agent.prompts()[0].contains(&format!("[event {run_id}:completed from {run_id}]"))
+    );
+    harness.agent.release(1);
     assert_eq!(harness.get(&mission.id).revision, 1);
 }
 
@@ -1026,7 +986,7 @@ fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
     harness.wait_idle(&mission.id);
     let store = attractor_runtime::RunStore::for_settings(&harness.settings);
     for root in ["root-a", "root-b"] {
-        owned_run(
+        crate::owned_run(
             &harness.settings,
             &harness.project,
             &mission.id,
@@ -1070,13 +1030,13 @@ fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
                 ),
             )
             .unwrap();
-        harness.missions.deliver_run_events(id).unwrap();
+        crate::deliver_run_events(&harness.settings, id);
         harness.wait_turns(index + 2);
         let prompt = &harness.agent.prompts()[index + 1];
         assert!(prompt.contains(&format!("\"run_id\":\"{id}\"")), "{prompt}");
         assert!(prompt.contains("\"question_id\":\"gate-0\""), "{prompt}");
-        assert!(harness.missions.deliver_run_events(id).unwrap().is_none());
-        assert!(harness.missions.deliver_run_events(root).unwrap().is_none());
+        assert!(!crate::deliver_run_events(&harness.settings, id));
+        assert!(!crate::deliver_run_events(&harness.settings, root));
         assert_eq!(harness.get(&mission.id).inbox.event_seq, (index + 1) as u64);
         harness.agent.release(1);
         harness.wait_idle(&mission.id);
@@ -1096,7 +1056,7 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
             .start(&harness.project, &mission.id)
             .unwrap();
         harness.wait_turns(1);
-        owned_run(
+        crate::owned_run(
             &harness.settings,
             &harness.project,
             &mission.id,
@@ -1128,7 +1088,7 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
                 ),
             )
             .unwrap();
-        harness.missions.deliver_run_events("child").unwrap();
+        crate::deliver_run_events(&harness.settings, "child");
         assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
         assert!(harness
             .launch(&mission.id, "work/next", "Blocked")
@@ -1157,15 +1117,11 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
                 ),
             )
             .unwrap();
-        harness.missions.deliver_run_events("child").unwrap();
+        crate::deliver_run_events(&harness.settings, "child");
         let reconciled = harness.get(&mission.id);
         assert_eq!(reconciled.inbox.runs[0].status, status);
         assert_eq!(reconciled.inbox.event_seq, 2);
-        assert!(harness
-            .missions
-            .deliver_run_events("root")
-            .unwrap()
-            .is_none());
+        assert!(!crate::deliver_run_events(&harness.settings, "root"));
         let next = harness
             .launch(&mission.id, "work/next", "Continue")
             .unwrap();
@@ -1173,8 +1129,11 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
         harness.agent.release(1);
         harness.wait_turns(2);
         assert!(!harness.agent.prompts()[1].contains("Obsolete question"));
-        harness.agent.release(1);
+        // The question queued behind the first turn; the rest follow it.
+        harness.agent.release(2);
+        harness.wait_turns(3);
         harness.wait_idle(&mission.id);
+        assert!(!harness.agent.prompts()[2].contains("Obsolete question"));
     }
 }
 
@@ -1189,7 +1148,7 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
     harness.wait_turns(1);
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
-    owned_run(
+    crate::owned_run(
         &harness.settings,
         &harness.project,
         &mission.id,
@@ -1226,10 +1185,10 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
             ),
         )
         .unwrap();
-    harness.missions.deliver_run_events("grandchild").unwrap();
+    crate::deliver_run_events(&harness.settings, "grandchild");
     harness.wait_turns(2);
-    harness.missions.deliver_run_events("grandchild").unwrap();
-    harness.missions.deliver_run_events("root").unwrap();
+    crate::deliver_run_events(&harness.settings, "grandchild");
+    crate::deliver_run_events(&harness.settings, "root");
     assert_eq!(harness.get(&mission.id).inbox.event_seq, 1);
     assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
@@ -1275,7 +1234,7 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
             serde_json::from_value(json!({"selected_value":"ship"})).unwrap(),
         );
     assert_eq!(response.status_code, 200);
-    harness.missions.deliver_run_events("grandchild").unwrap();
+    crate::deliver_run_events(&harness.settings, "grandchild");
     assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "running");
     assert_eq!(harness.get(&mission.id).inbox.event_seq, 2);
     harness.agent.release(1);
@@ -1294,7 +1253,7 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
     let mut result = attractor_core::RunResult::pending("root", "completed");
     result.state = "completed".into();
     store.write_result(&root, &result).unwrap();
-    harness.missions.deliver_run_events("root").unwrap();
+    crate::deliver_run_events(&harness.settings, "root");
     harness.wait_turns(4);
     assert!(harness.agent.prompts()[3].contains("ended completed"));
     harness.agent.release(1);
@@ -1312,7 +1271,7 @@ fn the_offered_question_is_one_still_unanswered() {
     harness.wait_turns(1);
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
-    owned_run(
+    crate::owned_run(
         &harness.settings,
         &harness.project,
         &mission.id,
@@ -1348,7 +1307,7 @@ fn the_offered_question_is_one_still_unanswered() {
                 ),
             )
             .unwrap();
-        harness.missions.deliver_run_events(id).unwrap();
+        crate::deliver_run_events(&harness.settings, id);
         harness.wait_turns(index + 2);
         harness.agent.release(1);
         harness.wait_idle(&mission.id);
@@ -1361,7 +1320,7 @@ fn the_offered_question_is_one_still_unanswered() {
             serde_json::from_value(json!({"selected_value":"yes"})).unwrap(),
         );
         assert_eq!(response.status_code, 200);
-        harness.missions.deliver_run_events(run).unwrap();
+        crate::deliver_run_events(&harness.settings, run);
     };
     assert_eq!(
         harness.get(&mission.id).question.unwrap()["prompt"],
@@ -1379,7 +1338,7 @@ fn the_offered_question_is_one_still_unanswered() {
     record.status = "waiting".into();
     record.outcome_reason_code = Some("recovery_decision_required".into());
     store.write_run_record(&paths, &record).unwrap();
-    harness.missions.deliver_run_events("root").unwrap();
+    crate::deliver_run_events(&harness.settings, "root");
     harness.wait_turns(4);
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
@@ -1458,7 +1417,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     });
     let child = question["run_id"].as_str().unwrap();
     assert_ne!(child, root);
-    harness.missions.deliver_run_events(child).unwrap();
+    crate::deliver_run_events(&harness.settings, child);
     assert_eq!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     harness.agent.release(1);
     harness.wait_turns(2);
@@ -1468,11 +1427,11 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
         serde_json::from_value(json!({"selected_value":"proceed"})).unwrap(),
     );
     assert_eq!(response.status_code, 200);
-    harness.missions.deliver_run_events(child).unwrap();
+    crate::deliver_run_events(&harness.settings, child);
     assert_ne!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
     assert_eq!(wait_terminal(&harness.settings, child), "completed");
     assert_eq!(wait_terminal(&harness.settings, &root), "completed");
-    harness.missions.deliver_run_events(&root).unwrap();
+    crate::deliver_run_events(&harness.settings, &root);
     harness.agent.release(2);
     harness.wait_turns(3);
     harness.wait_idle(&mission.id);
@@ -1600,21 +1559,21 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
             .unwrap()
             .activation
     };
-    let noop = fire(json!({"before": "start"}));
-    assert_eq!(noop.status, "success");
-    assert!(noop
-        .trigger
-        .state
-        .recent_history
-        .last()
-        .unwrap()
-        .message
-        .contains("skipped"));
-    assert!(noop.message.contains("not started"));
-    assert_eq!(h.get(id).inbox.event_seq, 0);
+    // A draft holds the delivery until it starts.
+    let held = fire(json!({"before": "start"}));
+    assert_eq!(held.status, "success");
+    assert!(!held.message.contains("skipped"), "{}", held.message);
+    assert_eq!((h.get(id).inbox.event_seq, h.get(id).inbox.cursor), (1, 0));
+    assert!(h.agent.prompts().is_empty());
     assert!(h.missions.wait(&h.project, id, " ").is_err());
     h.missions.start(&h.project, id).unwrap();
     h.wait_turns(1);
+    let begin = h.agent.prompts()[0].clone();
+    assert!(
+        begin.starts_with("Begin work on this mission.\n\n[Inbox: 1 event "),
+        "{begin}"
+    );
+    assert!(begin.contains("\"before\":\"start\""), "{begin}");
     h.missions.wait(&h.project, id, "CI results").unwrap();
     h.agent.release(1);
     wait_for("waiting", || h.get(id).waiting);
@@ -1651,13 +1610,11 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
     assert!(prompt.contains("truncated"));
     assert!(prompt.contains("\n> "));
     assert!(!prompt.contains(&"界".repeat(5000)));
-    let scope = spark_storage::ProjectRegistry::new(h.settings.data_dir.clone())
-        .ensure_project_paths(&h.project)
-        .unwrap();
-    let inbox = spark_storage::workspace_records::RecordRepository::missions(&scope.root)
-        .read_events(id)
-        .unwrap();
-    assert_eq!(inbox.last().unwrap()["payload"]["source_payload"], full);
+    let inbox =
+        spark_storage::ConversationRepository::new(crate::shared_store(&h.settings.data_dir))
+            .inbox_events(id)
+            .unwrap();
+    assert_eq!(inbox.last().unwrap().payload["source_payload"], full);
     let schedule = create(
         "schedule",
         json!({"kind": "once", "run_at": "2026-06-24T09:00:00Z"}),
@@ -1694,13 +1651,17 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         .emit_flow_event(flow_event.as_object().unwrap().clone())
         .unwrap()
         .is_empty());
+    // The first delivery during the busy turn queued the next turn; the
+    // other two wait for the one after it.
     assert_eq!(h.agent.prompts().len(), 2);
-    assert_eq!(h.get(id).inbox.event_seq - h.get(id).inbox.cursor, 3);
+    assert_eq!(h.get(id).inbox.event_seq - h.get(id).inbox.cursor, 2);
     h.agent.release(1);
     h.wait_turns(3);
-    let prompt = h.agent.prompts()[2].clone();
+    h.agent.release(1);
+    h.wait_turns(4);
+    let prompts = h.agent.prompts()[2..].join("\n");
     for kind in ["schedule", "poll", "flow_event"] {
-        assert!(prompt.contains(&format!("{kind} watcher")));
+        assert!(prompts.contains(&format!("{kind} watcher")));
     }
     h.agent.release(1);
     h.wait_idle(id);
@@ -1743,7 +1704,7 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         .trigger
         .state
         .recent_history
-        .last()
+        .first()
         .unwrap()
         .message
         .contains("skipped"));

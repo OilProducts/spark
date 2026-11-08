@@ -482,15 +482,31 @@ fn mounted_start_route_accepts_current_json_payload() {
         "run_id": "run-mounted-start",
         "flow_name": crate::install_flow(&settings, simple_flow()),
         "working_directory": project_path,
-        "model": "compat-model"
+        "model": "compat-model",
+        "launch_context": {
+            "context.spark_owner": {"conversation_id": "someone-else"},
+            "context.request.summary": "Kept"
+        }
     })
     .to_string();
 
-    let response = handle_attractor_request("POST", "/attractor/pipelines", &body, settings);
+    let response =
+        handle_attractor_request("POST", "/attractor/pipelines", &body, settings.clone());
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body["status"], json!("started"));
     assert_eq!(response.body["pipeline_id"], json!("run-mounted-start"));
+    // Only the workspace names a run's owner conversation.
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let paths = store.find_run_root("run-mounted-start").unwrap().unwrap();
+    let context = store
+        .read_run_record(&paths)
+        .unwrap()
+        .unwrap()
+        .launch_context
+        .unwrap();
+    assert!(!context.contains_key("context.spark_owner"));
+    assert_eq!(context["context.request.summary"], json!("Kept"));
 }
 
 fn simple_flow() -> serde_json::Value {

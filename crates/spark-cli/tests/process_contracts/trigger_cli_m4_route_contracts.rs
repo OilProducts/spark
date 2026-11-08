@@ -678,8 +678,6 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let updated: Value = serde_json::from_slice(&updated.stdout).unwrap();
     assert_eq!(updated["action"]["mission_id"], id);
     assert_eq!(updated["name"], "Updated watcher");
-    let sent = mission_cli(&["send", "--message", "Focus on the parser"]);
-    assert_eq!(sent["id"], id);
 
     // The mission's agent launches directly from its conversation.
     write_flow(&settings, "work/parse");
@@ -698,6 +696,25 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     // A Page: the handle is on its conversation row.
     let handle = page_handle(&snapshot);
     let handle = handle.as_str();
+    let sent = run_spark(
+        temp.path(),
+        [
+            "send",
+            "--to",
+            handle,
+            "--conversation",
+            handle,
+            "--message",
+            "Focus on the parser",
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(sent.status.code(), Some(0), "{}", stderr(&sent));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&sent.stdout).unwrap()["conversation_id"],
+        id
+    );
     let output = run_spark(
         temp.path(),
         [
@@ -1076,16 +1093,29 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         .await
         .unwrap();
     let handle = page_handle(&conversation);
-    let sent = json_of(role_cli(&[
-        "send",
-        "--role",
-        "coordinator",
-        "--conversation",
-        &handle,
-        "--message",
-        "Fixed it",
-    ]));
-    assert_eq!(sent["event_seq"], 1);
+    assert_ne!(
+        role_cli(&["send", "--role", "chief-of-staff", "--message", "Fixed it"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let sent = json_of(run_spark(
+        temp.path(),
+        [
+            "send",
+            "--to",
+            &handle,
+            "--conversation",
+            &handle,
+            "--message",
+            "Fixed it",
+            "--base-url",
+            &server.base_url,
+        ],
+    ));
+    assert_eq!(sent["conversation_id"], started["conversation_id"]);
+    let listed = json_of(role_cli(&["list"]));
+    assert_eq!(listed["roles"][1]["event_seq"], 1, "{listed}");
     let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
     assert_eq!(stopped["state"], "stopped");
 

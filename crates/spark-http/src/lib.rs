@@ -217,16 +217,13 @@ fn build_app_on_store(
                 publish: Arc::new(move |envelope| live_hub.publish(envelope)),
             },
         );
-        let _ = spark_workspace::missions::WorkspaceMissionService::new(
-            (*state.settings).clone(),
-            state.conversation_store.clone(),
-        )
-        .recover();
-        let _ = spark_workspace::roles::WorkspaceRoleService::new(
-            (*state.settings).clone(),
-            state.conversation_store.clone(),
-        )
-        .recover();
+        // Then every conversation's inbox: runs that reported while no
+        // server ran, and events still waiting for a turn.
+        if let Err(error) =
+            spark_workspace::inbox::recover(&state.settings, &state.conversation_store)
+        {
+            eprintln!("Unable to recover conversation inboxes: {error}");
+        }
     }
     let app = Router::new()
         .route("/", get(serve_index))
@@ -2000,7 +1997,7 @@ fn publish_terminal_run_trigger_events(
         publish_trigger_activation_outcomes(settings, live_hub, outcomes);
     }
     // Inbox delivery rides the observed publish path only, so every run a
-    // mission or role launches is itself observed and reports back.
+    // conversation launches is itself observed and reports back.
     if run_event_observer.is_some() {
         let _ = spark_workspace::inbox::deliver_run_events(settings, &store, run_id);
     }

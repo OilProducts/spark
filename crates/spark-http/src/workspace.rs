@@ -148,6 +148,10 @@ pub fn router() -> Router<HttpAppState> {
             post(create_flow_run_request_by_handle),
         )
         .route(
+            "/conversations/by-handle/{conversation_handle}/messages",
+            post(send_conversation_message),
+        )
+        .route(
             "/conversations/{conversation_id}/flow-run-requests/{request_id}/review",
             post(review_flow_run_request),
         )
@@ -500,7 +504,6 @@ async fn send_conversation_turn(
         &run_event_observer,
     );
     run_conversation_turn(
-        settings,
         live_hub,
         service,
         conversation_id,
@@ -530,7 +533,6 @@ async fn retry_conversation_turn(
     );
     let project_path_for_start = project_path.clone();
     run_conversation_turn(
-        settings,
         live_hub,
         service,
         conversation_id,
@@ -551,7 +553,6 @@ async fn retry_conversation_turn(
 /// are published here. A message delivered into or queued behind a running
 /// turn starts nothing.
 async fn run_conversation_turn(
-    settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
     service: WorkspaceConversationService,
     conversation_id: String,
@@ -586,36 +587,15 @@ async fn run_conversation_turn(
         // The running turn keeps the app's store open through its final
         // commit, even if the app itself is dropped meanwhile.
         let store = service.store().clone();
-        let missions = mission_service(&settings, &store);
-        let roles =
-            spark_workspace::roles::WorkspaceRoleService::new((*settings).clone(), store.clone());
-        let (progress_conversation, progress_project) = (
-            completion_conversation_id.clone(),
-            completion_project_path.clone(),
-        );
         let _ = tokio::task::spawn_blocking(move || {
-            let completed =
-                service.complete_started_turn_with_progress_payloads(prepared, move |payload| {
-                    live_hub.publish(conversation_event_envelope(
-                        &progress_conversation,
-                        &progress_project,
-                        payload,
-                    ));
-                });
-            // A mission's inbox may have filled while this turn ran.
-            if missions
-                .conversation_mission(&completion_project_path, &completion_conversation_id)
-                .is_some()
-            {
-                let _ = missions.process(&completion_project_path, &completion_conversation_id);
-            }
-            // So is a standing role's.
-            if let Some(role) =
-                roles.conversation_role(&completion_project_path, &completion_conversation_id)
-            {
-                let _ = roles.process(&completion_project_path, &role.name);
-            }
-            completed
+            // Completion then processes the conversation's inbox.
+            service.complete_started_turn_with_progress_payloads(prepared, move |payload| {
+                live_hub.publish(conversation_event_envelope(
+                    &completion_conversation_id,
+                    &completion_project_path,
+                    payload,
+                ));
+            })
         })
         .await;
         drop(store);
@@ -711,6 +691,22 @@ async fn create_flow_run_request_by_handle(
     .create_flow_run_request_by_handle(&conversation_handle, request)?;
     publish_run_ids_from_value(&settings, &live_hub, &payload);
     Ok(Json(payload))
+}
+
+/// 202 once the message is stored in the recipient's inbox.
+async fn send_conversation_message(
+    State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
+    AxumPath(conversation_handle): AxumPath<String>,
+    payload: Result<Json<spark_workspace::inbox::ThreadMessageRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), WorkspaceApiError> {
+    let request = json_payload(payload)?;
+    let accepted = tokio::task::spawn_blocking(move || {
+        spark_workspace::inbox::send_message(&settings, &store, &conversation_handle, request)
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("send task failed: {error}")))??;
+    Ok((StatusCode::ACCEPTED, Json(accepted)))
 }
 
 async fn review_flow_run_request(
@@ -2116,35 +2112,20 @@ async fn get_org_memory(
     )?))
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RoleSendRequest {
-    conversation_handle: String,
-    message: String,
-}
-
 async fn control_role(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
     AxumPath((name, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
-    body: Bytes,
 ) -> ApiResult<spark_workspace::roles::RoleRecord> {
     let query = query_payload(query)?;
-    let send: Option<RoleSendRequest> = (control == "send")
-        .then(|| serde_json::from_slice(&body))
-        .transpose()
-        .map_err(|error| WorkspaceError::Validation(format!("Invalid send request: {error}")))?;
     let role = tokio::task::spawn_blocking(move || {
         let service =
             spark_workspace::roles::WorkspaceRoleService::new((*settings).clone(), store.clone());
         let project = query.project_path.as_str();
-        match (control.as_str(), send) {
-            ("start", _) => service.start(project, &name),
-            ("stop", _) => service.stop(project, &name),
-            ("send", Some(send)) => {
-                service.send(project, &name, &send.conversation_handle, &send.message)
-            }
+        match control.as_str() {
+            "start" => service.start(project, &name),
+            "stop" => service.stop(project, &name),
             _ => Err(WorkspaceError::NotFound("Unknown role control".into())),
         }
     })

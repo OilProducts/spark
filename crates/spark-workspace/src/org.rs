@@ -15,10 +15,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
-use crate::inbox::{invalid, read_events, InboxEvent};
+use crate::inbox::{invalid, InboxEvent};
 use crate::roles::{memory_dir, RoleRecord, WorkspaceRoleService};
 use crate::{WorkspaceError, WorkspaceResult};
-use spark_storage::{workspace_records::RecordRepository, ConversationStore, ProjectRegistry};
+use spark_storage::{ConversationRepository, ConversationStore};
 use std::sync::Arc;
 
 const RECENT_WAKES: usize = 10;
@@ -159,15 +159,12 @@ impl WorkspaceOrgService {
     }
 
     fn standing_roles(&self, project: &str) -> WorkspaceResult<BTreeMap<String, StandingRole>> {
-        let scope = ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project)?;
-        let repo = RecordRepository::roles(&scope.root);
+        let repository = ConversationRepository::new(self.store.clone());
         WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
             .list(project)?
             .into_iter()
             .map(|role| {
-                let mut events = read_events(&repo, &role.name)?;
-                events.reverse();
-                events.truncate(RECENT_WAKES);
+                let events = repository.recent_inbox_events(&role.conversation_id, RECENT_WAKES)?;
                 Ok((
                     role.name.clone(),
                     StandingRole {
