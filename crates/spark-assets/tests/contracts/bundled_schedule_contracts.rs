@@ -792,6 +792,9 @@ struct Expected {
     fields: Vec<(&'static str, Value)>,
 }
 
+/// implement-change's evaluate blocks only on findings real use reaches.
+const EVALUATE_FIX: &str = "The completed review found blocking defects requiring another implementation pass on the same item; record actionable findings.";
+
 fn description(decision: &str) -> &'static str {
     DESCRIPTIONS
         .iter()
@@ -872,7 +875,13 @@ fn schedule() -> BTreeMap<&'static str, BTreeMap<&'static str, Expected>> {
         if !explicit.iter().any(|(decision, _)| *decision == "blocked") {
             entries.push(("blocked", "failed", description("blocked")));
         }
-        entries.extend(explicit.iter().map(|(d, t)| (*d, *t, description(d))));
+        entries.extend(explicit.iter().map(|(d, t)| {
+            let text = match (*path, *d) {
+                ("software-development/implement-change/evaluate", "fix") => EVALUATE_FIX,
+                _ => description(d),
+            };
+            (*d, *t, text)
+        }));
         add(
             path,
             Expected {
