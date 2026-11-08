@@ -1075,7 +1075,8 @@ fn tool_events_externalize_oversized_outputs() {
 }
 
 /// A launch or recovery result is recorded only while its target still
-/// waits for it; a newer decision or an earlier result keeps its state.
+/// waits for it; a newer decision or an earlier result keeps its state,
+/// except a run started before its request's rejection.
 #[test]
 fn results_apply_only_to_artifacts_still_waiting_for_them() {
     let project_path = "/projects/commit-artifact-results";
@@ -1119,7 +1120,8 @@ fn results_apply_only_to_artifacts_still_waiting_for_them() {
     );
     create(ArtifactCollection::RunRecoveries, "recovery-r", "pending");
 
-    // An approved request's late result does not replace its rejection.
+    // A request rejected while its approval launches keeps its rejection
+    // through a failed launch, and links the run of one that started.
     change(ArtifactChange::ApproveFlowRequest {
         request_id: "request-r".to_string(),
         message: "Go.".to_string(),
@@ -1136,9 +1138,25 @@ fn results_apply_only_to_artifacts_still_waiting_for_them() {
         launched(
             ArtifactCollection::FlowRunRequests,
             "request-r",
-            Ok("run-1"),
+            Err("late"),
         ),
         "rejected",
+    );
+    assert!(matches!(
+        launched(
+            ArtifactCollection::FlowRunRequests,
+            "request-r",
+            Ok("run-1"),
+        ),
+        ArtifactOutcome::Changed(_)
+    ));
+    refused(
+        launched(
+            ArtifactCollection::FlowRunRequests,
+            "request-r",
+            Ok("run-5"),
+        ),
+        "launched",
     );
     // A direct launch and a recovery take one result.
     assert!(matches!(
@@ -1201,8 +1219,10 @@ fn results_apply_only_to_artifacts_still_waiting_for_them() {
             .unwrap_or_else(|| panic!("{collection} {id}"))
     };
     let request = artifact("flow_run_requests", "request-r");
-    assert_eq!(request["status"], "rejected");
-    assert!(request.get("run_id").is_none());
+    assert_eq!(
+        (&request["status"], &request["run_id"]),
+        (&json!("launched"), &json!("run-1"))
+    );
     let launch = artifact("flow_launches", "launch-r");
     assert_eq!(
         (&launch["status"], &launch["run_id"]),

@@ -176,10 +176,10 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     assert!(!failed["launch_error"].as_str().expect("error").is_empty());
 }
 
-/// Another reviewer's rejection while an approval's launch runs stays: the
-/// launch's late result is not recorded over it.
+/// A stale rejection that lands while an approval's launch runs cannot stop
+/// the run, which stays linked to its request.
 #[test]
-fn a_rejection_during_an_approvals_launch_outlasts_its_result() {
+fn a_rejection_during_an_approvals_launch_keeps_its_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
@@ -241,9 +241,13 @@ fn a_rejection_during_an_approvals_launch_outlasts_its_result() {
         )
         .expect("snapshot");
     let request = request_by_id(&snapshot, "request-race");
-    assert_eq!(request["status"], "rejected", "{request}");
-    assert_eq!(request["review_message"], "rejected by a reviewer.");
-    assert!(request.get("run_id").is_none(), "{request}");
+    assert_eq!(request["status"], "launched", "{request}");
+    assert!(
+        request["run_id"]
+            .as_str()
+            .is_some_and(|run| !run.is_empty()),
+        "{request}"
+    );
 }
 
 fn pending_request(

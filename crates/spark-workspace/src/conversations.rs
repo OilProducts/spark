@@ -1328,6 +1328,13 @@ impl WorkspaceConversationService {
             match self.begin_turn(conversation_id, request, TurnStart::Queued(&queued)) {
                 Ok((Some(prepared), acceptance)) => return Ok(Some((prepared, acceptance))),
                 Ok((None, _)) => return Ok(None),
+                // A failed turn's execution has yet to settle; its run starts
+                // the message once it does.
+                Err(WorkspaceError::Conflict(message))
+                    if message == ACTIVE_ASSISTANT_TURN_MESSAGE =>
+                {
+                    return Ok(None)
+                }
                 Err(error) => {
                     repository.fail_queued_message(
                         conversation_id,
@@ -1494,6 +1501,8 @@ impl WorkspaceConversationService {
         let effective_reasoning_effort = effective.reasoning_effort.clone();
         execution_settings["source"] = json!(source);
         execution_settings["chat_mode"] = json!(effective_chat_mode);
+        // The provider that runs it, which files the thread it reports.
+        execution_settings["provider"] = json!(effective_provider);
         // Compatibility projection only; new turns resolve the authored group above.
         if snapshot["provider"] != json!(effective_provider) {
             settings_patch.provider = Some(effective_provider.clone());
@@ -2613,8 +2622,9 @@ impl WorkspaceConversationService {
             ),
             Err(error) => format!("Flow run request {request_id} failed to launch: {error}"),
         };
-        // A decision made while the launch ran keeps its state: the result
-        // is then not recorded.
+        // A decision made while the launch ran keeps its state, and the
+        // result is then not recorded, except a started run, which a
+        // rejection cannot stop.
         repository.change_artifacts(
             conversation_id,
             &project_path,
