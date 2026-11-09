@@ -205,7 +205,7 @@ impl CodexAppServerBackend {
             })
             .flatten();
         // Registered before the handshake so a stop also ends a stuck `initialize`.
-        let stop = Arc::<TurnStop>::default();
+        let (stop, inbox) = TurnStop::new();
         interrupt_registry().lock().unwrap().insert(
             (
                 request.project_path.clone(),
@@ -217,7 +217,7 @@ impl CodexAppServerBackend {
             PathBuf::from(&request.project_path),
             trace_path,
             native,
-            stop,
+            Some((stop, inbox)),
         )?;
         client.clarification_handler = clarification_handler;
         client.developer_instructions = metadata_string(
@@ -327,12 +327,16 @@ impl CodexAppServerBackend {
             return false;
         };
         let (sender, receiver) = std::sync::mpsc::channel();
-        stop.messages
-            .lock()
-            .unwrap()
-            .push((message_id.to_string(), message.to_string(), sender));
+        match stop.messages.lock().unwrap().as_mut() {
+            Some(messages) => {
+                messages.push((message_id.to_string(), message.to_string(), sender));
+            }
+            // The turn has ended and takes no more messages.
+            None => return false,
+        }
+        stop.wake();
         // The turn loop answers once turn/steer returns; a turn that ends
-        // first drops the sender.
+        // first answers false.
         match receiver.recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(1)) {
             Ok(accepted) => accepted,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
@@ -341,9 +345,11 @@ impl CodexAppServerBackend {
                 // ever queued or delivered, never both. A taken message is
                 // mid turn/steer, which its own request timeout bounds.
                 let mut messages = stop.messages.lock().unwrap();
-                if let Some(index) = messages.iter().position(|(id, ..)| id == message_id) {
-                    messages.remove(index);
-                    return false;
+                if let Some(messages) = messages.as_mut() {
+                    if let Some(index) = messages.iter().position(|(id, ..)| id == message_id) {
+                        messages.remove(index);
+                        return false;
+                    }
                 }
                 drop(messages);
                 receiver.recv().unwrap_or(false)
@@ -367,15 +373,18 @@ impl CodexAppServerBackend {
         conversation_id: &str,
         flag: impl Fn(&TurnStop) -> &AtomicBool,
     ) -> bool {
-        let mut registry = interrupt_registry().lock().unwrap();
-        registry.retain(|_, stop| stop.strong_count() > 0);
-        registry
-            .get(&(project_path.to_string(), conversation_id.to_string()))
-            .and_then(Weak::upgrade)
-            .is_some_and(|stop| {
-                flag(&stop).store(true, Ordering::SeqCst);
-                true
-            })
+        let stop = {
+            let mut registry = interrupt_registry().lock().unwrap();
+            registry.retain(|_, stop| stop.strong_count() > 0);
+            registry
+                .get(&(project_path.to_string(), conversation_id.to_string()))
+                .and_then(Weak::upgrade)
+        };
+        stop.is_some_and(|stop| {
+            flag(&stop).store(true, Ordering::SeqCst);
+            stop.wake();
+            true
+        })
     }
 
     pub fn answer_request_user_input(
@@ -491,7 +500,11 @@ fn thread_resume_failure_output(
 pub struct CodexAppServerClient {
     child: Child,
     stdin: mpsc::Sender<String>,
-    stdout: Receiver<String>,
+    inbox: Receiver<Inbox>,
+    /// Set once stdout ends: `Some(None)` at EOF, else the read error.
+    stdout_end: Option<Option<String>>,
+    /// A control wake an RPC wait received, left for the turn loop to act on.
+    woken: bool,
     next_request_id: u64,
     pending_messages: VecDeque<Value>,
     pending_responses: BTreeMap<String, VecDeque<Value>>,
@@ -517,15 +530,17 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
     ) -> Result<Self, CodexAppServerError> {
-        Self::connect_with_settings(working_dir, trace_path, None, Arc::default())
+        Self::connect_with_settings(working_dir, trace_path, None, None)
     }
 
+    /// `controls` are a registered turn's; a standalone client gets its own.
     fn connect_with_settings(
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
         native: Option<&spark_common::agent_settings::NativeAgentSettings>,
-        stop: Arc<TurnStop>,
+        controls: Option<(Arc<TurnStop>, Receiver<Inbox>)>,
     ) -> Result<Self, CodexAppServerError> {
+        let (stop, inbox) = controls.unwrap_or_else(TurnStop::new);
         if !working_dir.exists() {
             return Err(CodexAppServerError::configuration(format!(
                 "codex app-server working directory is unavailable in the runtime: {}",
@@ -572,14 +587,26 @@ impl CodexAppServerClient {
         let stderr = child.stderr.take().ok_or_else(|| {
             CodexAppServerError::runtime("codex app-server did not expose stderr")
         })?;
-        let (stdout_sender, stdout_receiver) = mpsc::channel();
+        // Lines in order, then exactly one end. ponytail: the end is how a
+        // turn sees its app-server exit, so an exited app-server whose stdout
+        // a descendant still holds open goes unseen while a pending question
+        // suspends idle expiry. codex-cli 0.162.1 gives commands their own
+        // pipes; add a `Child::wait` waiter if that changes.
+        let stdout_inbox = stop.inbox.clone();
         thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if stdout_sender.send(line).is_err() {
-                    break;
+            let mut lines = BufReader::new(stdout).lines();
+            let end = loop {
+                match lines.next() {
+                    Some(Ok(line)) => {
+                        if stdout_inbox.send(Inbox::Line(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Some(Err(error)) => break Some(error.to_string()),
+                    None => break None,
                 }
-            }
+            };
+            let _ = stdout_inbox.send(Inbox::End(end));
         });
         let stderr_lines = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_sink = Arc::clone(&stderr_lines);
@@ -597,7 +624,9 @@ impl CodexAppServerClient {
         let mut client = Self {
             child,
             stdin: crate::agent::stdin_writer(stdin),
-            stdout: stdout_receiver,
+            inbox,
+            stdout_end: None,
+            woken: false,
             next_request_id: 0,
             pending_messages: VecDeque::new(),
             pending_responses: BTreeMap::new(),
@@ -903,9 +932,13 @@ impl CodexAppServerClient {
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         let mut state = CodexAppServerTurnState::default();
         let mut events = Vec::new();
-        let mut last_activity = Instant::now();
+        // Renewed only by provider output; suspended while a question waits
+        // on a person, with a full window again once none does.
+        let mut idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
+        let mut flow_check_due = None;
         let mut stopping = false;
         loop {
+            self.check_terminated()?;
             self.steer_messages(
                 thread_id,
                 expected_turn_id,
@@ -913,7 +946,6 @@ impl CodexAppServerClient {
                 event_sink.as_ref(),
                 &mut events,
             );
-            self.check_terminated()?;
             if !stopping && self.stop.interrupt.load(Ordering::SeqCst) {
                 stopping = true;
                 let response = self.send_request(
@@ -925,7 +957,6 @@ impl CodexAppServerClient {
                 }
             }
             if let Some(pending) = self.pending_request_user_input.as_ref() {
-                last_activity = Instant::now();
                 if stopping {
                     // A stopped turn leaves its question unanswered; dropping unregisters it.
                     self.pending_request_user_input = None;
@@ -935,8 +966,14 @@ impl CodexAppServerClient {
                     self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
                 }
             }
-            if !self.workflow_questions.is_empty() {
-                last_activity = Instant::now();
+            // ponytail: a flow question's answer and its run's status live in
+            // the run record and journal, which another process writes, so
+            // they are checked every 100 ms while one is pending, on their own
+            // schedule that output cannot delay. Removing this needs
+            // cross-process notification.
+            if !self.workflow_questions.is_empty()
+                && flow_check_due.is_none_or(|due| Instant::now() >= due)
+            {
                 let mut index = 0;
                 while index < self.workflow_questions.len() {
                     let answers = (self.workflow_questions[index].1)()
@@ -948,21 +985,50 @@ impl CodexAppServerClient {
                         index += 1;
                     }
                 }
+                flow_check_due = Some(Instant::now() + Duration::from_millis(100));
             }
-            if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
+            if self.workflow_questions.is_empty() {
+                flow_check_due = None;
+            }
+            if self.pending_request_user_input.is_some() || !self.workflow_questions.is_empty() {
+                idle_deadline = None;
+            } else if idle_deadline.is_none() {
+                idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
+            }
+            if idle_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(CodexAppServerError::runtime(
                     "codex app-server turn timed out waiting for activity",
                 ));
             }
-            let Some(message) = self.next_message(Duration::from_millis(100))? else {
-                if self.child.try_wait().ok().flatten().is_some() {
-                    return Err(CodexAppServerError::runtime(
-                        "codex app-server exited before turn completion",
-                    ));
-                }
-                continue;
+            let deadline = idle_deadline.into_iter().chain(flow_check_due).min();
+            let message = match self.pending_messages.pop_front() {
+                Some(message) => message,
+                // A control that woke an RPC wait is acted on before blocking.
+                None if std::mem::take(&mut self.woken) => continue,
+                None => match self.receive(deadline)? {
+                    // A deadline passed or a control changed: recheck them all.
+                    None | Some(Inbox::Wake) => continue,
+                    Some(Inbox::End(read_error)) => {
+                        return Err(stream_end_error(
+                            read_error,
+                            "codex app-server exited before turn completion",
+                        ))
+                    }
+                    Some(Inbox::Line(line)) => {
+                        if let Some(message) = parse_jsonrpc_line(&line) {
+                            self.route_incoming_message(message)?;
+                        }
+                        // Replies and malformed lines are not provider activity.
+                        let Some(message) = self.pending_messages.pop_front() else {
+                            continue;
+                        };
+                        message
+                    }
+                },
             };
-            last_activity = Instant::now();
+            if idle_deadline.is_some() {
+                idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
+            }
             let extracted_turn_id = extract_turn_id(&message);
             if extracted_turn_id
                 .as_deref()
@@ -1057,7 +1123,14 @@ impl CodexAppServerClient {
         event_sink: Option<&AgentTurnEventSink>,
         events: &mut Vec<TurnStreamEvent>,
     ) {
-        let messages = std::mem::take(&mut *self.stop.messages.lock().unwrap());
+        let messages = self
+            .stop
+            .messages
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
         for (message_id, text, accepted) in messages {
             if stopping {
                 let _ = accepted.send(false);
@@ -1103,24 +1176,40 @@ impl CodexAppServerClient {
         target_id: u64,
         timeout: Duration,
     ) -> Result<Value, CodexAppServerError> {
-        let started = Instant::now();
+        let deadline = Instant::now() + timeout;
         let target_key = target_id.to_string();
         loop {
             if let Some(response) = self.pop_pending_response(&target_key) {
                 return Ok(response);
             }
             self.check_terminated()?;
-            if started.elapsed() >= timeout {
-                return Err(CodexAppServerError::runtime(
-                    "codex app-server request timed out waiting for response",
-                ));
-            }
-            let Some(message) = self.read_message(Duration::from_millis(100))? else {
-                if self.child.try_wait().ok().flatten().is_some() {
+            // Checked before each receive, so steady output cannot extend it.
+            let event = if Instant::now() < deadline {
+                self.receive(Some(deadline))?
+            } else {
+                None
+            };
+            let line = match event {
+                None => {
                     return Err(CodexAppServerError::runtime(
-                        "codex app-server exited unexpectedly",
-                    ));
+                        "codex app-server request timed out waiting for response",
+                    ))
                 }
+                // Only forced termination, checked above, acts mid request;
+                // the turn loop takes up any other control afterwards.
+                Some(Inbox::Wake) => {
+                    self.woken = true;
+                    continue;
+                }
+                Some(Inbox::End(read_error)) => {
+                    return Err(stream_end_error(
+                        read_error,
+                        "codex app-server exited unexpectedly",
+                    ))
+                }
+                Some(Inbox::Line(line)) => line,
+            };
+            let Some(message) = parse_jsonrpc_line(&line) else {
                 continue;
             };
             if message.get("id").and_then(id_key).as_deref() == Some(target_key.as_str()) {
@@ -1141,21 +1230,17 @@ impl CodexAppServerClient {
         ))
     }
 
+    /// The next notification, or a server request as one, if a line brings
+    /// one within `wait`.
     fn next_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {
-        if let Some(message) = self.pending_messages.pop_front() {
-            return Ok(Some(message));
+        if self.pending_messages.is_empty() {
+            if let Some(Inbox::Line(line)) = self.receive(Some(Instant::now() + wait))? {
+                if let Some(message) = parse_jsonrpc_line(&line) {
+                    self.route_incoming_message(message)?;
+                }
+            }
         }
-        let Some(message) = self.read_message(wait)? else {
-            return Ok(None);
-        };
-        if message.get("id").is_some() && message.get("method").is_some() {
-            return self.handle_server_request(message).map(Some);
-        }
-        if message.get("id").is_some() {
-            self.queue_pending_response(message);
-            return Ok(None);
-        }
-        Ok(message.get("method").is_some().then_some(message))
+        Ok(self.pending_messages.pop_front())
     }
 
     fn route_incoming_message(&mut self, message: Value) -> Result<(), CodexAppServerError> {
@@ -1185,8 +1270,10 @@ impl CodexAppServerClient {
                 let poll = handler(params).map_err(CodexAppServerError::runtime)?;
                 self.workflow_questions.push((request_id.clone(), poll));
             } else {
-                self.pending_request_user_input =
-                    Some(register_request_user_input_response(&message));
+                self.pending_request_user_input = Some(register_request_user_input_response(
+                    &message,
+                    self.stop.inbox.clone(),
+                ));
             }
             Value::Null
         } else {
@@ -1221,14 +1308,31 @@ impl CodexAppServerClient {
             .map_err(|_| CodexAppServerError::runtime("codex app-server stdin write failed"))
     }
 
-    fn read_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {
-        match self.stdout.recv_timeout(wait) {
-            Ok(line) => {
-                self.append_trace_line("incoming", &line)?;
-                Ok(parse_jsonrpc_line(&line))
-            }
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => Ok(None),
+    /// The next inbox event, waiting until `deadline` (or for as long as it
+    /// takes); `None` once the deadline passes. After stdout ends, every call
+    /// reports that end again.
+    fn receive(&mut self, deadline: Option<Instant>) -> Result<Option<Inbox>, CodexAppServerError> {
+        if let Some(read_error) = &self.stdout_end {
+            return Ok(Some(Inbox::End(read_error.clone())));
         }
+        let received = match deadline {
+            Some(deadline) => self
+                .inbox
+                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
+            None => self.inbox.recv().map_err(RecvTimeoutError::from),
+        };
+        let event = match received {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => return Ok(None),
+            // Not expected: this client's own `TurnStop` keeps a sender.
+            Err(RecvTimeoutError::Disconnected) => Inbox::End(None),
+        };
+        match &event {
+            Inbox::Line(line) => self.append_trace_line("incoming", line)?,
+            Inbox::End(read_error) => self.stdout_end = Some(read_error.clone()),
+            Inbox::Wake => {}
+        }
+        Ok(Some(event))
     }
 
     fn append_trace_line(&self, direction: &str, line: &str) -> Result<(), CodexAppServerError> {
@@ -1276,6 +1380,8 @@ struct PendingRequestUserInput {
     app_turn_id: Option<String>,
     aliases: Vec<String>,
     state: Mutex<PendingRequestUserInputState>,
+    /// The asking client's inbox, woken once an answer is stored.
+    inbox: mpsc::Sender<Inbox>,
 }
 
 #[derive(Debug, Default)]
@@ -1292,16 +1398,47 @@ impl PendingRequestUserInput {
         if let Ok(mut state) = self.state.lock() {
             state.answers = Some(answers);
         }
+        let _ = self.inbox.send(Inbox::Wake);
     }
 }
 
-#[derive(Debug, Default)]
+/// What a client waits on: stdout's lines in order and then its end, and
+/// wakes sent after a control changes. A wake carries no state; it only makes
+/// the client recheck, so an extra one is harmless.
+#[derive(Debug)]
+enum Inbox {
+    Line(String),
+    /// Stdout ended: `None` at EOF, else the read error.
+    End(Option<String>),
+    Wake,
+}
+
+#[derive(Debug)]
 struct TurnStop {
     interrupt: AtomicBool,
     terminate: AtomicBool,
     /// Messages for turn/steer, each with where to report acceptance.
-    /// `(message_id, message, accepted)`.
-    messages: Mutex<Vec<(String, String, std::sync::mpsc::Sender<bool>)>>,
+    /// `(message_id, message, accepted)`. `None` once the turn has ended.
+    messages: Mutex<Option<Vec<(String, String, std::sync::mpsc::Sender<bool>)>>>,
+    inbox: mpsc::Sender<Inbox>,
+}
+
+impl TurnStop {
+    fn new() -> (Arc<Self>, Receiver<Inbox>) {
+        let (inbox, receiver) = mpsc::channel();
+        let stop = Self {
+            interrupt: AtomicBool::new(false),
+            terminate: AtomicBool::new(false),
+            messages: Mutex::new(Some(Vec::new())),
+            inbox,
+        };
+        (Arc::new(stop), receiver)
+    }
+
+    /// Sent after a change is published and its lock released.
+    fn wake(&self) {
+        let _ = self.inbox.send(Inbox::Wake);
+    }
 }
 
 type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<TurnStop>>>;
@@ -1316,7 +1453,10 @@ fn request_user_input_registry() -> &'static Mutex<BTreeMap<String, Arc<PendingR
     REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn register_request_user_input_response(message: &Value) -> PendingRequestUserInputResponse {
+fn register_request_user_input_response(
+    message: &Value,
+    inbox: mpsc::Sender<Inbox>,
+) -> PendingRequestUserInputResponse {
     let params = message
         .get("params")
         .and_then(Value::as_object)
@@ -1341,6 +1481,7 @@ fn register_request_user_input_response(message: &Value) -> PendingRequestUserIn
         app_turn_id,
         aliases,
         state: Mutex::new(PendingRequestUserInputState::default()),
+        inbox,
     });
     if let Ok(mut registry) = request_user_input_registry().lock() {
         for key in request_user_input_registry_keys(&pending) {
@@ -1640,6 +1781,16 @@ struct CodexJsonrpcTraceLine<'a> {
 
 impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
+        // Closed to further messages; one the turn never took was not delivered.
+        let untaken = self
+            .stop
+            .messages
+            .lock()
+            .ok()
+            .and_then(|mut messages| messages.take());
+        for (.., accepted) in untaken.unwrap_or_default() {
+            let _ = accepted.send(false);
+        }
         self.workflow_questions.clear();
         if matches!(self.child.try_wait(), Ok(None)) {
             let pid = self.child.id();
@@ -2225,9 +2376,8 @@ pub fn list_available_codex_models_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
 ) -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
     let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
-    let mut client =
-        CodexAppServerClient::connect_with_settings(working_dir, None, native, Arc::default())
-            .map_err(log_model_discovery_error)?;
+    let mut client = CodexAppServerClient::connect_with_settings(working_dir, None, native, None)
+        .map_err(log_model_discovery_error)?;
     let result = client
         .list_models()
         .map_err(|error| log_model_discovery_error(error))?;
@@ -3071,6 +3221,14 @@ pub fn usage_from_codex_token_payload(payload: &Value) -> Option<Usage> {
         }
         .normalized(),
     )
+}
+
+/// Why no more output or replies can come once stdout has ended.
+fn stream_end_error(read_error: Option<String>, exited: &str) -> CodexAppServerError {
+    CodexAppServerError::runtime(match read_error {
+        Some(error) => format!("codex app-server stdout read failed: {error}"),
+        None => exited.to_string(),
+    })
 }
 
 fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {

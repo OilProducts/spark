@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -8,9 +8,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
-    AgentAttachment, AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnRequest,
-    CodexAppServerBackend, CodexAppServerClient, CodexAppServerTurnState, HistoryTurn,
-    RustLlmAgentTurnBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
+    AgentAttachment, AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnOutput,
+    AgentTurnRequest, CodergenBackend, CodergenBackendRequest, CodexAppServerBackend,
+    CodexAppServerClient, CodexAppServerError, CodexAppServerTurnState, HistoryTurn,
+    RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
@@ -320,6 +321,335 @@ fn send_message_reaches_turn_steer_on_the_running_turn() {
         .expect("turn/steer");
     assert_eq!(steer["params"]["expectedTurnId"], json!("turn-steer"));
     assert_eq!(steer["params"]["input"][0]["text"], json!("Use the docs."));
+}
+
+/// Points Codex turns at the fake app-server in `mode`, logging its requests
+/// to `dir/codex-rpc.jsonl` and gated by files in `dir`.
+fn fake_codex(dir: &Path, mode: &str) -> [EnvVarGuard; 5] {
+    [
+        EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin()),
+        EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", mode),
+        EnvVarGuard::set(
+            "SPARK_FAKE_CODEX_APP_SERVER_LOG",
+            dir.join("codex-rpc.jsonl"),
+        ),
+        EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR", dir),
+        EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", dir.join("codex-runtime")),
+    ]
+}
+
+fn turn_request(dir: &Path, conversation_id: &str) -> AgentTurnRequest {
+    AgentTurnRequest {
+        conversation_id: conversation_id.to_string(),
+        project_path: dir.to_string_lossy().into_owned(),
+        prompt: "Work".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::new(),
+    }
+}
+
+/// Runs the turn on its own thread. Every wait on the result below is far
+/// shorter than the idle (300 s) and acceptance (61 s) bounds, so a turn or
+/// caller that only those bounds would release fails the test.
+fn spawn_turn(
+    request: AgentTurnRequest,
+) -> mpsc::Receiver<Result<AgentTurnOutput, CodexAppServerError>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || sender.send(CodexAppServerBackend::new().run_agent_turn(request)));
+    receiver
+}
+
+fn spawn_send_message(dir: &Path, conversation_id: &str, id: &str) -> mpsc::Receiver<bool> {
+    let (sender, receiver) = mpsc::channel();
+    let (path, conversation_id, id) = (
+        dir.to_string_lossy().into_owned(),
+        conversation_id.to_string(),
+        id.to_string(),
+    );
+    thread::spawn(move || {
+        sender.send(CodexAppServerBackend::new().send_message(
+            &path,
+            &conversation_id,
+            &id,
+            "Use the docs.",
+        ))
+    });
+    receiver
+}
+
+fn wait_for_logged(dir: &Path, method: &str) {
+    let started = std::time::Instant::now();
+    while !fs::read_to_string(dir.join("codex-rpc.jsonl"))
+        .unwrap_or_default()
+        .contains(&format!("\"method\":\"{method}\""))
+    {
+        assert!(started.elapsed() < Duration::from_secs(10), "{method}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+const PROMPTLY: Duration = Duration::from_secs(10);
+
+fn delivered_ids(output: &AgentTurnOutput) -> Vec<&str> {
+    output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::Other("user_message_delivered".into()))
+        .filter_map(|event| event.source.item_id.as_deref())
+        .collect()
+}
+
+#[test]
+fn send_message_is_accepted_only_once_turn_steer_succeeds() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steer-gated");
+    let turn = spawn_turn(turn_request(temp.path(), "codex-steer-gated"));
+    wait_for_logged(temp.path(), "turn/start");
+
+    let accepted = spawn_send_message(temp.path(), "codex-steer-gated", "note-1");
+    wait_for_logged(temp.path(), "turn/steer");
+    assert_eq!(
+        accepted.recv_timeout(Duration::from_millis(300)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "accepted before turn/steer replied"
+    );
+    fs::write(temp.path().join("steer-reply"), "").expect("open steer gate");
+    assert_eq!(accepted.recv_timeout(PROMPTLY), Ok(true));
+
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("turn");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Steered"));
+    assert_eq!(delivered_ids(&output), ["note-1"]);
+    let delivered = output
+        .events
+        .iter()
+        .position(|event| event.kind == TurnStreamEventKind::Other("user_message_delivered".into()))
+        .expect("delivered");
+    let read_during_steer = output
+        .events
+        .iter()
+        .position(|event| event.content_delta.as_deref() == Some("Reading."))
+        .expect("output read while turn/steer was outstanding");
+    assert!(delivered < read_during_steer);
+}
+
+#[test]
+fn rejected_steer_is_not_delivered_and_the_turn_takes_the_next_message() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steer-rejected");
+    let turn = spawn_turn(turn_request(temp.path(), "codex-steer-rejected"));
+    wait_for_logged(temp.path(), "turn/start");
+
+    let rejected = spawn_send_message(temp.path(), "codex-steer-rejected", "note-1");
+    assert_eq!(rejected.recv_timeout(PROMPTLY), Ok(false));
+    let accepted = spawn_send_message(temp.path(), "codex-steer-rejected", "note-2");
+    assert_eq!(accepted.recv_timeout(PROMPTLY), Ok(true));
+
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("turn");
+    assert_eq!(delivered_ids(&output), ["note-2"]);
+}
+
+#[test]
+fn terminate_ends_a_silent_turn_and_withheld_replies_at_once() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let terminated = |result: Result<AgentTurnOutput, CodexAppServerError>| {
+        assert_eq!(
+            result.expect_err("terminated turn").message,
+            "codex app-server was terminated after its turn did not stop"
+        );
+    };
+    let backend = CodexAppServerBackend::new();
+
+    // Stdout silent mid turn.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steerable");
+    let path = temp.path().to_string_lossy().into_owned();
+    let turn = spawn_turn(turn_request(temp.path(), "codex-silent"));
+    wait_for_logged(temp.path(), "turn/start");
+    assert!(backend.terminate(&path, "codex-silent"));
+    terminated(turn.recv_timeout(PROMPTLY).expect("turn ended"));
+
+    // No initialize reply; a message queued meanwhile is released as not delivered.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "initialize-silent");
+    let path = temp.path().to_string_lossy().into_owned();
+    let turn = spawn_turn(turn_request(temp.path(), "codex-initialize"));
+    wait_for_logged(temp.path(), "initialize");
+    let queued = spawn_send_message(temp.path(), "codex-initialize", "note-1");
+    thread::sleep(Duration::from_millis(200));
+    assert!(backend.terminate(&path, "codex-initialize"));
+    terminated(turn.recv_timeout(PROMPTLY).expect("turn ended"));
+    assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false));
+
+    // No turn/steer reply, with a second message queued behind it.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steer-gated");
+    let path = temp.path().to_string_lossy().into_owned();
+    let turn = spawn_turn(turn_request(temp.path(), "codex-steer-withheld"));
+    wait_for_logged(temp.path(), "turn/start");
+    let taken = spawn_send_message(temp.path(), "codex-steer-withheld", "note-1");
+    wait_for_logged(temp.path(), "turn/steer");
+    let queued = spawn_send_message(temp.path(), "codex-steer-withheld", "note-2");
+    thread::sleep(Duration::from_millis(200));
+    assert!(backend.terminate(&path, "codex-steer-withheld"));
+    terminated(turn.recv_timeout(PROMPTLY).expect("turn ended"));
+    assert_eq!(taken.recv_timeout(PROMPTLY), Ok(false));
+    assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false));
+    assert!(!backend.send_message(&path, "codex-steer-withheld", "note-3", "Late."));
+
+    // No turn/interrupt reply.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steer-gated");
+    let path = temp.path().to_string_lossy().into_owned();
+    let turn = spawn_turn(turn_request(temp.path(), "codex-interrupt-withheld"));
+    wait_for_logged(temp.path(), "turn/start");
+    assert!(backend.interrupt(&path, "codex-interrupt-withheld"));
+    wait_for_logged(temp.path(), "turn/interrupt");
+    assert!(backend.terminate(&path, "codex-interrupt-withheld"));
+    terminated(turn.recv_timeout(PROMPTLY).expect("turn ended"));
+}
+
+#[test]
+fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for mode in ["exit-mid-turn", "question-then-exit"] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _env = fake_codex(temp.path(), mode);
+        let turn = spawn_turn(turn_request(temp.path(), "codex-exit"));
+        let error = turn
+            .recv_timeout(PROMPTLY)
+            .expect("turn ended")
+            .expect_err("exited turn");
+        assert_eq!(
+            error.message, "codex app-server exited before turn completion",
+            "{mode}"
+        );
+    }
+    let late_answer = CodexAppServerBackend::new()
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "codex-exit".to_string(),
+            project_path: String::new(),
+            request_id: "choice".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([("choice".to_string(), "A".to_string())]),
+            request_user_input: None,
+            history: Vec::new(),
+            provider: Some("codex".to_string()),
+            model: None,
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: None,
+            metadata: BTreeMap::from([
+                (
+                    "spark.runtime.codex_app_server.thread_id".to_string(),
+                    json!("thread-test"),
+                ),
+                (
+                    "spark.runtime.codex_app_server.turn_id".to_string(),
+                    json!("turn-test"),
+                ),
+            ]),
+        })
+        .expect("late answer");
+    assert_eq!(
+        late_answer
+            .thread_resume_failure
+            .and_then(|failure| failure.error_code)
+            .as_deref(),
+        Some("request_user_input_not_pending")
+    );
+}
+
+#[test]
+fn flow_question_is_answered_from_state_the_turn_is_not_woken_for() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "request-user-input");
+    let request = || CodergenBackendRequest {
+        node_id: "task".to_string(),
+        prompt: "Ask me".to_string(),
+        context: BTreeMap::new(),
+        response_contract: String::new(),
+        contract_repair_attempts: 0,
+        timeout_seconds: None,
+        write_contract: Default::default(),
+        provider: "codex".to_string(),
+        model: Some("gpt-codex-test".to_string()),
+        llm_profile: None,
+        reasoning_effort: None,
+        repair_attempt: None,
+        runtime_mode: Default::default(),
+        project_path: Some(temp.path().to_path_buf()),
+        metadata: BTreeMap::new(),
+    };
+
+    // Another process records the answer; only the flow's poll can see it.
+    let answer_path = temp.path().join("recorded-answer");
+    let (raised, raised_receiver) = mpsc::channel();
+    let recorder = {
+        let answer_path = answer_path.clone();
+        thread::spawn(move || {
+            raised_receiver.recv_timeout(PROMPTLY).expect("question");
+            thread::sleep(Duration::from_millis(300));
+            fs::write(answer_path, "A").expect("record answer");
+        })
+    };
+    let mut backend = RustLlmCodergenBackend::new(unified_llm_adapter::Client::new());
+    backend.set_clarification_handler(Arc::new(move |params: Value| {
+        raised.send(params).expect("raise question");
+        let answer_path = answer_path.clone();
+        Ok(Box::new(move || {
+            Ok(fs::read_to_string(&answer_path)
+                .ok()
+                .filter(|answer| !answer.is_empty())
+                .map(|answer| BTreeMap::from([("choice".to_string(), answer)])))
+        })
+            as spark_agent_adapter::codergen::ClarificationPoll)
+    }));
+    let output = backend.run(request()).expect("answered node");
+    recorder.join().expect("recorder");
+    assert!(matches!(
+        output.response,
+        spark_agent_adapter::CodergenBackendResponse::Text(ref text) if text == "Ack"
+    ));
+    assert!(read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .iter()
+        .any(|message| message["id"] == json!("server-request-1")
+            && message["result"] == json!({"answers": {"choice": {"answers": ["A"]}}})));
+
+    // A poll that cannot read the run's state fails the turn.
+    let mut backend = RustLlmCodergenBackend::new(unified_llm_adapter::Client::new());
+    backend.set_clarification_handler(Arc::new(|_| {
+        Ok(Box::new(|| Err("run record unavailable".to_string()))
+            as spark_agent_adapter::codergen::ClarificationPoll)
+    }));
+    let error = backend.run(request()).expect_err("poll failure");
+    assert!(
+        error.to_string().contains("run record unavailable"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -9,14 +9,20 @@ fn main() {
     let mode =
         env::var("SPARK_FAKE_CODEX_APP_SERVER_MODE").unwrap_or_else(|_| "default".to_string());
     let log_path = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_LOG").map(PathBuf::from);
-    if mode == "steerable" {
-        run_steerable(log_path);
+    if matches!(
+        mode.as_str(),
+        "steerable" | "steer-rejected" | "steer-gated"
+    ) {
+        run_steerable(log_path, &mode);
     } else {
         run_default(
             log_path,
             &mode,
             mode == "model-list",
-            mode == "request-user-input" || mode == "interruptible-question",
+            matches!(
+                mode.as_str(),
+                "request-user-input" | "interruptible-question" | "question-then-exit"
+            ),
             mode == "tool-calls",
         );
     }
@@ -55,6 +61,8 @@ fn run_default(
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let request_id = message.get("id").cloned().unwrap_or(Value::Null);
         match method {
+            // Never answered, like a wedged app-server.
+            "initialize" if mode == "initialize-silent" => {}
             "initialize" if mode == "initialize-error" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "error": {"code": -32000, "message": "initialize failed"}}),
@@ -159,6 +167,11 @@ fn run_default(
                         }),
                     );
                     awaiting_request_user_input_response = true;
+                    if mode == "question-then-exit" {
+                        return;
+                    }
+                } else if mode == "exit-mid-turn" {
+                    return;
                 } else if mode == "gated" {
                     // Like the real app-server, keep answering requests (turn/steer) mid turn.
                     std::thread::spawn(|| emit_gated_turn(&mut io::stdout()));
@@ -244,15 +257,6 @@ fn emit_tool_notifications(stdout: &mut impl Write) {
 /// A long turn that streams commentary and a partial answer, then waits for
 /// the `continue` and `finish` files in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR.
 fn emit_gated_turn(stdout: &mut impl Write) {
-    let gate_dir = PathBuf::from(
-        env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
-            .expect("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR"),
-    );
-    let wait_for = |name: &str| {
-        while !gate_dir.join(name).exists() {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    };
     let delta = |item_id: &str, text: &str| json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": item_id, "delta": text}});
     let completed = |item_id: &str, text: &str, phase: &str| json!({"method": "item/completed", "params": {"threadId": "thread-test", "turnId": "turn-test", "item": {"type": "AgentMessage", "id": item_id, "content": [{"type": "Text", "text": text}], "phase": phase}}});
     write_json(stdout, delta("msg-commentary", "Planning the work."));
@@ -261,9 +265,9 @@ fn emit_gated_turn(stdout: &mut impl Write) {
         completed("msg-commentary", "Planning the work.", "commentary"),
     );
     write_json(stdout, delta("msg-answer", "Half done."));
-    wait_for("continue");
+    wait_for_gate("continue");
     write_json(stdout, delta("msg-answer", " Still going."));
-    wait_for("finish");
+    wait_for_gate("finish");
     write_json(stdout, delta("msg-answer", " All done."));
     write_json(
         stdout,
@@ -279,9 +283,24 @@ fn emit_gated_turn(stdout: &mut impl Write) {
     );
 }
 
-fn run_steerable(log_path: Option<PathBuf>) {
+/// Waits for the named file in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR.
+fn wait_for_gate(name: &str) {
+    let gate_dir = PathBuf::from(
+        env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
+            .expect("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR"),
+    );
+    while !gate_dir.join(name).exists() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A silent turn that ends once steered. `steer-rejected` refuses the first
+/// steer; `steer-gated` streams output and then holds each steer's reply
+/// until the `steer-reply` gate opens, and never answers `turn/interrupt`.
+fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    let mut rejected_a_steer = false;
 
     for raw in stdin.lock().lines().map_while(Result::ok) {
         let message = serde_json::from_str::<Value>(&raw).expect("json-rpc request");
@@ -302,7 +321,22 @@ fn run_steerable(log_path: Option<PathBuf>) {
                 &mut stdout,
                 json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
             ),
+            "turn/steer" if mode == "steer-rejected" && !rejected_a_steer => {
+                rejected_a_steer = true;
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "error": {"code": -32000, "message": "turn is not steerable"}}),
+                );
+            }
+            "turn/interrupt" if mode == "steer-gated" => {}
             "turn/steer" => {
+                if mode == "steer-gated" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-before-reply", "delta": "Reading."}}),
+                    );
+                    wait_for_gate("steer-reply");
+                }
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 // Runtime callers set a decision envelope as the final answer.
                 let answer = std::env::var("SPARK_FAKE_FINAL_ANSWER")
