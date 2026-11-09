@@ -525,15 +525,9 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     .await;
 
     assert_eq!(listed.0, StatusCode::OK);
-    // A SummarySnapshot. Registration starts the project's coordinator,
-    // listed as a placeholder until its first message; clients pin it.
+    // A SummarySnapshot. A project with no started roles has no role threads.
     let entries = crate::summary_entries(&listed.1);
-    assert_eq!(entries.len(), 2);
-    let coordinator = entries
-        .iter()
-        .find(|entry| entry["standing_role"]["name"] == "coordinator")
-        .expect("coordinator");
-    assert_eq!(coordinator["placeholder"], true);
+    assert_eq!(entries.len(), 1);
     let thread = entries
         .iter()
         .find(|entry| entry["conversation_id"] == "conversation-a")
@@ -546,14 +540,13 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
 }
 
 #[tokio::test]
-async fn registering_a_project_installs_its_definitions_once() {
+async fn registering_a_project_writes_no_definitions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let app = build_app(settings.clone()).expect("app");
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let project_path = project.to_string_lossy().into_owned();
-    let definitions = project.join(".spark/definitions");
 
     let registered = request_json(
         app.clone(),
@@ -563,39 +556,11 @@ async fn registering_a_project_installs_its_definitions_once() {
     )
     .await;
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
-    for path in [
-        ".initialized",
-        "README.md",
-        "flows/organization/review-change/flow.md",
-        "roles/coordinator.md",
-        "playbooks/bug-report.md",
-        "profiles/software/spec.md",
-    ] {
-        assert!(definitions.join(path).is_file(), "{path}");
-    }
-    assert!(!project.join(".spark/state").exists());
-
-    // Once initialized, files Spark would add (here, one the operator
-    // removed) stay out, however often the project is registered again.
-    fs::remove_file(definitions.join("roles/coordinator.md")).unwrap();
-    fs::write(definitions.join("README.md"), "ours\n").unwrap();
-    let again = request_json(
-        app.clone(),
-        "POST",
-        "/workspace/api/projects/register",
-        Some(json!({"project_path": project_path})),
-    )
-    .await;
-    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
-    assert!(!definitions.join("roles/coordinator.md").exists());
-    assert_eq!(
-        fs::read_to_string(definitions.join("README.md")).unwrap(),
-        "ours\n"
-    );
+    assert!(!project.join(".spark").exists());
 }
 
 #[tokio::test]
-async fn rejected_registrations_install_nothing_and_record_nothing() {
+async fn rejected_registrations_record_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let app = build_app(settings.clone()).expect("app");
@@ -637,11 +602,11 @@ async fn rejected_registrations_install_nothing_and_record_nothing() {
 }
 
 #[tokio::test]
-async fn startup_sets_up_home_without_touching_spark_config() {
+async fn startup_registers_home_without_writing_definitions_or_config() {
     let temp = tempfile::tempdir().expect("tempdir");
     crate::isolate_home();
     let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
-    // Spark's default SPARK_HOME is ~/.spark, beside Home's own definitions.
+    // Spark's default SPARK_HOME is ~/.spark, where Home's definitions would go.
     let spark_home = home.join(".spark");
     let mut settings = settings(temp.path());
     settings.data_dir = spark_home.clone();
@@ -661,10 +626,7 @@ async fn startup_sets_up_home_without_touching_spark_config() {
     }
 
     let app = build_app(settings.clone()).expect("app");
-    assert!(spark_home.join("definitions/.initialized").is_file());
-    assert!(spark_home
-        .join("definitions/flows/organization/review-change/flow.md")
-        .is_file());
+    assert!(!spark_home.join("definitions").exists());
     let projects = request_json(app, "GET", "/workspace/api/projects", None).await;
     assert_eq!(
         projects.1[0]["project_path"],
@@ -686,62 +648,6 @@ async fn startup_sets_up_home_without_touching_spark_config() {
             text
         );
     }
-}
-
-#[test]
-fn home_setup_failure_does_not_stop_the_app() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path().join("home");
-    fs::create_dir_all(home.join(".spark")).unwrap();
-    // A file where Home's definitions directory belongs blocks its setup.
-    fs::write(home.join(".spark/definitions"), "").unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "workspace_route_contracts::home_setup_failure_child",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("HOME", &home)
-        .env("SPARK_TEST_HOME_SET", "1")
-        .env("SPARK_TEST_ROOT", temp.path())
-        .output()
-        .expect("child test");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-        "{output:?}"
-    );
-    assert!(
-        stderr.contains("Unable to set up the Home project")
-            && stderr.contains(&home.join(".spark/definitions").display().to_string()),
-        "{stderr}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "run by home_setup_failure_does_not_stop_the_app"]
-async fn home_setup_failure_child() {
-    let Some(root) = std::env::var_os("SPARK_TEST_ROOT") else {
-        return;
-    };
-    let root = Path::new(&root);
-    let app = build_app(settings(root)).expect("app");
-    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
-    assert_eq!(projects.0, StatusCode::OK);
-    assert_eq!(projects.1, json!([]));
-    let project = root.join("project");
-    fs::create_dir_all(&project).unwrap();
-    let registered = request_json(
-        app,
-        "POST",
-        "/workspace/api/projects/register",
-        Some(json!({"project_path": project.to_string_lossy()})),
-    )
-    .await;
-    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
-    assert!(project.join(".spark/definitions/.initialized").is_file());
 }
 
 #[tokio::test]
@@ -1260,11 +1166,27 @@ async fn role_routes_list_start_and_stop_roles_that_take_messages_by_handle() {
             crate::encode_query(&project)
         )
     };
+    // No role exists until it is started; listing starts none.
     let listed = request_json(app.clone(), "GET", &at(""), None).await;
     assert_eq!(listed.0, StatusCode::OK, "{}", listed.1);
-    assert_eq!(listed.1["roles"].as_array().unwrap().len(), 1);
-    assert_eq!(listed.1["roles"][0]["name"], "coordinator");
-    assert_eq!(listed.1["roles"][0]["title"], "Coordinator");
+    assert_eq!(listed.1["roles"], json!([]));
+    let definitions = format!(
+        "/workspace/api/definitions?project_path={}",
+        crate::encode_query(&project)
+    );
+    let live = |list: &Value, name: &str| {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "role" && item["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {list}"))["live"]
+            .clone()
+    };
+    let browsed = request_json(app.clone(), "GET", &definitions, None).await;
+    assert_eq!(browsed.0, StatusCode::OK, "{}", browsed.1);
+    assert_eq!(live(&browsed.1, "coordinator"), Value::Null);
+    assert_eq!(live(&browsed.1, "chief-of-staff"), Value::Null);
     let unknown = request_json(app.clone(), "POST", &at("/coordinator/pause"), None).await;
     assert_eq!(unknown.0, StatusCode::NOT_FOUND);
     let missing = request_json(app.clone(), "POST", &at("/no-such-role/start"), None).await;
@@ -1273,6 +1195,8 @@ async fn role_routes_list_start_and_stop_roles_that_take_messages_by_handle() {
     let started = request_json(app.clone(), "POST", &at("/chief-of-staff/start"), None).await;
     assert_eq!(started.0, StatusCode::OK, "{}", started.1);
     assert_eq!(started.1["title"], "Chief of Staff");
+    let coordinator = request_json(app.clone(), "POST", &at("/coordinator/start"), None).await;
+    assert_eq!(coordinator.0, StatusCode::OK, "{}", coordinator.1);
     let listed = request_json(app.clone(), "GET", &at(""), None).await;
     let names: Vec<_> = listed.1["roles"]
         .as_array()
@@ -1280,7 +1204,29 @@ async fn role_routes_list_start_and_stop_roles_that_take_messages_by_handle() {
         .iter()
         .map(|role| role["name"].clone())
         .collect();
-    assert_eq!(names, [json!("coordinator"), json!("chief-of-staff")]);
+    assert_eq!(names, [json!("chief-of-staff"), json!("coordinator")]);
+    // The Roles tab's list shows the started role and its conversation.
+    let browsed = request_json(app.clone(), "GET", &definitions, None).await;
+    let chief = live(&browsed.1, "chief-of-staff");
+    assert_eq!(chief["conversation_id"], started.1["conversation_id"]);
+    assert!(chief["conversation_handle"].as_str().is_some(), "{chief}");
+    assert!(chief["recent_events"].is_array(), "{chief}");
+    let threads = request_json(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/projects/conversations?project_path={}",
+            crate::encode_query(&project)
+        ),
+        None,
+    )
+    .await;
+    assert!(crate::summary_entries(&threads.1)
+        .iter()
+        .any(
+            |entry| entry["conversation_id"] == started.1["conversation_id"]
+                && entry["standing_role"]["name"] == "chief-of-staff"
+        ));
     let conversation = crate::conversation_view(
         app.clone(),
         started.1["conversation_id"].as_str().unwrap(),
@@ -1305,7 +1251,7 @@ async fn role_routes_list_start_and_stop_roles_that_take_messages_by_handle() {
         assert_eq!(sent.0, StatusCode::ACCEPTED, "{}", sent.1);
     }
     let listed = request_json(app.clone(), "GET", &at(""), None).await;
-    assert_eq!(listed.1["roles"][1]["event_seq"], 2, "{}", listed.1);
+    assert_eq!(listed.1["roles"][0]["event_seq"], 2, "{}", listed.1);
     for bad in [
         json!({"message": "No sender"}),
         json!({"conversation_handle": handle, "message": "  "}),

@@ -1,10 +1,7 @@
-//! A read-only view of a project's agent organization: its flows and roles
-//! by layer (bundled, project, or a project copy shadowing bundled) under
-//! `.spark/definitions`, and the standing roles' memory. Nothing here
-//! writes; changes go through the Coordinator, the CoS and the flow editor.
-//! Definitions carry no Git history of their own, so the Git facts in these
-//! records (uncommitted, file status, bundled drift, history) are always
-//! unknown: false, null or empty, never a claim about the parent repository.
+//! A read-only view of a project's definitions: its flows and roles by
+//! layer (bundled, project, or a project copy shadowing bundled) under
+//! `.spark/definitions`, and the started roles' memory. Nothing here writes;
+//! the flow editor and agents change the files.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -29,8 +26,9 @@ pub struct RoleUsage {
     pub node: String,
 }
 
+/// A started role's record and its newest inbox events.
 #[derive(Debug, Clone, Serialize)]
-pub struct StandingRole {
+pub struct LiveRole {
     #[serde(flatten)]
     pub role: RoleRecord,
     /// The newest inbox events, newest first.
@@ -38,7 +36,7 @@ pub struct StandingRole {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct OrgItem {
+pub struct DefinitionItem {
     /// `flow` or `role`.
     pub kind: &'static str,
     pub name: String,
@@ -46,53 +44,47 @@ pub struct OrgItem {
     pub layer: &'static str,
     /// Relative to the layer's root: `flows/<name>` or `roles/<name>.md`.
     pub path: String,
-    /// Always false: definitions have no Git history of their own.
-    pub uncommitted: bool,
-    /// Always null: no record of the bundled version a copy came from.
-    pub bundled_changed: Option<bool>,
-    /// A role file's frontmatter `title` and `description`.
+    /// A role's details in the list; absent for flows.
+    #[serde(flatten)]
+    pub role: Option<RoleDetails>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RoleDetails {
+    /// The role file's frontmatter `title` and `description`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Vec<RoleUsage>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub standing: Option<StandingRole>,
+    /// The flow nodes that name this role.
+    pub usage: Vec<RoleUsage>,
+    /// Whether the role file declares `standing: true`; false when it does not parse.
+    pub standing: bool,
+    /// The started role, or null.
+    pub live: Option<LiveRole>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct OrgFile {
+pub struct DefinitionFile {
     pub name: String,
     pub content: String,
-    /// Always null: definitions have no Git history of their own.
-    pub status: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct OrgItemDetail {
+pub struct RoleFileDetail {
     #[serde(flatten)]
-    pub item: OrgItem,
-    pub files: Vec<OrgFile>,
+    pub item: DefinitionItem,
+    pub files: Vec<DefinitionFile>,
     /// For a project copy: `git diff` from today's bundled version to the copy.
     pub bundled_diff: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct OrgCommit {
-    pub commit: String,
-    pub author: String,
-    pub date: String,
-    pub message: String,
-    pub diff: String,
-}
-
-pub struct WorkspaceOrgService {
+pub struct WorkspaceDefinitionService {
     settings: SparkSettings,
     store: Arc<ConversationStore>,
 }
 
-impl WorkspaceOrgService {
+impl WorkspaceDefinitionService {
     pub fn new(settings: SparkSettings, store: Arc<ConversationStore>) -> Self {
         Self { settings, store }
     }
@@ -135,30 +127,28 @@ impl WorkspaceOrgService {
             }
             items.push(flow);
         }
-        let standing = self.standing_roles(project)?;
+        let mut live = self.live_roles(project)?;
         for name in role_names(&roots) {
             let mut role = item(&roots, "role", name)?;
-            // A role file that does not parse has no title or description.
-            if let Ok(file) = roots
+            // A role file that does not parse has no title or description
+            // and cannot be started.
+            let file = roots
                 .role_text(&role.name)
                 .and_then(|(_, text)| attractor_dsl::parse_role(&role.name, &text))
-            {
-                role.title = file.title;
-                role.description = file.description;
-            }
-            role.usage = Some(usage.remove(&role.name).unwrap_or_default());
-            role.standing = standing.get(&role.name).cloned();
+                .ok();
+            role.role = Some(RoleDetails {
+                title: file.as_ref().and_then(|file| file.title.clone()),
+                description: file.as_ref().and_then(|file| file.description.clone()),
+                usage: usage.remove(&role.name).unwrap_or_default(),
+                standing: file.is_some_and(|file| file.standing),
+                live: live.remove(&role.name),
+            });
             items.push(role);
         }
-        Ok(json!({
-            "org_path": org,
-            "bundled_path": roots.bundled,
-            "org_exists": org.is_dir(),
-            "items": items,
-        }))
+        Ok(json!({ "items": items }))
     }
 
-    fn standing_roles(&self, project: &str) -> WorkspaceResult<BTreeMap<String, StandingRole>> {
+    fn live_roles(&self, project: &str) -> WorkspaceResult<BTreeMap<String, LiveRole>> {
         let repository = ConversationRepository::new(self.store.clone());
         WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
             .list(project)?
@@ -167,7 +157,7 @@ impl WorkspaceOrgService {
                 let events = repository.recent_inbox_events(&role.conversation_id, RECENT_WAKES)?;
                 Ok((
                     role.name.clone(),
-                    StandingRole {
+                    LiveRole {
                         role,
                         recent_events: events,
                     },
@@ -176,37 +166,27 @@ impl WorkspaceOrgService {
             .collect()
     }
 
-    /// One item's files as its winning layer has them; for a project copy,
-    /// also its diff from bundled.
-    pub fn item(&self, project: &str, kind: &str, name: &str) -> WorkspaceResult<OrgItemDetail> {
+    /// A role's file as its winning layer has it; for a project copy, also
+    /// its diff from bundled.
+    pub fn role_file(&self, project: &str, name: &str) -> WorkspaceResult<RoleFileDetail> {
         let roots = self.roots(project)?;
         let org = roots.org.clone().unwrap();
-        let (kind, name) = match kind {
-            "flow" => (
-                "flow",
-                attractor_dsl::normalize_flow_name(name).map_err(flow_error)?,
-            ),
-            "role" if valid_role_name(name) => ("role", name.to_string()),
-            "role" => return Err(invalid(format!("Invalid role name: {name}"))),
-            _ => return Err(invalid("kind must be flow or role")),
-        };
-        let item = item(&roots, kind, name)?;
+        if !valid_role_name(name) {
+            return Err(invalid(format!("Invalid role name: {name}")));
+        }
+        let item = item(&roots, "role", name.to_string())?;
         let root = if item.layer == "bundled" {
             &roots.bundled
         } else {
             &org
         };
-        let files = item_files(root, &item.path, kind)?
+        let files = item_files(root, &item.path, "role")?
             .into_iter()
-            .map(|(name, content)| OrgFile {
-                name,
-                content,
-                status: None,
-            })
+            .map(|(name, content)| DefinitionFile { name, content })
             .collect();
         let bundled_diff = if item.layer == "project_copy" {
-            // Read (and so contain) the bundled files before diffing them.
-            item_files(&roots.bundled, &item.path, kind)?;
+            // Read (and so contain) the bundled file before diffing it.
+            item_files(&roots.bundled, &item.path, "role")?;
             Some(diff_no_index(
                 &roots.bundled.join(&item.path),
                 &org.join(&item.path),
@@ -214,19 +194,11 @@ impl WorkspaceOrgService {
         } else {
             None
         };
-        Ok(OrgItemDetail {
+        Ok(RoleFileDetail {
             item,
             files,
             bundled_diff,
         })
-    }
-
-    /// Commits touching `path`: none, since definitions have no Git
-    /// history of their own.
-    pub fn history(&self, project: &str, path: &str) -> WorkspaceResult<Vec<OrgCommit>> {
-        self.roots(project)?;
-        relative_path(path)?;
-        Ok(Vec::new())
     }
 
     /// A role's memory files (relative paths, sorted), or one file's text
@@ -305,7 +277,7 @@ fn exists(root: &Path, kind: &str, rel: &str) -> bool {
     }
 }
 
-fn item(roots: &FlowRoots, kind: &'static str, name: String) -> WorkspaceResult<OrgItem> {
+fn item(roots: &FlowRoots, kind: &'static str, name: String) -> WorkspaceResult<DefinitionItem> {
     let path = item_rel_path(kind, &name);
     let in_org = roots
         .org
@@ -319,17 +291,12 @@ fn item(roots: &FlowRoots, kind: &'static str, name: String) -> WorkspaceResult<
             return Err(WorkspaceError::NotFound(format!("No {kind} named {name}")));
         }
     };
-    Ok(OrgItem {
+    Ok(DefinitionItem {
         kind,
         name,
         layer,
         path,
-        uncommitted: false,
-        bundled_changed: None,
-        title: None,
-        description: None,
-        usage: None,
-        standing: None,
+        role: None,
     })
 }
 

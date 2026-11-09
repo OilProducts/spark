@@ -11,7 +11,12 @@ it('opens on the Overview, and a reload in the same session keeps the view', () 
     expect(loadSessionViewMode()).toBe('overview')
     saveSessionViewMode('runs')
     expect(loadSessionViewMode()).toBe('runs')
+    saveSessionViewMode('roles')
+    expect(loadSessionViewMode()).toBe('roles')
     saveSessionViewMode('nowhere' as never)
+    expect(loadSessionViewMode()).toBe('overview')
+    // The Org view is now Roles; a stored 'org' gets no migration.
+    saveSessionViewMode('org' as never)
     expect(loadSessionViewMode()).toBe('overview')
 })
 

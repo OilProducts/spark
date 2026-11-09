@@ -132,14 +132,13 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
     assert_eq!(tool_output["output"].as_str().expect("output").len(), 8196);
     assert_eq!(tool_output["output_size"], 8196);
 
-    let mut summaries = service
+    let summaries = service
         .list_project_conversations(project_path)
         .expect("summaries");
-    // The Coordinator's placeholder row is pinned first.
-    assert_eq!(
-        summaries.remove(0).standing_role.unwrap().name,
-        "coordinator"
-    );
+    // No role is started, so no role row is listed.
+    assert!(summaries
+        .iter()
+        .all(|summary| summary.standing_role.is_none()));
     assert_eq!(summaries[0].conversation_id, "conversation-a");
     assert_eq!(summaries[0].last_message_preview.as_deref(), Some("Done"));
     assert_eq!(summaries[0].launched_run_ids, vec!["run-a".to_string()]);

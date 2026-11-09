@@ -1,7 +1,6 @@
 //! Standing roles: a role file (`roles/<name>.md`, resolved project first,
 //! then bundled) bound to one long-lived conversation per project and woken
-//! by its inbox (see `inbox`). The Coordinator exists in every project as an
-//! unsaved default until its first write; other roles start explicitly.
+//! by its inbox (see `inbox`). A role exists only once it is started.
 use crate::conversations::{RunLaunchRequest, WorkspaceConversationService};
 use crate::inbox::{self, decode, invalid, now, Inbox};
 use crate::{WorkspaceError, WorkspaceResult};
@@ -14,10 +13,8 @@ use spark_storage::{
 use std::path::Path;
 use std::sync::Arc;
 
-pub const COORDINATOR: &str = "coordinator";
 /// The persona of ordinary chats; not a standing role.
 pub const ASSISTANT: &str = "assistant";
-pub const CHIEF_OF_STAFF: &str = "chief-of-staff";
 const FINISHED_RUNS_KEPT: usize = 50;
 
 pub use attractor_dsl::RoleBudget;
@@ -145,17 +142,9 @@ impl WorkspaceRoleService {
         )
         .unwrap()
     }
-    /// The saved record, or the Coordinator's unsaved default.
-    fn load(
-        repo: &RecordRepository,
-        scope: &ProjectPaths,
-        name: &str,
-    ) -> WorkspaceResult<Option<RoleRecord>> {
-        match repo.read(name)? {
-            Some(value) => decode(value).map(Some),
-            None if name == COORDINATOR => Ok(Some(Self::default_record(scope, name))),
-            None => Ok(None),
-        }
+    /// The saved record.
+    fn load(repo: &RecordRepository, name: &str) -> WorkspaceResult<Option<RoleRecord>> {
+        repo.read(name)?.map(decode).transpose()
     }
     fn with_derived(&self, mut role: RoleRecord) -> RoleRecord {
         role.conversation_id = conversation_id(&role.project_id, &role.name);
@@ -185,12 +174,12 @@ impl WorkspaceRoleService {
 
     pub fn get(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         let scope = self.read_scope(project)?;
-        Self::load(&RecordRepository::roles(&scope.root), &scope, name)?
+        Self::load(&RecordRepository::roles(&scope.root), name)?
             .map(|role| self.with_derived(role))
             .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
     }
-    /// The project's standing roles, the Coordinator first. Reads only: an
-    /// unseen project gets no workspace directories.
+    /// The project's started roles, by name. Reads only: an unseen project
+    /// gets no workspace directories.
     pub fn list(&self, project: &str) -> WorkspaceResult<Vec<RoleRecord>> {
         if project.trim().is_empty() {
             return Err(invalid("Project path is required"));
@@ -201,12 +190,7 @@ impl WorkspaceRoleService {
             .into_iter()
             .map(decode)
             .collect::<WorkspaceResult<_>>()?;
-        if !roles.iter().any(|role| role.name == COORDINATOR) {
-            roles.push(Self::default_record(&scope, COORDINATOR));
-        }
-        roles.sort_by(|a, b| {
-            (a.name != COORDINATOR, &a.name).cmp(&(b.name != COORDINATOR, &b.name))
-        });
+        roles.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(roles
             .into_iter()
             .map(|role| self.with_derived(role))
@@ -217,7 +201,7 @@ impl WorkspaceRoleService {
     pub fn conversation_role(&self, project: &str, conversation_id: &str) -> Option<RoleRecord> {
         let scope = self.read_scope(project).ok()?;
         let name = conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
-        Self::load(&RecordRepository::roles(&scope.root), &scope, name)
+        Self::load(&RecordRepository::roles(&scope.root), name)
             .ok()?
             .map(|role| self.with_derived(role))
     }
@@ -225,8 +209,7 @@ impl WorkspaceRoleService {
     /// Runs `work` on the role under the project's role lock, delivers
     /// pending inbox events when `deliver` is set, saves a changed record,
     /// and publishes the role's summary once the lock is released.
-    /// `create` admits a role that is not saved yet; a record is saved once
-    /// it differs from its default or is created.
+    /// `create` admits a role that is not saved yet; a changed record is saved.
     fn locked(
         &self,
         project: &str,
@@ -239,10 +222,9 @@ impl WorkspaceRoleService {
         let mut written = false;
         let role = RecordRepository::roles(&scope.root).locked::<_, WorkspaceError>(|repo| {
             let saved = repo.read(name)?;
-            let default = Self::default_record(&scope, name);
             let mut role: RoleRecord = match &saved {
                 Some(value) => decode(value.clone())?,
-                None if create || name == COORDINATOR => default.clone(),
+                None if create => Self::default_record(&scope, name),
                 None => {
                     return Err(WorkspaceError::NotFound(format!(
                         "Role {name} is not started"
@@ -262,9 +244,7 @@ impl WorkspaceRoleService {
                     .trim_inbox_runs(&role.conversation_id, FINISHED_RUNS_KEPT)?;
             }
             let after = stored(&role);
-            if saved.as_ref() != Some(&after)
-                && (saved.is_some() || create || after != stored(&default))
-            {
+            if saved.as_ref() != Some(&after) {
                 repo.write(name, &after)?;
                 written = true;
             }
@@ -284,8 +264,7 @@ impl WorkspaceRoleService {
     pub fn process(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         self.locked(project, name, false, true, |_, _| Ok(()))
     }
-    /// Creates the role's conversation for its first inbox write; the
-    /// Coordinator's unsaved default included. Reads never create it.
+    /// Creates the role's conversation if it is missing. Reads never create it.
     fn materialize(&self, role: &RoleRecord) -> WorkspaceResult<()> {
         let repository = spark_storage::ConversationRepository::new(self.store.clone());
         if repository
@@ -300,7 +279,7 @@ impl WorkspaceRoleService {
     /// for the first time gets a turn to begin its work.
     pub fn start(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         let scope = self.scope(project)?;
-        if !role_file(&self.settings, &scope.project_path, name)?.standing && name != COORDINATOR {
+        if !role_file(&self.settings, &scope.project_path, name)?.standing {
             return Err(invalid(format!(
                 "Role {name} cannot be started: its role file (roles/{name}.md) does not declare standing: true"
             )));

@@ -73,7 +73,6 @@ impl WorkspaceProjectService {
     pub fn ensure_home_project(&self) -> WorkspaceResult<ProjectRecord> {
         let home = service_home_dir().map_err(WorkspaceError::Validation)?;
         let home = normalize_project_path_or_400(&home.to_string_lossy())?;
-        crate::project_setup::initialize_project(Path::new(&home))?;
         self.registry()
             .ensure_home_project(&home)
             .map_err(Into::into)
@@ -99,7 +98,11 @@ impl WorkspaceProjectService {
             }
             let execution_profile_id = self
                 .validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;
-            crate::project_setup::initialize_project(Path::new(&project_path))?;
+            if !Path::new(&project_path).is_dir() {
+                return Err(WorkspaceError::Validation(format!(
+                    "Project directory not found: {project_path}"
+                )));
+            }
             registry
                 .register_project_with_execution_profile(
                     &project_path,

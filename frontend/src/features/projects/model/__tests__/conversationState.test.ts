@@ -28,14 +28,14 @@ describe('conversation summaries', () => {
         expect(summary('chat', '2026-09-01T00:00:00Z').standing_role).toBeNull()
     })
 
-    it('sorts standing roles first, the Coordinator leading, then newest first', () => {
+    it('sorts standing roles first by name, then newest first', () => {
         const sorted = sortConversationSummaries([
             summary('old', '2026-09-01T00:00:00Z'),
-            summary('cos', '2026-08-01T00:00:00Z', { name: 'chief-of-staff', title: 'Chief of Staff', state: 'idle' }),
+            summary('coord', '2026-09-03T00:00:00Z', { name: 'coordinator', title: 'Coordinator', state: 'idle' }),
             summary('new', '2026-09-02T00:00:00Z'),
-            summary('coord', '', { name: 'coordinator', title: 'Coordinator', state: 'idle' }),
+            summary('arch', '2026-08-01T00:00:00Z', { name: 'archivist', title: 'Archivist', state: 'idle' }),
         ])
-        expect(sorted.map((entry) => entry.conversation_id)).toEqual(['coord', 'cos', 'new', 'old'])
+        expect(sorted.map((entry) => entry.conversation_id)).toEqual(['arch', 'coord', 'new', 'old'])
     })
 
     it('breaks an updated-at tie by revision, compared as integers', () => {

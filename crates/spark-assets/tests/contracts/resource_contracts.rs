@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
-use spark_assets::{agent_org, flows, frontend, guides, icons, models, resources, ResourceSource};
+use spark_assets::{flows, frontend, guides, icons, models, resources, ResourceSource};
 use spark_common::settings::SparkSettings;
 
 const STARTER_FLOW_NAMES: &[&str] = &[
@@ -17,7 +17,6 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "math-research/formalize-result",
     "math-research/prove-refute",
     "math-research/research-program",
-    "organization/review-change",
     "software-development/audit-codebase",
     "software-development/design-change",
     "software-development/implement-change",
@@ -135,7 +134,7 @@ fn frontend_asset_lookup_rejects_unsafe_paths_and_symlink_escapes() {
 #[test]
 fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
     let names = flows::starter_flow_names().expect("starter flow names");
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 19);
     assert_eq!(
         names,
         STARTER_FLOW_NAMES
@@ -321,33 +320,7 @@ fn role_files_declare_standing_and_its_budget() {
 }
 
 #[test]
-fn agent_org_seed_is_packaged_whole_without_a_setup_playbook() {
-    fn collect(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
-        for entry in fs::read_dir(dir).expect("seed dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                collect(root, &path, files);
-            } else {
-                let name = path.strip_prefix(root).unwrap().to_string_lossy().into();
-                files.push((name, fs::read(&path).expect("seed file")));
-            }
-        }
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/agent-org");
-    let mut source = Vec::new();
-    collect(&root, &root, &mut source);
-    source.sort();
-    let packaged = agent_org::files()
-        .into_iter()
-        .map(|(name, bytes)| (name, bytes.to_vec()))
-        .collect::<Vec<_>>();
-    assert_eq!(packaged, source);
-    assert!(packaged
-        .iter()
-        .any(|(name, _)| name == "standards/rfc2119.txt"));
-
-    assert!(!packaged.iter().any(|(name, _)| name == "playbook.md"));
-
+fn playbooks_are_packaged() {
     let playbooks = spark_assets::playbooks::assets();
     assert_eq!(
         playbooks
@@ -359,104 +332,39 @@ fn agent_org_seed_is_packaged_whole_without_a_setup_playbook() {
 }
 
 #[test]
-fn agent_org_seed_declares_packaged_flows_and_fillable_templates() {
-    let seed = agent_org::files()
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let front_matter = |path: &str| -> serde_yaml::Mapping {
-        let text = std::str::from_utf8(seed[path]).expect("utf-8");
-        let (front, _) = text
-            .strip_prefix("---\n")
-            .and_then(|rest| rest.split_once("\n---\n"))
-            .expect("front matter");
-        serde_yaml::from_str(front).expect("yaml")
-    };
-    assert!(front_matter("spec/README.md")["version"].as_str().is_some());
-
-    let roles = spark_assets::roles::assets()
-        .into_iter()
-        .map(|(file, _)| file)
-        .collect::<Vec<_>>();
-    let names = flows::starter_flow_names().expect("flow names");
-    let mut declared = Vec::new();
-    let specs = seed
-        .keys()
-        .filter(|path| *path == "spec/README.md" || path.ends_with("/spec.md"));
-    for spec in specs {
-        let Some(folders) = front_matter(spec).get("flows").cloned() else {
-            continue;
-        };
-        for folder in serde_yaml::from_value::<Vec<String>>(folders).expect("flow list") {
-            let flows_in = names
-                .iter()
-                .filter(|name| name.starts_with(&format!("{folder}/")))
-                .collect::<Vec<_>>();
-            assert!(!flows_in.is_empty(), "{spec}: {folder}");
-            for name in flows_in {
-                for node in bundled_flow(name).nodes.values() {
-                    if let Some(role) = &node.role {
-                        assert!(roles.contains(&format!("{role}.md")), "{name}: {role}");
-                    }
-                }
-            }
-            declared.push(folder);
-        }
+fn writing_principles_live_in_the_authoring_guide_and_roles_stand_alone() {
+    let guide = guides::flow_definition_authoring_guide()
+        .expect("authoring guide")
+        .text()
+        .expect("utf-8")
+        .to_string();
+    let principles = &guide[guide
+        .find("## Writing Principles")
+        .expect("principles section")..];
+    let principles = &principles[..principles[3..].find("\n## ").expect("next section") + 3];
+    for (number, title) in [
+        "Trust the agent with the method.",
+        "Match the guard to the real risk.",
+        "Keep the record in the run.",
+        "Separate making from checking.",
+        "Hold scope.",
+        "Stop honestly.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            principles.contains(&format!("{}. **{title}**", number + 1)),
+            "{title}"
+        );
     }
-    declared.sort();
-    assert_eq!(declared, ["organization", "software-development"]);
-
-    for template in ["templates/README.md", "templates/CHANGELOG.md"] {
-        let text = std::str::from_utf8(seed[template]).expect("utf-8");
-        let mut rest = text;
-        while let Some(start) = rest.find("{{") {
-            let end = rest[start..].find("}}").expect("closed placeholder") + start;
-            assert!(
-                matches!(
-                    &rest[start + 2..end],
-                    "spark_version" | "seed_version" | "profiles"
-                ),
-                "{template}: {}",
-                &rest[start..end + 2]
-            );
-            rest = &rest[end + 2..];
-        }
-    }
-}
-
-#[test]
-fn organization_review_takes_a_state_diff_and_roles_set_nothing_up_unasked() {
-    let flow = json!(bundled_flow("organization/review-change"));
-    let inputs = flow["inputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|input| input["key"].as_str().unwrap())
-        .collect::<Vec<_>>();
     assert_eq!(
-        inputs,
-        ["context.request.proposal_path", "context.request.objective"]
+        guides::assets()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        guides::guide_names()
     );
-    assert!(flow["inputs"][0]["description"]
-        .as_str()
-        .unwrap()
-        .contains(".spark/state/reviews/"));
-    let review = &flow["nodes"]["review"];
-    assert_eq!(review["role"], json!("adversarial-reviewer"));
-    assert_eq!(
-        review["contracts"]["reads_context"],
-        json!([
-            "internal.org_root",
-            "context.request.proposal_path",
-            "context.request.objective"
-        ])
-    );
-    assert_eq!(
-        review["contracts"]["writes_context"],
-        json!(["context.review.verdict", "context.review.summary"])
-    );
-    let prompt = review["config"]["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Do not modify any files"));
-    assert!(prompt.contains("Reject a change that widens what the organization may do"));
 
     let role = |file: &str| {
         spark_assets::roles::assets()
@@ -465,33 +373,46 @@ fn organization_review_takes_a_state_diff_and_roles_set_nothing_up_unasked() {
             .unwrap_or_else(|| panic!("{file}"))
             .1
     };
+    // The Chief of Staff checks a change with an existing flow that takes
+    // its proposal as an artifact.
     let chief = role("chief-of-staff.md");
-    for expected in [
-        ".spark/state/reviews/",
-        "context.request.proposal_path",
-        "only when the operator asks",
-        "Create no triggers",
+    assert!(chief.contains("software-development/design-change"));
+    let inputs = json!(bundled_flow("software-development/design-change"))["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| input["key"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    for key in [
+        "context.request.artifact_path",
+        "context.request.objective",
+        "context.request.constraints",
     ] {
-        assert!(chief.contains(expected), "{expected}");
+        assert!(chief.contains(key), "{key}");
+        assert!(inputs.iter().any(|input| input == key), "{key}");
     }
-    for file in ["chief-of-staff.md", "coordinator.md", "assistant.md"] {
+    for (file, others) in [
+        ("chief-of-staff.md", &["Coordinator"][..]),
+        ("coordinator.md", &["Chief of Staff"][..]),
+        ("assistant.md", &["Coordinator", "Chief of Staff"][..]),
+    ] {
         let text = role(file);
-        for stale in [
+        for stale in others.iter().chain(&[
+            "organization",
+            "seed",
+            "changelog",
             "spark trigger create",
-            "first turn",
-            "agent-org-setup",
             "--profile",
             "worktree add",
-            "org repo",
-        ] {
+            "Workflow writing principles",
+        ]) {
             assert!(!text.contains(stale), "{file}: {stale}");
         }
     }
 }
 
-/// No bundled instruction uses the old nested organization repository or
-/// writes ignore rules outside `.spark/state/`. Historical seed decisions keep
-/// their original wording under a superseding note.
+/// No bundled instruction keeps working data outside `.spark/state/` or
+/// writes ignore rules elsewhere.
 #[test]
 fn bundled_instructions_keep_working_data_under_state() {
     let mut texts = Vec::new();
@@ -513,22 +434,12 @@ fn bundled_instructions_keep_working_data_under_state() {
             guide.text().expect("utf-8").to_string(),
         ));
     }
-    for (path, bytes) in agent_org::files() {
-        if !path.starts_with("decisions/") && !path.starts_with("standards/") {
-            texts.push((
-                format!("seed/{path}"),
-                String::from_utf8(bytes.to_vec()).unwrap(),
-            ));
-        }
-    }
     for (path, text) in &texts {
         for stale in [
-            ".spark/agent-org",
             ".spark/.gitignore",
             ".spark/checkouts",
             ".spark/integrations",
             ".spark/spec-implementation",
-            "spark org init --project <path> --profile",
         ] {
             assert!(!text.contains(stale), "{path}: {stale}");
         }

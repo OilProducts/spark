@@ -49,8 +49,8 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The Flows panel asks the org list for its badges.
-const EMPTY_ORG_LIST = { org_path: '', bundled_path: '', org_exists: false, items: [] }
+// The Flows panel asks the definition list for its badges.
+const EMPTY_DEFINITION_LIST = { items: [] }
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
 
@@ -362,8 +362,8 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.split('?')[0].endsWith('/attractor/api/flows')) {
           return new Response(JSON.stringify(['contract-behavior.yaml']), {
@@ -580,8 +580,8 @@ describe('Frontend contract behavior', () => {
             entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
           })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url === '/attractor/api/flows?project_path=%2Ftmp%2Fproject%20one') {
           return jsonResponse(['alpha.yaml'])
@@ -1271,22 +1271,22 @@ describe('Frontend contract behavior', () => {
     const flowsTab = screen.getByTestId('activity-flows')
     const settingsTab = screen.getByTestId('activity-settings')
 
-    // Overview, Chats, Missions, Runs, Triggers, Flows and Org, then the bell and Settings at the bottom.
+    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
-      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-org'), screen.getByTestId('attention-bell'), settingsTab,
+      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab,
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
     // Each icon shows its name under it.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Org', 'Inbox', 'Settings',
+      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings',
     ])
 
     chatsTab.focus()
     expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [screen.getByTestId('activity-org'), 'org'], [settingsTab, 'settings'], [screen.getByTestId('activity-overview'), 'overview'], [chatsTab, 'home']] as const) {
+    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [screen.getByTestId('activity-roles'), 'roles'], [settingsTab, 'settings'], [screen.getByTestId('activity-overview'), 'overview'], [chatsTab, 'home']] as const) {
       await user.keyboard('{ArrowDown}')
       expect(tab).toHaveFocus()
       expect(useStore.getState().viewMode).toBe(mode)
@@ -2114,8 +2114,8 @@ useStore.getState().setRunsSelectedRunId(runId);
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])

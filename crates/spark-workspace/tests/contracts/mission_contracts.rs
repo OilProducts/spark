@@ -802,14 +802,15 @@ fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
     let harness = Harness::new();
     super::role_contracts::seed_bundled_roles(&harness.settings);
     let roles = crate::roles(harness.settings.clone());
-    let coordinator = roles.get(&harness.project, "coordinator").unwrap();
-    spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir))
-        .touch_conversation(&coordinator.conversation_id, &harness.project)
-        .unwrap();
+    let coordinator = roles.start(&harness.project, "coordinator").unwrap();
     let idle = || {
         roles.get(&harness.project, "coordinator").unwrap().state
             != spark_workspace::roles::RoleState::Working
     };
+    // The role's first turn.
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    wait_for("an idle coordinator", idle);
     let mission = harness
         .missions
         .create_from_conversation(
@@ -826,9 +827,9 @@ fn a_mission_opened_from_a_role_reports_its_close_to_the_role() {
             serde_json::from_value(json!({"reason": "Shipped"})).unwrap(),
         )
         .unwrap();
-    harness.wait_turns(1);
+    harness.wait_turns(2);
     assert_eq!(
-        crate::batch_events(&harness.agent.prompts()[0]),
+        crate::batch_events(&harness.agent.prompts()[1]),
         [format!(
             "Mission \"Ship\" ({}) closed as done: Shipped",
             mission.id

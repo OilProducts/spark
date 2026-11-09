@@ -895,6 +895,7 @@ fn write_bundled_library(settings: &SparkSettings) -> std::result::Result<(), St
         (bundled.join("flows"), flows.collect::<Vec<_>>()),
         (bundled.join("roles"), spark_assets::roles::assets()),
         (bundled.join("playbooks"), spark_assets::playbooks::assets()),
+        (bundled.join("guides"), spark_assets::guides::assets()),
     ] {
         match fs::remove_dir_all(&dir) {
             Ok(()) => {}

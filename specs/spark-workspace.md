@@ -375,7 +375,7 @@ That provenance model must support:
 
 ## 15. Workspace Trigger Subsystem
 
-A trigger belongs to a project's agent organization: its definition lives in the project's definitions, and Spark keeps only its runtime state. A trigger is identified by its project plus its id; ids are unique within a project.
+A trigger belongs to a project: its definition lives in the project's definitions, and Spark keeps only its runtime state. A trigger is identified by its project plus its id; ids are unique within a project.
 
 Each trigger definition includes:
 - trigger id

@@ -1,46 +1,67 @@
-export type OrgLayer = 'bundled' | 'project' | 'project_copy'
-export type OrgKind = 'flow' | 'role'
+export type DefinitionLayer = 'bundled' | 'project' | 'project_copy'
+export type DefinitionKind = 'flow' | 'role'
 export type InboxEvent = { seq: number; id: string; at: string; kind: string; source: string; payload?: unknown }
-export type StandingRole = {
+/** A started role's record and its newest inbox events. */
+export type LiveRole = {
     name: string
     title: string
     state: 'idle' | 'working' | 'stopped'
     conversation_id: string
+    /** Present once the role's conversation exists. */
+    conversation_handle?: string | null
     budget: { concurrent_runs: number }
     runs: { run_id: string; status: string }[]
     recent_events: InboxEvent[]
 }
-export type OrgItem = {
-    kind: OrgKind
+export type DefinitionItem = {
+    kind: DefinitionKind
     name: string
-    layer: OrgLayer
+    layer: DefinitionLayer
     path: string
     title?: string
     description?: string
     usage?: { flow: string; node: string }[]
-    standing?: StandingRole | null
+    /** A role file that declares `standing: true`. */
+    standing?: boolean
+    /** The started role, or null. */
+    live?: LiveRole | null
 }
-export type OrgList = { org_path: string; bundled_path: string; org_exists: boolean; items: OrgItem[] }
-// Definitions have no Git history of their own: items report no uncommitted state or bundled drift, files no status, and history is empty.
-export type OrgFile = { name: string; content: string }
-export type OrgItemDetail = OrgItem & { files: OrgFile[]; bundled_diff: string | null }
+export type DefinitionList = { items: DefinitionItem[] }
+export type DefinitionFile = { name: string; content: string }
+export type RoleFileDetail = DefinitionItem & { files: DefinitionFile[]; bundled_diff: string | null }
 
-export const LAYER_LABELS: Record<OrgLayer, string> = { project: 'project', project_copy: 'project copy', bundled: 'bundled' }
 // The inbox's terminal run statuses (TERMINAL_RUN_STATUSES in spark-workspace).
 const TERMINAL = new Set(['completed', 'failed', 'validation_error', 'canceled'])
 
-/** A read-only GET under /workspace/api/org for `project`. */
-export async function orgRequest<T>(route: string, project: string, params: Record<string, string> = {}): Promise<T> {
+async function workspaceRequest<T>(route: string, project: string, params: Record<string, string> = {}, init?: RequestInit): Promise<T> {
     const query = new URLSearchParams({ project_path: project, ...params })
-    const response = await fetch(`/workspace/api/org${route}?${query}`)
-    const value = await response.json()
-    if (!response.ok) throw new Error(value.detail || 'Org request failed')
+    const response = await fetch(`/workspace/api${route}?${query}`, init)
+    const value = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(value.detail || `Request failed (${response.status})`)
     return value as T
 }
 
-/** The Coordinator draft for an item: what it is and where it lives, for the user to finish. */
-export function askCoordinatorDraft(item: Pick<OrgItem, 'kind' | 'name' | 'layer' | 'path'>): string {
-    return `About the ${item.kind} "${item.name}" (${LAYER_LABELS[item.layer]}, ${item.path}): `
+const rolePath = (role: string, rest: string) => `/roles/${encodeURIComponent(role)}/${rest}`
+
+/** The project's flows and roles by layer. */
+export const fetchDefinitions = (project: string) => workspaceRequest<DefinitionList>('/definitions', project)
+
+/** A role's winning file and, for a project copy, its diff from bundled. */
+export const fetchRoleFile = (project: string, role: string) => workspaceRequest<RoleFileDetail>(rolePath(role, 'file'), project)
+
+/** A role's memory files, or one file's text. */
+export function fetchRoleMemory<T>(project: string, role: string, file?: string): Promise<T> {
+    return workspaceRequest<T>(rolePath(role, 'memory'), project, file === undefined ? {} : { file })
+}
+
+/** Starts a standing role, creating its conversation if it has none. */
+export const startRole = (project: string, role: string) =>
+    workspaceRequest<{ conversation_id: string }>(rolePath(role, 'start'), project, {}, { method: 'POST' })
+
+/** What a role's row and detail offer: open its conversation, start it, or nothing. */
+export function roleAction(item: Pick<DefinitionItem, 'standing' | 'live'>): 'open' | 'start' | null {
+    if (item.live?.conversation_handle) return 'open'
+    return item.standing ? 'start' : null
 }
 
 /** Flow and role files are markdown under YAML frontmatter; show the frontmatter as a YAML block. */
@@ -68,17 +89,8 @@ export function frontmatterFields(text: string): { fields: [string, string][]; b
 }
 
 /** An item's origin when it is not bundled only: the project's own, or a project copy of a bundled one. */
-export function orgBadges(item: Pick<OrgItem, 'layer'>): string[] {
+export function definitionBadges(item: Pick<DefinitionItem, 'layer'>): string[] {
     return item.layer === 'project' ? ['customized'] : item.layer === 'project_copy' ? ['project copy'] : []
-}
-
-/** The roles' standing against the bundled defaults, from whether the project's definitions exist. */
-export function orgStatus(list: OrgList): string {
-    if (!list.org_exists) return 'No project definitions: all roles are bundled defaults.'
-    const roles = list.items.filter((item) => item.kind === 'role')
-    const customized = roles.filter((item) => item.layer === 'project').length
-    const copies = roles.filter((item) => item.layer === 'project_copy').length
-    return `${customized} customized ${customized === 1 ? 'role' : 'roles'} · ${copies} project ${copies === 1 ? 'copy' : 'copies'}`
 }
 
 /** A role's flow nodes, grouped by flow in first-seen order. */
@@ -96,7 +108,7 @@ export function usageSummary(usage: { flow: string; node: string }[]): string {
 }
 
 /** "2/4 concurrent": current usage against the role's limit. */
-export function budgetLine(role: StandingRole): string {
+export function budgetLine(role: LiveRole): string {
     const running = role.runs.filter((run) => !TERMINAL.has(run.status)).length
     return `${running}/${role.budget.concurrent_runs} concurrent`
 }

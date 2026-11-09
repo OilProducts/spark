@@ -302,7 +302,7 @@ async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names()
 }
 
 #[tokio::test]
-async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_git() {
+async fn workspace_definition_routes_show_layers_copies_and_memory_read_only() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir();
@@ -312,6 +312,12 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
     std::fs::create_dir_all(bundled.join("roles")).expect("roles dir");
     std::fs::write(bundled.join("roles/reviewer.md"), role).expect("role");
     std::fs::write(bundled.join("roles/coordinator.md"), role).expect("role");
+    std::fs::write(bundled.join("roles/editor.md"), role).expect("role");
+    std::fs::write(
+        bundled.join("roles/watcher.md"),
+        "---\ntype: Role\nstanding: true\n---\n\nYou watch.\n",
+    )
+    .expect("role");
 
     let project = temp.path().join("project");
     let org = spark_common::project::definitions_dir(&project);
@@ -325,6 +331,8 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
     std::fs::create_dir_all(org.join("roles")).expect("org roles");
     let helper_role = "---\ntype: Role\ntitle: Helper\ndescription: Helps out.\n---\n\nYou help.\n";
     std::fs::write(org.join("roles/helper.md"), helper_role).expect("role");
+    let edited_role = "---\ntype: Role\n---\n\nYou edit.\n";
+    std::fs::write(org.join("roles/editor.md"), edited_role).expect("copy");
     let memory = project.join(".spark/state/memory/coordinator");
     std::fs::create_dir_all(memory.join("notes")).expect("memory");
     std::fs::write(memory.join("index.md"), "# Known\n").expect("index");
@@ -338,10 +346,12 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
         async move { request_json(app, "GET", &uri, None).await }
     };
 
-    let (status, list, _) = get(format!("/workspace/api/org?{query}")).await;
+    let (status, list, _) = get(format!("/workspace/api/definitions?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{list}");
-    assert_eq!(list["org_path"], json!(org));
-    assert_eq!(list["org_exists"], true);
+    assert_eq!(
+        list.as_object().expect("object").keys().collect::<Vec<_>>(),
+        ["items"]
+    );
     let items = list["items"].as_array().expect("items");
     let find = |kind: &str, name: &str| {
         items
@@ -350,135 +360,102 @@ async fn workspace_org_routes_show_layers_copies_and_memory_read_only_without_gi
             .unwrap_or_else(|| panic!("{kind} {name} in {list}"))
             .clone()
     };
-    assert_eq!(find("flow", "shared")["layer"], "project_copy");
-    assert_eq!(find("flow", "shared")["path"], "flows/shared");
-    // Definitions have no Git history: those facts are always unknown.
-    for item in items {
-        assert_eq!(item["uncommitted"], false, "{item}");
-        assert_eq!(item["bundled_changed"], Value::Null, "{item}");
-    }
+    let shared = find("flow", "shared");
+    assert_eq!(
+        shared,
+        json!({"kind": "flow", "name": "shared", "layer": "project_copy", "path": "flows/shared"})
+    );
     assert_eq!(find("flow", "plain")["layer"], "bundled");
     assert_eq!(find("flow", "local")["layer"], "project");
     let helper = find("role", "helper");
     assert_eq!(helper["layer"], "project");
-    assert_eq!(helper["standing"], Value::Null);
     assert_eq!(helper["title"], "Helper");
     assert_eq!(helper["description"], "Helps out.");
+    assert_eq!(helper["standing"], false);
+    assert_eq!(helper["live"], Value::Null);
     let reviewer = find("role", "reviewer");
     assert_eq!(reviewer["layer"], "bundled");
     assert_eq!(
         reviewer["usage"],
         json!([{"flow": "local", "node": "review"}])
     );
+    // No role is started implicitly, whatever its name.
     let coordinator = find("role", "coordinator");
     assert_eq!(coordinator["usage"], json!([]));
-    assert_eq!(coordinator["standing"]["state"], "idle");
-    assert_eq!(coordinator["standing"]["budget"]["concurrent_runs"], 4);
-    assert!(coordinator["standing"]["conversation_id"]
-        .as_str()
-        .expect("conversation")
-        .ends_with("-coordinator"));
+    assert_eq!(coordinator["standing"], false);
+    assert_eq!(coordinator["live"], Value::Null);
+    let watcher = find("role", "watcher");
+    assert_eq!(watcher["standing"], true);
+    assert_eq!(watcher["live"], Value::Null);
+    assert_eq!(find("role", "editor")["layer"], "project_copy");
 
     // A project copy carries its diff from today's bundled version.
-    let (status, copy, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=flow&name=shared"
-    ))
-    .await;
+    let (status, copy, _) = get(format!("/workspace/api/roles/editor/file?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{copy}");
-    assert_eq!(copy["bundled_changed"], Value::Null);
-    assert!(copy["bundled_diff"]
-        .as_str()
-        .expect("diff")
-        .contains("-title: Shared v2"));
-    let flow_file = copy["files"]
-        .as_array()
-        .expect("files")
-        .iter()
-        .find(|file| file["name"] == "flow.md")
-        .expect("flow.md")
-        .clone();
-    assert!(flow_file["content"]
-        .as_str()
-        .expect("content")
-        .contains("title: shared"));
-    assert_eq!(flow_file["status"], Value::Null);
-    let (_, plain, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=flow&name=plain"
-    ))
-    .await;
-    assert_eq!(plain["layer"], "bundled");
-    assert_eq!(plain["bundled_changed"], Value::Null);
-    let (_, helper, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=role&name=helper"
-    ))
-    .await;
+    assert_eq!(copy["layer"], "project_copy");
+    assert_eq!(
+        copy["files"],
+        json!([{"name": "editor.md", "content": edited_role}])
+    );
+    let diff = copy["bundled_diff"].as_str().expect("diff");
+    assert!(
+        diff.contains("-You review.") && diff.contains("+You edit."),
+        "{diff}"
+    );
+    let (_, helper, _) = get(format!("/workspace/api/roles/helper/file?{query}")).await;
+    assert_eq!(helper["layer"], "project");
     assert_eq!(
         helper["files"],
-        json!([{"name": "helper.md", "content": helper_role, "status": null}])
+        json!([{"name": "helper.md", "content": helper_role}])
     );
-    // Copying shared again makes bundled match the copy.
-    write_flow(&settings, "shared", simple_flow("shared", "shared"));
-    let (_, same, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=flow&name=shared"
-    ))
-    .await;
+    assert_eq!(helper["bundled_diff"], Value::Null);
+    // Copying the role again makes bundled match the copy.
+    std::fs::write(bundled.join("roles/editor.md"), edited_role).expect("role");
+    let (_, same, _) = get(format!("/workspace/api/roles/editor/file?{query}")).await;
     assert_eq!(same["bundled_diff"], "");
     // A whitespace-only change to bundled still counts.
-    let bundled_flow = bundled.join("flows/shared/flow.md");
-    let text = std::fs::read_to_string(&bundled_flow).expect("bundled flow");
-    std::fs::write(&bundled_flow, format!("{text}\n")).expect("append newline");
-    let (_, spaced, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=flow&name=shared"
-    ))
-    .await;
+    std::fs::write(bundled.join("roles/editor.md"), format!("{edited_role}\n")).expect("role");
+    let (_, spaced, _) = get(format!("/workspace/api/roles/editor/file?{query}")).await;
     assert_ne!(spaced["bundled_diff"], "");
-    write_flow(&settings, "shared", simple_flow("shared", "shared"));
+    let (status, missing, _) = get(format!("/workspace/api/roles/nobody/file?{query}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
 
-    let (status, history, _) = get(format!(
-        "/workspace/api/org/history?{query}&path=flows/shared"
-    ))
-    .await;
-    assert_eq!((status, history), (StatusCode::OK, json!({"commits": []})));
-    let elsewhere = temp.path().join("no-org");
-    let (status, empty, _) = get(format!(
-        "/workspace/api/org/history?project_path={}&path=flows/shared",
-        elsewhere.display()
-    ))
-    .await;
-    assert_eq!((status, empty), (StatusCode::OK, json!({"commits": []})));
-
-    let (status, files, _) = get(format!(
-        "/workspace/api/org/memory?{query}&role=coordinator"
-    ))
-    .await;
+    let (status, files, _) = get(format!("/workspace/api/roles/coordinator/memory?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{files}");
     assert_eq!(files["files"], json!(["index.md", "notes/a.md"]));
     let (_, note, _) = get(format!(
-        "/workspace/api/org/memory?{query}&role=coordinator&file=notes/a.md"
+        "/workspace/api/roles/coordinator/memory?{query}&file=notes/a.md"
     ))
     .await;
     assert_eq!(note["content"], "note a\n");
 
     // Paths stay inside the definitions, memory and the bundled root.
     for uri in [
-        format!("/workspace/api/org/history?{query}&path=../outside"),
-        format!("/workspace/api/org/history?{query}&path=/etc/passwd"),
-        format!(
-            "/workspace/api/org/memory?{query}&role=coordinator&file=../../flows/shared/flow.md"
-        ),
-        format!("/workspace/api/org/memory?{query}&role=..&file=flows/shared/flow.md"),
-        format!("/workspace/api/org/item?{query}&kind=flow&name=../shared"),
-        format!("/workspace/api/org/item?{query}&kind=role&name=../roles/reviewer"),
+        format!("/workspace/api/roles/coordinator/memory?{query}&file=../../flows/shared/flow.md"),
+        format!("/workspace/api/roles/coordinator/memory?{query}&file=/etc/passwd"),
+        format!("/workspace/api/roles/../memory?{query}&file=flows/shared/flow.md"),
+        format!("/workspace/api/roles/..%2Froles%2Freviewer/file?{query}"),
+        format!("/workspace/api/roles/..%2Fflows%2Fshared%2Fflow/file?{query}"),
     ] {
         let (status, body, _) = get(uri.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+    }
+    // The organization routes are gone, with no aliases.
+    for uri in [
+        format!("/workspace/api/org?{query}"),
+        format!("/workspace/api/org/item?{query}&kind=role&name=helper"),
+        format!("/workspace/api/org/history?{query}&path=flows/shared"),
+        format!("/workspace/api/org/memory?{query}&role=coordinator"),
+    ] {
+        let (status, _, _) = request_text(app.clone(), "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
     }
     // Nothing above wrote to the project.
     assert_eq!(walk(&project), before);
 }
 
 #[tokio::test]
-async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
+async fn workspace_definition_routes_read_wildcard_and_unicode_role_names_literally() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let bundled = settings.bundled_dir().join("roles");
@@ -504,10 +481,8 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
         let app = app.clone();
         async move { request_json(app, "GET", &uri, None).await }
     };
-    let (status, bracketed, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=role&name=review%5B1%5D"
-    ))
-    .await;
+    let (status, bracketed, _) =
+        get(format!("/workspace/api/roles/review%5B1%5D/file?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{bracketed}");
     assert_eq!(bracketed["layer"], "project_copy");
     assert_eq!(
@@ -516,10 +491,8 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
     );
     assert_eq!(bracketed["bundled_diff"], "");
 
-    let (status, unicode, _) = get(format!(
-        "/workspace/api/org/item?{query}&kind=role&name=r%C3%A9viseur"
-    ))
-    .await;
+    let (status, unicode, _) =
+        get(format!("/workspace/api/roles/r%C3%A9viseur/file?{query}")).await;
     assert_eq!(status, StatusCode::OK, "{unicode}");
     assert_eq!(unicode["layer"], "project_copy");
     assert_eq!(
@@ -527,7 +500,6 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
         json!([{
             "name": "réviseur.md",
             "content": "---\ntype: Role\n---\n\nréviseur reviews.\n",
-            "status": null,
         }])
     );
     assert!(unicode["bundled_diff"]
@@ -538,7 +510,7 @@ async fn workspace_org_routes_read_wildcard_and_unicode_item_paths_literally() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots() {
+async fn workspace_definition_routes_refuse_symlinks_out_of_the_project_and_bundled_roots() {
     use std::os::unix::fs::symlink;
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -584,12 +556,8 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let app = build_app(settings).expect("app");
     let query = format!("project_path={}", project.display());
     for uri in [
-        format!("/workspace/api/org/item?{query}&kind=role&name=leak"),
-        format!("/workspace/api/org/item?{query}&kind=role&name=bleak"),
-        format!("/workspace/api/org/item?{query}&kind=flow&name=shared"),
-        format!("/workspace/api/org/item?{query}&kind=flow&name=own"),
-        format!("/workspace/api/org/item?{query}&kind=flow&name=linked"),
-        format!("/workspace/api/org/item?{query}&kind=flow&name=nodelink"),
+        format!("/workspace/api/roles/leak/file?{query}"),
+        format!("/workspace/api/roles/bleak/file?{query}"),
     ] {
         let (status, body, _) = request_json(app.clone(), "GET", &uri, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
@@ -600,7 +568,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let (status, list, _) = request_json(
         app.clone(),
         "GET",
-        &format!("/workspace/api/org?{query}"),
+        &format!("/workspace/api/definitions?{query}"),
         None,
     )
     .await;
@@ -620,7 +588,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let (status, files, _) = request_json(
         app.clone(),
         "GET",
-        &format!("/workspace/api/org/memory?{query}&role=coordinator"),
+        &format!("/workspace/api/roles/coordinator/memory?{query}"),
         None,
     )
     .await;
@@ -631,7 +599,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     let (status, body, _) = request_json(
         app,
         "GET",
-        &format!("/workspace/api/org/memory?{query}&role=coordinator&file=secret.md"),
+        &format!("/workspace/api/roles/coordinator/memory?{query}&file=secret.md"),
         None,
     )
     .await;
@@ -640,7 +608,7 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
 
 #[cfg(unix)]
 #[tokio::test]
-async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() {
+async fn workspace_definition_role_titles_never_come_from_outside_the_roots() {
     use std::os::unix::fs::symlink;
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -673,20 +641,23 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
     let app = build_app(settings).expect("app");
     let list = || {
         let app = app.clone();
-        let uri = format!("/workspace/api/org?project_path={}", project.display());
+        let uri = format!(
+            "/workspace/api/definitions?project_path={}",
+            project.display()
+        );
         async move {
             let (status, list, _) = request_json(app, "GET", &uri, None).await;
             assert_eq!(status, StatusCode::OK, "{list}");
             list
         }
     };
-    let standing_title = |list: &Value| {
+    let role_title = |list: &Value| {
         list["items"]
             .as_array()
             .expect("items")
             .iter()
             .find(|item| item["name"] == "coordinator")
-            .map(|item| item["standing"]["title"].clone())
+            .map(|item| item["title"].clone())
     };
     // Project link escapes; the bundled one, next in line, escapes too.
     let body = list().await;
@@ -695,19 +666,19 @@ async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() 
     std::fs::remove_file(org_roles.join("coordinator.md")).expect("unlink");
     let body = list().await;
     assert!(!body.to_string().contains("Outside"), "{body}");
-    // A role file inside its root still titles the standing role.
+    // A role file inside its root still titles the role.
     std::fs::write(
         org_roles.join("coordinator.md"),
         "---\ntype: Role\ntitle: Inside Title\n---\n\nYou coordinate.\n",
     )
     .expect("inside role");
     let body = list().await;
-    assert_eq!(standing_title(&body), Some(json!("Inside Title")), "{body}");
+    assert_eq!(role_title(&body), Some(json!("Inside Title")), "{body}");
     assert!(!body.to_string().contains("Outside"), "{body}");
 }
 
 #[tokio::test]
-async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
+async fn workspace_definition_list_writes_nothing_for_an_unseen_project() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     write_flow(&settings, "shared", simple_flow("shared", "shared"));
@@ -715,7 +686,7 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     std::fs::create_dir_all(&roles).expect("roles");
     std::fs::write(
         roles.join("coordinator.md"),
-        "---\ntype: Role\n---\n\nYou coordinate.\n",
+        "---\ntype: Role\nstanding: true\n---\n\nYou coordinate.\n",
     )
     .expect("role");
     let app = build_app(settings).expect("app");
@@ -730,7 +701,10 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     let (status, list, _) = request_json(
         app.clone(),
         "GET",
-        &format!("/workspace/api/org?project_path={}", project.display()),
+        &format!(
+            "/workspace/api/definitions?project_path={}",
+            project.display()
+        ),
         None,
     )
     .await;
@@ -742,12 +716,13 @@ async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
         .find(|item| item["name"] == "coordinator")
         .expect("coordinator")
         .clone();
-    assert_eq!(coordinator["standing"]["state"], "idle");
+    assert_eq!(coordinator["standing"], true);
+    assert_eq!(coordinator["live"], Value::Null);
     assert_eq!(tree(), before);
 }
 
 #[tokio::test]
-async fn workspace_org_list_writes_nothing_into_a_partial_workspace_data_root() {
+async fn workspace_definition_list_writes_nothing_into_a_partial_workspace_data_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project = temp.path().join("project");
@@ -775,7 +750,10 @@ async fn workspace_org_list_writes_nothing_into_a_partial_workspace_data_root() 
     let (status, list, _) = request_json(
         app.clone(),
         "GET",
-        &format!("/workspace/api/org?project_path={}", project.display()),
+        &format!(
+            "/workspace/api/definitions?project_path={}",
+            project.display()
+        ),
         None,
     )
     .await;

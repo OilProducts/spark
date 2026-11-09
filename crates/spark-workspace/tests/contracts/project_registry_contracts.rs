@@ -104,7 +104,7 @@ enabled = false
 }
 
 #[test]
-fn project_service_sets_up_definitions_before_recording_a_registration() {
+fn project_service_registers_without_writing_definitions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = WorkspaceProjectService::new(settings.clone());
@@ -128,14 +128,23 @@ fn project_service_sets_up_definitions_before_recording_a_registration() {
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     register(&project, None).expect("register");
+    assert!(recorded(&project));
+    assert!(!project.join(".spark").exists());
+
+    // A project's existing copies stay exactly as they are.
     let definitions = project.join(".spark/definitions");
-    assert!(definitions.join(".initialized").is_file());
-    assert!(definitions
-        .join("flows/organization/review-change/flow.md")
-        .is_file());
-    fs::remove_file(definitions.join("roles/author.md")).unwrap();
+    fs::create_dir_all(definitions.join("roles")).unwrap();
+    fs::write(definitions.join("roles/coordinator.md"), "ours\n").unwrap();
     register(&project, None).expect("register again");
-    assert!(!definitions.join("roles/author.md").exists());
+    assert_eq!(
+        fs::read_dir(&definitions).unwrap().count(),
+        1,
+        "only the operator's roles directory"
+    );
+    assert_eq!(
+        fs::read_to_string(definitions.join("roles/coordinator.md")).unwrap(),
+        "ours\n"
+    );
 
     let missing = temp.path().join("missing");
     assert!(register(&missing, None).is_err());
@@ -145,21 +154,6 @@ fn project_service_sets_up_definitions_before_recording_a_registration() {
     fs::create_dir_all(&unprofiled).unwrap();
     assert!(register(&unprofiled, Some("missing")).is_err());
     assert!(!unprofiled.join(".spark").exists() && !recorded(&unprofiled));
-
-    let blocked = temp.path().join("blocked");
-    fs::create_dir_all(blocked.join(".spark")).unwrap();
-    fs::write(blocked.join(".spark/definitions"), "").unwrap();
-    let error = register(&blocked, None).expect_err("blocked setup");
-    assert!(error.to_string().contains(".spark/definitions"), "{error}");
-    assert!(!recorded(&blocked));
-
-    // The storage registry itself only records.
-    let stored = temp.path().join("stored");
-    fs::create_dir_all(&stored).unwrap();
-    registry
-        .register_project_with_execution_profile(&stored.to_string_lossy(), None)
-        .unwrap();
-    assert!(!stored.join(".spark").exists());
 }
 
 #[test]
@@ -371,9 +365,7 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
         )
         .expect("conversations");
 
-    // Registration starts the project's coordinator, pinned first.
-    let (coordinator, summaries) = summaries.split_first().expect("coordinator");
-    assert!(coordinator.conversation_id.ends_with("-coordinator"));
+    // Registration starts no role, so only real conversations are listed.
     assert_eq!(
         summaries
             .iter()

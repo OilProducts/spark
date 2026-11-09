@@ -88,7 +88,7 @@ export function TriggerEditor({
                         id={fieldId('role')}
                         value={form.roleName}
                         disabled={protectedTrigger}
-                        placeholder="chief-of-staff"
+                        placeholder="role-name"
                         onChange={(event) => onChange({ ...form, roleName: event.target.value })}
                         className="text-sm font-mono"
                     />
@@ -117,7 +117,7 @@ export function TriggerEditor({
                         <option value="flow_event">Flow Event</option>
                     </NativeSelect>
                 </TriggerField>
-                {/* A trigger lives in its project's org: chosen on create, fixed after. */}
+                {/* A trigger belongs to a project: chosen on create, fixed after. */}
                 <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
                     <NativeSelect
                         id={fieldId('project-choice')}

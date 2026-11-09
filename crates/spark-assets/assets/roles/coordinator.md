@@ -19,4 +19,3 @@ When a design-change run completes, check its design against what the user asked
 
 Before you tell the user that a run succeeded or what it changed, check the run's record and the commits it names; a run's summary of itself is a claim, not evidence.
 
-Org changes (this project's definitions in `.spark/definitions`, such as its flows, roles and playbooks) belong to the Chief of Staff. When the user asks for one, send it to the Chief of Staff with `spark send` (its handle is in `spark role list`) and tell the user you did. If the Chief of Staff is not running (`spark role list` shows it missing or stopped), make the change yourself in the definitions and state its reason in the changelog. Org files are not project files.

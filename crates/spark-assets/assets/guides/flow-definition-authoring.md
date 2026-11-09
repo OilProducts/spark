@@ -6,17 +6,33 @@ body, and a required `type`. The flow's name is the directory's path relative
 to the flows root, with no extension, for example `examples/simple-linear`.
 YAML flow files are not loaded.
 
+## Writing Principles
+
+Apply these whenever you write or change a flow or role.
+
+1. **Trust the agent with the method.** Say what outcome you want and how you'll know it's done. Leave the method to the agent unless getting it wrong would be costly.
+
+2. **Match the guard to the real risk.** A risk is real when you can name what triggers it and what it costs. A guard has a cost too, so don't guard against risk the work doesn't carry.
+
+3. **Keep the record in the run.** The run is the audit trail. Produce artifacts only when the artifact is the deliverable.
+
+4. **Separate making from checking.** Whoever produces the work shouldn't be the one who accepts it. Checks should try to disprove claims, including the unstated claim that nothing else broke, not add work of their own.
+
+5. **Hold scope.** Do what the request needs and don't build beyond it. This applies to authors and reviewers alike.
+
+6. **Stop honestly.** When something needs human judgment, stop and say so instead of guessing, and never quietly lower a bar to get to done.
+
 ## Where Flows Live
 
 Flows, roles and playbooks resolve through two roots, in order:
 
 1. The project's definitions, `<project>/.spark/definitions/` (`flows/`,
-   `roles/` and `playbooks/`). Spark installs a copy of the bundled library
-   there once, when the project is registered, and never updates it on its
-   own; the project owns these files.
+   `roles/` and `playbooks/`). Registering a project writes nothing there;
+   the project owns whatever files it adds.
 2. The bundled library, `$SPARK_HOME/bundled/` (`flows/`, `roles/` and
-   `playbooks/`). Spark
-   rewrites it from its packaged assets on every start, so never edit it.
+   `playbooks/`). Spark rewrites it from its packaged assets on every start,
+   so never edit it. It also holds `guides/`, this guide among them, as
+   read-only references; guides take no part in project lookup.
 
 A project file with the same name as a bundled one replaces it. A launch with
 no project uses bundled flows only, and a name missing from the project's

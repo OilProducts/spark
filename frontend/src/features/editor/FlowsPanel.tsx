@@ -7,8 +7,8 @@ import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
 import { FlowTree } from '@/components/app/flow-tree'
-import { OrgBadges } from '@/features/org/OrgPanel'
-import { orgBadges, orgRequest, type OrgItem, type OrgList } from '@/features/org/orgModel'
+import { DefinitionBadges } from '@/features/roles/RolesPanel'
+import { definitionBadges, fetchDefinitions, type DefinitionItem } from '@/features/roles/rolesModel'
 
 import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
 
@@ -21,8 +21,8 @@ function useFlowCatalogPanel() {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const [flows, setFlows] = useState<string[]>([])
     // Badge metadata and the project it describes; another project's never shows.
-    const [org, setOrg] = useState<{ project: string | null; flows: Record<string, OrgItem> }>({ project: null, flows: {} })
-    const orgFlows = org.project === activeProjectPath ? org.flows : {}
+    const [definitions, setDefinitions] = useState<{ project: string | null; flows: Record<string, DefinitionItem> }>({ project: null, flows: {} })
+    const flowDefinitions = definitions.project === activeProjectPath ? definitions.flows : {}
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
@@ -36,13 +36,13 @@ function useFlowCatalogPanel() {
             setIsRefreshingFlows(true)
         }
 
-        // Badges are a hint: a project whose org list fails shows none.
+        // Badges are a hint: a project whose definition list fails shows none.
         if (activeProjectPath) {
             const project = activeProjectPath
-            const settle = (flows: Record<string, OrgItem>) => {
-                if (isMountedRef.current && requestId === refreshRequestIdRef.current) setOrg({ project, flows })
+            const settle = (flows: Record<string, DefinitionItem>) => {
+                if (isMountedRef.current && requestId === refreshRequestIdRef.current) setDefinitions({ project, flows })
             }
-            orgRequest<OrgList>('', project).then(
+            fetchDefinitions(project).then(
                 (list) => settle(Object.fromEntries(list.items.filter((item) => item.kind === 'flow').map((item) => [item.name, item]))),
                 (error) => { console.error(error); settle({}) },
             )
@@ -148,7 +148,7 @@ function useFlowCatalogPanel() {
         await refreshFlows();
     };
 
-    return { activeFlow, setActiveFlow, flows, orgFlows, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
+    return { activeFlow, setActiveFlow, flows, flowDefinitions, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
 }
 
 export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
@@ -191,8 +191,8 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
-                renderFlowIndicator={(flow) => catalog.orgFlows[flow] && orgBadges(catalog.orgFlows[flow]).length > 0
-                    && <span className="flex flex-wrap gap-1"><OrgBadges item={catalog.orgFlows[flow]} /></span>}
+                renderFlowIndicator={(flow) => catalog.flowDefinitions[flow] && definitionBadges(catalog.flowDefinitions[flow]).length > 0
+                    && <span className="flex flex-wrap gap-1"><DefinitionBadges item={catalog.flowDefinitions[flow]} /></span>}
             />
         </div>
     )

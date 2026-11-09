@@ -579,10 +579,7 @@ function mergeSummaryRows(current: ProjectConversationCacheState, rows: Conversa
             return
         }
         const filedPath = scopePath ?? path ?? row.payload.project_path
-        let summary = { ...conversationSummaryFromRow({ ...row, payload: row.payload }), project_path: filedPath }
-        // A conversation-scope row doesn't carry the standing role the summary feed listed.
-        const role = row.payload.standing_role === undefined ? existing?.standing_role : null
-        if (role) summary = { ...summary, title: role.title, standing_role: role }
+        const summary = { ...conversationSummaryFromRow({ ...row, payload: row.payload }), project_path: filedPath }
         lists[summary.project_path] = upsertConversationSummary(lists[summary.project_path] ?? [], summary)
         pathById.set(row.id, summary.project_path)
     })

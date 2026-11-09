@@ -1,5 +1,5 @@
 /// Points HOME at a fresh directory for this test process before the first
-/// app starts, so Home's setup never writes into the developer's home. A
+/// app starts, so the Home project never points at the developer's home. A
 /// child test process started with `SPARK_TEST_HOME_SET` keeps the HOME its
 /// parent chose.
 pub(crate) fn isolate_home() {

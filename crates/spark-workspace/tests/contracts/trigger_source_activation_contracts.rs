@@ -337,6 +337,10 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
     let settings = settings(&root);
     let other = project(&settings, "other");
     let project = project(&settings, "project");
+    super::role_contracts::seed_bundled_roles(&settings);
+    crate::roles(settings.clone())
+        .start(&project, "coordinator")
+        .expect("start role");
     let mut trigger = flow_event_definition("role-event", Map::new());
     trigger.action.mode = "role".into();
     trigger.action.role = Some("coordinator".into());

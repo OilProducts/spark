@@ -25,12 +25,12 @@ fn process_help_matches_top_level_contract() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         concat!(
-            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
+            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n",
             "\n",
             "Spark agent CLI\n",
             "\n",
             "positional arguments:\n",
-            "  {convo,send,run,flow,trigger,mission,role,playbook,settings,org}\n",
+            "  {convo,send,run,flow,trigger,mission,role,playbook,settings}\n",
             "    convo               Conversation-scoped artifact commands\n",
             "    send                Message another conversation by handle\n",
             "    run                 Direct execution commands\n",
@@ -40,7 +40,6 @@ fn process_help_matches_top_level_contract() {
             "    role                Standing role management\n",
             "    playbook            Mission playbook discovery\n",
             "    settings            Read, validate, and save workspace settings\n",
-            "    org                 Agent organization initialization\n",
             "\n",
             "options:\n",
             "  -h, --help            show this help message and exit\n",
@@ -847,213 +846,6 @@ fn process_flow_validate_dir_resolves_roles_through_the_flows_org() {
     for removed in ["accept", "promote"] {
         let output = spark(&["flow", removed, "flows/team/work/flow.md"]);
         assert_ne!(output.status.code(), Some(0), "{output:?}");
-    }
-}
-
-mod org_init {
-    use std::collections::BTreeSet;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::process::{Command, Output};
-
-    struct Env {
-        _temp: tempfile::TempDir,
-        home: PathBuf,
-        project: PathBuf,
-    }
-
-    fn env() -> Env {
-        let temp = tempfile::tempdir().expect("tempdir");
-        // The CLI reports canonical paths; macOS temp dirs sit behind /var -> /private/var.
-        let root = temp.path().canonicalize().expect("canonical tempdir");
-        let home = root.join("home");
-        let project = root.join("project");
-        fs::create_dir_all(&home).expect("home");
-        fs::create_dir_all(&project).expect("project");
-        Env {
-            _temp: temp,
-            home,
-            project,
-        }
-    }
-
-    impl Env {
-        fn definitions(&self) -> PathBuf {
-            self.project.join(".spark/definitions")
-        }
-
-        fn init(&self) -> Output {
-            self.spark(&["--project", self.project.to_str().unwrap()])
-        }
-
-        fn spark(&self, args: &[&str]) -> Output {
-            Command::new(super::spark_bin())
-                .args(["org", "init"])
-                .args(args)
-                .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .env("HOME", &self.home)
-                .env("SPARK_HOME", self.home.join("spark-home"))
-                .output()
-                .expect("run spark")
-        }
-    }
-
-    fn stdout(output: &Output) -> String {
-        String::from_utf8_lossy(&output.stdout).to_string()
-    }
-
-    fn stderr(output: &Output) -> String {
-        String::from_utf8_lossy(&output.stderr).to_string()
-    }
-
-    fn lines_with(output: &Output, prefix: &str) -> Vec<String> {
-        stdout(output)
-            .lines()
-            .filter_map(|line| line.strip_prefix(prefix))
-            .map(str::to_string)
-            .collect()
-    }
-
-    fn assets() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../spark-assets/assets")
-    }
-
-    /// Files below `assets/<dir>`, as `<prefix><relative path>`.
-    fn source_files(dir: &str, prefix: &str) -> BTreeSet<String> {
-        fn collect(root: &Path, dir: &Path, prefix: &str, files: &mut BTreeSet<String>) {
-            for entry in fs::read_dir(dir).expect("dir") {
-                let path = entry.expect("entry").path();
-                if path.is_dir() {
-                    collect(root, &path, prefix, files);
-                } else {
-                    let relative = path.strip_prefix(root).unwrap().to_string_lossy();
-                    files.insert(format!("{prefix}{relative}"));
-                }
-            }
-        }
-        let root = assets().join(dir);
-        let mut files = BTreeSet::new();
-        collect(&root, &root, prefix, &mut files);
-        files
-    }
-
-    fn source_bytes(installed: &str) -> std::io::Result<Vec<u8>> {
-        let source = match installed.split_once('/') {
-            Some(("flows" | "roles" | "playbooks", _)) => assets().join(installed),
-            _ => assets().join("agent-org").join(installed),
-        };
-        fs::read(source)
-    }
-
-    #[test]
-    fn initialization_installs_the_complete_definitions_once() {
-        let env = env();
-        let output = env.init();
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        let definitions = env.definitions();
-        assert!(stdout(&output).starts_with(&format!("Definitions: {}\n", definitions.display())));
-
-        let mut expected = BTreeSet::new();
-        for dir in ["spec", "profiles", "standards", "templates", "decisions"] {
-            expected.extend(source_files(
-                &format!("agent-org/{dir}"),
-                &format!("{dir}/"),
-            ));
-        }
-        for dir in ["flows", "roles", "playbooks"] {
-            expected.extend(source_files(dir, &format!("{dir}/")));
-        }
-        expected.extend(["README.md".to_string(), "CHANGELOG.md".to_string()]);
-        assert_eq!(
-            lines_with(&output, "created ")
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            expected
-        );
-        for path in &expected {
-            if path != "README.md" && path != "CHANGELOG.md" {
-                let installed = fs::read(definitions.join(path)).expect("installed");
-                assert!(installed == source_bytes(path).expect("source"), "{path}");
-            }
-        }
-        let readme = fs::read_to_string(definitions.join("README.md")).expect("readme");
-        assert!(readme.contains(env!("CARGO_PKG_VERSION")), "{readme}");
-        assert!(
-            readme.contains("external-effects, operations, software"),
-            "{readme}"
-        );
-        assert!(definitions.join(".initialized").is_file());
-        assert!(!env.project.join(".spark/agent-org").exists());
-        assert!(!definitions.join(".git").exists());
-        assert!(!env.home.join("spark-home").exists());
-
-        // Deleted copies are not restored once the project is initialized.
-        fs::remove_file(definitions.join("roles/author.md")).expect("remove");
-        let again = env.init();
-        assert_eq!(again.status.code(), Some(0), "{again:?}");
-        assert!(lines_with(&again, "created ").is_empty());
-        assert!(stdout(&again).contains("Already initialized"), "{again:?}");
-        assert!(!definitions.join("roles/author.md").exists());
-    }
-
-    #[test]
-    fn initialization_keeps_existing_files_and_repairs_a_partial_copy() {
-        let env = env();
-        let definitions = env.definitions();
-        fs::create_dir_all(&definitions).expect("definitions");
-        fs::write(definitions.join("standards"), "").expect("blocking file");
-        fs::write(definitions.join("README.md"), "our readme\n").expect("readme");
-
-        let failed = env.init();
-        assert_eq!(failed.status.code(), Some(1), "{failed:?}");
-        assert!(stderr(&failed).contains("standards"), "{failed:?}");
-        assert!(!definitions.join(".initialized").exists());
-        assert!(definitions.join("CHANGELOG.md").is_file());
-
-        fs::remove_file(definitions.join("standards")).expect("unblock");
-        let output = env.init();
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        assert!(lines_with(&output, "created ").contains(&"standards/README.md".to_string()));
-        assert!(lines_with(&output, "skipped ").contains(&"README.md".to_string()));
-        assert!(lines_with(&output, "skipped ").contains(&"CHANGELOG.md".to_string()));
-        assert_eq!(
-            fs::read_to_string(definitions.join("README.md")).unwrap(),
-            "our readme\n"
-        );
-        assert!(definitions.join(".initialized").is_file());
-    }
-
-    #[test]
-    fn invalid_invocations_write_nothing() {
-        let env = env();
-        let project = env.project.to_str().unwrap().to_string();
-        for args in [
-            vec!["--project", &project, "--profile", "software"],
-            vec!["--profile", "software"],
-            vec!["--project"],
-            vec!["--project", &project, "--force"],
-            vec!["--project", &project, "extra"],
-        ] {
-            let output = env.spark(&args);
-            assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
-            assert!(stderr(&output).starts_with("usage: spark"), "{output:?}");
-            assert!(!env.project.join(".spark").exists(), "{args:?}");
-        }
-
-        let missing = env.project.join("missing");
-        let output = env.spark(&["--project", missing.to_str().unwrap()]);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(!missing.exists());
-
-        let plan = spark_cli::request_plan_with_args_env_and_stdin(
-            ["spark", "org", "init", "--project", project.as_str()],
-            &std::collections::BTreeMap::<String, String>::new(),
-            "",
-        )
-        .expect_err("local command");
-        assert_eq!(plan.exit_code, 2);
-        assert!(plan.stderr.contains("local command"), "{}", plan.stderr);
     }
 }
 

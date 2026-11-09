@@ -217,6 +217,11 @@ test('an opened standing role keeps its row, and its state chip follows stop and
     const projectPath = path.join(tmpRoot, 'projects', 'standing-role-row')
     mkdirSync(projectPath, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
+    const control = (action: string) => page.request.post(`/workspace/api/roles/coordinator/${action}?project_path=${encodeURIComponent(projectPath)}`)
+    // A role has a row once started; its first turn runs through the gates.
+    openGate('continue')
+    openGate('finish')
+    expect((await control('start')).ok()).toBe(true)
     await page.addInitScript(({ projectPath }) => {
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
     }, { projectPath })
@@ -231,7 +236,6 @@ test('an opened standing role keeps its row, and its state chip follows stop and
     const conversationId = await row.getAttribute('data-conversation-id')
     await expect(page.getByTestId(`project-thread-delete-${conversationId}`)).toHaveCount(0)
 
-    const control = (action: string) => page.request.post(`/workspace/api/roles/coordinator/${action}?project_path=${encodeURIComponent(projectPath)}`)
     expect((await control('stop')).ok()).toBe(true)
     await expect(row.getByTestId('standing-role-state')).toHaveText('stopped')
     expect((await control('start')).ok()).toBe(true)

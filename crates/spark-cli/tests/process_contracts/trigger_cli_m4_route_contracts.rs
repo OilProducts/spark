@@ -1074,8 +1074,9 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
+    // No role exists until it is started.
     let listed = json_of(role_cli(&["list"]));
-    assert_eq!(listed["roles"][0]["name"], "coordinator");
+    assert_eq!(listed["roles"], json!([]), "{listed}");
     assert_ne!(role_cli(&["start"]).status.code(), Some(0));
     let started = json_of(role_cli(&["start", "--role", "chief-of-staff"]));
     assert_eq!(started["name"], "chief-of-staff");
@@ -1115,7 +1116,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     ));
     assert_eq!(sent["conversation_id"], started["conversation_id"]);
     let listed = json_of(role_cli(&["list"]));
-    assert_eq!(listed["roles"][1]["event_seq"], 1, "{listed}");
+    assert_eq!(listed["roles"][0]["event_seq"], 1, "{listed}");
     let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
     assert_eq!(stopped["state"], "stopped");
 

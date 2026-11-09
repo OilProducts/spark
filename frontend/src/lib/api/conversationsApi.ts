@@ -263,8 +263,6 @@ export interface ConversationRowPayload {
     settings_revision: string | null
     /** Summary scope only; `undefined` when the row doesn't carry it. */
     standing_role?: StandingRoleSummary | null
-    /** A standing role without a conversation yet. */
-    placeholder: boolean
 }
 
 export type ConversationArtifactCollection = 'flow_run_requests' | 'flow_launches' | 'run_recoveries' | 'proposed_plans' | 'event_log'
@@ -734,7 +732,6 @@ function parseConversationRowPayload(value: unknown, endpoint: string): Conversa
         settings_revision: modelSettingsView?.revision
             ?? (settingsRevision == null ? null : expectDecimal(settingsRevision, endpoint, 'metadata.settings_revision')),
         ...('standing_role' in record ? { standing_role: parseStandingRole(record.standing_role) } : {}),
-        placeholder: record.placeholder === true,
     }
 }
 

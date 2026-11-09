@@ -15,7 +15,6 @@ static FRONTEND_DIST: Dir<'_> = include_dir!("$SPARK_FRONTEND_DIST_DIR");
 static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/flows");
 static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/guides");
 static PLAYBOOKS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/playbooks");
-static AGENT_ORG: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/agent-org");
 static ROLES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/roles");
 static ROOT_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../assets");
 static MODEL_CATALOG_JSON: &str = include_str!(concat!(
@@ -374,29 +373,17 @@ pub mod guides {
     pub fn spark_operations_guide() -> Option<ResourceFile> {
         load_guide(SPARK_OPERATIONS_GUIDE_NAME)
     }
+
+    /// Bundled guides (`guides/<name>.md`): `(file name, Markdown text)`, sorted.
+    pub fn assets() -> Vec<(String, String)> {
+        super::markdown_assets(&GUIDES)
+    }
 }
 
 /// Bundled mission playbooks: `(file name, Markdown text)`, sorted by name.
 pub mod playbooks {
     pub fn assets() -> Vec<(String, String)> {
         super::markdown_assets(&super::PLAYBOOKS)
-    }
-}
-
-/// The agent organization seed (`assets/agent-org`).
-pub mod agent_org {
-    /// Every seed file: `(path relative to the seed root, bytes)`, sorted.
-    pub fn files() -> Vec<(String, &'static [u8])> {
-        let mut names = Vec::new();
-        super::collect_file_names(&super::AGENT_ORG, &mut names);
-        names.sort();
-        names
-            .into_iter()
-            .filter_map(|name| {
-                let bytes = super::AGENT_ORG.get_file(&name)?.contents();
-                Some((name, bytes))
-            })
-            .collect()
     }
 }
 

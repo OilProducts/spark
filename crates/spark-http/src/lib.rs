@@ -200,7 +200,7 @@ fn build_app_on_store(
         if let Err(error) = spark_workspace::WorkspaceProjectService::new((*state.settings).clone())
             .ensure_home_project()
         {
-            eprintln!("Unable to set up the Home project: {error}");
+            eprintln!("Unable to register the Home project: {error}");
         }
         let _ = service.recover_interrupted_runs();
         // Likewise every chat turn the previous process left in flight.
@@ -1488,7 +1488,7 @@ mod live_queue_tests {
         use tower::ServiceExt;
 
         let temp = tempfile::tempdir().unwrap();
-        // Home's setup writes under HOME; nothing else in this binary reads it.
+        // The Home project is HOME; nothing else in this binary reads it.
         std::env::set_var("HOME", temp.path());
         let settings = live_lag_settings(temp.path());
         let project = temp.path().join("project").to_string_lossy().into_owned();

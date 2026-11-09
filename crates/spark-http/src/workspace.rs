@@ -88,10 +88,9 @@ pub fn router() -> Router<HttpAppState> {
         .route("/missions/{mission_id}/{control}", post(control_mission))
         .route("/roles", get(list_roles))
         .route("/roles/{name}/{control}", post(control_role))
-        .route("/org", get(list_org))
-        .route("/org/item", get(get_org_item))
-        .route("/org/history", get(get_org_history))
-        .route("/org/memory", get(get_org_memory))
+        .route("/roles/{name}/file", get(get_role_file))
+        .route("/roles/{name}/memory", get(get_role_memory))
+        .route("/definitions", get(list_definitions))
         .route("/playbooks", get(list_playbooks))
         .route("/playbooks/{name}", get(get_playbook))
         .route("/projects", get(list_projects).delete(delete_project))
@@ -2045,69 +2044,51 @@ async fn list_roles(
 }
 
 #[derive(Debug, Deserialize)]
-struct OrgQuery {
+struct DefinitionsQuery {
     project_path: String,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    path: String,
-    #[serde(default)]
-    role: String,
     file: Option<String>,
 }
 
-fn org_service(
+fn definition_service(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
-) -> spark_workspace::org::WorkspaceOrgService {
-    spark_workspace::org::WorkspaceOrgService::new(settings.clone(), store.clone())
+) -> spark_workspace::definitions::WorkspaceDefinitionService {
+    spark_workspace::definitions::WorkspaceDefinitionService::new(settings.clone(), store.clone())
 }
 
-async fn list_org(
+async fn list_definitions(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
-    payload: Result<Query<OrgQuery>, QueryRejection>,
+    payload: Result<Query<DefinitionsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
     Ok(Json(
-        org_service(&settings, &store).list(&query.project_path)?,
+        definition_service(&settings, &store).list(&query.project_path)?,
     ))
 }
 
-async fn get_org_item(
+async fn get_role_file(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
-    payload: Result<Query<OrgQuery>, QueryRejection>,
-) -> ApiResult<spark_workspace::org::OrgItemDetail> {
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Query<DefinitionsQuery>, QueryRejection>,
+) -> ApiResult<spark_workspace::definitions::RoleFileDetail> {
     let query = query_payload(payload)?;
-    Ok(Json(org_service(&settings, &store).item(
-        &query.project_path,
-        &query.kind,
-        &query.name,
-    )?))
+    Ok(Json(
+        definition_service(&settings, &store).role_file(&query.project_path, &name)?,
+    ))
 }
 
-async fn get_org_history(
+async fn get_role_memory(
     State(settings): State<Arc<SparkSettings>>,
     State(store): State<Arc<ConversationStore>>,
-    payload: Result<Query<OrgQuery>, QueryRejection>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Query<DefinitionsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    let commits = org_service(&settings, &store).history(&query.project_path, &query.path)?;
-    Ok(Json(json!({ "commits": commits })))
-}
-
-async fn get_org_memory(
-    State(settings): State<Arc<SparkSettings>>,
-    State(store): State<Arc<ConversationStore>>,
-    payload: Result<Query<OrgQuery>, QueryRejection>,
-) -> ApiResult<Value> {
-    let query = query_payload(payload)?;
-    Ok(Json(org_service(&settings, &store).memory(
+    Ok(Json(definition_service(&settings, &store).memory(
         &query.project_path,
-        &query.role,
+        &name,
         query.file.as_deref(),
     )?))
 }

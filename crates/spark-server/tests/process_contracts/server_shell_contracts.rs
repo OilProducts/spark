@@ -202,6 +202,13 @@ fn init_creates_runtime_layout_and_bundled_library() {
     assert!(fs::read_to_string(bundled.join("playbooks/bug-report.md"))
         .expect("bundled playbook")
         .starts_with("---\ntitle: Bug report\n"));
+    // Guides are published for agents writing flows and roles at runtime.
+    assert!(
+        fs::read_to_string(bundled.join("guides/flow-definition-authoring.md"))
+            .expect("bundled guide")
+            .contains("## Writing Principles")
+    );
+    assert!(bundled.join("guides/spark-operations.md").is_file());
     assert!(!data_dir.join("playbooks").exists());
     assert!(!data_dir.join("flows").exists());
     assert!(!data_dir.join("config/flow-catalog.toml").exists());
@@ -257,6 +264,10 @@ fn bundled_library_is_rewritten_on_every_start_including_serve() {
     let packaged_playbook = fs::read_to_string(&playbook).expect("bundled playbook");
     fs::write(&playbook, "edited playbook\n").expect("edit playbook");
     fs::write(bundled.join("playbooks/stray.md"), "x").expect("stray playbook");
+    let guide = bundled.join("guides/flow-definition-authoring.md");
+    let packaged_guide = fs::read_to_string(&guide).expect("bundled guide");
+    fs::write(&guide, "edited guide\n").expect("edit guide");
+    fs::write(bundled.join("guides/stray.md"), "x").expect("stray guide");
 
     let serve = run_with_args_and_env(
         [
@@ -281,6 +292,8 @@ fn bundled_library_is_rewritten_on_every_start_including_serve() {
     assert!(!bundled.join("roles/stray.md").exists());
     assert_eq!(fs::read_to_string(&playbook).unwrap(), packaged_playbook);
     assert!(!bundled.join("playbooks/stray.md").exists());
+    assert_eq!(fs::read_to_string(&guide).unwrap(), packaged_guide);
+    assert!(!bundled.join("guides/stray.md").exists());
     assert!(!data_dir.join("playbooks").exists());
 }
 

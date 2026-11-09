@@ -51,7 +51,7 @@ describe('parseTriggerResponse', () => {
     expect(() => parseTriggerResponse({ ...baseTriggerResponse, action: {} })).toThrow(ApiSchemaError)
   })
 
-  it('requires the project whose org holds the trigger', () => {
+  it('requires the project the trigger belongs to', () => {
     const { project_path: _projectPath, ...withoutProject } = baseTriggerResponse
     expect(() => parseTriggerResponse(withoutProject)).toThrow(ApiSchemaError)
   })
