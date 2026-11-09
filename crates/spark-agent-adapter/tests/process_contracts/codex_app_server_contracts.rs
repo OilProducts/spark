@@ -447,6 +447,107 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
 }
 
 #[test]
+fn turn_effort_rides_in_the_collaboration_mode_when_a_chat_mode_is_sent() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    // (chat mode, requested effort, expected collaboration mode, expected top-level effort)
+    let mode = |mode: &str, effort: Option<&str>| {
+        let mut settings = json!({"model": "gpt-codex-test"});
+        if let Some(effort) = effort {
+            settings["reasoning_effort"] = json!(effort);
+        }
+        Some(json!({"mode": mode, "settings": settings}))
+    };
+    let cases = [
+        (
+            Some("agent"),
+            Some("high"),
+            mode("default", Some("high")),
+            None,
+        ),
+        (
+            Some("plan"),
+            Some("xhigh"),
+            mode("plan", Some("xhigh")),
+            None,
+        ),
+        (None, Some("medium"), None, Some("medium")),
+        (Some("agent"), None, mode("default", None), None),
+        (Some("plan"), None, mode("plan", None), None),
+        (None, None, None, None),
+        (Some("agent"), Some("  "), mode("default", None), None),
+        (Some("plan"), Some("  "), mode("plan", None), None),
+        (None, Some("  "), None, None),
+        (
+            Some("plan"),
+            Some(" XHigh "),
+            mode("plan", Some("xhigh")),
+            None,
+        ),
+        (None, Some(" LOW "), None, Some("low")),
+        (
+            Some("agent"),
+            Some("Max"),
+            mode("default", Some("Max")),
+            None,
+        ),
+        (None, Some("Max"), None, Some("Max")),
+    ];
+
+    let mut client = CodexAppServerClient::connect(temp.path().to_path_buf()).expect("connect");
+    let thread_id = client
+        .start_thread(None, Some(temp.path().to_string_lossy().as_ref()), true)
+        .expect("thread/start");
+    for (chat_mode, effort, _, _) in &cases {
+        client
+            .run_turn(
+                &thread_id,
+                "Work",
+                Some("gpt-codex-test"),
+                *effort,
+                *chat_mode,
+                None,
+                None,
+            )
+            .expect("turn/start");
+    }
+
+    let turn_starts = read_jsonrpc_log(&log_path)
+        .into_iter()
+        .filter(|message| message["method"] == "turn/start")
+        .map(|message| message["params"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(turn_starts.len(), cases.len());
+    for ((chat_mode, effort, collaboration_mode, top_level_effort), params) in
+        cases.iter().zip(&turn_starts)
+    {
+        let case = format!("chat mode {chat_mode:?}, effort {effort:?}: {params}");
+        assert_eq!(params["model"], json!("gpt-codex-test"), "{case}");
+        // `get` tells an absent key from a null one; whole-object equality does too.
+        assert_eq!(
+            params.get("collaborationMode"),
+            collaboration_mode.as_ref(),
+            "{case}"
+        );
+        assert_eq!(
+            params.get("effort"),
+            top_level_effort.map(|effort| json!(effort)).as_ref(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn pinned_instructions_reach_codex_as_developer_instructions_on_start_and_resume() {
     let _lock = ENV_LOCK
         .lock()

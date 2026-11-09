@@ -808,6 +808,7 @@ impl CodexAppServerClient {
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "cwd": cwd,
         });
+        let effort = normalize_reasoning_effort(reasoning_effort)?;
         let effective_model = model.and_then(non_empty).map(str::to_string);
         if chat_mode.is_some() {
             let effective_model = match effective_model {
@@ -820,12 +821,14 @@ impl CodexAppServerClient {
             };
             params["model"] = json!(&effective_model);
             params["collaborationMode"] =
-                collaboration_mode_for_chat_mode(chat_mode, &effective_model);
-        } else if let Some(model) = effective_model {
-            params["model"] = json!(model);
-        }
-        if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
-            params["effort"] = json!(effort);
+                collaboration_mode_for_chat_mode(chat_mode, &effective_model, effort.as_deref());
+        } else {
+            if let Some(model) = effective_model {
+                params["model"] = json!(model);
+            }
+            if let Some(effort) = effort {
+                params["effort"] = json!(effort);
+            }
         }
         // Without an explicit level Codex falls back to its own default (auto),
         // bypassing model_reasoning_summary in config.toml, so Spark's default
@@ -2954,17 +2957,22 @@ fn model_id_from_model_list_entry(entry: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn collaboration_mode_for_chat_mode(chat_mode: Option<&str>, model: &str) -> Value {
+// Codex runs a collaboration-mode turn at the mode's settings, ignoring a
+// top-level `effort`, so a mode-bearing turn carries its effort here.
+fn collaboration_mode_for_chat_mode(
+    chat_mode: Option<&str>,
+    model: &str,
+    effort: Option<&str>,
+) -> Value {
     let mode = match chat_mode.map(str::trim).map(str::to_ascii_lowercase) {
         Some(mode) if mode == COLLABORATION_MODE_PLAN => COLLABORATION_MODE_PLAN,
         _ => COLLABORATION_MODE_DEFAULT,
     };
-    json!({
-        "mode": mode,
-        "settings": {
-            "model": model,
-        },
-    })
+    let mut settings = json!({"model": model});
+    if let Some(effort) = effort {
+        settings["reasoning_effort"] = json!(effort);
+    }
+    json!({"mode": mode, "settings": settings})
 }
 
 fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, CodexAppServerError> {

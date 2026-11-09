@@ -348,7 +348,8 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
         .find(|message| message["method"] == json!("thread/start"))
         .expect("thread/start payload");
     assert_eq!(thread_start["params"]["ephemeral"], json!(true));
-    assert_eq!(turn_start["params"]["effort"], json!("high"));
+    // The mode's settings carry the effort; Codex ignores a top-level one beside them.
+    assert!(turn_start["params"].get("effort").is_none());
     assert_eq!(turn_start["params"]["summary"], json!("concise"));
     assert!(turn_start["params"].get("reasoningEffort").is_none());
     assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
@@ -362,7 +363,7 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
         turn_start["params"]["collaborationMode"],
         json!({
             "mode": "default",
-            "settings": {"model": "gpt-codex-test"}
+            "settings": {"model": "gpt-codex-test", "reasoning_effort": "high"}
         })
     );
 }
