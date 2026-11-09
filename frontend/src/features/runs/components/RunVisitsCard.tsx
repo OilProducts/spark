@@ -235,7 +235,7 @@ export function RunVisitsCard({
                     aria-label="Visits"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('flex flex-col gap-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button
