@@ -38,7 +38,7 @@ test('real chat math and Mermaid render while streaming and contain wide content
         window.dispatchEvent(new CustomEvent('spark:conversation-live-event', { detail: {
             conversationId: 'markdown', projectPath, type: 'conversation.stream_delta', payload: {
                 type: 'stream_delta', conversation_id: 'markdown', turn_id: 'assistant', stream_sequence: 1, base_revision: 1,
-                delta_kind: 'segment_delta', segment: { ...segment, content: header + '```mermaid\ngraph TD; A[Streaming]-->B[Rendered]' },
+                delta_kind: 'segment_text', segment_id: segment.id, text: header + '```mermaid\ngraph TD; A[Streaming]-->B[Rendered]',
             },
         } }))
     }, { projectPath, segment, header })

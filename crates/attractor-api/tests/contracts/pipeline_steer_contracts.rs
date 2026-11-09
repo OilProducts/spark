@@ -20,6 +20,14 @@ fn in_child_process(test: &str, envs: &[(&str, String)]) -> bool {
     if std::env::var_os(CHILD_ENV).is_some() {
         return true;
     }
+    // Fake agents append to their logs, and log names repeat when the OS
+    // reuses this process's PID, so each child starts and ends with none.
+    let remove_logs = || {
+        for (_, path) in envs.iter().filter(|(key, _)| key.ends_with("_LOG")) {
+            let _ = fs::remove_file(path);
+        }
+    };
+    remove_logs();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -32,6 +40,7 @@ fn in_child_process(test: &str, envs: &[(&str, String)]) -> bool {
         .envs(envs.iter().map(|(key, value)| (key, value)))
         .output()
         .unwrap();
+    remove_logs();
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -294,6 +303,19 @@ fn steer_delivers_to_active_codex_agent_node() {
     ));
     let sent = sent_message(&settings, "steer-codex", "work", "Also update the docs.");
     assert_eq!(sent["status"], "complete", "{sent}");
+}
+
+#[test]
+fn steer_test_ignores_a_stale_fake_agent_log_from_a_reused_pid() {
+    let envs = codex_env("stale");
+    let (_, log) = envs
+        .iter()
+        .find(|(key, _)| *key == "SPARK_FAKE_CODEX_APP_SERVER_LOG")
+        .unwrap();
+    let log = Path::new(log);
+    fs::write(&log, "{\"method\":\"turn/start\"}\n".repeat(3)).unwrap();
+    in_child_process("steer_delivers_to_active_codex_agent_node", &envs);
+    assert!(!log.exists(), "{}", log.display());
 }
 
 #[test]
