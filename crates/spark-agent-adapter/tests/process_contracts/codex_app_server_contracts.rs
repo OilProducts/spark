@@ -527,6 +527,62 @@ fn terminate_ends_a_silent_turn_and_withheld_replies_at_once() {
     terminated(turn.recv_timeout(PROMPTLY).expect("turn ended"));
 }
 
+#[cfg(unix)]
+#[test]
+fn startup_failure_releases_a_message_admitted_during_startup() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (stage, error) in [
+        ("launch", "codex app-server executable not found"),
+        (
+            "runtime setup",
+            "could not default to the standard service tier",
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _env = fake_codex(temp.path(), "default");
+        let _bin = (stage == "launch")
+            .then(|| EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", temp.path().join("missing")));
+        if stage == "runtime setup" {
+            fs::create_dir_all(temp.path().join("codex-runtime/.codex/config.toml"))
+                .expect("unwritable runtime config");
+        }
+        // Runtime setup opens the seed config after the turn registers, and
+        // opening a FIFO holds it there until the test opens the other end.
+        let seed = temp.path().join("seed");
+        fs::create_dir(&seed).expect("seed dir");
+        let fifo = seed.join("config.toml");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo")
+            .success());
+        let _seed = EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", &seed);
+
+        let turn = spawn_turn(turn_request(temp.path(), "codex-startup-fails"));
+        let started = std::time::Instant::now();
+        let queued = loop {
+            let queued = spawn_send_message(temp.path(), "codex-startup-fails", "note-1");
+            // Refused at once until the turn registers; held once it has.
+            match queued.recv_timeout(Duration::from_millis(200)) {
+                Err(mpsc::RecvTimeoutError::Timeout) => break queued,
+                answer => assert_eq!(answer, Ok(false), "{stage}"),
+            }
+            assert!(
+                started.elapsed() < PROMPTLY,
+                "{stage}: turn never registered"
+            );
+        };
+        thread::spawn(move || fs::OpenOptions::new().write(true).open(fifo));
+
+        let failure = turn.recv_timeout(PROMPTLY).expect("turn ended");
+        let message = failure.expect_err("startup failed").message;
+        assert!(message.contains(error), "{stage}: {message}");
+        assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false), "{stage}");
+    }
+}
+
 #[test]
 fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
     let _lock = ENV_LOCK

@@ -217,8 +217,10 @@ impl CodexAppServerBackend {
             PathBuf::from(&request.project_path),
             trace_path,
             native,
-            Some((stop, inbox)),
-        )?;
+            Some((Arc::clone(&stop), inbox)),
+        )
+        // Startup can fail before a client exists to close the turn.
+        .inspect_err(|_| stop.close())?;
         client.clarification_handler = clarification_handler;
         client.developer_instructions = metadata_string(
             &request.metadata,
@@ -1439,6 +1441,18 @@ impl TurnStop {
     fn wake(&self) {
         let _ = self.inbox.send(Inbox::Wake);
     }
+
+    /// Takes no more messages; one the turn never took was not delivered.
+    fn close(&self) {
+        let untaken = self
+            .messages
+            .lock()
+            .ok()
+            .and_then(|mut messages| messages.take());
+        for (.., accepted) in untaken.unwrap_or_default() {
+            let _ = accepted.send(false);
+        }
+    }
 }
 
 type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<TurnStop>>>;
@@ -1781,16 +1795,7 @@ struct CodexJsonrpcTraceLine<'a> {
 
 impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
-        // Closed to further messages; one the turn never took was not delivered.
-        let untaken = self
-            .stop
-            .messages
-            .lock()
-            .ok()
-            .and_then(|mut messages| messages.take());
-        for (.., accepted) in untaken.unwrap_or_default() {
-            let _ = accepted.send(false);
-        }
+        self.stop.close();
         self.workflow_questions.clear();
         if matches!(self.child.try_wait(), Ok(None)) {
             let pid = self.child.id();
