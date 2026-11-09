@@ -45,13 +45,12 @@ in `$SPARK_HOME/bundled/flows`. Pass `--project <path>` (or `project_path=` on
 the HTTP routes) to include a project's flows; without it you see the bundled
 library only. Every flow can be launched.
 
-Registering a project installs its definitions once: every bundled flow,
-role and playbook plus the organization seed, recorded with the Spark and
-seed versions in `.spark/definitions/README.md` and `CHANGELOG.md`, and marked
-by `.spark/definitions/.initialized`. Nothing asks questions and no trigger is
-created. `spark org init --project <path>` finishes an interrupted setup and
-does nothing once the marker exists. Spark never updates the installed copies
-on its own; newer bundled files are applied only when the operator asks.
+Registering a project writes nothing under `.spark/definitions`: a flow,
+role or playbook the project has no file for resolves from the bundled
+library. Copy a bundled file into the project's definitions to change it
+there; the editor does this when you save a bundled flow. The bundled library
+also holds `$SPARK_HOME/bundled/guides`, read-only references such as the
+flow authoring guide; guides take no part in project lookup.
 Working data, such as run checkouts and role memory, lives under
 `.spark/state/`, which ignores itself with a `*` `.gitignore`. Spark runs no
 Git in `.spark`; versioning the definitions is the operator's choice.
@@ -530,15 +529,15 @@ Create rejects an unknown playbook. On start, the mission snapshots the playbook
 
 ## Standing roles
 
-A standing role is a role file (`roles/<name>.md`, resolved from the project's definitions, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. Two are bundled: the `coordinator`, the agent the user talks to, which exists in every project and is saved on first use, and the `chief-of-staff`, which owns the project's definitions and starts only when asked. Each role keeps its memory in `<project>/.spark/state/memory/<name>/` (`index.md`, `log.md`).
+A standing role is a role file (`roles/<name>.md`, resolved from the project's definitions, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. No role runs until it is started: a project with no started roles has no role conversations. Each role keeps its memory in `<project>/.spark/state/memory/<name>/` (`index.md`, `log.md`).
 
 ```bash
 spark role list --project /absolute/project
-spark role start --project /absolute/project --role chief-of-staff
-spark role stop --project /absolute/project --role chief-of-staff
+spark role start --project /absolute/project --role <name>
+spark role stop --project /absolute/project --role <name>
 ```
 
-Only a role whose file declares `standing: true` can be started; the bundled `coordinator` and `chief-of-staff` do. The Coordinator is standing in every project whatever its file says. The role file also sets the role's launch limit:
+Only a role whose file declares `standing: true` can be started. Starting a role records it, creates its conversation if it has none and gives it a first turn to begin its work; starting a stopped role resumes delivery. The Roles tab in the app starts a standing role and opens its conversation the same way. The role file also sets the role's launch limit:
 
 ```yaml
 standing: true
@@ -546,7 +545,7 @@ budget:
   concurrent_runs: 4
 ```
 
-`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only whether the role is stopped; its inbox and run roster belong to its conversation, which is created by the role's first inbox write. `spark role list` shows each role's `conversation_handle` once that conversation exists; message a role with `spark send --to <that handle>`.
+`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only whether the role is stopped; its inbox and run roster belong to its conversation. `spark role list` shows each role's `conversation_handle` once its conversation exists; message a role with `spark send --to <that handle>`.
 
 The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop?project_path=...`.
 

@@ -267,14 +267,12 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
     )
     .await;
     assert_eq!(listed.0, StatusCode::OK);
-    // A SummarySnapshot; the Coordinator's placeholder row has revision 0.
+    // A SummarySnapshot of the project's own threads; no started roles, no role rows.
     assert_eq!(listed.1["project_path"], "/projects/http-empty");
     let listed = crate::summary_entries(&listed.1);
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["conversation_id"], "conversation-empty");
     assert_eq!(listed[0]["revision"], created.1["revision"]);
-    assert_eq!(listed[1]["standing_role"]["name"], "coordinator");
-    assert_eq!(listed[1]["placeholder"], true);
     let reloaded = request_json(
         reloaded_app.clone(),
         "GET",
@@ -308,9 +306,7 @@ async fn empty_thread_created_through_settings_persists_until_deleted() {
         None,
     )
     .await;
-    let listed = crate::summary_entries(&listed.1);
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["standing_role"]["name"], "coordinator");
+    assert!(crate::summary_entries(&listed.1).is_empty());
     // A fresh open of a deleted conversation is not found.
     let reopened = request_json(
         crate::store_app_default(settings.clone()),

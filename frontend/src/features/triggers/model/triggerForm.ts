@@ -13,7 +13,7 @@ export type TriggerFormState = {
     missionId: string
     roleName: string
     flowName: string
-    /** The project whose org holds the trigger; chosen only on create. */
+    /** The project the trigger belongs to; chosen only on create. */
     projectPath: string
     staticContextText: string
     scheduleKind: 'once' | 'interval' | 'weekly'
@@ -85,7 +85,7 @@ export function triggerSourceSummary(trigger: TriggerResponse): string {
 
 type Registry = Record<string, RegisteredProject>
 
-/** The project whose org holds the trigger. */
+/** The project the trigger belongs to. */
 export function triggerProjectSummary(trigger: TriggerResponse, registry: Registry): string {
     const label = projectLabel(registry, normalizeProjectPath(trigger.project_path))
     return isUnregisteredTarget(registry, trigger.project_path)

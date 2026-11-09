@@ -44,7 +44,7 @@ test('every activity-bar view opens its panel with items from more than one proj
     await createChat(page, alpha, `conversation-alpha-${stamp}`)
     await createMission(page, alpha, `Alpha mission ${stamp}`)
     await createMission(page, beta, `Beta mission ${stamp}`)
-    // Each trigger lives in its project's org; a bundled flow is one every project sees.
+    // Each trigger belongs to a project; a bundled flow is one every project sees.
     const createTrigger = async (projectPath: string, name: string) => {
         const response = await page.request.post('/workspace/api/triggers', { data: {
             project_path: projectPath, name, enabled: false, source_type: 'schedule',

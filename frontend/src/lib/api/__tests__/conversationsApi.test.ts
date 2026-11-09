@@ -601,7 +601,7 @@ describe('conversation wire envelopes', () => {
         const page = parseConversationPageResponse(conversationPage(fixture, { older_cursor: 'cursor-1' }))
         expect(page).toMatchObject({ generation: 'generation-test', watermark: '4', conversation_id: conversationId, turn_ids: ['turn-1'], older_cursor: 'cursor-1' })
         const conversation = page.rows.find((row) => row.kind === 'conversation')
-        expect(conversation?.payload).toMatchObject({ chat_mode: 'plan', model: 'gpt-5.4', title: 'Thread', placeholder: false })
+        expect(conversation?.payload).toMatchObject({ chat_mode: 'plan', model: 'gpt-5.4', title: 'Thread' })
         expect(conversation?.kind === 'conversation' && conversation.payload?.model_settings_view?.revision).toBe('4')
     })
 

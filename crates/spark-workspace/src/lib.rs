@@ -4,12 +4,12 @@
 
 pub mod attachments;
 pub mod conversations;
+pub mod definitions;
 pub mod errors;
 pub mod flows;
 pub mod live;
 pub mod models;
 pub mod profile_settings;
-pub mod project_setup;
 pub mod projects;
 pub mod settings;
 pub mod triggers;
@@ -30,7 +30,6 @@ pub use flows::{
 };
 pub use live::{LiveCursor, LiveEnvelope, LiveQuery, LiveResource, RawLiveQuery};
 pub use models::chat_models;
-pub use project_setup::{initialize_project, ProjectSetup};
 pub use projects::{
     BrowseEntry, BrowseResponse, ProjectMetadata, ProjectRegistrationRequest, ProjectStateUpdate,
     WorkspaceProjectService,
@@ -47,6 +46,5 @@ pub use workflow_log::{
 };
 pub mod inbox;
 pub mod missions;
-pub mod org;
 pub mod playbooks;
 pub mod roles;

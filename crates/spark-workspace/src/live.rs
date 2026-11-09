@@ -1530,8 +1530,7 @@ pub fn conversation_changes_envelope(
 
 /// A summary scope's complete membership at one watermark: every live,
 /// listed conversation of the project (or of every project), decorated with
-/// standing roles, plus placeholder rows (revision 0) for roles without a
-/// conversation yet. Mission conversations and draft-only conversations are
+/// standing roles. Mission conversations and draft-only conversations are
 /// not listed.
 pub fn conversations_snapshot_envelope(
     service: &WorkspaceConversationService,
@@ -1541,29 +1540,7 @@ pub fn conversations_snapshot_envelope(
     let database = service.store().database();
     let (watermark, rows) =
         database.read(|read| Ok((read.watermark(), read.summaries(project_path.as_deref())?)))?;
-    let mut rows = listed_summary_rows(service, rows);
-    let projects = match project_path.as_deref() {
-        Some(project_path) => vec![project_path.to_string()],
-        None => spark_storage::ProjectRegistry::new(service.settings().data_dir.clone())
-            .list_project_records()?
-            .into_iter()
-            .map(|project| project.project_path)
-            .collect(),
-    };
-    let roles = crate::roles::WorkspaceRoleService::new(
-        service.settings().clone(),
-        service.store().clone(),
-    );
-    for project in projects {
-        for role in roles.list(&project).unwrap_or_default() {
-            // A touched role has a conversation row; one never touched has
-            // only this placeholder.
-            if rows.iter().any(|row| row.id == role.conversation_id) {
-                continue;
-            }
-            rows.push(placeholder_row(&role, &project));
-        }
-    }
+    let rows = listed_summary_rows(service, rows);
     let generation = database.generation();
     let payload = json!({
         "generation": generation,
@@ -1575,34 +1552,6 @@ pub fn conversations_snapshot_envelope(
         conversations_envelope("conversations.snapshot", project_path.as_deref(), payload),
         watermark,
     ))
-}
-
-/// A standing role's summary row before its conversation exists.
-fn placeholder_row(role: &crate::roles::RoleRecord, project_path: &str) -> EntityRow {
-    EntityRow {
-        kind: EntityKind::Conversation,
-        conversation_id: role.conversation_id.clone(),
-        id: role.conversation_id.clone(),
-        collection: None,
-        turn_id: None,
-        position: None,
-        order: None,
-        revision: 0,
-        deleted: false,
-        payload: Some(json!({
-            "placeholder": true,
-            "handle": "",
-            "project_path": project_path,
-            "created_at": "",
-            "updated_at": "",
-            "title": role.title,
-            "preview": "",
-            "running": false,
-            "needs_attention": false,
-            "launched_run_ids": [],
-            "standing_role": {"name": role.name, "title": role.title, "state": role.state},
-        })),
-    }
 }
 
 /// A summary scope's changed conversation rows after `since`, and the new

@@ -36,12 +36,12 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,org} ...\n",
+    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,send,run,flow,trigger,mission,role,playbook,settings,org}\n",
+    "  {convo,send,run,flow,trigger,mission,role,playbook,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    send                Message another conversation by handle\n",
     "    run                 Direct execution commands\n",
@@ -51,7 +51,6 @@ const TOP_LEVEL_HELP: &str = concat!(
     "    role                Standing role management\n",
     "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
-    "    org                 Agent organization initialization\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -109,7 +108,6 @@ enum CommandDomain {
     Role,
     Playbook,
     Settings,
-    Org,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,7 +250,6 @@ fn run_agent_shell(
             Err(output) => output,
         },
         CommandDomain::Flow => run_flow_domain(args, env, stdin),
-        CommandDomain::Org => run_org_init(&args[2..]),
     }
 }
 
@@ -291,9 +288,6 @@ fn build_request_plan(
         CommandDomain::Role => build_role_plan(args, env),
         CommandDomain::Playbook => build_playbook_plan(args, env),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
-        CommandDomain::Org => Err(usage_error(
-            "spark org init is a local command and makes no API request",
-        )),
     }
 }
 
@@ -691,7 +685,7 @@ fn build_flow_plan(
     }
 }
 
-/// `?project_path=<--project>`, so flows resolve through that project's org.
+/// `?project_path=<--project>`, so flows resolve through that project's definitions.
 fn project_query(options: &ParsedOptions) -> String {
     trimmed_option(options, "--project")
         .map(|project| format!("?project_path={}", percent_encode_component(&project)))
@@ -1348,12 +1342,6 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }),
             _ => Err(usage_error("Unknown command")),
         },
-        "org" => match domain_matches.subcommand_name() {
-            Some("init") => Ok(CommandPath {
-                domain: CommandDomain::Org,
-            }),
-            _ => Err(usage_error("Unknown command")),
-        },
         "convo" => match domain_matches.subcommand_name() {
             Some("run-request") => Ok(CommandPath {
                 domain: CommandDomain::Convo,
@@ -1416,7 +1404,7 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
     };
     match domain {
         "convo" | "send" | "run" | "flow" | "trigger" | "mission" | "role" | "playbook"
-        | "settings" | "org" => usage_error("Unknown command"),
+        | "settings" => usage_error("Unknown command"),
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
     }
 }
@@ -1458,7 +1446,6 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("validate"))
                 .subcommand(clap_command_leaf("set")),
         )
-        .subcommand(Command::new("org").subcommand(clap_command_leaf("init")))
         .subcommand(
             Command::new("mission")
                 .subcommand(clap_command_leaf("list"))
@@ -2803,61 +2790,4 @@ fn build_settings_plan(
         body,
         text: false,
     })
-}
-
-/// `spark org init --project <path>`: installs every missing default
-/// definition into the project's `.spark/definitions`, once; a project already
-/// initialized is left as it is.
-fn run_org_init(args: &[String]) -> CommandOutput {
-    let matches = match Command::new("spark org init")
-        .no_binary_name(true)
-        .disable_help_flag(true)
-        .arg(
-            Arg::new("project")
-                .long("project")
-                .num_args(1)
-                .required(true),
-        )
-        .try_get_matches_from(args)
-    {
-        Ok(matches) => matches,
-        Err(error) => {
-            let message = error.to_string();
-            let message = message.lines().next().unwrap_or_default();
-            return usage_error(format!(
-                "spark org init: {}; usage: spark org init --project <path>",
-                message.trim_start_matches("error: ")
-            ));
-        }
-    };
-    let project = matches.get_one::<String>("project").expect("required");
-    let project = match spark_common::project::normalize_project_path(project) {
-        Ok(Some(path)) => path,
-        Ok(None) => return usage_error("spark org init: --project must not be empty"),
-        Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
-    };
-    let setup = match spark_workspace::initialize_project(&project) {
-        Ok(setup) => setup,
-        Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
-    };
-
-    let mut text = format!("Definitions: {}\n", setup.definitions_dir.display());
-    if setup.already_initialized {
-        text.push_str("Already initialized; nothing installed\n");
-        return CommandOutput::stdout(0, text);
-    }
-    for path in &setup.created {
-        writeln!(&mut text, "created {path}").expect("writing to String cannot fail");
-    }
-    for path in &setup.skipped {
-        writeln!(&mut text, "skipped {path}").expect("writing to String cannot fail");
-    }
-    writeln!(
-        &mut text,
-        "{} created, {} skipped",
-        setup.created.len(),
-        setup.skipped.len()
-    )
-    .expect("writing to String cannot fail");
-    CommandOutput::stdout(0, text)
 }

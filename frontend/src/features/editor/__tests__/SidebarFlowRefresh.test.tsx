@@ -113,7 +113,7 @@ describe('Editor sidebar manual refresh', () => {
         saveFlowContentMock.mockReset()
         saveFlowContentMock.mockResolvedValue(true)
         resetSidebarState()
-        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ org_path: '', bundled_path: '', org_exists: false, items: [] }) })))
+        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ items: [] }) })))
     })
 
     afterEach(() => {
@@ -258,27 +258,27 @@ describe('Editor sidebar manual refresh', () => {
     })
 })
 
-describe('Flows panel org badges', () => {
+describe('Flows panel layer badges', () => {
     afterEach(() => { vi.unstubAllGlobals() })
 
     it('marks only flows that differ from bundled', async () => {
         resetSidebarState()
         fetchFlowListMock.mockReset()
         fetchFlowListMock.mockResolvedValue(['plain', 'local', 'shared'])
-        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ org_path: '/o', bundled_path: '/b', org_exists: true, items: [
+        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ items: [
             { kind: 'flow', name: 'plain', layer: 'bundled', path: 'flows/plain' },
             { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local' },
             { kind: 'flow', name: 'shared', layer: 'project_copy', path: 'flows/shared' },
         ] }) })))
         renderWithFlowProvider(<FlowsPanelHarness />)
-        const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
+        const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
         await waitFor(async () => expect(await badges('local')).toEqual(['customized']))
         expect(await badges('shared')).toEqual(['project copy'])
         expect(await badges('plain')).toEqual([])
     })
 })
 
-describe('Flows panel org badges across projects', () => {
+describe('Flows panel layer badges across projects', () => {
     afterEach(() => { vi.unstubAllGlobals() })
 
     it('never shows one project\'s badges on another project\'s flow of the same name', async () => {
@@ -288,22 +288,22 @@ describe('Flows panel org badges across projects', () => {
         const pendingB = createDeferred<Response>()
         vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('project_path=%2Ftmp%2Fproject-b')
             ? pendingB.promise
-            : ({ ok: true, json: async () => ({ org_path: '/a', bundled_path: '/b', org_exists: true, items: [
+            : ({ ok: true, json: async () => ({ items: [
                 { kind: 'flow', name: 'shared', layer: 'project', path: 'flows/shared' },
             ] }) })))
         vi.spyOn(console, 'error').mockImplementation(() => {})
         useStore.setState({ activeProjectPath: '/tmp/project-a' })
         renderWithFlowProvider(<FlowsPanelHarness />)
-        const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('org-badge').map((badge) => badge.textContent)
+        const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
         await waitFor(() => expect(badges()).toEqual(['customized']))
 
-        // B's org request is pending: A's badges must not carry over.
+        // B's definition request is pending: A's badges must not carry over.
         useStore.setState({ activeProjectPath: '/tmp/project-b' })
         await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(2))
         expect(badges()).toEqual([])
 
-        // B's org request fails: still none.
-        pendingB.reject(new Error('org unavailable'))
+        // B's definition request fails: still none.
+        pendingB.reject(new Error('definitions unavailable'))
         await waitFor(() => expect(console.error).toHaveBeenCalled())
         expect(badges()).toEqual([])
     })

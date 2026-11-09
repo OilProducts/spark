@@ -7,7 +7,7 @@ use spark_agent_adapter::{AgentTurnRequest, AGENT_INSTRUCTIONS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
 use spark_workspace::{
     inbox::{install_runtime, InboxRuntime, ThreadMessageRequest},
-    roles::{RoleRecord, RoleState, WorkspaceRoleService, CHIEF_OF_STAFF, COORDINATOR},
+    roles::{RoleRecord, RoleState, WorkspaceRoleService},
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
     WorkspaceConversationService, WorkspaceError,
 };
@@ -17,6 +17,10 @@ const COORDINATOR_FILE: &str = include_str!("../../../spark-assets/assets/roles/
 const ASSISTANT_FILE: &str = include_str!("../../../spark-assets/assets/roles/assistant.md");
 const CHIEF_OF_STAFF_FILE: &str =
     include_str!("../../../spark-assets/assets/roles/chief-of-staff.md");
+
+/// Bundled standing roles the tests start like any other.
+const COORDINATOR_ROLE: &str = "coordinator";
+const CHIEF_OF_STAFF_ROLE: &str = "chief-of-staff";
 
 /// The handle of the chat that `Harness::message` sends from.
 const SENDER: &str = "amber-anchor";
@@ -64,6 +68,13 @@ impl Harness {
     fn get(&self, name: &str) -> RoleRecord {
         self.roles.get(&self.project, name).unwrap()
     }
+    /// Starts a role and lets its first turn finish.
+    fn start(&self, name: &str) {
+        let before = self.agent.requests.lock().unwrap().len();
+        self.roles.start(&self.project, name).unwrap();
+        self.request(before);
+        self.finish_turn(name);
+    }
     fn conversations(&self) -> WorkspaceConversationService {
         crate::conversations_with_backend(self.settings.clone(), self.agent.clone())
     }
@@ -94,18 +105,11 @@ impl Harness {
             .unwrap()
             .to_string()
     }
-    /// A `spark send` to the role from the sender chat. The role's
-    /// conversation must exist first; the test stands in for the first inbox
-    /// write that creates it.
+    /// A `spark send` to the started role from the sender chat.
     fn message(&self, name: &str, text: &str) -> RoleRecord {
-        let store = crate::shared_store(&self.settings.data_dir);
-        let conversation_id = self.get(name).conversation_id;
-        spark_storage::ConversationRepository::new(store.clone())
-            .touch_conversation(&conversation_id, &self.project)
-            .unwrap();
         spark_workspace::inbox::send_message(
             &self.settings,
-            &store,
+            &crate::shared_store(&self.settings.data_dir),
             &self.handle(name),
             ThreadMessageRequest {
                 conversation_handle: SENDER.into(),
@@ -171,9 +175,11 @@ fn frame(request: &AgentTurnRequest) -> String {
 #[test]
 fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
     let harness = Harness::new();
-    let coordinator = harness.get(COORDINATOR).conversation_id;
-    let role = frame(&harness.user_turn(&coordinator));
-    assert!(role.contains("Org changes"), "{role}");
+    harness
+        .roles
+        .start(&harness.project, COORDINATOR_ROLE)
+        .unwrap();
+    let role = frame(&harness.request(0));
     for rule in [
         NEVER_CHANGE,
         "`software-development/design-change` when the approach needs deciding",
@@ -188,17 +194,13 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
         "{role}"
     );
     assert!(role.contains(".spark/state/memory/coordinator"));
-    assert!(role.contains("Only the Chief of Staff role changes files in the definitions"));
+    harness.finish_turn(COORDINATOR_ROLE);
     let chat = frame(&harness.user_turn("chat-1"));
     assert!(
         chat.starts_with("You are the Spark workspace assistant."),
         "{chat}"
     );
-    assert!(chat.contains("Org changes"), "{chat}");
     assert!(!chat.contains(NEVER_CHANGE), "{chat}");
-    assert!(!chat.contains("standing Coordinator ("), "{chat}");
-    assert!(chat.contains(".spark/state/memory/coordinator"));
-    assert!(chat.contains("never edit it"));
     let missions = crate::missions(harness.settings.clone());
     let mission = missions
         .create(
@@ -207,10 +209,30 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
         )
         .unwrap();
     missions.start(&harness.project, &mission.id).unwrap();
-    let mission_frame = frame(&harness.request(0));
+    let mission_frame = frame(&harness.request(1));
     assert!(mission_frame.contains(&format!("Mission ID: {}", mission.id)));
-    assert!(!mission_frame.contains("Org changes"));
     assert!(!mission_frame.contains(NEVER_CHANGE));
+    // Every frame points flow and role authors at the bundled guide, and
+    // none gives a named role special authority or memory.
+    for frame in [&role, &chat, &mission_frame] {
+        assert!(
+            frame.contains(
+                "read $SPARK_HOME/bundled/guides/flow-definition-authoring.md and follow its writing principles"
+            ),
+            "{frame}"
+        );
+        assert!(frame.contains("Never edit $SPARK_HOME/bundled."), "{frame}");
+    }
+    for frame in [&chat, &mission_frame] {
+        for named in [
+            "Coordinator",
+            "coordinator",
+            "Chief of Staff",
+            "chief-of-staff",
+        ] {
+            assert!(!frame.contains(named), "{named}: {frame}");
+        }
+    }
     harness.agent.release(1);
 }
 
@@ -244,9 +266,15 @@ fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
     )
     .unwrap();
     harness.org_role(
-        COORDINATOR,
+        COORDINATOR_ROLE,
         &COORDINATOR_FILE.replacen("---\n", "---\nexecution:\n  llm_model: role-model\n", 1),
     );
+    harness
+        .roles
+        .start(&harness.project, COORDINATOR_ROLE)
+        .unwrap();
+    assert_eq!(harness.request(0).model.as_deref(), Some("role-model"));
+    harness.finish_turn(COORDINATOR_ROLE);
     let conversations = harness.conversations();
     let models = |id: &str| {
         conversations
@@ -256,14 +284,14 @@ fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
     };
     assert_eq!(models("chat-1")["effective"]["model"], "project-model");
     assert_eq!(models("chat-1")["source"], "project");
-    let coordinator = harness.get(COORDINATOR).conversation_id;
+    let coordinator = harness.get(COORDINATOR_ROLE).conversation_id;
     assert_eq!(models(&coordinator)["effective"]["model"], "role-model");
     assert_eq!(models(&coordinator)["source"], "role");
     // The role keeps the project's provider when it names only a model.
     assert_eq!(models(&coordinator)["effective"]["provider"], "codex");
-    harness.message(COORDINATOR, "One");
-    assert_eq!(harness.request(0).model.as_deref(), Some("role-model"));
-    harness.finish_turn(COORDINATOR);
+    harness.message(COORDINATOR_ROLE, "One");
+    assert_eq!(harness.request(1).model.as_deref(), Some("role-model"));
+    harness.finish_turn(COORDINATOR_ROLE);
     // Role state changes re-deliver the conversation row; the settings
     // revision a save names stays that of the last committed change.
     let revision = models(&coordinator)["revision"]
@@ -287,52 +315,53 @@ fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
         "conversation-model"
     );
     assert_eq!(models(&coordinator)["source"], "conversation");
-    harness.message(COORDINATOR, "Two");
+    harness.message(COORDINATOR_ROLE, "Two");
     assert_eq!(
-        harness.request(1).model.as_deref(),
+        harness.request(2).model.as_deref(),
         Some("conversation-model")
     );
-    harness.finish_turn(COORDINATOR);
+    harness.finish_turn(COORDINATOR_ROLE);
 }
 
 #[test]
-fn the_coordinator_exists_unsaved_until_its_first_write() {
+fn no_role_exists_until_it_is_started_and_started_roles_pin_by_name() {
     let harness = Harness::new();
     let root = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
         .ensure_project_paths(&harness.project)
         .unwrap()
         .root;
-    let listed = harness.roles.list(&harness.project).unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, COORDINATOR);
-    assert_eq!(listed[0].title, "Coordinator");
-    harness
-        .roles
-        .process(&harness.project, COORDINATOR)
-        .unwrap();
-    assert!(!root.join("roles/coordinator.json").exists());
-    // Its Threads row is a placeholder until the conversation exists.
-    let threads = harness
-        .conversations()
-        .list_project_conversations(&harness.project)
-        .unwrap();
-    let pinned = &threads[0];
-    assert_eq!(pinned.conversation_id, listed[0].conversation_id);
-    assert_eq!(pinned.title, "Coordinator");
-    assert_eq!(pinned.standing_role.as_ref().unwrap().name, COORDINATOR);
-    // A role that was never started does not exist.
-    assert!(matches!(
-        harness.roles.get(&harness.project, CHIEF_OF_STAFF),
-        Err(WorkspaceError::NotFound(_))
-    ));
-    // Its first inbox write creates its conversation, not its record.
-    let coordinator = listed[0].conversation_id.clone();
     let repository =
         spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
-    assert!(repository
-        .conversation_project_path(&coordinator)
+    let role_threads = || {
+        harness
+            .conversations()
+            .list_project_conversations(&harness.project)
+            .unwrap()
+            .into_iter()
+            .filter_map(|thread| thread.standing_role.map(|role| role.name))
+            .collect::<Vec<_>>()
+    };
+    // Reads write nothing and find no role, whatever its name.
+    assert!(harness.roles.list(&harness.project).unwrap().is_empty());
+    for name in [COORDINATOR_ROLE, CHIEF_OF_STAFF_ROLE] {
+        assert!(matches!(
+            harness.roles.get(&harness.project, name),
+            Err(WorkspaceError::NotFound(_))
+        ));
+    }
+    assert!(!root.join("roles").exists());
+    assert!(role_threads().is_empty());
+    assert!(matches!(
+        harness.roles.process(&harness.project, COORDINATOR_ROLE),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    assert!(!root.join("roles/coordinator.json").exists());
+    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
+        .project_paths(&harness.project)
         .unwrap()
-        .is_none());
+        .project_id;
+    let coordinator = spark_workspace::roles::conversation_id(&project_id, COORDINATOR_ROLE);
+    // A trigger does not start a role either.
     let delivered = harness
         .roles
         .deliver_trigger(&spark_triggers::TriggerActivationRequest {
@@ -341,35 +370,76 @@ fn the_coordinator_exists_unsaved_until_its_first_write() {
             trigger_name: "Nightly".into(),
             source_type: "schedule".into(),
             action: serde_json::from_value(
-                json!({"mode": "role", "role": COORDINATOR, "static_context": {}}),
+                json!({"mode": "role", "role": COORDINATOR_ROLE, "static_context": {}}),
             )
             .unwrap(),
             source_payload: json!({}),
             delivery_id: None,
-        })
-        .unwrap();
-    assert!(!delivered.no_op);
+        });
+    assert!(
+        matches!(delivered, Err(WorkspaceError::NotFound(_))),
+        "{delivered:?}"
+    );
     assert!(repository
         .conversation_project_path(&coordinator)
         .unwrap()
-        .is_some());
-    assert!(!root.join("roles/coordinator.json").exists());
-    assert!(harness
-        .request(0)
-        .prompt
-        .contains("Trigger fired: \"Nightly\""));
-    harness.finish_turn(COORDINATOR);
+        .is_none());
+
+    // Starting saves the record and creates its conversation.
+    harness.start(CHIEF_OF_STAFF_ROLE);
+    assert!(root.join("roles/chief-of-staff.json").exists());
+    assert_eq!(role_threads(), [CHIEF_OF_STAFF_ROLE]);
+    // A saved record whose conversation is missing, as after an interrupted
+    // start, is listed without a thread; starting it creates the conversation.
+    std::fs::write(
+        root.join("roles/coordinator.json"),
+        json!({"name": COORDINATOR_ROLE, "project_id": project_id, "project_path": harness.project})
+            .to_string(),
+    )
+    .unwrap();
+    let names = || {
+        harness
+            .roles
+            .list(&harness.project)
+            .unwrap()
+            .into_iter()
+            .map(|role| role.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(), [CHIEF_OF_STAFF_ROLE, COORDINATOR_ROLE]);
+    assert_eq!(role_threads(), [CHIEF_OF_STAFF_ROLE]);
+    let restarted = harness
+        .roles
+        .start(&harness.project, COORDINATOR_ROLE)
+        .unwrap();
+    assert_eq!(restarted.conversation_id, coordinator);
+    assert!(restarted.conversation_handle.is_some());
+    // Role threads pin above newer ordinary threads, sorted by name rather
+    // than recency.
+    crate::write_conversation_snapshot(
+        &harness.settings.data_dir,
+        &json!({
+            "schema_version": 5,
+            "settings_schema_version": 1,
+            "revision": 0,
+            "conversation_id": "chat-latest",
+            "conversation_handle": "brisk-bank",
+            "project_path": harness.project,
+            "title": "Latest",
+            "created_at": "2099-01-01T00:00:00Z",
+            "updated_at": "2099-01-01T00:00:00Z",
+            "turns": []
+        }),
+    );
     let threads = harness
         .conversations()
         .list_project_conversations(&harness.project)
         .unwrap();
-    assert_eq!(
-        threads
-            .iter()
-            .filter(|thread| thread.standing_role.is_some())
-            .count(),
-        1
-    );
+    assert_eq!(role_threads(), [CHIEF_OF_STAFF_ROLE, COORDINATOR_ROLE]);
+    assert!(threads[..2]
+        .iter()
+        .all(|thread| thread.standing_role.is_some()));
+    assert_eq!(threads[2].conversation_id, "chat-latest");
 }
 
 #[test]
@@ -378,7 +448,7 @@ fn a_run_the_role_launched_reports_back_as_a_turn() {
     crate::install_named_flow(&harness.settings, "work/ok", tool_flow("true"));
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     let begin = harness.request(0);
     assert_eq!(
@@ -387,14 +457,14 @@ fn a_run_the_role_launched_reports_back_as_a_turn() {
     );
     assert!(frame(&begin).contains("You are this project's Chief of Staff."));
     let run = harness
-        .launch(CHIEF_OF_STAFF, "work/ok", "Build it")
+        .launch(CHIEF_OF_STAFF_ROLE, "work/ok", "Build it")
         .unwrap();
     let store = attractor_runtime::RunStore::for_settings(&harness.settings);
     let record = store
         .read_run_record(&store.find_run_root(&run).unwrap().unwrap())
         .unwrap()
         .unwrap();
-    let role = harness.get(CHIEF_OF_STAFF);
+    let role = harness.get(CHIEF_OF_STAFF_ROLE);
     assert_eq!(
         json!(record.launch_context)["context.spark_owner"],
         json!({"conversation_id": role.conversation_id})
@@ -409,9 +479,9 @@ fn a_run_the_role_launched_reports_back_as_a_turn() {
             "Run {run} (work/ok, \"Build it\") ended completed."
         )]
     );
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
     assert_eq!(
-        harness.get(CHIEF_OF_STAFF).inbox.runs[0].status,
+        harness.get(CHIEF_OF_STAFF_ROLE).inbox.runs[0].status,
         "completed"
     );
 }
@@ -421,28 +491,28 @@ fn a_stopped_role_records_events_and_delivers_them_when_started_again() {
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
     let stopped = harness
         .roles
-        .stop(&harness.project, CHIEF_OF_STAFF)
+        .stop(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     assert_eq!(stopped.state, RoleState::Stopped);
-    let recorded = harness.message(CHIEF_OF_STAFF, "While you were out");
+    let recorded = harness.message(CHIEF_OF_STAFF_ROLE, "While you were out");
     assert_eq!(recorded.inbox.event_seq, recorded.inbox.cursor + 1);
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     assert_eq!(
         crate::batch_events(&harness.request(1).prompt),
         [harness.sent("While you were out")]
     );
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
 }
 
 #[test]
@@ -452,7 +522,7 @@ fn launches_over_the_role_file_budget_are_refused() {
     // The org copy's budget replaces the bundled file's defaults.
     let budget = |concurrent: usize| {
         harness.org_role(
-            CHIEF_OF_STAFF,
+            CHIEF_OF_STAFF_ROLE,
             &CHIEF_OF_STAFF_FILE.replacen(
                 "standing: true",
                 &format!("standing: true\nbudget:\n  concurrent_runs: {concurrent}"),
@@ -463,7 +533,7 @@ fn launches_over_the_role_file_budget_are_refused() {
     budget(0);
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     assert!(
         frame(&harness.request(0)).contains("budget (0 concurrent runs)"),
@@ -471,7 +541,7 @@ fn launches_over_the_role_file_budget_are_refused() {
         frame(&harness.request(0))
     );
     let refused = harness
-        .launch(CHIEF_OF_STAFF, "work/ok", "One")
+        .launch(CHIEF_OF_STAFF_ROLE, "work/ok", "One")
         .unwrap_err();
     assert!(
         refused.to_string().contains("concurrent_runs (0)")
@@ -483,17 +553,17 @@ fn launches_over_the_role_file_budget_are_refused() {
         .unwrap()
         .root;
     let record = spark_storage::workspace_records::RecordRepository::roles(&root)
-        .read(CHIEF_OF_STAFF)
+        .read(CHIEF_OF_STAFF_ROLE)
         .unwrap()
         .unwrap();
     // The record holds no budget and no inbox, only whether it is stopped.
     for key in ["budget", "runs", "cursor", "event_seq"] {
         assert!(record.get(key).is_none(), "{record}");
     }
-    let role = harness.get(CHIEF_OF_STAFF);
+    let role = harness.get(CHIEF_OF_STAFF_ROLE);
     assert!(role.inbox.runs.is_empty());
     assert_eq!(role.budget.concurrent_runs, 0);
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
 }
 
 #[test]
@@ -506,12 +576,32 @@ fn only_a_role_file_declaring_standing_can_start() {
         "{refused}"
     );
     assert!(harness.roles.get(&harness.project, "helper").is_err());
-    // The Coordinator stays standing whatever its file says, with its file's budget.
-    harness.org_role(COORDINATOR, "---\ntype: Role\n---\n\nYou coordinate.\n");
-    let coordinator = harness.roles.start(&harness.project, COORDINATOR).unwrap();
-    assert_eq!(coordinator.budget.concurrent_runs, 4);
+    // No name is exempt: a coordinator file without the flag cannot start.
+    harness.org_role(
+        COORDINATOR_ROLE,
+        "---\ntype: Role\n---\n\nYou coordinate.\n",
+    );
+    let refused = harness
+        .roles
+        .start(&harness.project, COORDINATOR_ROLE)
+        .unwrap_err();
+    assert!(
+        matches!(&refused, WorkspaceError::Validation(message) if message.contains("standing: true")),
+        "{refused}"
+    );
+    assert!(harness
+        .roles
+        .get(&harness.project, COORDINATOR_ROLE)
+        .is_err());
+    // Any role file declaring it starts, with its file's budget.
+    harness.org_role(
+        "scout",
+        "---\ntype: Role\nstanding: true\n---\n\nYou scout.\n",
+    );
+    let scout = harness.roles.start(&harness.project, "scout").unwrap();
+    assert_eq!(scout.budget.concurrent_runs, 4);
     harness.request(0);
-    harness.finish_turn(COORDINATOR);
+    harness.finish_turn("scout");
 }
 
 #[test]
@@ -519,11 +609,11 @@ fn a_message_from_another_role_names_its_sender() {
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
-    let handle = harness.handle(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
+    let handle = harness.handle(CHIEF_OF_STAFF_ROLE);
     let send = |to: &str, sender: &str| {
         spark_workspace::inbox::send_message(
             &harness.settings,
@@ -535,11 +625,12 @@ fn a_message_from_another_role_names_its_sender() {
             },
         )
     };
-    harness.message(COORDINATOR, "Hello");
-    harness.request(1);
-    harness.finish_turn(COORDINATOR);
-    send(&harness.handle(COORDINATOR), &handle).unwrap();
-    let request = harness.request(2);
+    harness.start(COORDINATOR_ROLE);
+    harness.message(COORDINATOR_ROLE, "Hello");
+    harness.request(2);
+    harness.finish_turn(COORDINATOR_ROLE);
+    send(&harness.handle(COORDINATOR_ROLE), &handle).unwrap();
+    let request = harness.request(3);
     assert_eq!(
         crate::batch_events(&request.prompt),
         [format!(
@@ -554,15 +645,15 @@ fn a_message_from_another_role_names_its_sender() {
     );
     assert_eq!(
         request.conversation_id,
-        harness.get(COORDINATOR).conversation_id
+        harness.get(COORDINATOR_ROLE).conversation_id
     );
-    harness.finish_turn(COORDINATOR);
+    harness.finish_turn(COORDINATOR_ROLE);
     assert!(matches!(
         send("no-such-handle", &handle),
         Err(WorkspaceError::NotFound(_))
     ));
     assert!(matches!(
-        send(&harness.handle(COORDINATOR), "no-such-handle"),
+        send(&harness.handle(COORDINATOR_ROLE), "no-such-handle"),
         Err(WorkspaceError::NotFound(_))
     ));
 }
@@ -570,18 +661,19 @@ fn a_message_from_another_role_names_its_sender() {
 #[test]
 fn a_changed_persona_is_announced_once() {
     let harness = Harness::new();
-    harness.message(COORDINATOR, "One");
+    harness.start(COORDINATOR_ROLE);
+    harness.message(COORDINATOR_ROLE, "One");
     assert_eq!(
-        crate::batch_events(&harness.request(0).prompt),
+        crate::batch_events(&harness.request(1).prompt),
         [harness.sent("One")]
     );
-    harness.finish_turn(COORDINATOR);
+    harness.finish_turn(COORDINATOR_ROLE);
     harness.org_role(
-        COORDINATOR,
+        COORDINATOR_ROLE,
         "---\ntype: Role\ntitle: Coordinator\n---\n\nYou are a terse coordinator.\n",
     );
-    harness.message(COORDINATOR, "Two");
-    let changed = harness.request(1);
+    harness.message(COORDINATOR_ROLE, "Two");
+    let changed = harness.request(2);
     assert!(
         changed
             .prompt
@@ -591,13 +683,13 @@ fn a_changed_persona_is_announced_once() {
     );
     assert!(changed.prompt.ends_with(&harness.sent("Two")));
     assert!(frame(&changed).starts_with("You are a terse coordinator."));
-    harness.finish_turn(COORDINATOR);
-    harness.message(COORDINATOR, "Three");
+    harness.finish_turn(COORDINATOR_ROLE);
+    harness.message(COORDINATOR_ROLE, "Three");
     assert_eq!(
-        crate::batch_events(&harness.request(2).prompt),
+        crate::batch_events(&harness.request(3).prompt),
         [harness.sent("Three")]
     );
-    harness.finish_turn(COORDINATOR);
+    harness.finish_turn(COORDINATOR_ROLE);
 }
 
 #[test]
@@ -605,12 +697,12 @@ fn recovery_delivers_a_role_runs_missing_terminal_event() {
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
     // A run failed before a restart while its result was still pending.
-    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    let conversation = harness.get(CHIEF_OF_STAFF_ROLE).conversation_id;
     crate::owned_run(
         &harness.settings,
         &harness.project,
@@ -624,8 +716,11 @@ fn recovery_delivers_a_role_runs_missing_terminal_event() {
         crate::batch_events(&harness.request(1).prompt),
         ["Run run-lost (work/seeded, \"Seeded work\") ended failed."]
     );
-    harness.finish_turn(CHIEF_OF_STAFF);
-    assert_eq!(harness.get(CHIEF_OF_STAFF).inbox.runs[0].status, "failed");
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
+    assert_eq!(
+        harness.get(CHIEF_OF_STAFF_ROLE).inbox.runs[0].status,
+        "failed"
+    );
     crate::recover(&harness.settings);
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
 }
@@ -635,14 +730,14 @@ fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instruc
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
     crate::owned_run(
         &harness.settings,
         &harness.project,
-        &harness.get(CHIEF_OF_STAFF).conversation_id,
+        &harness.get(CHIEF_OF_STAFF_ROLE).conversation_id,
         "run-asks",
         "running",
     );
@@ -681,11 +776,11 @@ fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs()
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
-    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
+    let conversation = harness.get(CHIEF_OF_STAFF_ROLE).conversation_id;
     let repository =
         spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
     for index in 0..50 {
@@ -712,7 +807,7 @@ fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs()
     // Recovery reconciles the run to its terminal status, which trims.
     crate::recover(&harness.settings);
     harness.request(1);
-    let runs = harness.get(CHIEF_OF_STAFF).inbox.runs;
+    let runs = harness.get(CHIEF_OF_STAFF_ROLE).inbox.runs;
     let ids: Vec<&str> = runs.iter().map(|run| run.run_id.as_str()).collect();
     assert_eq!(runs.iter().filter(|run| !run.in_flight()).count(), 50);
     assert!(!ids.contains(&"run-done-0"), "{ids:?}");
@@ -732,12 +827,12 @@ fn restarts_keep_trimmed_runs_out_of_the_roster_and_restore_missing_ones_in_laun
     let harness = Harness::new();
     harness
         .roles
-        .start(&harness.project, CHIEF_OF_STAFF)
+        .start(&harness.project, CHIEF_OF_STAFF_ROLE)
         .unwrap();
     harness.request(0);
-    harness.finish_turn(CHIEF_OF_STAFF);
+    harness.finish_turn(CHIEF_OF_STAFF_ROLE);
     harness.agent.release(1000);
-    let conversation = harness.get(CHIEF_OF_STAFF).conversation_id;
+    let conversation = harness.get(CHIEF_OF_STAFF_ROLE).conversation_id;
     let repository =
         spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
     let store = attractor_runtime::RunStore::for_settings(&harness.settings);
@@ -788,7 +883,7 @@ fn restarts_keep_trimmed_runs_out_of_the_roster_and_restore_missing_ones_in_laun
             .pending_inbox_events(&conversation)
             .unwrap()
             .is_empty()
-            && harness.get(CHIEF_OF_STAFF).state != RoleState::Working
+            && harness.get(CHIEF_OF_STAFF_ROLE).state != RoleState::Working
     });
     let roster = |repository: &spark_storage::ConversationRepository| {
         repository
@@ -816,7 +911,7 @@ fn restarts_keep_trimmed_runs_out_of_the_roster_and_restore_missing_ones_in_laun
         assert_eq!(harness.agent.requests.lock().unwrap().len(), turns);
     }
     assert!(harness
-        .get(CHIEF_OF_STAFF)
+        .get(CHIEF_OF_STAFF_ROLE)
         .inbox
         .runs
         .iter()
@@ -868,13 +963,16 @@ fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted(
         String::from_utf8_lossy(&output.stdout).to_string()
     };
     git(&["init", "-q"]);
-    spark_workspace::initialize_project(project).unwrap();
+    // A project copy of the role: definitions stay visible to Git.
+    harness.org_role(COORDINATOR_ROLE, COORDINATOR_FILE);
     let state = project.join(".spark/state");
     let memory = state.join("memory/coordinator");
+    harness.start(COORDINATOR_ROLE);
+    let _ = std::fs::remove_dir_all(&state);
     for (turn, pass) in ["fresh", "after state deletion"].into_iter().enumerate() {
         assert!(!state.exists(), "{pass}");
-        harness.message(COORDINATOR, "Note what you know.");
-        let role = frame(&harness.request(turn));
+        harness.message(COORDINATOR_ROLE, "Note what you know.");
+        let role = frame(&harness.request(turn + 1));
         assert!(role.contains(&memory.display().to_string()), "{pass}");
         assert_eq!(
             std::fs::read_to_string(state.join(".gitignore")).unwrap(),
@@ -887,10 +985,10 @@ fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted(
         let status = git(&["status", "--porcelain", "--untracked-files=all"]);
         assert!(!status.contains(".spark/state"), "{pass}: {status}");
         assert!(
-            status.contains("?? .spark/definitions/README.md"),
+            status.contains("?? .spark/definitions/roles/coordinator.md"),
             "{pass}: {status}"
         );
-        harness.finish_turn(COORDINATOR);
+        harness.finish_turn(COORDINATOR_ROLE);
         std::fs::remove_dir_all(&state).unwrap();
     }
 }

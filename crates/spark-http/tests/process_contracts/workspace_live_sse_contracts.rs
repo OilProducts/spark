@@ -2055,19 +2055,46 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     summary_state(&mut live_stream, "idle").await;
 }
 
-/// The Coordinator has no conversation before its first message, so its
-/// thread-list row is a placeholder until then.
-fn coordinator_app(settings: &SparkSettings) -> axum::Router {
+/// An app whose bundled library holds the standing role `watcher`.
+fn role_app(settings: &SparkSettings) -> axum::Router {
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).expect("roles");
+    fs::write(
+        roles.join("watcher.md"),
+        "---\ntype: Role\nstanding: true\n---\n\nYou watch.\n",
+    )
+    .expect("role file");
     crate::store_app(
         settings.clone(),
         Arc::new(StaticAgentTurnBackend::new("On it.")),
     )
 }
 
-fn coordinator_state(envelope: &Value) -> Option<String> {
+/// Starts `watcher` and waits for its first turn to settle.
+async fn start_watcher(app: &axum::Router, project: &str) {
+    let uri = |path: &str| {
+        format!(
+            "/workspace/api/roles{path}?project_path={}",
+            url_encode(project)
+        )
+    };
+    let started = request(app.clone(), "POST", &uri("/watcher/start"), None).await;
+    assert_eq!(started.status(), StatusCode::OK);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let roles = json_body(request(app.clone(), "GET", &uri(""), None).await).await;
+        if roles["roles"][0]["state"] == "idle" {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{roles}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn watcher_state(envelope: &Value) -> Option<String> {
     carried(std::slice::from_ref(envelope), "conversation")
         .into_iter()
-        .find(|conversation| conversation["standing_role"]["name"] == "coordinator")
+        .find(|conversation| conversation["standing_role"]["name"] == "watcher")
         .and_then(|conversation| {
             conversation["standing_role"]["state"]
                 .as_str()
@@ -2076,7 +2103,8 @@ fn coordinator_state(envelope: &Value) -> Option<String> {
 }
 
 /// A role's summary change made while nobody is connected reaches a client
-/// reconnecting with the cursor it held, for a placeholder row and a real one.
+/// reconnecting with the cursor it held, and so does a later change to
+/// another thread.
 #[tokio::test]
 async fn a_role_summary_change_during_a_disconnect_arrives_on_reconnect() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -2085,10 +2113,11 @@ async fn a_role_summary_change_during_a_disconnect_arrives_on_reconnect() {
     fs::create_dir_all(&project_path).expect("project");
     let project = project_path.to_string_lossy().to_string();
     seed_conversation(&settings, &project_path, "conversation-first");
-    let app = coordinator_app(&settings);
+    let app = role_app(&settings);
+    start_watcher(&app, &project).await;
     let (generation, held) = store_cursor(&settings);
     let control = format!(
-        "/workspace/api/roles/coordinator/stop?project_path={}",
+        "/workspace/api/roles/watcher/stop?project_path={}",
         url_encode(&project)
     );
     let stopped = request(app.clone(), "POST", &control, None).await;
@@ -2105,7 +2134,7 @@ async fn a_role_summary_change_during_a_disconnect_arrives_on_reconnect() {
     let mut stream = live.into_body().into_data_stream();
     let envelope = next_of_type(&mut stream, "conversations.changes").await;
     assert_eq!(
-        coordinator_state(&envelope).as_deref(),
+        watcher_state(&envelope).as_deref(),
         Some("stopped"),
         "{envelope}"
     );
@@ -2148,17 +2177,18 @@ async fn a_role_change_before_a_restart_reaches_catch_up_and_snapshots() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project = project_path.to_string_lossy().to_string();
-    let app = coordinator_app(&settings);
+    let app = role_app(&settings);
+    start_watcher(&app, &project).await;
     let (generation, held) = store_cursor(&settings);
     let control = format!(
-        "/workspace/api/roles/coordinator/stop?project_path={}",
+        "/workspace/api/roles/watcher/stop?project_path={}",
         url_encode(&project)
     );
     let stopped = request(app.clone(), "POST", &control, None).await;
     assert_eq!(stopped.status(), StatusCode::OK);
     drop(app);
 
-    let restarted = coordinator_app(&settings);
+    let restarted = role_app(&settings);
     let live = request(
         restarted.clone(),
         "GET",
@@ -2169,7 +2199,7 @@ async fn a_role_change_before_a_restart_reaches_catch_up_and_snapshots() {
     let mut stream = live.into_body().into_data_stream();
     let caught_up = next_of_type(&mut stream, "conversations.changes").await;
     assert_eq!(
-        coordinator_state(&caught_up).as_deref(),
+        watcher_state(&caught_up).as_deref(),
         Some("stopped"),
         "{caught_up}"
     );
@@ -2184,7 +2214,7 @@ async fn a_role_change_before_a_restart_reaches_catch_up_and_snapshots() {
     let mut stream = live.into_body().into_data_stream();
     let snapshot = next_of_type(&mut stream, "conversations.snapshot").await;
     assert_eq!(
-        coordinator_state(&snapshot).as_deref(),
+        watcher_state(&snapshot).as_deref(),
         Some("stopped"),
         "{snapshot}"
     );
@@ -4414,68 +4444,4 @@ fn registered_path(settings: &SparkSettings, project_path: &Path) -> String {
         .project_paths(&project_path.to_string_lossy())
         .unwrap()
         .project_path
-}
-
-/// A standing role with no conversation yet still follows its state live:
-/// its first change commits the role's conversation row, and each change
-/// delivers that row at a new revision.
-#[tokio::test]
-async fn placeholder_role_rows_follow_role_state_changes() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let project_path = temp.path().join("project");
-    fs::create_dir_all(&project_path).expect("project");
-    let app = crate::store_app_default(settings.clone());
-    let registered = request(
-        app.clone(),
-        "POST",
-        "/workspace/api/projects/register",
-        Some(json!({"project_path": project_path})),
-    )
-    .await;
-    assert_eq!(registered.status(), StatusCode::OK);
-    let mut stream = request(
-        app.clone(),
-        "GET",
-        &summaries_live_uri(Some(&project_path), None),
-        None,
-    )
-    .await
-    .into_body()
-    .into_data_stream();
-    let snapshot = next_envelope(&mut stream).await;
-    let coordinator = carried(std::slice::from_ref(&snapshot), "conversation")
-        .into_iter()
-        .find(|row| row["standing_role"]["name"] == "coordinator")
-        .expect("coordinator placeholder");
-    assert_eq!(coordinator["placeholder"], true);
-    let mut last = watermark(&snapshot);
-    for (action, state) in [("stop", "stopped"), ("start", "idle")] {
-        let response = request(
-            app.clone(),
-            "POST",
-            &format!(
-                "/workspace/api/roles/coordinator/{action}?project_path={}",
-                url_encode(&project_path.to_string_lossy())
-            ),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        loop {
-            let changes = next_of_type(&mut stream, "conversations.changes").await;
-            assert_eq!(changes["payload"]["from_revision"], last.to_string());
-            last = watermark(&changes);
-            let rows = changes["payload"]["rows"].as_array().unwrap();
-            if let Some(row) = rows
-                .iter()
-                .find(|row| row["payload"]["standing_role"]["state"] == state)
-            {
-                assert_eq!(row["payload"]["placeholder"], Value::Null);
-                let revision: u64 = row["revision"].as_str().unwrap().parse().unwrap();
-                assert!(revision > 0 && revision <= last);
-                break;
-            }
-        }
-    }
 }

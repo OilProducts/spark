@@ -785,14 +785,6 @@ describe('summary snapshots', () => {
     expect(cache.summaryCursor?.watermark).toBe('11')
   })
 
-  it('replaces a standing role\'s placeholder with its real conversation', () => {
-    const role = { name: 'coordinator', title: 'Coordinator', state: 'idle' }
-    let cache = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([summary('role-1', '/a', 0, { standing_role: role, placeholder: true, title: 'Coordinator' })], null, '3'), 'live')
-    expect(cache.summariesByProjectPath['/a']).toEqual([expect.objectContaining({ revision: '0', standing_role: role })])
-    cache = applySummaryBatchToCache(cache, parseConversationBatchResponse(conversationBatch([conversationRow(summary('role-1', '/a', 4, { standing_role: role, title: 'Coordinator' }))], { from_revision: '3' })))
-    expect(cache.summariesByProjectPath['/a']).toEqual([expect.objectContaining({ revision: '4', standing_role: role })])
-  })
-
   it('discards revisions from another store generation', () => {
     let cache = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([summary('a1', '/a', 40)], null, '40'), 'live')
     cache = applySummarySnapshotToCache(cache, snapshot([summary('a1', '/a', 2, { title: 'Fresh store' })], null, '2', 'generation-2'), 'live')
@@ -843,9 +835,9 @@ describe('a standing role\'s thread-list row', () => {
 
   it('keeps its role and title through opening it and later live updates', () => {
     const seeded = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, parseConversationSummarySnapshotResponse(summarySnapshot([{
-      conversation_id: ID, project_path: PROJECT, title: 'Coordinator', created_at: '', updated_at: '', revision: 0, standing_role: role, placeholder: true,
-    }], { watermark: '0' })), 'live')
-    // Opening the placeholder loads a fresh shell titled like any new thread.
+      conversation_id: ID, project_path: PROJECT, title: 'Coordinator', created_at: '2026-03-06T15:00:00Z', updated_at: '2026-03-06T15:00:00Z', revision: 1, standing_role: role,
+    }], { watermark: '1' })), 'live')
+    // Opening it loads a shell titled like any new thread.
     const opened = open(buildSnapshot({ revision: 1, title: 'New thread', turns: [], segments: [] }), seeded)
     expect(opened.summariesByProjectPath[PROJECT]).toEqual([expect.objectContaining({ title: 'Coordinator', standing_role: role })])
 

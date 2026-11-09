@@ -49,7 +49,6 @@ export function conversationPayload(fixture: Fixture): Fixture {
             reasoning_effort: fixture.reasoning_effort ?? null,
         },
         ...(fixture.standing_role !== undefined ? { standing_role: fixture.standing_role } : {}),
-        ...(fixture.placeholder ? { placeholder: true } : {}),
     }
 }
 

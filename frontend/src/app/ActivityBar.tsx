@@ -19,7 +19,7 @@ export const ACTIVITY_ITEMS: ActivityItem[] = [
     { mode: 'runs', label: 'Runs', icon: Play, testId: 'activity-runs' },
     { mode: 'triggers', label: 'Triggers', icon: Zap, testId: 'activity-triggers' },
     { mode: 'editor', label: 'Flows', icon: GitBranch, testId: 'activity-flows' },
-    { mode: 'org', label: 'Org', icon: Network, testId: 'activity-org' },
+    { mode: 'roles', label: 'Roles', icon: Network, testId: 'activity-roles' },
 ]
 const ACTIVITY_ORDER: ViewMode[] = [...ACTIVITY_ITEMS.map((item) => item.mode), 'settings']
 

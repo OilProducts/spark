@@ -48,12 +48,12 @@ describe('project choices', () => {
         ])
     })
 
-    it('pins standing roles first, the Coordinator leading, above newer chats', () => {
+    it('pins standing roles first, by name, above newer chats', () => {
         const role = (id: string, name: string, updatedAt: string) => ({ ...chat(id, updatedAt), standing_role: { name } })
         const groups = groupChatsByProject(registry, {
-            '/home/me': [chat('new-chat', '2026-09-30T00:00:00Z'), role('cos', 'chief-of-staff', '2026-09-29T00:00:00Z'), role('coord', 'coordinator', '')],
+            '/home/me': [chat('new-chat', '2026-09-30T00:00:00Z'), role('coord', 'coordinator', '2026-09-29T00:00:00Z'), role('arch', 'archivist', '2026-09-01T00:00:00Z')],
         })
-        expect(groups[0].chats.map((entry) => entry.conversation_id)).toEqual(['coord', 'cos', 'new-chat'])
+        expect(groups[0].chats.map((entry) => entry.conversation_id)).toEqual(['arch', 'coord', 'new-chat'])
     })
 
     it('names Home by its display name and other projects by their folder', () => {

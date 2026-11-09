@@ -8,8 +8,8 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { conversationPage, summarySnapshot } from '@/test/conversationWire'
 
-// The Flows panel asks the org list for its badges.
-const EMPTY_ORG_LIST = { org_path: '', bundled_path: '', org_exists: false, items: [] }
+// The Flows panel asks the definition list for its badges.
+const EMPTY_DEFINITION_LIST = { items: [] }
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
 const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
@@ -368,8 +368,8 @@ const installCanvasWorkspaceFetchMock = () => {
           headers: { 'Content-Type': 'application/json' },
         })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return new Response(JSON.stringify([LINEAR_FLOW_NAME, REVIEW_FLOW_NAME]), {
@@ -497,8 +497,8 @@ describe('App shell behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return new Response(JSON.stringify([]), {
@@ -586,7 +586,7 @@ describe('App shell behavior', () => {
 
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('org')
+    expect(useStore.getState().viewMode).toBe('roles')
     await user.keyboard('{ArrowDown}')
     expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
@@ -624,8 +624,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -700,8 +700,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -758,8 +758,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -840,8 +840,8 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return new Response(JSON.stringify([]), {
@@ -939,8 +939,8 @@ describe('App shell behavior', () => {
         if (url.pathname === '/attractor/status') {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.pathname === '/attractor/api/flows') {
           return jsonResponse([])
@@ -1047,8 +1047,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -1150,8 +1150,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1284,8 +1284,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1404,8 +1404,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1574,8 +1574,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1695,8 +1695,8 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return new Response(JSON.stringify([]), {
@@ -1777,8 +1777,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1847,8 +1847,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1912,8 +1912,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -1962,8 +1962,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -2072,8 +2072,8 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/status')) {
           return jsonResponse({ status: 'idle' })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
@@ -2318,8 +2318,8 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/status')) {
         return jsonResponse({ status: 'idle' })
       }
-      if (String(url).includes('/workspace/api/org?')) {
-        return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (String(url).includes('/workspace/api/definitions?')) {
+        return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
@@ -2499,8 +2499,8 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return new Response(JSON.stringify([LINEAR_FLOW_NAME]), {
@@ -2694,8 +2694,8 @@ describe('App shell behavior', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (String(url).includes('/workspace/api/org?')) {
-          return new Response(JSON.stringify(EMPTY_ORG_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (String(url).includes('/workspace/api/definitions?')) {
+          return new Response(JSON.stringify(EMPTY_DEFINITION_LIST), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (url.includes('/attractor/api/flows')) {
           return new Response(JSON.stringify([NESTED_LINEAR_FLOW_NAME]), {

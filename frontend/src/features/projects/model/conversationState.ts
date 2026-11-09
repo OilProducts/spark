@@ -44,10 +44,10 @@ export function mergeConversationRows(rows: ConversationRows, incoming: Conversa
     return next
 }
 
-/** Standing roles first, the Coordinator leading; then newest first. */
+/** Standing roles first, by name; then newest first. */
 export function pinRank(item: { standing_role?: { name: string } | null }): string {
     const role = item.standing_role
-    return role ? `0${role.name === 'coordinator' ? '0' : '1'}${role.name}` : '1'
+    return role ? `0${role.name}` : '1'
 }
 
 export function sortConversationSummaries(items: ConversationSummaryResponse[]): ConversationSummaryResponse[] {
