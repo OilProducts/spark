@@ -921,10 +921,33 @@ impl WorkspaceConversationService {
         Ok(head["settings"].clone())
     }
 
+    /// Marks a standing role's conversation row with the role and its state
+    /// now, titled after the role. Thread lists and an open conversation get
+    /// the same row at the same revision, and the browser keeps whichever
+    /// arrives first, so both scopes must carry it.
+    pub(crate) fn decorate_standing_role(&self, row: &mut EntityRow) {
+        let Some(payload) = row.payload.as_mut() else {
+            return;
+        };
+        let Some(project_path) = payload["project_path"].as_str().map(str::to_string) else {
+            return;
+        };
+        if let Some(role) =
+            crate::roles::WorkspaceRoleService::new(self.settings.clone(), self.store.clone())
+                .conversation_role(&project_path, &row.id)
+        {
+            payload["title"] = json!(role.title);
+            let state = role.state_beside(payload["running"] == true);
+            payload["standing_role"] =
+                json!({"name": role.name, "title": role.title, "state": state});
+        }
+    }
+
     /// Decorate a conversation row for the browser's conversation scope with
     /// its model-settings view and effective selectors, derived from its
-    /// metadata at the row's revision.
+    /// metadata at the row's revision, and its standing role.
     pub fn decorate_conversation_row(&self, row: &mut EntityRow) -> WorkspaceResult<()> {
+        self.decorate_standing_role(row);
         let Some(payload) = row.payload.as_mut() else {
             return Ok(());
         };

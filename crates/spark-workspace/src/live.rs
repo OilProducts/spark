@@ -1599,10 +1599,6 @@ fn listed_summary_rows(
     service: &WorkspaceConversationService,
     rows: Vec<EntityRow>,
 ) -> Vec<EntityRow> {
-    let roles = crate::roles::WorkspaceRoleService::new(
-        service.settings().clone(),
-        service.store().clone(),
-    );
     rows.into_iter()
         .filter_map(|mut row| {
             let Some(payload) = row.payload.as_mut() else {
@@ -1622,12 +1618,7 @@ fn listed_summary_rows(
             if missions.is_some_and(|missions| matches!(missions.read(&row.id), Ok(Some(_)))) {
                 return None;
             }
-            if let Some(role) = roles.conversation_role(&project_path, &row.id) {
-                payload["title"] = json!(role.title);
-                let state = role.state_beside(payload["running"] == true);
-                payload["standing_role"] =
-                    json!({"name": role.name, "title": role.title, "state": state});
-            }
+            service.decorate_standing_role(&mut row);
             Some(row)
         })
         .collect()

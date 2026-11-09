@@ -833,17 +833,19 @@ describe('thread-list summaries the Overview reads', () => {
 describe('a standing role\'s thread-list row', () => {
   const role = { name: 'coordinator', title: 'Coordinator', state: 'idle' as const }
 
-  it('keeps its role and title through opening it and later live updates', () => {
+  it('follows the role state the open conversation\'s rows carry', () => {
     const seeded = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, parseConversationSummarySnapshotResponse(summarySnapshot([{
       conversation_id: ID, project_path: PROJECT, title: 'Coordinator', created_at: '2026-03-06T15:00:00Z', updated_at: '2026-03-06T15:00:00Z', revision: 1, standing_role: role,
     }], { watermark: '1' })), 'live')
-    // Opening it loads a shell titled like any new thread.
-    const opened = open(buildSnapshot({ revision: 1, title: 'New thread', turns: [], segments: [] }), seeded)
+    // The server marks the role on the conversation scope's rows too.
+    const opened = open(buildSnapshot({ revision: 1, title: 'Coordinator', standing_role: role, turns: [], segments: [] }), seeded)
     expect(opened.summariesByProjectPath[PROJECT]).toEqual([expect.objectContaining({ title: 'Coordinator', standing_role: role })])
 
-    const streamed = live(opened, [conversation(2, { title: 'New thread', last_message_preview: 'Hello.' }), turn(buildTurn({ id: 'turn-next', role: 'user', content: 'Hello.' }), 2)])
+    // A stop can reach the open conversation first; the thread list's copy of that revision is then ignored.
+    const stopped = { ...role, state: 'stopped' as const }
+    const streamed = live(opened, [conversation(2, { title: 'Coordinator', standing_role: stopped, last_message_preview: 'Hello.' })])
     expect(streamed.summariesByProjectPath[PROJECT]).toEqual([
-      expect.objectContaining({ title: 'Coordinator', standing_role: role, last_message_preview: 'Hello.' }),
+      expect.objectContaining({ title: 'Coordinator', standing_role: stopped, last_message_preview: 'Hello.' }),
     ])
   })
 })

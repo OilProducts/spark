@@ -2047,9 +2047,33 @@ async fn thread_list_feed_follows_a_standing_roles_lifecycle_and_turns() {
     open_gate.send(()).expect("gate");
     let idle = summary_state(&mut live_stream, "idle").await;
     assert_eq!(idle["running"], false);
-    let stopped = request(app.clone(), "POST", &control("stop"), None).await;
-    assert_eq!(json_body(stopped).await["state"], "stopped");
+    let stopped = json_body(request(app.clone(), "POST", &control("stop"), None).await).await;
+    assert_eq!(stopped["state"], "stopped");
     summary_state(&mut live_stream, "stopped").await;
+    // The open conversation's own rows carry the same role state: the
+    // browser keeps whichever scope delivers a revision first.
+    let page = json_body(
+        request(
+            app.clone(),
+            "GET",
+            &format!(
+                "/workspace/api/conversations/{}?project_path={}",
+                stopped["conversation_id"].as_str().unwrap(),
+                url_encode(&project)
+            ),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let row = page["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "conversation")
+        .unwrap();
+    assert_eq!(row["payload"]["standing_role"]["state"], "stopped", "{row}");
+    assert_eq!(row["payload"]["title"], "Chief of Staff");
     let resumed = request(app.clone(), "POST", &control("start"), None).await;
     assert_eq!(resumed.status(), StatusCode::OK);
     summary_state(&mut live_stream, "idle").await;
