@@ -985,3 +985,179 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(approved.getByTestId('run-context-history-entry')).toHaveText(['Implement 1:draft looks fine', 'Evaluate 1:cleared'])
   await expect(page.getByTestId('run-context-search-input')).toHaveValue('')
 })
+
+test('wrapped visit labels stay inside their own rows in split and stacked layouts', async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-wrapped-visits-${Date.now()}`
+  const run = buildSmokeRun(projectPath, { run_id: `run-wrapped-visits-${Date.now()}`, flow_name: 'WrapFlow' })
+  const empty = buildSmokeRun(projectPath, {
+    run_id: `run-no-visits-${Date.now()}`,
+    flow_name: 'EmptyFlow',
+    started_at: '2026-03-03T11:00:00Z',
+    ended_at: '2026-03-03T11:01:00Z',
+  })
+  const labels: Record<string, string> = {
+    start: 'Start',
+    prepare: 'Prepare',
+    draft: 'Draft the synthetic deliverable so that every section named by the long checklist is covered in full',
+    review: 'Review the synthetic deliverable against each acceptance criterion before it moves on',
+    fan_out: 'Fan out',
+    check_wide: 'Check the synthetic deliverable in an independent branch with a long label of its own',
+    check_a: 'Check A',
+    check_b: 'Check B',
+    summarize: 'Summarize',
+    publish: 'Publish',
+    notify: 'Notify',
+    done: 'Done',
+  }
+  // Five drafts and reviews, each review but the last sending the draft back; a fan-out
+  // whose three branches nest under it; a completed exit the list leaves out: 19 visits.
+  const stages = ['start', 'prepare', ...Array.from({ length: 5 }, () => ['draft', 'review']).flat(), 'fan_out', 'summarize', 'publish', 'notify', 'done']
+  const branches = ['check_wide', 'check_a', 'check_b']
+  let sequence = 0
+  const entry = (rawType: string, node: string, stageIndex: number, payload: Record<string, unknown>) => {
+    sequence += 1
+    return buildSmokeJournalEntry(sequence, {
+      kind: rawType.startsWith('Stage') ? 'stage' : 'parallel',
+      raw_type: rawType,
+      summary: `${rawType} ${node}`,
+      node_id: node,
+      stage_index: stageIndex,
+      emitted_at: new Date(Date.UTC(2026, 2, 3, 12) + sequence * 7_000).toISOString(),
+      payload: { node_id: node, ...payload },
+    })
+  }
+  const journal = stages.flatMap((node, index) => [
+    entry('StageStarted', node, index, { index }),
+    ...(node === 'fan_out'
+      ? branches.flatMap((branch, branchIndex) => [
+        entry('ParallelBranchStarted', node, index, { branch, index: branchIndex }),
+        entry('ParallelBranchCompleted', node, index, { branch, index: branchIndex, success: true }),
+      ])
+      : []),
+    entry('StageCompleted', node, index, { index, outcome: 'completed', decision: 'done' }),
+  ]).reverse()
+
+  await stubRunSummary(page, run, [run, empty])
+  await stubJson(page, `**/attractor/pipelines/${run.run_id}/journal**`, {
+    pipeline_id: run.run_id, entries: journal, oldest_sequence: 1, newest_sequence: sequence, has_older: false,
+  })
+  await stubJson(page, `**/attractor/pipelines/${run.run_id}/graph-preview**`, {
+    status: 'ok',
+    flow: {
+      nodes: Object.fromEntries(Object.entries(labels).map(([id, label]) => [
+        id, { label, kind: id === 'start' ? 'start' : id === 'done' ? 'exit' : 'agent_task' },
+      ])),
+    },
+    graph: { nodes: [], edges: [] },
+    diagnostics: [],
+    errors: [],
+  })
+  await stubJson(page, `**/attractor/pipelines/${empty.run_id}`, {
+    pipeline_id: empty.run_id, ...empty, completed_nodes: [], progress: { current_node: null, completed_count: 0 },
+  })
+  await stubJson(page, `**/attractor/pipelines/${empty.run_id}/journal**`, {
+    pipeline_id: empty.run_id, entries: [], oldest_sequence: null, newest_sequence: null, has_older: false,
+  })
+
+  await page.setViewportSize({ width: 1440, height: 700 })
+  await openRunsForSmokeTest(page, projectPath)
+  const list = page.getByTestId('run-visit-list')
+  const rows = page.getByTestId('run-visit-row')
+  const lastRow = rows.last()
+  // Whether a row lies within the list's visible scrollport.
+  const inScrollport = (row: typeof lastRow) => row.evaluate((element) => {
+    const port = element.closest('[data-testid="run-visit-list"]')!.getBoundingClientRect()
+    const box = element.getBoundingClientRect()
+    return box.top >= port.top - 1 && box.bottom <= port.bottom + 1
+  })
+
+  const checkRail = async (layout: 'split' | 'stacked') => {
+    await expect(page.getByTestId('run-visits-panel')).toHaveAttribute('data-responsive-layout', layout)
+    await expect(rows).toHaveCount(19)
+    const rail = await list.evaluate((element) => {
+      const box = (node: Element) => {
+        const { top, bottom, left, right, height } = node.getBoundingClientRect()
+        return { top, bottom, left, right, height }
+      }
+      return {
+        height: element.getBoundingClientRect().height,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+        items: [...element.querySelectorAll('[data-testid^="run-visit-item-"]')].map(box),
+        heading: { text: element.children[2].textContent, ...box(element.children[2]) },
+        rows: [...element.querySelectorAll('[data-testid="run-visit-row"]')].map((row) => ({
+          name: row.children[1].querySelector('span')!.textContent,
+          indent: parseFloat(getComputedStyle(row).paddingLeft),
+          sentBack: row.querySelector('[data-testid="run-visit-row-sent-back"]') !== null,
+          row: box(row),
+          // The label column holds the label and any sent-back description.
+          label: box(row.children[1]),
+          duration: box(row.children[2]),
+        })),
+      }
+    })
+    const tolerance = 1
+    expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight)
+    if (layout === 'stacked') {
+      expect(rail.height).toBe(288)
+    }
+    const lineHeight = Math.min(...rail.rows.map(({ label }) => label.height))
+    expect(Math.max(...rail.rows.map(({ label }) => label.height))).toBeGreaterThanOrEqual(3 * lineHeight)
+    expect(rail.rows.filter(({ indent }) => indent === 24).map(({ name }) => name)).toEqual([labels.check_wide, 'Check A', 'Check B'])
+    expect(rail.rows.filter(({ sentBack }) => sentBack)).toHaveLength(4)
+
+    // Every label column and duration lies inside its own button, and buttons do not overlap.
+    type Box = (typeof rail.rows)[number]['row']
+    const outside = (inner: Box, outer: Box) => inner.top < outer.top - tolerance || inner.bottom > outer.bottom + tolerance
+      || inner.left < outer.left - tolerance || inner.right > outer.right + tolerance
+    const spills = rail.rows.flatMap(({ name, row, label, duration }, index) => [
+      ...(outside(label, row) ? [`label of row ${index} (${name})`] : []),
+      ...(outside(duration, row) ? [`duration of row ${index} (${name})`] : []),
+      ...(index > 0 && row.top < rail.rows[index - 1].row.bottom - tolerance ? [`row ${index} overlaps row ${index - 1}`] : []),
+    ])
+    expect(spills).toEqual([])
+
+    // Natural sizes: Result/Context rows, single-line visits, the heading between them.
+    expect(rail.items.map(({ height }) => Math.round(height))).toEqual([34, 34])
+    const singleLine = rail.rows.filter(({ sentBack, label }) => !sentBack && label.height <= lineHeight + tolerance)
+    expect(singleLine.map(({ name }) => name)).toEqual(['Start', 'Prepare', 'Fan out', 'Check A', 'Check B', 'Summarize', 'Publish', 'Notify'])
+    expect(singleLine.map(({ row }) => Math.round(row.height))).toEqual(singleLine.map(() => 32))
+    expect(rail.heading.text).toBe('Steps19 visits')
+    expect(rail.heading.top).toBeGreaterThanOrEqual(rail.items[1].bottom - tolerance)
+    expect(rail.rows[0].row.top).toBeGreaterThanOrEqual(rail.heading.bottom - tolerance)
+
+    // Durations stay centred in ordinary rows and level with the label in sent-back rows.
+    for (const { name, row, label, duration, sentBack } of rail.rows) {
+      const offset = sentBack
+        ? duration.top - label.top
+        : (duration.top + duration.bottom) / 2 - (row.top + row.bottom) / 2
+      expect(Math.abs(offset), `duration alignment of ${name}`).toBeLessThanOrEqual(tolerance)
+    }
+
+    // The final visit can be scrolled into view, and keyboard navigation reaches it.
+    await list.evaluate((element) => { element.scrollTop = 0 })
+    expect(await inScrollport(lastRow)).toBe(false)
+    await lastRow.scrollIntoViewIfNeeded()
+    expect(await inScrollport(lastRow)).toBe(true)
+    await list.evaluate((element) => { element.scrollTop = 0 })
+    await page.getByTestId('run-visit-item-status').click()
+    await expect(page.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
+    for (let step = 0; step < 20; step += 1) {
+      await page.keyboard.press('ArrowDown')
+    }
+    await expect(lastRow).toHaveAttribute('aria-selected', 'true')
+    await expect(lastRow).toBeFocused()
+    expect(await inScrollport(lastRow)).toBe(true)
+    await expect(lastRow).toBeInViewport()
+  }
+
+  await checkRail('split')
+  await page.setViewportSize({ width: 390, height: 700 })
+  await checkRail('stacked')
+
+  // With no visits, the heading and the empty note stay readable.
+  await page.setViewportSize({ width: 1440, height: 700 })
+  await page.getByTestId('run-history-row').nth(1).click()
+  await expect(page.getByTestId('run-visits-empty')).toBeInViewport({ ratio: 1 })
+  await expect(list.getByText('0 visits')).toBeInViewport({ ratio: 1 })
+})
