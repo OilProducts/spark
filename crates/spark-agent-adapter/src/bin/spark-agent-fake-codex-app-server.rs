@@ -30,7 +30,8 @@ fn run_default(
     tool_calls: bool,
 ) {
     let stdin = io::stdin();
-    let mut stdout = io::stdout().lock();
+    // Unlocked, so a gated turn's thread can write while this loop answers requests.
+    let mut stdout = io::stdout();
     let mut awaiting_request_user_input_response = false;
     let fake_login =
         PathBuf::from(env::var_os("CODEX_HOME").unwrap_or_default()).join("fake-login-complete");
@@ -159,7 +160,8 @@ fn run_default(
                     );
                     awaiting_request_user_input_response = true;
                 } else if mode == "gated" {
-                    emit_gated_turn(&mut stdout);
+                    // Like the real app-server, keep answering requests (turn/steer) mid turn.
+                    std::thread::spawn(|| emit_gated_turn(&mut io::stdout()));
                 } else if mode == "interruptible" {
                     // Runs until Spark sends turn/interrupt.
                     write_json(
@@ -187,6 +189,10 @@ fn run_default(
                     );
                 }
             }
+            "turn/steer" if mode == "gated" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "result": {"turnId": "turn-test"}}),
+            ),
             "turn/interrupt" if mode == "interruptible" || mode == "interruptible-question" => {
                 assert_eq!(
                     message["params"],
