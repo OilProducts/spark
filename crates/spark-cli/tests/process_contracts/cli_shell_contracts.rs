@@ -201,32 +201,81 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "summary": "Run the approved scope"
         })
     );
+}
 
-    // `spark run launch` shares the payload builder and its object check.
-    let rejected = run_with_args_and_env(
+#[test]
+fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
+    let env = BTreeMap::new();
+    let command = |base_url: &str, overrides: &str| -> Vec<String> {
         [
-            "spark",
-            "run",
-            "launch",
             "--flow",
             "test",
             "--summary",
-            "Launch directly",
-            "--project",
-            "/tmp/project",
+            "Launch",
             "--node-overrides-json",
-            r#"["verify"]"#,
+            overrides,
             "--base-url",
-            "http://127.0.0.1:9",
+            base_url,
+        ]
+        .map(str::to_string)
+        .to_vec()
+    };
+    for prefix in [
+        [
+            "spark",
+            "convo",
+            "run-request",
+            "--conversation",
+            "amber-otter",
         ],
-        &env,
-    );
-    assert_eq!(rejected.exit_code, 1);
-    assert_eq!(rejected.stdout, "");
-    assert_eq!(
-        rejected.stderr,
-        "{\"ok\": false, \"error\": \"Node overrides must be a JSON object keyed by node id.\"}\n"
-    );
+        ["spark", "run", "launch", "--project", "/tmp/project"],
+    ] {
+        // An empty `"$OVERRIDES"` must not launch without the overrides.
+        for (overrides, error) in [
+            ("", "Node overrides must be valid JSON"),
+            ("  ", "Node overrides must be valid JSON"),
+            (
+                r#"["verify"]"#,
+                "Node overrides must be a JSON object keyed by node id.",
+            ),
+        ] {
+            let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
+            let args = prefix
+                .map(str::to_string)
+                .into_iter()
+                .chain(command(&base_url, overrides));
+            let output = run_with_args_and_env(args, &env);
+            assert_eq!(output.exit_code, 1, "{prefix:?} {overrides:?}: {output:?}");
+            assert_eq!(output.stdout, "");
+            assert!(
+                output
+                    .stderr
+                    .starts_with(&format!("{{\"ok\": false, \"error\": \"{error}")),
+                "{prefix:?} {overrides:?}: {}",
+                output.stderr
+            );
+            assert!(
+                requests.recv_timeout(Duration::from_millis(200)).is_err(),
+                "{prefix:?} {overrides:?} dispatched a request"
+            );
+        }
+
+        // An empty object is still a valid value and is sent as given.
+        let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
+        let args = prefix
+            .map(str::to_string)
+            .into_iter()
+            .chain(command(&base_url, "{}"));
+        let output = run_with_args_and_env(args, &env);
+        assert_eq!(output.exit_code, 0, "{prefix:?}: {output:?}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        assert_eq!(
+            serde_json::from_str::<Value>(&request.body).expect("request json")["node_overrides"],
+            serde_json::json!({})
+        );
+    }
 }
 
 #[test]

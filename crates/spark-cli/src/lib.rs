@@ -1832,9 +1832,10 @@ fn build_flow_payload(
         "--execution-profile",
         "execution_profile_id",
     );
-    // The server checks each override's fields.
-    if let Some(raw) = trimmed_option(options, "--node-overrides-json") {
-        let value: Value = serde_json::from_str(&raw).map_err(|error| {
+    // A supplied value must parse, so an empty one never launches without
+    // overrides. The server checks each override's fields.
+    if let Some(raw) = options.value("--node-overrides-json") {
+        let value: Value = serde_json::from_str(raw).map_err(|error| {
             json_error(
                 format!("Node overrides must be valid JSON: {error}"),
                 EXIT_GENERAL_FAILURE,
