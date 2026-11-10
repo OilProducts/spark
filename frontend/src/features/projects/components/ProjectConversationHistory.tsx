@@ -5,10 +5,12 @@ import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
     ProjectProposedPlan,
+    ProjectRunRecovery,
 } from '../model/types'
 import {
     ProjectFlowLaunchEntry,
     ProjectFlowRunRequestEntry,
+    ProjectRunRecoveryEntry,
 } from './ProjectArtifactEntries'
 import { ProjectConversationRequestUserInputCard } from './ProjectConversationRequestUserInputCard'
 import {
@@ -36,6 +38,7 @@ interface ProjectConversationHistoryProps {
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
     activeFlowLaunchesById: Map<string, ProjectFlowLaunch>
     activeProposedPlansById: Map<string, ProjectProposedPlan>
+    activeRunRecoveriesById: Map<string, ProjectRunRecovery>
     latestFlowRunRequestId: string | null
     latestFlowLaunchId: string | null
     expandedToolCalls: Record<string, boolean>
@@ -152,6 +155,26 @@ const FlowLaunchRow = memo(function FlowLaunchRow({
                 onOpenFlowRun={onOpenFlowRun}
                 formatConversationTimestamp={formatConversationTimestamp}
                 getFlowLaunchStatusPresentation={getFlowLaunchStatusPresentation}
+            />
+        </li>
+    )
+})
+
+const RunRecoveryRow = memo(function RunRecoveryRow({
+    runRecovery,
+    formatConversationTimestamp,
+    onOpenFlowRun,
+}: {
+    runRecovery: ProjectRunRecovery | null
+    formatConversationTimestamp: (value: string) => string
+    onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
+}) {
+    return (
+        <li className="flex min-w-0 justify-start">
+            <ProjectRunRecoveryEntry
+                runRecovery={runRecovery}
+                onOpenFlowRun={onOpenFlowRun}
+                formatConversationTimestamp={formatConversationTimestamp}
             />
         </li>
     )
@@ -301,6 +324,7 @@ export function ProjectConversationHistory({
     activeFlowRunRequestsById,
     activeFlowLaunchesById,
     activeProposedPlansById,
+    activeRunRecoveriesById,
     latestFlowRunRequestId,
     latestFlowLaunchId,
     expandedToolCalls,
@@ -341,7 +365,7 @@ export function ProjectConversationHistory({
         activeConversationId && activeProjectPath ? { id: activeConversationId, projectPath: activeProjectPath } : undefined
     ), [activeConversationId, activeProjectPath])
 
-    // The rows only the chat acts on: plan review, flow requests and launches, and questions.
+    // The rows only the chat acts on: plan review, flow requests, launches and run recoveries, and questions.
     const renderEntry = (entry: ConversationTimelineEntry): ReactNode | undefined => {
         switch (entry.kind) {
         case 'request_user_input':
@@ -378,6 +402,14 @@ export function ProjectConversationHistory({
                 />
             )
         }
+        case 'run_recovery':
+            return (
+                <RunRecoveryRow
+                    runRecovery={activeRunRecoveriesById.get(entry.artifactId) || null}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    onOpenFlowRun={onOpenFlowRun}
+                />
+            )
         case 'plan': {
             const proposedPlan = entry.artifactId
                 ? (activeProposedPlansById.get(entry.artifactId) || null)

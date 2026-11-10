@@ -16,6 +16,7 @@ import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
     ProjectProposedPlan,
+    ProjectRunRecovery,
 } from './types'
 
 type BuildProjectsHomeViewModelArgs = {
@@ -37,6 +38,7 @@ export type ProjectsHomeViewModel = {
     activeFlowLaunchesById: Map<string, ProjectFlowLaunch>
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
     activeProposedPlansById: Map<string, ProjectProposedPlan>
+    activeRunRecoveriesById: Map<string, ProjectRunRecovery>
     activeProjectGitMetadata: ProjectGitMetadata
     chatSendButtonLabel: string
     hasActiveAssistantTurn: boolean
@@ -88,6 +90,7 @@ export function buildProjectsHomeViewModel({
         || entry.kind === 'request_user_input'
         || entry.kind === 'flow_run_request'
         || entry.kind === 'flow_launch'
+        || entry.kind === 'run_recovery'
         || entry.kind === 'tool_call'
         || entry.role === 'user'
         || entry.role === 'assistant'
@@ -127,6 +130,7 @@ export function buildProjectsHomeViewModel({
         activeFlowLaunchesById: buildIdMap(activeFlowLaunches),
         activeFlowRunRequestsById: buildIdMap(activeFlowRunRequests),
         activeProposedPlansById: buildIdMap(activeProposedPlans),
+        activeRunRecoveriesById: new Map(Object.entries(activeConversationRecord?.runRecoveriesById ?? {})),
         activeProjectGitMetadata: activeProjectPath
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,

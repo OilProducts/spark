@@ -18,6 +18,7 @@ export {
     type FlowLaunchResponse,
     type FlowRunRequestResponse,
     type ProposedPlanArtifactResponse,
+    type RunRecoveryResponse,
     type ProjectDeleteResponse,
     type ProjectMetadataResponse,
     type ProjectBrowseEntryResponse,

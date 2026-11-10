@@ -7,6 +7,7 @@ import { ProjectConversationHistory } from '@/features/projects/components/Proje
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { useStore } from '@/store'
 import { applyConversationPage, getConversationTimelineEntries } from '@/features/projects/model/projectsHomeState'
+import { buildProjectsHomeViewModel } from '@/features/projects/model/projectsHomeViewModel'
 import { parseConversationPageResponse } from '@/lib/workspaceClient'
 import { conversationPage } from '@/test/conversationWire'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -16,6 +17,7 @@ import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
     ProjectProposedPlan,
+    ProjectRunRecovery,
 } from '@/features/projects/model/types'
 
 const markdownRenderSpy = vi.hoisted(() => vi.fn())
@@ -45,6 +47,7 @@ vi.mock('@/features/projects/components/ProjectArtifactEntries', async () => {
             return React.createElement(actual.ProjectFlowRunRequestEntry, props)
         },
         ProjectFlowLaunchEntry: actual.ProjectFlowLaunchEntry,
+        ProjectRunRecoveryEntry: actual.ProjectRunRecoveryEntry,
     }
 })
 
@@ -64,6 +67,7 @@ const makeHistoryElement = (
         activeFlowRunRequestsById?: Map<string, ProjectFlowRunRequest>
         activeFlowLaunchesById?: Map<string, ProjectFlowLaunch>
         activeProposedPlansById?: Map<string, ProjectProposedPlan>
+        activeRunRecoveriesById?: Map<string, ProjectRunRecovery>
         latestFlowRunRequestId?: string | null
         latestFlowLaunchId?: string | null
         onOpenFlowRun?: (request: { run_id?: string | null; flow_name: string }) => void
@@ -91,6 +95,7 @@ const makeHistoryElement = (
         activeFlowRunRequestsById={overrides.activeFlowRunRequestsById ?? new Map()}
         activeFlowLaunchesById={overrides.activeFlowLaunchesById ?? new Map()}
         activeProposedPlansById={overrides.activeProposedPlansById ?? new Map()}
+        activeRunRecoveriesById={overrides.activeRunRecoveriesById ?? new Map()}
         latestFlowRunRequestId={overrides.latestFlowRunRequestId ?? null}
         latestFlowLaunchId={overrides.latestFlowLaunchId ?? null}
         expandedToolCalls={{}}
@@ -1190,6 +1195,62 @@ describe('ProjectConversationHistory', () => {
         expect(card).not.toHaveTextContent('Open run')
         await user.click(openRun)
         expect(onOpenFlowRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-launch-456' }))
+    })
+
+    it('renders run recoveries from a conversation page as cards that open the resulting run and show a failure', async () => {
+        const user = userEvent.setup()
+        const onOpenFlowRun = vi.fn()
+        const at = '2026-11-10T02:54:49Z'
+        const segment = (id: string, order: number, kind: string, extra: Record<string, unknown> = {}) => ({
+            id, turn_id: 'turn-assistant', order, kind, role: 'system', status: 'complete', timestamp: at, updated_at: at, content: '', ...extra,
+        })
+        const recovery = (id: string, overrides: Record<string, unknown>) => ({
+            id, created_at: at, updated_at: at, status: 'started', source_run_id: 'run-source', result_run_id: 'run-result',
+            project_path: '/tmp/project', conversation_id: 'conversation-1', source_turn_id: 'turn-assistant',
+            source_segment_id: `segment-artifact-${id}`, ...overrides,
+        })
+        const record = applyConversationPage(undefined, parseConversationPageResponse(conversationPage({
+            revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
+            chat_mode: 'chat', title: 'Chat', created_at: at, updated_at: at,
+            turns: [
+                { id: 'turn-user', role: 'user', content: 'Hi', timestamp: at, kind: 'message', status: 'complete', position: 1 },
+                { id: 'turn-assistant', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'complete', position: 2 },
+            ],
+            segments: [
+                segment('answer', 1, 'assistant_message', { role: 'assistant', content: 'Done.' }),
+                segment('segment-artifact-run-recovery-1', 2, 'run_recovery', { artifact_id: 'run-recovery-1' }),
+                segment('segment-artifact-run-recovery-2', 3, 'run_recovery', { artifact_id: 'run-recovery-2' }),
+                segment('segment-artifact-run-recovery-3', 4, 'run_recovery', { artifact_id: 'run-recovery-3' }),
+            ],
+            run_recoveries: [
+                recovery('run-recovery-1', { operation: 'continue', start_node: 'verify_findings' }),
+                recovery('run-recovery-2', { operation: 'retry', status: 'failed', result_run_id: 'run-source', recovery_error: 'Run is still active.' }),
+                recovery('run-recovery-3', { operation: 'continue', status: 'pending', result_run_id: '', start_node: 'review' }),
+            ],
+        })), 'window') ?? null
+        const viewModel = buildProjectsHomeViewModel({
+            activeConversationId: 'conversation-1', activeConversationRecord: record, activeProjectPath: '/tmp/project',
+            pendingConversationTurn: null, pendingMessages: [], projectGitMetadata: {},
+            uiDefaults: { llm_model: '', llm_provider: '', reasoning_effort: '' },
+        })
+        renderHistory(viewModel.activeConversationHistory, { activeRunRecoveriesById: viewModel.activeRunRecoveriesById, onOpenFlowRun })
+
+        expect(screen.getByText('Done.')).toBeInTheDocument()
+        const [continued, retried, pending] = screen.getAllByTestId('project-run-recovery-surface')
+        expect(continued).toHaveTextContent('Continue run-source from verify_findings')
+        expect(continued).toHaveTextContent('Started')
+        expect(continued).toHaveTextContent('Source run: run-source')
+        await user.click(within(continued).getByRole('button', { name: 'Continue run-source from verify_findings' }))
+        expect(onOpenFlowRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-result' }))
+
+        expect(retried).toHaveTextContent('Retry run-source')
+        expect(retried).toHaveTextContent('Failed')
+        expect(retried).toHaveTextContent('Recovery error: Run is still active.')
+
+        // No run yet: nothing to open.
+        expect(pending).toHaveTextContent('Continue run-source from review')
+        expect(pending).toHaveTextContent('Starting')
+        expect(within(pending).queryAllByRole('button')).toHaveLength(0)
     })
 
     it('keeps tool command and output rows literal and unchanged', async () => {

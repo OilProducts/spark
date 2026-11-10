@@ -74,6 +74,8 @@ describe('visitTranscriptEntries', () => {
         role: 'system',
         request_user_input: { request_id: 'q', status: 'pending', questions: [], answers: {}, submitted_at: null },
       }),
+      segment({ id: 's-launch', kind: 'flow_launch', role: 'system', content: '', artifact_id: 'launch-1' }),
+      segment({ id: 's-recovery', kind: 'run_recovery', role: 'system', content: '', artifact_id: 'run-recovery-1' }),
     ])
     expect(entries.map((entry) => entry.id)).toEqual(['s-answer', 's-thinking', 's-tool', 's-compaction', 's-warning'])
     expect(entries).toEqual([

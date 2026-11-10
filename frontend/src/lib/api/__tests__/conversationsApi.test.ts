@@ -536,6 +536,60 @@ describe('conversationsApi parsing', () => {
         expect(() => batchOf([artifactRow(conversationId, 'proposed_plans', { id: 'plan-2' }, '1', 1)])).toThrow()
     })
 
+    it('parses a run recovery segment and its artifact', () => {
+        const conversationId = 'conversation-users-chris-projects-spark-431aef86'
+        const at = '2026-11-10T02:54:49Z'
+        const recovery = {
+            id: 'run-recovery-fafa28ed0684',
+            operation: 'continue',
+            status: 'started',
+            source_run_id: 'run-18e67cc27559fe08',
+            result_run_id: 'run-2026-11-10T02-54-49-275189000Z',
+            start_node: 'verify_findings',
+            flow_source_mode: 'snapshot',
+            flow_name: null,
+            model: null, llm_provider: null, llm_profile: null, reasoning_effort: null,
+            project_path: '/Users/chris/projects/spark',
+            conversation_id: conversationId,
+            source_turn_id: 'turn-1fb2f664677e450284fafbc616388304',
+            source_segment_id: 'segment-artifact-run-recovery-fafa28ed0684',
+            created_at: at,
+            updated_at: at,
+        }
+        const batch = batchOf([
+            segmentRow(conversationId, {
+                id: 'segment-artifact-run-recovery-fafa28ed0684',
+                turn_id: 'turn-1fb2f664677e450284fafbc616388304',
+                order: 7,
+                kind: 'run_recovery',
+                role: 'system',
+                status: 'complete',
+                timestamp: at,
+                updated_at: at,
+                content: '',
+                artifact_id: 'run-recovery-fafa28ed0684',
+                source: {},
+            }, '3'),
+            artifactRow(conversationId, 'run_recoveries', recovery, '3', 1),
+        ])
+
+        const [segment, artifact] = batch.rows
+        expect(segment).toMatchObject({ kind: 'segment', payload: { kind: 'run_recovery', artifact_id: 'run-recovery-fafa28ed0684' } })
+        expect(artifact).toMatchObject({ kind: 'artifact', collection: 'run_recoveries', payload: {
+            id: 'run-recovery-fafa28ed0684',
+            operation: 'continue',
+            status: 'started',
+            source_run_id: 'run-18e67cc27559fe08',
+            result_run_id: 'run-2026-11-10T02-54-49-275189000Z',
+            start_node: 'verify_findings',
+        } })
+
+        // A continue that failed before starting a run records an empty result id and its error.
+        const failed = batchOf([artifactRow(conversationId, 'run_recoveries', { ...recovery, status: 'failed', result_run_id: '', recovery_error: 'Unknown node.' }, '4', 1)])
+        expect(failed.rows[0]).toMatchObject({ payload: { status: 'failed', result_run_id: null, recovery_error: 'Unknown node.' } })
+        expect(() => batchOf([artifactRow(conversationId, 'run_recoveries', { ...recovery, operation: 'rewind' }, '4', 1)])).toThrow()
+    })
+
     it('parses yielded tool calls with their completion reason', () => {
         const batch = batchOf([segmentRow('conversation-yield', {
             id: 'segment-tool-app-1-exec-a',

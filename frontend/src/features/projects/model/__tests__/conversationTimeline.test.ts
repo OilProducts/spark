@@ -101,6 +101,26 @@ describe('conversation timeline normalization', () => {
     })
   })
 
+  it('shows a run recovery anchored after the final answer without losing that answer', () => {
+    const timeline = buildTimeline({
+      ...baseSnapshot,
+      segments: [...baseSnapshot.segments, {
+        ...baseSnapshot.segments[1],
+        id: 'segment-artifact-run-recovery-1',
+        order: 3,
+        kind: 'run_recovery',
+        role: 'system',
+        timestamp: '2026-03-10T10:05:00Z',
+        content: '',
+        artifact_id: 'run-recovery-1',
+      }],
+    })
+
+    expect(timeline.map((entry) => entry.kind)).toEqual(['message', 'tool_call', 'final_separator', 'message', 'run_recovery'])
+    expect(timeline[2]).toMatchObject({ label: 'Worked for 10s' })
+    expect(timeline[4]).toMatchObject({ id: 'segment-artifact-run-recovery-1', artifactId: 'run-recovery-1' })
+  })
+
   it('shows messages sent during a turn as queued, delivered or not sent', () => {
     const userSegment = (id: string, order: number, status: 'complete' | 'failed', error: string | null) => ({
       ...baseSnapshot.segments[1],

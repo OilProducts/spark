@@ -162,10 +162,10 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
             timestamp: segment.timestamp,
         }
     }
-    if (segment.kind === 'flow_launch' && segment.artifact_id) {
+    if ((segment.kind === 'flow_launch' || segment.kind === 'run_recovery') && segment.artifact_id) {
         return {
             id: segment.id,
-            kind: 'flow_launch',
+            kind: segment.kind,
             role: 'system',
             artifactId: segment.artifact_id,
             timestamp: segment.timestamp,
@@ -184,12 +184,13 @@ function buildAssistantTimelineEntries(
     const sortedSegments = [...turnSegments].sort((left, right) => left.order - right.order)
     // The canonical projection guarantees a finished turn's final answer is its
     // last user-visible segment; only non-rendered lifecycle markers
-    // (agent_event) may follow it. Trust that order instead of scanning
-    // backwards past visible work rows.
+    // (agent_event) and run recoveries, which `spark run continue|retry` anchor
+    // to the latest finished turn, may follow it. Trust that order instead of
+    // scanning backwards past visible work rows.
     let finalAssistantIndex = -1
     for (let index = sortedSegments.length - 1; index >= 0; index -= 1) {
         const kind: string = sortedSegments[index].kind
-        if (kind === 'agent_event') {
+        if (kind === 'agent_event' || kind === 'run_recovery') {
             continue
         }
         if (kind === 'assistant_message' || kind === 'plan') {

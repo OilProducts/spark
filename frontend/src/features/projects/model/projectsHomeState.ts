@@ -19,6 +19,7 @@ import {
     type FlowLaunchResponse,
     type FlowRunRequestResponse,
     type ProposedPlanArtifactResponse,
+    type RunRecoveryResponse,
 } from '@/lib/workspaceClient'
 import type { ProjectGitMetadata } from './presentation'
 import {
@@ -94,6 +95,7 @@ export type NormalizedConversationRecord = ConversationWindowState & {
     flowRunRequestsById: Record<string, FlowRunRequestResponse>
     flowLaunchIds: string[]
     flowLaunchesById: Record<string, FlowLaunchResponse>
+    runRecoveriesById: Record<string, RunRecoveryResponse>
     proposedPlanIds: string[]
     proposedPlansById: Record<string, ProposedPlanArtifactResponse>
     timelineEntryIds: string[]
@@ -341,6 +343,7 @@ function deriveConversationRecord(
         .map((row) => row.payload as T)
     const flowRunRequests = artifacts<FlowRunRequestResponse>('flow_run_requests')
     const flowLaunches = artifacts<FlowLaunchResponse>('flow_launches')
+    const runRecoveries = artifacts<RunRecoveryResponse>('run_recoveries')
     const proposedPlans = artifacts<ProposedPlanArtifactResponse>('proposed_plans')
 
     // Turns before the oldest loaded page stay hidden until that page loads; pinned ones show.
@@ -419,6 +422,7 @@ function deriveConversationRecord(
         flowRunRequestsById: Object.fromEntries(flowRunRequests.map((request) => [request.id, request])),
         flowLaunchIds: flowLaunches.map((launch) => launch.id),
         flowLaunchesById: Object.fromEntries(flowLaunches.map((launch) => [launch.id, launch])),
+        runRecoveriesById: Object.fromEntries(runRecoveries.map((recovery) => [recovery.id, recovery])),
         proposedPlanIds: proposedPlans.map((plan) => plan.id),
         proposedPlansById: Object.fromEntries(proposedPlans.map((plan) => [plan.id, plan])),
         timelineEntryIds,
