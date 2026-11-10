@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use attractor_api::{
-    ContinuePipelineRequest, PipelineStartRequest, RuntimeHandlerRunnerFactory,
+    ContinuePipelineRequest, NodeOverride, PipelineStartRequest, RuntimeHandlerRunnerFactory,
     RuntimeRouteResponse,
 };
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,8 @@ pub struct FlowRunRequestCreateByHandleRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub execution_profile_id: Option<String>,
+    #[serde(default)]
+    pub node_overrides: Option<BTreeMap<String, NodeOverride>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -199,6 +201,8 @@ pub struct RunLaunchRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub execution_profile_id: Option<String>,
+    #[serde(default)]
+    pub node_overrides: Option<BTreeMap<String, NodeOverride>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -2523,6 +2527,7 @@ impl WorkspaceConversationService {
             llm_profile: request.llm_profile,
             reasoning_effort: request.reasoning_effort,
             execution_profile_id: request.execution_profile_id,
+            node_overrides: request.node_overrides,
         };
         let (project, conversation) = (&handle_match.project_path, &handle_match.conversation_id);
         let missions = crate::missions::WorkspaceMissionService::new(
@@ -3651,6 +3656,18 @@ impl WorkspaceConversationService {
         } else {
             None
         };
+        // A malformed value fails the launch rather than dropping the overrides.
+        let node_overrides = match serde_json::from_value(
+            artifact.get("node_overrides").cloned().unwrap_or_default(),
+        ) {
+            Ok(node_overrides) => node_overrides,
+            Err(error) => {
+                return RuntimeRouteResponse::json(
+                    200,
+                    json!({"status": "validation_error", "error": format!("Invalid node_overrides: {error}")}),
+                )
+            }
+        };
         let response = self
             .runtime_api_service()
             .start_pipeline(PipelineStartRequest {
@@ -3681,6 +3698,7 @@ impl WorkspaceConversationService {
                     .and_then(Value::as_str)
                     .and_then(non_empty_string),
                 launch_context: Some(launch_context.into_iter().collect()),
+                node_overrides,
                 ..PipelineStartRequest::default()
             });
         if let Ok(outcome) = flow_start_outcome_from_response(&response) {
@@ -3836,6 +3854,7 @@ struct NormalizedFlowRunRequestPayload {
     llm_profile: Option<String>,
     reasoning_effort: Option<String>,
     execution_profile_id: Option<String>,
+    node_overrides: Option<BTreeMap<String, NodeOverride>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3887,6 +3906,7 @@ fn normalize_run_launch_request_payload(
         request.llm_profile.as_deref(),
         request.reasoning_effort.as_deref(),
         request.execution_profile_id.as_deref(),
+        request.node_overrides,
         "spark run launch",
     )
 }
@@ -3901,6 +3921,7 @@ fn normalize_flow_run_payload_fields(
     llm_profile: Option<&str>,
     reasoning_effort: Option<&str>,
     execution_profile_id: Option<&str>,
+    node_overrides: Option<BTreeMap<String, NodeOverride>>,
     source_name: &str,
 ) -> WorkspaceResult<NormalizedFlowRunRequestPayload> {
     let flow_name = non_empty_string(flow_name).ok_or_else(|| {
@@ -3923,6 +3944,7 @@ fn normalize_flow_run_payload_fields(
             .and_then(non_empty_string)
             .map(|value| value.to_lowercase()),
         execution_profile_id: execution_profile_id.and_then(non_empty_string),
+        node_overrides: node_overrides.filter(|overrides| !overrides.is_empty()),
     })
 }
 
@@ -4171,7 +4193,7 @@ pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &st
         "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's definitions {org} (flows/ and roles/) replace any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
         - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --dir <flow directory>` (pass `--project {project_path}` to include this project's flows)\n\
         - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
-        Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.\n\
+        Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs. `--model`, `--llm-provider`, `--llm-profile` and `--reasoning-effort` apply run-wide but do not change nodes whose own or role execution sets those fields; to change specific nodes, pass `--node-overrides-json '{{\"<node id>\":{{\"llm_model\":\"…\",\"reasoning_effort\":\"…\"}}}}'` with node ids from `spark flow get`. Only `agent_task` nodes can be overridden, and every member of a shared `runtime.session` must end up on the same provider, profile and model.\n\
         - `spark run retry|continue|events|questions|answer ...` inspect, resume, or answer existing runs.\n\
         - `spark send --to <handle> --conversation {handle} --message <text>` messages another conversation (a chat, mission, or standing role) by its handle. It arrives there as a turn, marked as from your handle; replies come back to you the same way. `spark role list --project {project_path}` shows each standing role's conversation handle.\n\n\
         Before you write or change a flow or role, read $SPARK_HOME/bundled/guides/flow-definition-authoring.md and follow its writing principles. Never edit $SPARK_HOME/bundled.\n\n\
@@ -4209,6 +4231,10 @@ fn copy_payload_options_to_artifact(target: &mut Value, payload: &NormalizedFlow
         "execution_profile_id",
         payload.execution_profile_id.as_deref(),
     );
+    match payload.node_overrides.as_ref() {
+        Some(node_overrides) => set_value(target, "node_overrides", json!(node_overrides)),
+        None => remove_key(target, "node_overrides"),
+    }
 }
 
 fn flow_launch_artifact_payload(

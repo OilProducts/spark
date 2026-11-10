@@ -126,6 +126,80 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
 }
 
 #[test]
+fn direct_launch_carries_node_overrides_into_the_launch_artifact_and_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    crate::install_named_flow(&settings, "ops/run", simple_flow());
+    let project = project_path.to_str().expect("utf-8");
+    seed_conversation(&settings, project, "conversation-launch");
+    let service = crate::conversations(settings.clone());
+    let launch = |overrides: Value| {
+        service.launch_workspace_run(RunLaunchRequest {
+            flow_name: "ops/run".to_string(),
+            summary: "Launch with a node override.".to_string(),
+            conversation_handle: Some("amber-anchor".to_string()),
+            node_overrides: serde_json::from_value(overrides).expect("node overrides"),
+            ..RunLaunchRequest::default()
+        })
+    };
+    let launch_artifact = |flow_launch_id: &str| {
+        let snapshot = service
+            .get_snapshot("conversation-launch", Some(project))
+            .expect("snapshot");
+        snapshot["flow_launches"]
+            .as_array()
+            .expect("launches")
+            .iter()
+            .find(|entry| entry["id"] == flow_launch_id)
+            .expect("flow launch")
+            .clone()
+    };
+
+    let overrides = json!({"task": {"llm_model": "M1", "reasoning_effort": "high"}});
+    let response = launch(overrides.clone()).expect("launch");
+    let artifact = launch_artifact(response["flow_launch_id"].as_str().expect("launch id"));
+    assert_eq!(artifact["status"], "launched");
+    assert_eq!(artifact["node_overrides"], overrides);
+    let store = RunStore::for_settings(&settings);
+    let paths = store
+        .find_run_root(response["run_id"].as_str().expect("run id"))
+        .expect("find run")
+        .expect("run");
+    let execution = store
+        .read_graph_source(&paths)
+        .expect("read snapshot")
+        .expect("snapshot")
+        .nodes["task"]
+        .execution
+        .clone()
+        .expect("execution");
+    assert_eq!(execution.llm_model.as_deref(), Some("M1"));
+    assert_eq!(execution.reasoning_effort.as_deref(), Some("high"));
+
+    let error = launch(json!({"start": {"llm_model": "M1"}}))
+        .expect_err("start is not an agent_task")
+        .to_string();
+    assert!(
+        error.contains("only agent_task nodes can be overridden"),
+        "{error}"
+    );
+    let snapshot = service
+        .get_snapshot("conversation-launch", Some(project))
+        .expect("snapshot");
+    let failed = snapshot["flow_launches"]
+        .as_array()
+        .expect("launches")
+        .iter()
+        .find(|entry| entry["status"] == "launch_failed")
+        .expect("failed launch");
+    assert!(failed["launch_error"]
+        .as_str()
+        .is_some_and(|message| message.contains("only agent_task nodes")));
+}
+
+#[test]
 fn direct_launch_project_only_and_selection_errors_are_explicit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

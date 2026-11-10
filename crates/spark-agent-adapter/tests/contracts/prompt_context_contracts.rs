@@ -525,7 +525,7 @@ impl ProviderAdapter for RecordingAdapter {
 }
 
 #[test]
-fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
+fn reasoning_controls_resolve_flow_defaults_and_reach_session_requests() {
     use spark_agent_adapter::{
         CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenError,
         CodergenHandler, CodergenRequest,
@@ -553,9 +553,8 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
         }
     }
     let source = json!({"schema_version":"2", "id":"flow",
-        "defaults":{"reasoning_mode":"standard"},
-        "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; reasoning_effort: ultra; reasoning_summary: detailed; }"},
-        "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"work", "description":"Begin."}}}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_mode":"pro", "thinking_budget_tokens":4096}, "contracts":{"response":"decision_envelope"}, "routes":{"done":{"to":"end", "description":"Done."}}}, "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
+        "defaults":{"thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"standard", "reasoning_summary":"detailed"},
+        "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"work", "description":"Begin."}}}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_effort":"ultra", "reasoning_mode":"pro", "thinking_budget_tokens":4096}, "contracts":{"response":"decision_envelope"}, "routes":{"done":{"to":"end", "description":"Done."}}}, "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
     });
     let flow =
         attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
@@ -586,72 +585,63 @@ fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
     assert!(!off.nodes["work"]
         .attrs
         .contains_key("thinking_budget_tokens"));
-    for invalid in [
-        "thinking: invalid",
-        "thinking_budget_tokens: 12",
-        "reasoning_mode: fast",
-        "reasoning_summary: none",
+    for (field, invalid) in [
+        ("thinking", json!("invalid")),
+        ("thinking_budget_tokens", json!(12)),
+        ("reasoning_mode", json!("fast")),
+        ("reasoning_summary", json!("none")),
     ] {
         let mut source = source.clone();
-        source["metadata"]["model_stylesheet"] = json!(format!("* {{ {invalid}; }}"));
-        let flow: attractor_core::FlowDefinition = serde_json::from_value(source).unwrap();
-        assert!(
-            attractor_dsl::validate_graph(&flow.to_runtime_dot_graph())
-                .iter()
-                .any(|d| d.rule_id == "reasoning_controls"),
-            "{invalid}"
-        );
+        source["defaults"][field] = invalid;
+        let error = attractor_core::FlowDefinition::from_json_str(&source.to_string())
+            .map_err(attractor_dsl::FlowSourceError::from)
+            .and_then(attractor_dsl::validated_flow)
+            .unwrap_err();
+        assert!(error.to_string().contains(field), "{error}");
     }
 }
 
 #[test]
 fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
     let source = json!({"schema_version":"2", "id":"flow",
-        "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; }"},
+        "defaults":{"thinking":"budget", "thinking_budget_tokens":2048},
         "nodes":{"start":{"kind":"start", "routes":{"next":{"to":"work", "description":"Begin."}}}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}, "contracts":{"response":"decision_envelope"}, "routes":{"done":{"to":"end", "description":"Done."}}}, "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}}
     });
     attractor_dsl::validated_flow(serde_json::from_value(source.clone()).unwrap()).unwrap();
-    for (execution, stylesheet, defaults, field) in [
+    for (execution, defaults, field) in [
         (
             json!({"thinking":"off", "thinking_budget_tokens":4096}),
-            "* { thinking: budget; thinking_budget_tokens: 2048; }",
-            json!({}),
+            json!({"thinking":"budget", "thinking_budget_tokens":2048}),
             "thinking_budget_tokens",
         ),
         (
             json!({"thinking":"budget"}),
-            "",
             json!({}),
             "thinking_budget_tokens",
         ),
         (
             json!({"thinking_budget_tokens":4096}),
-            "",
             json!({}),
             "thinking_budget_tokens",
         ),
         (
             json!({"reasoning_mode":"fast"}),
-            "* { reasoning_mode: pro; }",
-            json!({}),
+            json!({"reasoning_mode":"pro"}),
             "reasoning_mode",
         ),
         (
             json!({}),
-            "* { reasoning_mode: pro; }",
             json!({"reasoning_mode":"fast"}),
             "reasoning_mode",
         ),
         (
             json!({"thinking_budget_tokens":12}),
-            "* { thinking: budget; thinking_budget_tokens: 2048; }",
-            json!({}),
+            json!({"thinking":"budget", "thinking_budget_tokens":2048}),
             "thinking_budget_tokens",
         ),
     ] {
         let mut invalid = source.clone();
         invalid["nodes"]["work"]["execution"] = execution;
-        invalid["metadata"]["model_stylesheet"] = json!(stylesheet);
         invalid["defaults"] = defaults;
         let error = attractor_core::FlowDefinition::from_json_str(&invalid.to_string())
             .map_err(attractor_dsl::FlowSourceError::from)

@@ -1,7 +1,6 @@
 import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
-import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
 import {
   buildCanonicalFlowModelFromEditorState,
   buildCanonicalFlowModelFromPreviewGraph,
@@ -235,23 +234,6 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
     expect(screen.queryByText('Loading models…')).toBeNull()
     expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
-  })
-
-  it('highlights stylesheet tokens and emits changes through textarea editing', async () => {
-    const onChange = vi.fn()
-    const initialStylesheet = '#review {\n  llm_model: "gpt-5";\n}'
-
-    const { container } = render(<StylesheetEditor value={initialStylesheet} onChange={onChange} />)
-
-    const highlight = screen.getByTestId('model-stylesheet-editor-highlight')
-    expect(highlight).toBeVisible()
-    expect(container.querySelector('[data-token-type="selector"]')).toBeTruthy()
-    expect(container.querySelector('[data-token-type="property"]')).toBeTruthy()
-
-    const textarea = screen.getByRole('textbox')
-    fireEvent.change(textarea, { target: { value: '* llm_provider_openai' } })
-
-    expect(onChange).toHaveBeenCalledWith('* llm_provider_openai')
   })
 
   it('validates typed FlowDefinition defaults and exposes only extension metadata in advanced settings', async () => {

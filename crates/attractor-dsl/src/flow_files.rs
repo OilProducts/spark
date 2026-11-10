@@ -492,7 +492,8 @@ pub fn parse_role(name: &str, text: &str) -> Result<Role, String> {
     })
 }
 
-fn merge_execution(
+/// Merges two execution configs field by field; `node` wins where both set a field.
+pub fn merge_execution(
     node: Option<ExecutionConfig>,
     role: Option<ExecutionConfig>,
 ) -> Option<ExecutionConfig> {

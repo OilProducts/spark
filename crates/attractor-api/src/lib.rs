@@ -2,20 +2,21 @@
 
 //! Minimal Attractor API surface for Rust rewrite compatibility milestones.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use attractor_core::{
-    ContextMap, FlowDefinition, FlowDiagnostic, LaunchContext, NodeConfig, RawRuntimeEvent,
-    RecoveryPolicy, RunExecutionLock, RunRecord,
+    ContextMap, ExecutionConfig, FlowDefinition, FlowDiagnostic, LaunchContext, NodeConfig,
+    NodeKind, RawRuntimeEvent, RecoveryPolicy, RunExecutionLock, RunRecord,
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    assemble_flow_files, flow_file_list, flow_ref_name, load_flow, resolve_flow_roles,
-    validated_flow, write_flow_dir, write_flow_files, FlowFileText, FlowRoots, FlowSourceError,
-    BUNDLED_LAYER, FLOW_FILE,
+    assemble_flow_files, flow_file_list, flow_ref_name, load_flow, merge_execution,
+    resolve_flow_roles, validate_flow_definition, validated_flow, write_flow_dir, write_flow_files,
+    FlowFileText, FlowRoots, FlowSourceError, BUNDLED_LAYER, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -352,6 +353,20 @@ pub struct ContinuePipelineRequest {
     pub reasoning_effort: Option<String>,
 }
 
+/// Launch-time selection for one node; supplied fields beat the node's own and its role's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineStartRequest {
     #[serde(default)]
@@ -381,6 +396,9 @@ pub struct PipelineStartRequest {
     pub goal: Option<String>,
     #[serde(default)]
     pub launch_context: Option<ContextMap>,
+    /// Per-node execution selections keyed by exact node id.
+    #[serde(default)]
+    pub node_overrides: Option<BTreeMap<String, NodeOverride>>,
     #[serde(default)]
     pub spec_id: Option<String>,
     #[serde(default)]
@@ -406,6 +424,7 @@ impl Default for PipelineStartRequest {
             flow_name: None,
             goal: None,
             launch_context: None,
+            node_overrides: None,
             spec_id: None,
             plan_id: None,
             wait: None,
@@ -1682,6 +1701,10 @@ impl AttractorApiService {
         if let Some(goal) = trimmed_option(request.goal.as_deref()) {
             flow.goal = goal;
         }
+        let node_overrides = request.node_overrides.unwrap_or_default();
+        if let Err(error) = apply_node_overrides(&mut flow, &node_overrides) {
+            return validation_error_response(error);
+        }
         let flow = flow.normalize();
         let flow_definition_json = flow.to_canonical_json_string();
 
@@ -1802,6 +1825,21 @@ impl AttractorApiService {
                 return validation_error_response(
                     "Selected LLM profile requires an explicit model.",
                 );
+            }
+        }
+        if !node_overrides.is_empty() {
+            if let Err(error) = check_overridden_sessions(
+                &flow,
+                &node_overrides,
+                &selected_provider,
+                selected_profile.as_deref(),
+                selected_model.as_deref(),
+            ) {
+                return validation_error_response(error);
+            }
+            // The authored flow passed load_flow; a new diagnostic comes from a patch.
+            if let Err(error) = validate_flow_definition(&flow) {
+                return flow_definition_validation_response(error.into());
             }
         }
         let diagnostic_payloads = flow_diagnostics_payload(&flow.diagnostics());
@@ -3408,6 +3446,99 @@ fn default_working_directory() -> String {
     "./workspace".to_string()
 }
 
+/// Patches each named `agent_task` node; a supplied field beats the node's own
+/// value and its role's, which the loader has already merged into `execution`.
+fn apply_node_overrides(
+    flow: &mut FlowDefinition,
+    overrides: &BTreeMap<String, NodeOverride>,
+) -> Result<(), String> {
+    for (node_id, patch) in overrides {
+        let Some(node) = flow.nodes.get_mut(node_id) else {
+            return Err(format!("node_overrides names unknown node '{node_id}'"));
+        };
+        if node.kind != NodeKind::AgentTask {
+            return Err(format!(
+                "node_overrides target '{node_id}' is {}; only agent_task nodes can be overridden",
+                node.kind.as_str()
+            ));
+        }
+        // The resolvers skip blanks, which would fall through to a lower-precedence value.
+        for (field, value) in [
+            ("llm_model", &patch.llm_model),
+            ("llm_provider", &patch.llm_provider),
+            ("llm_profile", &patch.llm_profile),
+            ("reasoning_effort", &patch.reasoning_effort),
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err(format!(
+                    "node_overrides.{node_id}.{field} must not be blank"
+                ));
+            }
+        }
+        let patch = ExecutionConfig {
+            llm_model: patch.llm_model.clone(),
+            llm_provider: patch.llm_provider.clone(),
+            llm_profile: patch.llm_profile.clone(),
+            reasoning_effort: patch.reasoning_effort.clone(),
+            ..ExecutionConfig::default()
+        };
+        node.execution = merge_execution(Some(patch), node.execution.take());
+    }
+    Ok(())
+}
+
+/// A shared session continues one provider session, so once a member is
+/// overridden every member must resolve to the same provider, profile and
+/// model settings: the node's value, else the run-wide one, as codergen does.
+fn check_overridden_sessions(
+    flow: &FlowDefinition,
+    overrides: &BTreeMap<String, NodeOverride>,
+    provider: &str,
+    profile: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), String> {
+    for (session, members) in flow.sessions() {
+        if !members.iter().any(|id| overrides.contains_key(id)) {
+            continue;
+        }
+        let settings = members
+            .iter()
+            .map(|id| {
+                let execution = flow.nodes[id].execution.clone().unwrap_or_default();
+                let provider = trimmed_option(execution.llm_provider.as_deref())
+                    .unwrap_or_else(|| provider.trim().to_string())
+                    .to_lowercase();
+                let profile = trimmed_option(execution.llm_profile.as_deref())
+                    .or_else(|| trimmed_option(profile));
+                let model = trimmed_option(execution.llm_model.as_deref())
+                    .or_else(|| trimmed_option(model));
+                (id, (provider, profile, model))
+            })
+            .collect::<Vec<_>>();
+        if settings.iter().all(|(_, member)| *member == settings[0].1) {
+            continue;
+        }
+        let listed = settings
+            .iter()
+            .map(|(id, (provider, profile, model))| {
+                format!(
+                    "{id}={provider}/{}/{}",
+                    profile.as_deref().unwrap_or("-"),
+                    model.as_deref().unwrap_or("default")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "session '{session}' members must use the same provider, profile and model: {listed}; set the same values on every member through node_overrides"
+        ));
+    }
+    Ok(())
+}
+
 fn validation_error_response(error: impl Into<String>) -> RuntimeRouteResponse {
     RuntimeRouteResponse::json(
         200,
@@ -4068,7 +4199,7 @@ fn running_agent_nodes(
                 .filter(|node_id| {
                     flow.nodes
                         .get(node_id)
-                        .is_some_and(|node| node.kind == attractor_core::NodeKind::AgentTask)
+                        .is_some_and(|node| node.kind == NodeKind::AgentTask)
                 })
                 .map(|node_id| (run_id.clone(), node_id)),
         );

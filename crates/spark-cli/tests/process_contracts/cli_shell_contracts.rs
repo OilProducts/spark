@@ -162,6 +162,8 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "implementation",
             "--reasoning-effort",
             "FutureEffort",
+            "--node-overrides-json",
+            r#"{"verify":{"llm_model":"gpt-5.5","reasoning_effort":"high"}}"#,
             "--execution-profile",
             "local-dev",
             "--base-url",
@@ -194,9 +196,36 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "llm_profile": "implementation",
             "llm_provider": "openai",
             "model": "gpt-5",
+            "node_overrides": {"verify": {"llm_model": "gpt-5.5", "reasoning_effort": "high"}},
             "reasoning_effort": "FutureEffort",
             "summary": "Run the approved scope"
         })
+    );
+
+    // `spark run launch` shares the payload builder and its object check.
+    let rejected = run_with_args_and_env(
+        [
+            "spark",
+            "run",
+            "launch",
+            "--flow",
+            "test",
+            "--summary",
+            "Launch directly",
+            "--project",
+            "/tmp/project",
+            "--node-overrides-json",
+            r#"["verify"]"#,
+            "--base-url",
+            "http://127.0.0.1:9",
+        ],
+        &env,
+    );
+    assert_eq!(rejected.exit_code, 1);
+    assert_eq!(rejected.stdout, "");
+    assert_eq!(
+        rejected.stderr,
+        "{\"ok\": false, \"error\": \"Node overrides must be a JSON object keyed by node id.\"}\n"
     );
 }
 
@@ -848,26 +877,49 @@ fn flow_validate_rejects_file_option_and_single_flow_files() {
 }
 
 #[test]
-fn flow_validate_dir_checks_stylesheet_controls_and_inherited_budgets() {
+fn flow_validate_dir_checks_reasoning_controls_and_inherited_budgets() {
     let temp_dir = temp_dir("flow-validate-reasoning");
     let flow_path = temp_dir.join("flow");
-    for (stylesheet, valid) in [
-        ("* { reasoning_mode: fast; }", false),
-        ("* { thinking: invalid; }", false),
-        ("* { thinking_budget_tokens: 12; }", false),
-        ("* { reasoning_summary: none; }", false),
-        ("* { thinking: off; thinking_budget_tokens: 2048; }", false),
+    let budget = serde_json::json!({"thinking":"budget", "thinking_budget_tokens":2048});
+    for (defaults, execution, valid) in [
         (
-            "* { thinking: budget; thinking_budget_tokens: 2048; }",
+            serde_json::json!({"reasoning_mode":"fast"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"thinking":"invalid"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"reasoning_summary":"none"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"thinking":"budget"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            budget.clone(),
+            serde_json::json!({"thinking_budget_tokens":4096}),
             true,
+        ),
+        // An explicit non-budget thinking drops the inherited budget.
+        (budget.clone(), serde_json::json!({"thinking":"off"}), true),
+        (
+            budget.clone(),
+            serde_json::json!({"thinking":"off", "thinking_budget_tokens":4096}),
+            false,
         ),
     ] {
         let source = serde_json::json!({"schema_version":"2", "id":"flow",
-            "defaults":{"thinking":"budget", "thinking_budget_tokens":2048},
-            "metadata":{"model_stylesheet":stylesheet},
+            "defaults":defaults,
             "nodes":{
                 "start":{"kind":"start", "config":{"kind":"start"}, "routes":{"next":{"to":"work", "description":"Enter the first workflow step."}}},
-                "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "contracts":{"response":"decision_envelope"}, "execution":{"thinking_budget_tokens":4096}, "routes":{"done":{"to":"end", "description":"The work is complete."}}},
+                "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "contracts":{"response":"decision_envelope"}, "execution":execution, "routes":{"done":{"to":"end", "description":"The work is complete."}}},
                 "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}
             }
         });

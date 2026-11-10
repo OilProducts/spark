@@ -317,7 +317,7 @@ pub fn flow_graph_for_handler_compat(flow: &FlowDefinition) -> DotGraph {
         defaults: DotScopeDefaults::default(),
         subgraphs: Vec::new(),
     };
-    attractor_dsl::GraphTransform::apply(&attractor_dsl::ModelStylesheetTransform, &mut graph);
+    attractor_dsl::GraphTransform::apply(&attractor_dsl::ReasoningDefaultsTransform, &mut graph);
     graph
 }
 

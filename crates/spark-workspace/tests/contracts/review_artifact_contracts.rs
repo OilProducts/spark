@@ -41,6 +41,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
                 llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 execution_profile_id: Some("native".to_string()),
+                node_overrides: None,
             },
         )
         .expect("launched");

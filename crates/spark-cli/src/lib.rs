@@ -312,6 +312,7 @@ fn build_convo_plan(
                     "--llm-provider",
                     "--llm-profile",
                     "--reasoning-effort",
+                    "--node-overrides-json",
                     "--execution-profile",
                     "--base-url",
                 ],
@@ -372,6 +373,7 @@ fn build_run_plan(
                     "--llm-provider",
                     "--llm-profile",
                     "--reasoning-effort",
+                    "--node-overrides-json",
                     "--execution-profile",
                     "--base-url",
                 ],
@@ -1830,6 +1832,22 @@ fn build_flow_payload(
         "--execution-profile",
         "execution_profile_id",
     );
+    // The server checks each override's fields.
+    if let Some(raw) = trimmed_option(options, "--node-overrides-json") {
+        let value: Value = serde_json::from_str(&raw).map_err(|error| {
+            json_error(
+                format!("Node overrides must be valid JSON: {error}"),
+                EXIT_GENERAL_FAILURE,
+            )
+        })?;
+        if !value.is_object() {
+            return Err(json_error(
+                "Node overrides must be a JSON object keyed by node id.",
+                EXIT_GENERAL_FAILURE,
+            ));
+        }
+        body.insert("node_overrides".to_string(), value);
+    }
     Ok(Value::Object(body))
 }
 
