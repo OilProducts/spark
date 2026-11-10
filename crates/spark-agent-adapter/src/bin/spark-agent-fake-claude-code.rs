@@ -49,10 +49,11 @@ fn main() {
                 let config_dir = env::var("CLAUDE_CONFIG_DIR").unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nBASH_MAX_TIMEOUT_MS={}\nCLAUDE_CODE_AUTO_COMPACT_WINDOW={}\nCLAUDE_CONFIG_DIR={config_dir}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nBASH_MAX_TIMEOUT_MS={}\nCLAUDE_CODE_AUTO_COMPACT_WINDOW={}\nCLAUDE_CONFIG_DIR={config_dir}\nCLAUDE_CODE_DISABLE_AUTO_MEMORY={}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
                     args.join("\n"),
                     env::var("BASH_MAX_TIMEOUT_MS").unwrap_or_default(),
-                    env::var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap_or_default()
+                    env::var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").unwrap_or_default(),
+                    env::var("CLAUDE_CODE_DISABLE_AUTO_MEMORY").unwrap_or_default()
                 );
             }
         }

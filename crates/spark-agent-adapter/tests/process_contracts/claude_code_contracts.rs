@@ -282,6 +282,8 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=\n",
         "BASH_MAX_TIMEOUT_MS=3600000",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000",
+        // Spark's agents don't use Claude Code's auto-memory.
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1\n",
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }

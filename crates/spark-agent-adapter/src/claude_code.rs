@@ -1716,6 +1716,8 @@ fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
         env::var("PATH").ok().as_deref(),
     ));
     command.env("CLAUDE_CONFIG_DIR", claude_config_dir(native));
+    // Spark's agents don't use Claude Code's auto-memory.
+    command.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
     (executable, command)
 }
 
