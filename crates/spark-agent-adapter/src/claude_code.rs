@@ -475,6 +475,12 @@ impl ClaudeCodeBackend {
             }
             let (sent, request_event, ended) = {
                 let mut control = control.lock().unwrap();
+                // Kept in the raw log only: it neither ends the turn nor
+                // reports text or usage.
+                if control.foreign_result(&message) {
+                    control.log("result before the prompt started; waiting for the prompt's");
+                    continue;
+                }
                 // 2.1.220 reports an interrupted stream as an error result.
                 // Only an acknowledged interrupt with an explicit abort reason
                 // is normal completion; genuine execution errors remain errors.

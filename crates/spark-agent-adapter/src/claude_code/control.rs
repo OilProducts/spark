@@ -49,6 +49,12 @@ pub(super) struct Control {
     pub stopping: bool,
     /// Live non-ambient background tasks, from the last `background_tasks_changed`.
     tasks: usize,
+    /// This process's prompt, by uuid. Unlike a mid-turn message it has no
+    /// caller message id, so it never reports delivery.
+    prompt: Option<String>,
+    /// The CLI queued the prompt behind a command of its own and has not
+    /// started it yet.
+    prompt_queued: bool,
     /// Messages sent after the prompt whose uuid no result has confirmed
     /// yet, by uuid, with their caller's message id.
     pub undelivered: BTreeMap<String, String>,
@@ -89,6 +95,8 @@ impl Control {
             interrupted: false,
             stopping: false,
             tasks: 0,
+            prompt: None,
+            prompt_queued: false,
             undelivered: BTreeMap::new(),
             sent: Vec::new(),
             idle: false,
@@ -116,6 +124,24 @@ impl Control {
                 message["terminal_reason"].as_str(),
                 Some("aborted_streaming" | "aborted_tools")
             )
+    }
+
+    /// A successful result while the prompt waits behind another command,
+    /// such as a resumed session's own task notification, answers that
+    /// command and not this turn. A result naming the prompt is its own; a
+    /// stopping turn ends at any result.
+    pub fn foreign_result(&self, message: &Value) -> bool {
+        self.prompt_queued
+            && !self.stopping
+            && message["type"] == "result"
+            && message["is_error"] != true
+            && !message["user_message_uuids"]
+                .as_array()
+                .is_some_and(|uuids| {
+                    uuids
+                        .iter()
+                        .any(|uuid| uuid.as_str() == self.prompt.as_deref())
+                })
     }
 
     /// The final result has arrived; the turn ends once the context usage
@@ -198,13 +224,16 @@ impl Control {
         true
     }
 
-    /// Writes a user message stamped with a uuid. A message after the
-    /// prompt, named by `message_id`, holds the turn open until a result
-    /// lists it as delivered.
+    /// Writes a user message stamped with a uuid: the prompt, or a message
+    /// after it, named by `message_id`, that holds the turn open until a
+    /// result lists it as delivered.
     pub fn send_user(&mut self, content: Value, message_id: Option<&str>) -> bool {
         let uuid = Uuid::new_v4().to_string();
-        if let Some(id) = message_id {
-            self.undelivered.insert(uuid.clone(), id.to_string());
+        match message_id {
+            Some(id) => {
+                self.undelivered.insert(uuid.clone(), id.to_string());
+            }
+            None => self.prompt = Some(uuid.clone()),
         }
         let sent = self.send(
             json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": content}}),
@@ -267,6 +296,17 @@ impl Control {
                     None => self.log("background_tasks_changed without tasks"),
                 }
             }
+            // Lifecycle frames carry their own uuid; command_uuid names the command.
+            "command_lifecycle"
+                if self.prompt.is_some()
+                    && message["command_uuid"].as_str() == self.prompt.as_deref() =>
+            {
+                match message["state"].as_str() {
+                    Some("queued") => self.prompt_queued = true,
+                    Some("started") => self.prompt_queued = false,
+                    _ => {}
+                }
+            }
             "result" => {
                 for uuid in message["user_message_uuids"]
                     .as_array()
@@ -275,6 +315,10 @@ impl Control {
                     .filter_map(Value::as_str)
                 {
                     self.undelivered.remove(uuid);
+                    // The prompt was processed, whether or not it was seen starting.
+                    if self.prompt.as_deref() == Some(uuid) {
+                        self.prompt_queued = false;
+                    }
                 }
                 // Background work and queued messages each bring another result.
                 let inputs_done = message["queued_turn_count"].as_u64().unwrap_or(0) == 0
