@@ -690,16 +690,15 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     fs::write(&core, "[models]\nprovider = \"codex\"\nmodel = \"workspace-model\"\nreasoning_effort = \"high\"\n").unwrap();
     let project = temp.path().join("project");
     let project = project.to_str().unwrap();
-    let metadata = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .project_paths(project)
-        .unwrap()
-        .project_file;
-    fs::create_dir_all(metadata.parent().unwrap()).unwrap();
-    fs::write(
-        &metadata,
-        "[model_settings]\nprovider = \"codex\"\nmodel = \"project-model\"\n",
-    )
-    .unwrap();
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    registry.ensure_project_paths(project).unwrap();
+    registry
+        .update_project_model_settings(
+            project,
+            "1",
+            Some(&json!({"provider": "codex", "model": "project-model"})),
+        )
+        .unwrap();
     let service = AttractorApiService::new(settings.clone());
     let flow = json!({
         "schema_version": "2",
@@ -787,7 +786,10 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
             Some("node-model")
         );
     }
-    fs::write(&metadata, "").unwrap();
+    let revision = registry.project_settings(project).unwrap().revision;
+    registry
+        .update_project_model_settings(project, &revision, None)
+        .unwrap();
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("workspace".into()),

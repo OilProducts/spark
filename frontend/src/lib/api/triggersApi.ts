@@ -21,6 +21,8 @@ export interface TriggerStateResponse {
     last_fired_at?: string | null
     last_result?: string | null
     last_error?: string | null
+    /** Why the last activation failed; the trigger stays inactive until activated again. */
+    activation_error?: string | null
     next_run_at?: string | null
     recent_history: Array<{
         timestamp: string
@@ -65,6 +67,7 @@ function parseTriggerStateResponse(value: unknown, endpoint: string): TriggerSta
         last_fired_at: asOptionalNullableString(record.last_fired_at),
         last_result: asOptionalNullableString(record.last_result),
         last_error: asOptionalNullableString(record.last_error),
+        activation_error: asOptionalNullableString(record.activation_error),
         next_run_at: asOptionalNullableString(record.next_run_at),
         recent_history: recentHistory,
     }

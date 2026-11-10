@@ -6,8 +6,7 @@ use serde_json::json;
 use super::database::{
     ArtifactRow, AttachmentRow, CatchUp, ChangeBatch, ChangeScope, ConversationDatabase,
     ConversationRow, EntityKind, PageRead, ResetReason, SegmentRow, TurnPage, TurnRow,
-    CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS, CONVERSATION_DATABASE_FILE_NAME,
-    CONVERSATION_DATABASE_SCHEMA_VERSION,
+    CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS, STATE_DATABASE_FILE_NAME, STATE_DATABASE_SCHEMA_VERSION,
 };
 use crate::StorageError;
 
@@ -116,7 +115,7 @@ fn open_configures_pragmas_and_keeps_generation_across_reopen() {
     let home = temp.path().join("spark-home");
     let database = ConversationDatabase::open(&home).expect("open");
 
-    assert_eq!(database.path(), home.join(CONVERSATION_DATABASE_FILE_NAME));
+    assert_eq!(database.path(), home.join(STATE_DATABASE_FILE_NAME));
     assert_eq!(database.pragma("journal_mode").unwrap(), "wal");
     assert_eq!(database.pragma("synchronous").unwrap(), "1", "NORMAL");
     assert_eq!(database.pragma("foreign_keys").unwrap(), "1");
@@ -144,7 +143,7 @@ fn unsupported_schema_version_fails_open_without_wiping_rows() {
         .expect("write");
     drop(database);
 
-    let raw = rusqlite::Connection::open(home.join(CONVERSATION_DATABASE_FILE_NAME)).unwrap();
+    let raw = rusqlite::Connection::open(home.join(STATE_DATABASE_FILE_NAME)).unwrap();
     raw.execute("UPDATE store_meta SET schema_version = 99", [])
         .unwrap();
 
@@ -156,7 +155,7 @@ fn unsupported_schema_version_fails_open_without_wiping_rows() {
             error,
             StorageError::UnsupportedConversationDatabase {
                 found: 99,
-                expected: CONVERSATION_DATABASE_SCHEMA_VERSION,
+                expected: STATE_DATABASE_SCHEMA_VERSION,
                 ..
             }
         ),
@@ -183,7 +182,7 @@ fn inbox_tables_arrive_with_a_new_schema_version_and_older_databases_fail_closed
         .expect("write");
     drop(database);
 
-    let raw = rusqlite::Connection::open(home.join(CONVERSATION_DATABASE_FILE_NAME)).unwrap();
+    let raw = rusqlite::Connection::open(home.join(STATE_DATABASE_FILE_NAME)).unwrap();
     let names: Vec<String> = raw
         .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'inbox_%' ORDER BY name")
         .unwrap()
@@ -199,7 +198,7 @@ fn inbox_tables_arrive_with_a_new_schema_version_and_older_databases_fail_closed
     // A database of the previous version is rejected, never wiped or migrated.
     raw.execute(
         "UPDATE store_meta SET schema_version = ?1",
-        [CONVERSATION_DATABASE_SCHEMA_VERSION - 1],
+        [STATE_DATABASE_SCHEMA_VERSION - 1],
     )
     .unwrap();
     let error = ConversationDatabase::open(&home)
@@ -209,7 +208,7 @@ fn inbox_tables_arrive_with_a_new_schema_version_and_older_databases_fail_closed
         matches!(
             error,
             StorageError::UnsupportedConversationDatabase { found, .. }
-                if found == CONVERSATION_DATABASE_SCHEMA_VERSION - 1
+                if found == STATE_DATABASE_SCHEMA_VERSION - 1
         ),
         "{error}"
     );
@@ -986,7 +985,7 @@ fn measure_storage(
     use crate::{ConversationRepository, ConversationStore};
     use std::time::Instant;
     let (id, project) = (MEASURE_ID, MEASURE_PROJECT);
-    let database_bytes = std::fs::metadata(home.join(CONVERSATION_DATABASE_FILE_NAME))
+    let database_bytes = std::fs::metadata(home.join(STATE_DATABASE_FILE_NAME))
         .unwrap()
         .len();
 
@@ -1129,7 +1128,7 @@ fn measure_storage(
 
     // Checkpoints of exactly one acceptance's frames: the cleanup FULL
     // barrier, then the periodic passive checkpoint.
-    let wal = home.join(format!("{CONVERSATION_DATABASE_FILE_NAME}-wal"));
+    let wal = home.join(format!("{STATE_DATABASE_FILE_NAME}-wal"));
     let wal_bytes = std::fs::metadata(&wal).map_or(0, |meta| meta.len());
     store.database().passive_checkpoint_frames().unwrap();
     let (_, _, assistant) = accept();

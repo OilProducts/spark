@@ -267,7 +267,7 @@ impl WorkspaceMissionService {
         }
         mission
     }
-    /// The mission's project's enabled triggers that deliver to it.
+    /// The mission's project's active triggers bound to it.
     fn enabled_targeting_triggers(
         &self,
         mission: &MissionRecord,
@@ -276,9 +276,10 @@ impl WorkspaceMissionService {
         let states = repositories.runtime_state(&mission.project_path)?;
         let mut triggers = Vec::new();
         for trigger in repositories.definitions(&mission.project_path)?.list()? {
+            let state = states.load(&trigger.id)?;
             if trigger.action.mode == "mission"
-                && trigger.action.mission_id.as_deref() == Some(&mission.id)
-                && states.load(&trigger.id)?.enabled
+                && state.mission_id.as_deref() == Some(&mission.id)
+                && state.is_active_for(&trigger)
             {
                 triggers.push(trigger);
             }
@@ -292,16 +293,21 @@ impl WorkspaceMissionService {
     }
     pub fn get(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
         let scope = self.read_scope(project)?;
-        Self::load(&RecordRepository::missions(&scope.root), &scope, id)
-            .map(|m| self.with_status(m))
+        Self::load(
+            &RecordRepository::missions(&self.settings.data_dir, &scope.project_id),
+            &scope,
+            id,
+        )
+        .map(|m| self.with_status(m))
     }
     pub fn list(&self, project: &str) -> WorkspaceResult<Vec<MissionRecord>> {
         let scope = self.read_scope(project)?;
-        let mut missions: Vec<MissionRecord> = RecordRepository::missions(&scope.root)
-            .list()?
-            .into_iter()
-            .map(decode::<MissionRecord>)
-            .collect::<WorkspaceResult<_>>()?;
+        let mut missions: Vec<MissionRecord> =
+            RecordRepository::missions(&self.settings.data_dir, &scope.project_id)
+                .list()?
+                .into_iter()
+                .map(decode::<MissionRecord>)
+                .collect::<WorkspaceResult<_>>()?;
         if missions.iter().any(|m| m.project_id != scope.project_id) {
             return Err(invalid("Mission belongs to another project"));
         }
@@ -333,7 +339,7 @@ impl WorkspaceMissionService {
     ) -> Option<MissionRecord> {
         let scope = self.read_scope(project).ok()?;
         Self::load(
-            &RecordRepository::missions(&scope.root),
+            &RecordRepository::missions(&self.settings.data_dir, &scope.project_id),
             &scope,
             conversation_id,
         )
@@ -418,7 +424,10 @@ impl WorkspaceMissionService {
             return Err(invalid(format!("Mission field `{key}` is not editable")));
         }
         let mut updated = None;
-        let value = RecordRepository::missions(&scope.root).transact::<WorkspaceError>(id, |previous| {
+        let repo = RecordRepository::missions(&self.settings.data_dir, &scope.project_id);
+        let value = repo.locked::<_, WorkspaceError>(|repo| {
+            let previous = repo.read(id)?;
+            let saved = previous.clone();
             let now = now();
             let mut mission: MissionRecord = match previous {
                 Some(value) if !create => decode(value)?,
@@ -454,7 +463,11 @@ impl WorkspaceMissionService {
                 spark_storage::ConversationRepository::new(self.store.clone())
                     .touch_conversation(id, &scope.project_path)?;
             }
-            Ok(stored(&mission))
+            let next = stored(&mission);
+            if saved.as_ref() != Some(&next) {
+                repo.write(id, &next)?;
+            }
+            Ok(next)
         })?;
         let mission = self.with_status(decode(value)?);
         if let Some(payload) = updated {
@@ -482,21 +495,21 @@ impl WorkspaceMissionService {
         work: impl FnOnce(&RecordRepository, &mut MissionRecord) -> WorkspaceResult<()>,
     ) -> WorkspaceResult<MissionRecord> {
         let scope = self.scope(project)?;
-        let mission =
-            RecordRepository::missions(&scope.root).locked::<_, WorkspaceError>(|repo| {
-                let mut mission = Self::load(repo, &scope, id)?;
-                mission.inbox = Inbox::read(&self.store, &mission.id)?;
-                let before = stored(&mission);
-                work(repo, &mut mission)?;
-                if deliver {
-                    self.deliver_pending(&mut mission, None)?;
-                }
-                let after = stored(&mission);
-                if before != after {
-                    repo.write(id, &after)?;
-                }
-                Ok(mission)
-            })?;
+        let mission = RecordRepository::missions(&self.settings.data_dir, &scope.project_id)
+            .locked::<_, WorkspaceError>(|repo| {
+            let mut mission = Self::load(repo, &scope, id)?;
+            mission.inbox = Inbox::read(&self.store, &mission.id)?;
+            let before = stored(&mission);
+            work(repo, &mut mission)?;
+            if deliver {
+                self.deliver_pending(&mut mission, None)?;
+            }
+            let after = stored(&mission);
+            if before != after {
+                repo.write(id, &after)?;
+            }
+            Ok(mission)
+        })?;
         let mission = self.with_status(mission);
         self.publish(&mission);
         Ok(mission)
@@ -686,7 +699,7 @@ impl WorkspaceMissionService {
         let states = spark_storage::TriggerRepositories::from_settings(&self.settings)
             .runtime_state(&mission.project_path)?;
         for trigger in self.enabled_targeting_triggers(mission)? {
-            states.update(&trigger.id, |state| state.enabled = false)?;
+            states.update_existing(&trigger.id, |state| state.enabled = false)?;
             if let Some(runtime) = inbox::runtime(&self.settings) {
                 let saved = crate::triggers::WorkspaceTriggerService::new(
                     self.settings.clone(),

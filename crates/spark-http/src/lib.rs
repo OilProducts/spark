@@ -202,6 +202,26 @@ fn build_app_on_store(
         {
             eprintln!("Unable to register the Home project: {error}");
         }
+        // Triggers removed while no server ran lose their activation; the
+        // source loop reconciles again before each dispatch.
+        match spark_workspace::WorkspaceTriggerService::new(
+            (*state.settings).clone(),
+            state.conversation_store.clone(),
+        )
+        .reconcile_triggers()
+        {
+            Ok(issues) => {
+                for issue in issues {
+                    eprintln!(
+                        "Trigger {} in {} cannot run: {}",
+                        issue.trigger_id.as_deref().unwrap_or("definitions"),
+                        issue.project_path,
+                        issue.error
+                    );
+                }
+            }
+            Err(error) => eprintln!("Unable to reconcile triggers: {error}"),
+        }
         let _ = service.recover_interrupted_runs();
         // Likewise every chat turn the previous process left in flight.
         let _ = spark_workspace::WorkspaceConversationService::new(

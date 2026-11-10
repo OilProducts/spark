@@ -94,17 +94,23 @@ impl TriggerSourceRuntime {
         }
     }
 
+    /// Reconciles every registered project, refreshes the next run of each
+    /// active trigger, and returns the readable triggers.
     pub fn reload_refresh_state(&self) -> TriggerResult<Vec<SerializedTrigger>> {
         self.repositories
-            .list_all()?
+            .reconcile()?
+            .definitions
             .into_iter()
             .map(|definition| {
                 let state = self
                     .repositories
                     .runtime_state(&definition.project_path)?
-                    .update(&definition.id, |state| {
-                        state::refresh_next_run_at(&definition, state);
-                    })?;
+                    .update_existing(&definition.id, |state| {
+                        if state.is_active_for(&definition) {
+                            state::refresh_next_run_at(&definition, state);
+                        }
+                    })?
+                    .unwrap_or_default();
                 Ok(serialize_trigger(definition, state, None))
             })
             .collect()
@@ -115,12 +121,12 @@ impl TriggerSourceRuntime {
         now: OffsetDateTime,
     ) -> TriggerResult<Vec<TriggerActivationOutcome>> {
         let mut outcomes = Vec::new();
-        // ponytail: reads every registered project's org triggers each tick,
-        // so hand edits apply without a restart; cache by directory mtime if
-        // projects or triggers grow large.
+        // ponytail: reconciles every registered project's triggers each tick,
+        // so hand edits and removals apply without a restart; cache by
+        // directory mtime if projects or triggers grow large.
         // ponytail: polls run one at a time, each bounded by POLL_TIMEOUT;
         // run them concurrently if there are many.
-        for definition in self.repositories.list_all()? {
+        for definition in self.repositories.reconcile()?.definitions {
             match definition.source_type.as_str() {
                 SOURCE_SCHEDULE => {
                     outcomes.extend(self.process_schedule_source(&definition, now)?);
@@ -144,8 +150,9 @@ impl TriggerSourceRuntime {
         }
         let states = self.repositories.runtime_state(&definition.project_path)?;
         let mut due_at = None;
-        states.update(&definition.id, |trigger_state| {
-            if trigger_state.enabled {
+        // Claimed in one transaction, on an existing active row only.
+        states.update_existing(&definition.id, |trigger_state| {
+            if trigger_state.is_active_for(definition) {
                 due_at = state::schedule_due_at(definition, trigger_state, now);
                 trigger_state.next_run_at =
                     state::compute_next_run_at_at(definition, trigger_state, now);
@@ -160,7 +167,7 @@ impl TriggerSourceRuntime {
             now,
             None,
         )
-        .map(|outcome| vec![outcome])
+        .map(|outcome| outcome.into_iter().collect())
     }
 
     pub async fn process_poll_source(
@@ -178,8 +185,8 @@ impl TriggerSourceRuntime {
             .ok_or_else(|| TriggerError::Validation("Poll interval is missing.".to_string()))?;
         let states = self.repositories.runtime_state(&definition.project_path)?;
         let mut due = false;
-        states.update(&definition.id, |trigger_state| {
-            due = trigger_state.enabled
+        states.update_existing(&definition.id, |trigger_state| {
+            due = trigger_state.is_active_for(definition)
                 && !state::parse_iso_datetime(trigger_state.next_run_at.as_deref())
                     .is_some_and(|next_run_at| now < next_run_at);
             if due {
@@ -226,7 +233,7 @@ impl TriggerSourceRuntime {
             if item_id.is_null() {
                 continue;
             }
-            outcomes.push(self.execute_activation(
+            outcomes.extend(self.execute_activation(
                 definition,
                 json!({ "poll_item": item.clone() }),
                 now,
@@ -272,7 +279,7 @@ impl TriggerSourceRuntime {
 
         let now = OffsetDateTime::now_utc();
         let mut outcomes = Vec::new();
-        for definition in self.repositories.list_all()? {
+        for definition in self.repositories.reconcile()?.definitions {
             if definition.source_type != SOURCE_FLOW_EVENT
                 || run_project.as_deref() != Some(Path::new(&definition.project_path))
             {
@@ -302,16 +309,17 @@ impl TriggerSourceRuntime {
             {
                 continue;
             }
-            // Claimed under the state lock before firing: every publish path
-            // re-emits a terminal run, and only the first claim fires.
+            // Claimed in one immediate transaction before firing: every
+            // publish path re-emits a terminal run, and only the first claim
+            // fires.
             let mut claimed = false;
             self.repositories
                 .runtime_state(&definition.project_path)?
-                .update(&definition.id, |trigger_state| {
-                    claimed = trigger_state.enabled
+                .update_existing(&definition.id, |trigger_state| {
+                    claimed = trigger_state.is_active_for(&definition)
                         && !trigger_state.flow_event_deliveries.contains(&delivery_id);
                     // ponytail: the list grows by one key per fired run, kept until
-                    // the trigger is deleted; move keys to their own files if it grows large.
+                    // the trigger is deleted; move keys to their own rows if it grows large.
                     if claimed {
                         trigger_state
                             .flow_event_deliveries
@@ -321,7 +329,7 @@ impl TriggerSourceRuntime {
             if !claimed {
                 continue;
             }
-            outcomes.push(self.execute_activation(
+            outcomes.extend(self.execute_activation(
                 &definition,
                 Value::Object(payload.clone()),
                 now,
@@ -345,25 +353,59 @@ impl TriggerSourceRuntime {
             ok: true,
             trigger_id: definition.id.clone(),
         };
-        let activation = self.execute_activation(
-            &definition,
-            Value::Object(request.payload),
-            OffsetDateTime::now_utc(),
-            request.request_id.filter(|id| !id.trim().is_empty()),
-        )?;
+        let activation = self
+            .execute_activation(
+                &definition,
+                Value::Object(request.payload),
+                OffsetDateTime::now_utc(),
+                request.request_id.filter(|id| !id.trim().is_empty()),
+            )?
+            .ok_or_else(|| TriggerError::Validation("Webhook trigger is disabled.".to_string()))?;
         Ok(WebhookDispatchOutcome {
             response,
             activation,
         })
     }
 
+    /// The definition as it reads now, with its private bindings, when it is
+    /// still present and armed for the same content as `definition`; every
+    /// dispatch rechecks this instead of trusting the list it came from.
+    fn dispatchable(
+        &self,
+        definition: &TriggerDefinition,
+    ) -> TriggerResult<Option<TriggerDefinition>> {
+        let Ok(Some(current)) = self
+            .repositories
+            .definitions(&definition.project_path)?
+            .get(&definition.id)
+        else {
+            return Ok(None);
+        };
+        let Some(state) = self
+            .repositories
+            .runtime_state(&definition.project_path)?
+            .get(&definition.id)?
+        else {
+            return Ok(None);
+        };
+        let same = spark_storage::definition_fingerprint(&current)
+            == spark_storage::definition_fingerprint(definition);
+        Ok((same && state.is_active_for(&current)).then(|| state.bind(current)))
+    }
+
+    /// Fires a dispatchable trigger and records the outcome on its existing
+    /// row; `None` when it is no longer dispatchable.
     fn execute_activation(
         &self,
         definition: &TriggerDefinition,
         source_payload: Value,
         timestamp: OffsetDateTime,
         delivery_id: Option<String>,
-    ) -> TriggerResult<TriggerActivationOutcome> {
+    ) -> TriggerResult<Option<TriggerActivationOutcome>> {
+        let Some(definition) = self.dispatchable(definition)? else {
+            return Ok(None);
+        };
+        let definition = &definition;
         let sink_result = self.sink.activate(TriggerActivationRequest {
             trigger_id: definition.id.clone(),
             project_path: definition.project_path.clone(),
@@ -380,9 +422,10 @@ impl TriggerSourceRuntime {
                     .message
                     .clone()
                     .unwrap_or_else(|| "Trigger fired successfully.".to_string());
-                // Recorded on the latest state, under its lock: a switch-off or
-                // secret rotation during the activation survives.
-                let trigger_state = states.update(&definition.id, |trigger_state| {
+                // Recorded on the latest state, in one transaction: a
+                // switch-off or secret rotation during the activation
+                // survives, and a removed activation is not recreated.
+                let trigger_state = states.update_existing(&definition.id, |trigger_state| {
                     if sink_outcome.no_op {
                         state::record_activation_no_op(
                             definition,
@@ -400,19 +443,23 @@ impl TriggerSourceRuntime {
                         );
                     }
                 })?;
-                Ok(TriggerActivationOutcome {
+                Ok(Some(TriggerActivationOutcome {
                     trigger_id: definition.id.clone(),
                     source_type: definition.source_type.clone(),
                     status: "success".to_string(),
                     message,
                     run_id: sink_outcome.run_id,
                     source_payload,
-                    trigger: serialize_trigger(definition.clone(), trigger_state, None),
-                })
+                    trigger: serialize_trigger(
+                        definition.clone(),
+                        trigger_state.unwrap_or_default(),
+                        None,
+                    ),
+                }))
             }
-            Err(error) => {
-                self.record_source_failure(definition, timestamp, error.to_string(), source_payload)
-            }
+            Err(error) => self
+                .record_source_failure(definition, timestamp, error.to_string(), source_payload)
+                .map(Some),
         }
     }
 
@@ -427,9 +474,10 @@ impl TriggerSourceRuntime {
         let trigger_state = self
             .repositories
             .runtime_state(&definition.project_path)?
-            .update(&definition.id, |trigger_state| {
+            .update_existing(&definition.id, |trigger_state| {
                 state::record_activation_failure(definition, trigger_state, timestamp, &message);
-            })?;
+            })?
+            .unwrap_or_default();
         Ok(TriggerActivationOutcome {
             trigger_id: definition.id.clone(),
             source_type: definition.source_type.clone(),

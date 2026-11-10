@@ -279,6 +279,9 @@ export function TriggersPanel() {
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>
+                    {selectedTrigger.state.activation_error ? (
+                      <div className="mt-2 text-destructive">Not activated: {selectedTrigger.state.activation_error}</div>
+                    ) : null}
                     {selectedTrigger.state.last_error ? (
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}

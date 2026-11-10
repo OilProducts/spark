@@ -57,10 +57,12 @@ pub use workspace_conversations::{
 };
 pub use workspace_projects::{
     DeletedProjectRecord, ProjectPaths, ProjectRecord, ProjectRecordUpdate, ProjectRegistry,
+    ProjectSettings,
 };
 pub use workspace_triggers::{
-    normalize_trigger_action_payload, normalize_trigger_source_payload, TriggerAction,
-    TriggerDefinition, TriggerDefinitionRepository, TriggerRepositories,
-    TriggerRuntimeStateRepository, TriggerState, TriggerStateHistoryEntry,
+    definition_fingerprint, normalize_trigger_action_payload, normalize_trigger_source_payload,
+    TriggerAction, TriggerDefinition, TriggerDefinitionRepository, TriggerIssue,
+    TriggerReconciliation, TriggerRepositories, TriggerRuntimeStateRepository, TriggerState,
+    TriggerStateHistoryEntry,
 };
 pub mod workspace_records;

@@ -174,9 +174,12 @@ impl WorkspaceRoleService {
 
     pub fn get(&self, project: &str, name: &str) -> WorkspaceResult<RoleRecord> {
         let scope = self.read_scope(project)?;
-        Self::load(&RecordRepository::roles(&scope.root), name)?
-            .map(|role| self.with_derived(role))
-            .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
+        Self::load(
+            &RecordRepository::roles(&self.settings.data_dir, &scope.project_id),
+            name,
+        )?
+        .map(|role| self.with_derived(role))
+        .ok_or_else(|| WorkspaceError::NotFound(format!("Role {name} is not started")))
     }
     /// The project's started roles, by name. Reads only: an unseen project
     /// gets no workspace directories.
@@ -185,11 +188,12 @@ impl WorkspaceRoleService {
             return Err(invalid("Project path is required"));
         }
         let scope = ProjectRegistry::new(self.settings.data_dir.clone()).project_paths(project)?;
-        let mut roles: Vec<RoleRecord> = RecordRepository::roles(&scope.root)
-            .list()?
-            .into_iter()
-            .map(decode)
-            .collect::<WorkspaceResult<_>>()?;
+        let mut roles: Vec<RoleRecord> =
+            RecordRepository::roles(&self.settings.data_dir, &scope.project_id)
+                .list()?
+                .into_iter()
+                .map(decode)
+                .collect::<WorkspaceResult<_>>()?;
         roles.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(roles
             .into_iter()
@@ -201,9 +205,12 @@ impl WorkspaceRoleService {
     pub fn conversation_role(&self, project: &str, conversation_id: &str) -> Option<RoleRecord> {
         let scope = self.read_scope(project).ok()?;
         let name = conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
-        Self::load(&RecordRepository::roles(&scope.root), name)
-            .ok()?
-            .map(|role| self.with_derived(role))
+        Self::load(
+            &RecordRepository::roles(&self.settings.data_dir, &scope.project_id),
+            name,
+        )
+        .ok()?
+        .map(|role| self.with_derived(role))
     }
 
     /// Runs `work` on the role under the project's role lock, delivers
@@ -220,7 +227,8 @@ impl WorkspaceRoleService {
     ) -> WorkspaceResult<RoleRecord> {
         let scope = self.scope(project)?;
         let mut written = false;
-        let role = RecordRepository::roles(&scope.root).locked::<_, WorkspaceError>(|repo| {
+        let role = RecordRepository::roles(&self.settings.data_dir, &scope.project_id)
+            .locked::<_, WorkspaceError>(|repo| {
             let saved = repo.read(name)?;
             let mut role: RoleRecord = match &saved {
                 Some(value) => decode(value.clone())?,

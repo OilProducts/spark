@@ -440,8 +440,8 @@ async fn due_sources_scan_every_registered_org_and_pick_up_hand_edits() {
     let now = at("2026-06-24T10:00:00Z");
     assert!(runtime.process_due_sources(now).await.unwrap().is_empty());
 
-    // A definition the Chief of Staff writes by hand fires on the
-    // next tick, in its own project.
+    // A definition written by hand stays inactive until it is activated,
+    // then fires on the next tick, in its own project.
     let org = spark_common::project::definitions_dir(Path::new(&project));
     std::fs::create_dir_all(org.join("triggers")).unwrap();
     let path = org.join("triggers/by-hand.toml");
@@ -463,43 +463,56 @@ run_at = "2026-06-24T09:30:00Z"
 "#,
     )
     .unwrap();
+    assert!(runtime.process_due_sources(now).await.unwrap().is_empty());
+    let service = TriggerService::new(settings.clone());
+    assert!(
+        service
+            .activate_trigger(&project, "by-hand")
+            .unwrap()
+            .enabled
+    );
     let outcomes = runtime.process_due_sources(now).await.unwrap();
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].trigger_id, "by-hand");
     assert_eq!(outcomes[0].trigger.project_path, project);
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 
-    // Disabled in state, or its file deleted: it no longer fires.
+    // A hand edit to its source needs a new activation; deleting its file
+    // removes its activation.
     let interval = path.with_file_name("by-hand-interval.toml");
+    let interval_text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("by-hand", "by-hand-interval")
+        .replace(
+            "kind = \"once\"\nrun_at = \"2026-06-24T09:30:00Z\"",
+            "kind = \"interval\"\ninterval_seconds = 60",
+        );
+    std::fs::write(&interval, &interval_text).unwrap();
+    assert!(
+        service
+            .activate_trigger(&project, "by-hand-interval")
+            .unwrap()
+            .enabled
+    );
     std::fs::write(
         &interval,
-        std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("by-hand", "by-hand-interval")
-            .replace(
-                "kind = \"once\"\nrun_at = \"2026-06-24T09:30:00Z\"",
-                "kind = \"interval\"\ninterval_seconds = 60",
-            ),
+        interval_text.replace("interval_seconds = 60", "interval_seconds = 120"),
     )
     .unwrap();
-    TriggerRepositories::from_settings(&settings)
-        .runtime_state(&project)
-        .unwrap()
-        .save(
-            "by-hand-interval",
-            &TriggerState {
-                enabled: false,
-                ..TriggerState::default()
-            },
-        )
-        .unwrap();
     assert!(runtime.process_due_sources(now).await.unwrap().is_empty());
+    let states = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap();
+    let changed = states.load("by-hand-interval").unwrap();
+    assert!(!changed.enabled);
+    assert!(changed.activation_error.is_some());
     std::fs::remove_file(&interval).unwrap();
     assert!(runtime
         .process_due_sources(at("2026-06-25T10:00:00Z"))
         .await
         .unwrap()
         .is_empty());
+    assert_eq!(states.get("by-hand-interval").unwrap(), None);
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 

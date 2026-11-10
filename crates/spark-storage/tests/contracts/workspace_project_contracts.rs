@@ -13,7 +13,7 @@ use spark_storage::{
 };
 
 #[test]
-fn project_registry_registers_lists_and_preserves_toml_shape() {
+fn project_registry_registers_lists_and_survives_restart_as_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: registered records hold canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
@@ -29,56 +29,103 @@ fn project_registry_registers_lists_and_preserves_toml_shape() {
     assert_eq!(record.display_name, "Registered Project");
     assert_eq!(record.project_path, project_dir.to_string_lossy());
     assert!(!record.is_favorite);
-    let project_file = home
-        .join("workspace/projects")
-        .join(&record.project_id)
-        .join("project.toml");
-    let text = fs::read_to_string(project_file).expect("project toml");
-    let lines = text.lines().take(6).collect::<Vec<_>>();
-    assert_eq!(lines[0], format!("project_id = \"{}\"", record.project_id));
-    assert_eq!(
-        lines[1],
-        format!("project_path = \"{}\"", project_dir.display())
-    );
-    assert_eq!(lines[2], "display_name = \"Registered Project\"");
-    assert!(lines[3].starts_with("created_at = \""));
-    assert!(lines[4].starts_with("last_opened_at = \""));
-    assert_eq!(lines[5], "is_favorite = false");
+    assert!(record.folder_exists);
+    assert!(!record.created_at.is_empty());
+    let project_root = home.join("workspace/projects").join(&record.project_id);
+    assert!(project_root.join("conversations").is_dir());
+    // The registry is a database row: no project.toml, no lock, and no
+    // obsolete artifact directories.
+    let mut created: Vec<_> = fs::read_dir(&project_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    created.sort();
+    assert_eq!(created, vec!["conversations"]);
     assert!(home
-        .join("workspace/projects")
-        .join(&record.project_id)
-        .join("flow-run-requests")
-        .is_dir());
+        .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME)
+        .is_file());
 
-    assert_eq!(registry.list_project_records().expect("list"), vec![record]);
+    assert_eq!(
+        ProjectRegistry::new(&home)
+            .list_project_records()
+            .expect("list"),
+        vec![record.clone()]
+    );
+
+    // Private model and execution defaults are columns of the same row.
+    let path = record.project_path.as_str();
+    registry
+        .update_project_model_settings(path, "1", Some(&json!({"provider": "codex", "model": "m"})))
+        .unwrap();
+    registry
+        .update_project_record(
+            path,
+            ProjectRecordUpdate {
+                expected_revision: Some("2".into()),
+                execution_profile_id: Some(Some("native-dev".into())),
+                ..ProjectRecordUpdate::default()
+            },
+        )
+        .unwrap();
+    let restarted = ProjectRegistry::new(&home);
+    assert_eq!(
+        restarted.project_settings(path).unwrap(),
+        spark_storage::ProjectSettings {
+            revision: "3".into(),
+            model_settings: Some(json!({"provider": "codex", "model": "m"})),
+            execution_profile_id: Some("native-dev".into()),
+        }
+    );
+    assert_eq!(
+        restarted
+            .read_project_record(path)
+            .unwrap()
+            .unwrap()
+            .execution_profile_id
+            .as_deref(),
+        Some("native-dev")
+    );
+    assert!(!project_root.join("project.toml").exists());
+    // A corrupt stored selection is reported, never read as absent.
+    rusqlite::Connection::open(home.join(spark_storage::conversation::STATE_DATABASE_FILE_NAME))
+        .unwrap()
+        .execute_batch(
+            "PRAGMA ignore_check_constraints = ON; UPDATE projects SET model_settings = 'not json'",
+        )
+        .unwrap();
+    assert!(restarted.project_settings(path).is_err());
 }
 
 #[test]
-fn project_registry_reads_python_created_record_with_missing_optionals() {
+fn project_registry_never_reads_project_toml() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
-    let project_path = temp.path().join("python-created");
-    let project_id = build_project_id(project_path.to_str().expect("utf-8")).expect("project id");
+    let project_path = "/projects/file-created";
+    let project_id = build_project_id(project_path).expect("project id");
     let root = home.join("workspace/projects").join(&project_id);
     fs::create_dir_all(&root).expect("root");
-    fs::write(
-        root.join("project.toml"),
-        format!(
-            "project_id = \"{project_id}\"\nproject_path = \"{}\"\ndisplay_name = \"Python Created\"\ncreated_at = \"2026-01-01T00:00:00Z\"\nlast_opened_at = \"2026-01-01T00:00:01Z\"\nis_favorite = false\n",
-            project_path.display()
-        ),
-    )
-    .expect("project toml");
+    let stray = format!(
+        "project_id = \"{project_id}\"\nproject_path = \"{project_path}\"\ndisplay_name = \"File\"\n\
+         created_at = \"2026-01-01T00:00:00Z\"\nlast_opened_at = \"2026-01-01T00:00:01Z\"\n\
+         execution_profile_id = \"native\"\n[model_settings]\nprovider = \"codex\"\n"
+    );
+    fs::write(root.join("project.toml"), &stray).expect("project toml");
+    let registry = ProjectRegistry::new(&home);
 
-    let record = ProjectRegistry::new(home)
-        .read_project_record_by_id(&project_id)
-        .expect("read")
-        .expect("record");
-
-    assert_eq!(record.display_name, "Python Created");
-    assert_eq!(record.last_accessed_at, None);
-    assert_eq!(record.active_conversation_id, None);
+    assert_eq!(
+        registry.read_project_record_by_id(&project_id).unwrap(),
+        None
+    );
+    assert!(registry.list_project_records().unwrap().is_empty());
+    let record = registry.register_project(project_path).unwrap();
+    assert_eq!(record.display_name, "file-created");
     assert_eq!(record.execution_profile_id, None);
+    let settings = registry.project_settings(project_path).unwrap();
+    assert_eq!(settings.model_settings, None);
+    assert_eq!(
+        fs::read_to_string(root.join("project.toml")).unwrap(),
+        stray
+    );
 }
 
 #[test]
@@ -89,7 +136,15 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     let registry = ProjectRegistry::new(&home);
     let record = registry.register_project(project_path).expect("register");
     assert_eq!(record.project_path, project_path);
+    assert_eq!(
+        registry
+            .project_settings("/projects/other")
+            .unwrap()
+            .revision,
+        "absent"
+    );
 
+    let revision = registry.project_settings(project_path).unwrap().revision;
     let updated = registry
         .update_project_record(
             project_path,
@@ -98,13 +153,7 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
                 is_favorite: Some(true),
                 active_conversation_id: Some(Some("conversation-1".to_string())),
                 execution_profile_id: Some(Some("native".to_string())),
-                expected_revision: Some(
-                    spark_storage::settings::read_settings_document(
-                        &registry.project_paths(project_path).unwrap().project_file,
-                    )
-                    .unwrap()
-                    .revision,
-                ),
+                expected_revision: Some(revision.clone()),
                 ..ProjectRecordUpdate::default()
             },
         )
@@ -115,6 +164,36 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
         Some("conversation-1")
     );
     assert_eq!(updated.execution_profile_id.as_deref(), Some("native"));
+    // The settings revision moved, so the stale one conflicts.
+    assert!(matches!(
+        registry.update_project_record(
+            project_path,
+            ProjectRecordUpdate {
+                execution_profile_id: Some(None),
+                expected_revision: Some(revision.clone()),
+                ..ProjectRecordUpdate::default()
+            },
+        ),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+    assert!(matches!(
+        registry.update_project_model_settings(project_path, &revision, Some(&json!({}))),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+    let models = json!({"provider": "codex", "model": "gpt-5", "thinking": null});
+    let current = registry.project_settings(project_path).unwrap().revision;
+    registry
+        .update_project_model_settings(project_path, &current, Some(&models))
+        .unwrap();
+    let stored = ProjectRegistry::new(&home)
+        .project_settings(project_path)
+        .unwrap();
+    assert_eq!(
+        stored.model_settings,
+        Some(json!({"provider": "codex", "model": "gpt-5"}))
+    );
+    assert_eq!(stored.execution_profile_id.as_deref(), Some("native"));
+    assert_ne!(stored.revision, current);
 
     // Validation alone never removes anything; the store removes the
     // directory after tombstoning the project's conversations.
@@ -126,48 +205,32 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     store.delete_project(&deleted, &|_| {}).expect("delete");
     assert!(!project_root.exists());
     assert_eq!(registry.read_project_record(project_path).unwrap(), None);
+    assert_eq!(
+        registry.project_settings(project_path).unwrap().revision,
+        "absent"
+    );
 }
 
+/// Sets every optional field of a project's row, as an older session would
+/// have left it.
 fn seed_historical_metadata(registry: &ProjectRegistry, path: &str) -> spark_storage::ProjectPaths {
     let paths = registry.ensure_project_paths(path).expect("initialize");
-    let mut payload: toml::Value = fs::read_to_string(&paths.project_file)
-        .unwrap()
-        .parse()
-        .unwrap();
-    for (key, value) in [
-        ("display_name", "Custom project name"),
-        ("created_at", "2001-01-01T00:00:00Z"),
-        ("last_opened_at", "2002-01-01T00:00:00Z"),
-        ("last_accessed_at", "2003-01-01T00:00:00Z"),
-        ("active_conversation_id", "conversation-1"),
-        ("execution_profile_id", "native"),
-    ] {
-        payload
-            .as_table_mut()
-            .unwrap()
-            .insert(key.into(), value.into());
-    }
-    payload["is_favorite"] = true.into();
-    fs::write(&paths.project_file, toml::to_string(&payload).unwrap()).unwrap();
-    // A fixed old mtime detects writes even on filesystems with coarse timestamps.
-    fs::File::options()
-        .write(true)
-        .open(&paths.project_file)
-        .unwrap()
-        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+    let connection = rusqlite::Connection::open(
+        registry
+            .home_dir()
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    connection
+        .execute(
+            "UPDATE projects SET display_name = 'Custom project name', \
+             created_at = '2001-01-01T00:00:00Z', last_opened_at = '2002-01-01T00:00:00Z', \
+             last_accessed_at = '2003-01-01T00:00:00Z', active_conversation_id = 'conversation-1', \
+             execution_profile_id = 'native', is_favorite = 1 WHERE project_id = ?1",
+            [&paths.project_id],
+        )
         .unwrap();
     paths
-}
-
-fn assert_metadata_untouched(path: &std::path::Path, bytes: &[u8], before: &fs::Metadata) {
-    assert_eq!(fs::read(path).unwrap(), bytes);
-    let after = fs::metadata(path).unwrap();
-    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
-    }
 }
 
 #[test]
@@ -178,27 +241,18 @@ fn initialization_recreates_directories_and_reads_preserve_metadata() {
     assert_eq!(registry.read_project_record(path).unwrap(), None);
     assert!(!registry.workspace_root().exists());
     let paths = seed_historical_metadata(&registry, path);
-    let bytes = fs::read(&paths.project_file).unwrap();
-    let before = fs::metadata(&paths.project_file).unwrap();
     let record = registry.read_project_record(path).unwrap().unwrap();
-    assert_metadata_untouched(&paths.project_file, &bytes, &before);
-    for directory in [
-        &paths.conversations_dir,
-        &paths.flow_run_requests_dir,
-        &paths.flow_launches_dir,
-        &paths.proposed_plans_dir,
-    ] {
-        assert!(directory.is_dir());
-        fs::remove_dir(directory).unwrap();
-        assert_eq!(
-            registry.read_project_record(path).unwrap(),
-            Some(record.clone())
-        );
-        assert!(!directory.exists());
-        registry.ensure_project_paths(path).unwrap();
-        assert!(directory.is_dir());
-        assert_metadata_untouched(&paths.project_file, &bytes, &before);
-    }
+    assert_eq!(record.display_name, "Custom project name");
+    assert!(paths.conversations_dir.is_dir());
+    fs::remove_dir(&paths.conversations_dir).unwrap();
+    assert_eq!(
+        registry.read_project_record(path).unwrap(),
+        Some(record.clone())
+    );
+    assert!(!paths.conversations_dir.exists());
+    registry.ensure_project_paths(path).unwrap();
+    assert!(paths.conversations_dir.is_dir());
+    assert_eq!(registry.read_project_record(path).unwrap(), Some(record));
 }
 
 #[test]
@@ -246,65 +300,6 @@ fn registration_and_updates_preserve_unspecified_metadata() {
 }
 
 #[test]
-fn initialization_repairs_records_and_preserves_legacy_defaults() {
-    let temp = tempfile::tempdir().unwrap();
-    let registry = ProjectRegistry::new(temp.path());
-    let path = "/projects/repair";
-    let paths = seed_historical_metadata(&registry, path);
-    let expected = registry.read_project_record(path).unwrap().unwrap();
-    let mut payload: toml::Value = fs::read_to_string(&paths.project_file)
-        .unwrap()
-        .parse()
-        .unwrap();
-    payload.as_table_mut().unwrap().remove("project_id");
-    fs::write(&paths.project_file, toml::to_string(&payload).unwrap()).unwrap();
-    registry.ensure_project_paths(path).unwrap();
-    assert_eq!(registry.read_project_record(path).unwrap(), Some(expected));
-
-    payload.as_table_mut().unwrap().remove("created_at");
-    payload["last_opened_at"] = 42.into();
-    payload["active_conversation_id"] = false.into();
-    fs::write(&paths.project_file, toml::to_string(&payload).unwrap()).unwrap();
-    registry.ensure_project_paths(path).unwrap();
-    let repaired = registry.read_project_record(path).unwrap().unwrap();
-    assert_eq!(repaired.display_name, "Custom project name");
-    assert_eq!(repaired.execution_profile_id.as_deref(), Some("native"));
-    assert!(repaired.is_favorite);
-    assert_eq!(repaired.active_conversation_id, None);
-    assert!(!repaired.created_at.is_empty());
-    assert_eq!(repaired.created_at, repaired.last_opened_at);
-
-    let valid = fs::read(&paths.project_file).unwrap();
-    fs::write(&paths.project_file, "not valid toml [").unwrap();
-    // Project metadata now owns authored configuration; invalid TOML cannot be
-    // repaired by silently dropping settings and reverting to built-in defaults.
-    assert!(registry.ensure_project_paths(path).is_err());
-    assert_eq!(
-        fs::read_to_string(&paths.project_file).unwrap(),
-        "not valid toml ["
-    );
-    fs::write(&paths.project_file, valid).unwrap();
-
-    let mut payload: toml::Value = fs::read_to_string(&paths.project_file)
-        .unwrap()
-        .parse()
-        .unwrap();
-    payload.as_table_mut().unwrap().remove("is_favorite");
-    let bytes = toml::to_string(&payload).unwrap().into_bytes();
-    fs::write(&paths.project_file, &bytes).unwrap();
-    let before = fs::metadata(&paths.project_file).unwrap();
-    registry.ensure_project_paths(path).unwrap();
-    assert_metadata_untouched(&paths.project_file, &bytes, &before);
-    assert!(
-        !registry
-            .read_project_record(path)
-            .unwrap()
-            .unwrap()
-            .is_favorite
-    );
-}
-
-#[test]
 fn project_operations_reject_empty_paths_without_initializing() {
     let temp = tempfile::tempdir().unwrap();
     let registry = ProjectRegistry::new(temp.path());
@@ -324,11 +319,10 @@ fn provider_events_persist_without_replacing_project_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let registry = ProjectRegistry::new(temp.path());
     let path = "/projects/provider-events";
-    let paths = seed_historical_metadata(&registry, path);
+    seed_historical_metadata(&registry, path);
     let repo = ConversationRepository::new(ConversationStore::open(temp.path()).unwrap());
     start(&repo, "conversation-1", path, "turn-1", &[]).unwrap();
-    let bytes = fs::read(&paths.project_file).unwrap();
-    let before = fs::metadata(&paths.project_file).unwrap();
+    let before = registry.read_project_record(path).unwrap();
     for message in ["one", "two", "three"] {
         record(
             &repo,
@@ -338,7 +332,7 @@ fn provider_events_persist_without_replacing_project_metadata() {
             tool_event(message, message),
         )
         .unwrap();
-        assert_metadata_untouched(&paths.project_file, &bytes, &before);
+        assert_eq!(registry.read_project_record(path).unwrap(), before);
     }
     let snapshot = repo
         .read_snapshot("conversation-1", Some(path))
@@ -485,7 +479,75 @@ fn seeded_project(
     let output = "x".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2);
     record(&repo, "chat-a", path, "turn-a", tool_event("call", &output)).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
+    seed_private_rows(home, path, &deleted.project_id);
     (store, deleted)
+}
+
+/// A role, a mission, an armed trigger and a global milestone for the project.
+fn seed_private_rows(home: &std::path::Path, path: &str, project_id: &str) {
+    use spark_storage::workspace_records::{RecordRepository, WorkflowMilestones};
+    RecordRepository::roles(home, project_id)
+        .write("coordinator", &json!({"name": "coordinator"}))
+        .unwrap();
+    RecordRepository::missions(home, project_id)
+        .write("mission-1", &json!({"id": "mission-1"}))
+        .unwrap();
+    spark_storage::TriggerRepositories::new(home.join("config"), home)
+        .runtime_state(path)
+        .unwrap()
+        .update("trigger-a", |state| {
+            state.enabled = true;
+            state.webhook_key = Some("key".into());
+            state.secret_hash = Some("hash".into());
+        })
+        .unwrap();
+    WorkflowMilestones::new(home)
+        .record::<StorageError>(&format!("run-{project_id}"), |_| {
+            Ok((
+                vec![(
+                    format!("milestone-{project_id}"),
+                    json!({"project_path": path}),
+                )],
+                json!({}),
+            ))
+        })
+        .unwrap();
+}
+
+/// Removal deletes the project's private rows, keeps its global milestone,
+/// and a late trigger outcome recreates nothing.
+fn assert_private_rows_removed(home: &std::path::Path, path: &str, project_id: &str) {
+    use spark_storage::workspace_records::{RecordRepository, WorkflowMilestones};
+    assert_eq!(
+        ProjectRegistry::new(home)
+            .read_project_record(path)
+            .unwrap(),
+        None
+    );
+    assert!(RecordRepository::roles(home, project_id)
+        .list()
+        .unwrap()
+        .is_empty());
+    assert!(RecordRepository::missions(home, project_id)
+        .list()
+        .unwrap()
+        .is_empty());
+    let triggers = spark_storage::TriggerRepositories::new(home.join("config"), home);
+    let states = triggers.runtime_state(path).unwrap();
+    assert_eq!(states.get("trigger-a").unwrap(), None);
+    assert_eq!(triggers.find_webhook_key("key").unwrap(), None);
+    assert_eq!(
+        states
+            .update_existing("trigger-a", |state| state.last_result = Some("late".into()))
+            .unwrap(),
+        None
+    );
+    assert_eq!(states.get("trigger-a").unwrap(), None);
+    assert!(WorkflowMilestones::new(home)
+        .tail(100)
+        .unwrap()
+        .iter()
+        .any(|entry| entry["project_path"] == path));
 }
 
 #[test]
@@ -510,6 +572,7 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     assert_eq!(*cancelled.lock().unwrap(), vec!["chat-a", "chat-b"]);
     assert!(!project_root.exists());
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+    assert_private_rows_removed(&home, path, &deleted.project_id);
     for id in ["chat-a", "chat-b"] {
         assert_eq!(
             store
@@ -546,6 +609,15 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     // Re-registration starts fresh; the deleted handle is free again but a
     // deleted conversation id never comes back.
     ProjectRegistry::new(&home).register_project(path).unwrap();
+    assert_eq!(
+        spark_storage::TriggerRepositories::new(home.join("config"), &home)
+            .runtime_state(path)
+            .unwrap()
+            .get("trigger-a")
+            .unwrap(),
+        None,
+        "re-registration never re-arms a trigger"
+    );
     assert!(start(&repo, "chat-a", path, "turn-new", &[]).is_err());
     assert_eq!(
         repo.conversation_handle("chat-new", Some(&handle)).unwrap(),
@@ -627,6 +699,8 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
         store.pending_project_deletion(path).unwrap(),
         Some(deleted.clone())
     );
+    // The rows went with the tombstones, before file cleanup.
+    assert_private_rows_removed(&home, path, &deleted.project_id);
     // Nothing new is admitted while cleanup is pending.
     assert!(start(&repo, "chat-c", path, "turn-c", &[]).is_err());
     drop(repo);
@@ -671,6 +745,7 @@ fn failed_directory_removal_keeps_the_marker_and_is_retried() {
     assert!(store.finish_project_deletion(path).unwrap());
     assert!(!conversations.exists());
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
+    assert_private_rows_removed(&home, path, &deleted.project_id);
 }
 
 #[test]
@@ -753,14 +828,15 @@ fn first_open_wipes_only_legacy_conversations_and_the_handle_index() {
     let legacy = paths.conversations_dir.join("old-chat");
     fs::create_dir_all(&legacy).unwrap();
     fs::write(legacy.join("conversation.json"), "{}").unwrap();
-    fs::create_dir_all(&paths.flow_launches_dir).unwrap();
     let handles = home.join("workspace/conversation-handles.json");
     fs::write(&handles, "{}").unwrap();
     let store = ConversationStore::open(&home).unwrap();
     assert!(!paths.conversations_dir.exists());
     assert!(!handles.exists());
-    assert!(paths.project_file.exists());
-    assert!(paths.flow_launches_dir.exists());
+    assert!(registry
+        .read_project_record("/projects/legacy")
+        .unwrap()
+        .is_some());
     drop(store);
     // Later opens never wipe again.
     fs::create_dir_all(&legacy).unwrap();

@@ -145,7 +145,7 @@ fn execution_profiles_validate_mounts_metadata_defaults_and_preserve_the_documen
     assert!(
         error
             .to_string()
-            .contains("project.toml.execution_profile_id"),
+            .contains("project defaults of /project.execution_profile_id"),
         "{error}"
     );
 }
@@ -236,36 +236,20 @@ fn deletion_cannot_pass_a_reference_waiting_at_the_real_document_boundary() {
     let profile_revision = first["llm_profiles"]["revision"].as_str().unwrap();
     let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
     registry.register_project("/project").unwrap();
-    let path = registry.project_paths("/project").unwrap().project_file;
-    let revision = spark_storage::settings::read_settings_document(&path)
-        .unwrap()
-        .revision;
-    let revision =
-        spark_storage::settings::update_settings_section(&path, &revision, "unused", None, |_| {
-            Ok(())
-        })
-        .unwrap()
-        .revision;
+    let revision = registry.project_settings("/project").unwrap().revision;
     let (locked_tx, locked_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     std::thread::scope(|scope| {
-        // An unrelated writer holds the real project lock. Its no-op patch leaves
-        // the revision unchanged, so the waiting model update remains valid.
-        let blocker_path = &path;
-        let blocker_revision = &revision;
+        // An unrelated writer holds the state database's write transaction.
+        let database = settings
+            .data_dir
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME);
         let blocker = scope.spawn(move || {
-            spark_storage::settings::update_settings_section(
-                blocker_path,
-                blocker_revision,
-                "unused",
-                None,
-                |_| {
-                    locked_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-                    Ok(())
-                },
-            )
-            .unwrap();
+            let connection = rusqlite::Connection::open(database).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(4)).unwrap();
+            connection.execute_batch("COMMIT").unwrap();
         });
         locked_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let reference = scope.spawn(|| {
@@ -282,7 +266,8 @@ fn deletion_cannot_pass_a_reference_waiting_at_the_real_document_boundary() {
             .write(true)
             .open(lock_path)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // The database's busy timeout bounds how long the reference waits.
+        let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match FileExt::try_lock_exclusive(&probe) {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -304,14 +289,15 @@ fn deletion_cannot_pass_a_reference_waiting_at_the_real_document_boundary() {
             .unwrap()
             .unwrap_err()
             .to_string()
-            .contains("project.toml.model_settings.llm_profile"));
+            .contains("project defaults of /project.model_settings.llm_profile"));
     });
     assert_eq!(
-        spark_storage::settings::read_settings_document(&path)
+        registry
+            .project_settings("/project")
             .unwrap()
-            .values["model_settings"]["llm_profile"]
-            .as_str(),
-        Some("team")
+            .model_settings
+            .unwrap()["llm_profile"],
+        "team"
     );
 }
 

@@ -34,11 +34,12 @@ pub(crate) use tool_output::{
 
 pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
 pub use commit::ConversationCommit;
+pub(crate) use database::open_state_database;
 pub use database::{
     CatchUp, ChangeBatch, ChangeScope, CheckpointFault, CheckpointedView, ConversationDatabase,
     EntityKind, EntityRow, PageCursor, PageRead, ProjectDeletionMarker, ReadTransaction,
     ResetReason, StoredConversation, TurnPage, CATCH_UP_MAX_BYTES, CATCH_UP_MAX_ROWS,
-    CONVERSATION_DATABASE_FILE_NAME, CONVERSATION_DATABASE_SCHEMA_VERSION,
+    STATE_DATABASE_FILE_NAME, STATE_DATABASE_SCHEMA_VERSION,
 };
 pub use identity::{
     agent_event_segment_id, assistant_segment_id, context_compaction_segment_id,

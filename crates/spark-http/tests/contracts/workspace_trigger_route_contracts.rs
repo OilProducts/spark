@@ -78,8 +78,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let states = TriggerRepositories::from_settings(&settings)
         .runtime_state(&project)
         .unwrap();
-    let state_path = states.state_path(&trigger_id).unwrap();
-    assert!(state_path.exists());
+    assert!(states.get(&trigger_id).unwrap().is_some());
 
     let url = format!("/workspace/api/triggers/{trigger_id}?project_path={project}");
     let unscoped = request_json(
@@ -152,7 +151,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
         json!({"status": "deleted", "id": trigger_id, "project_path": project})
     );
     assert!(!definition_path.exists());
-    assert!(!state_path.exists());
+    assert_eq!(states.get(&trigger_id).unwrap(), None);
     assert_eq!(fs::read_dir(org.join("triggers")).unwrap().count(), 0);
 }
 
@@ -449,8 +448,13 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
         })),
     )
     .await;
-    assert_eq!(unknown_flow.0, StatusCode::NOT_FOUND);
-    assert_eq!(unknown_flow.1, json!({"detail": "Unknown flow: missing"}));
+    // Saved, but activation fails: inactive, with the reason reported.
+    assert_eq!(unknown_flow.0, StatusCode::OK);
+    assert_eq!(unknown_flow.1["enabled"], false);
+    assert_eq!(
+        unknown_flow.1["state"]["activation_error"],
+        "Unknown flow: missing"
+    );
 
     assert!(definitions
         .get("trigger-protected")
@@ -492,14 +496,10 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
         .unwrap()
         .definition_path("trigger-protected")
         .unwrap();
-    let state_path = states.state_path("trigger-protected").unwrap();
     let delete_url = format!(
         "/workspace/api/triggers/trigger-protected?project_path={project}&expected_revision=protected"
     );
     let original_definition_text = fs::read_to_string(&definition_path).expect("definition text");
-    let original_state_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&state_path).expect("state text"))
-            .expect("state json");
     let app = build_app(settings.clone()).expect("app");
 
     let protected_delete = request_json(app.clone(), "DELETE", &delete_url, None).await;
@@ -512,19 +512,19 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
         fs::read_to_string(&definition_path).expect("definition unchanged"),
         original_definition_text
     );
-    let state_after_delete: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&state_path).expect("state unchanged"))
-            .expect("state json");
-    assert_eq!(state_after_delete, original_state_value);
+    assert_eq!(
+        states.get("trigger-protected").unwrap(),
+        Some(original_state.clone())
+    );
 
-    fs::remove_file(&state_path).expect("remove state file");
+    states.delete("trigger-protected").expect("remove state");
     let protected_delete_without_state = request_json(app, "DELETE", &delete_url, None).await;
     assert_eq!(protected_delete_without_state.0, StatusCode::BAD_REQUEST);
     assert_eq!(
         protected_delete_without_state.1,
         json!({"detail": "Protected triggers cannot be deleted."})
     );
-    assert!(!state_path.exists());
+    assert_eq!(states.get("trigger-protected").unwrap(), None);
     assert_eq!(
         fs::read_to_string(&definition_path).expect("definition unchanged"),
         original_definition_text

@@ -256,15 +256,19 @@ fn an_org_assistant_role_replaces_the_bundled_one_for_ordinary_chats() {
 #[test]
 fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
     let harness = Harness::new();
-    let paths = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
-        .ensure_project_paths(&harness.project)
+    let registry = spark_storage::ProjectRegistry::new(&harness.settings.data_dir);
+    registry.ensure_project_paths(&harness.project).unwrap();
+    let revision = registry
+        .project_settings(&harness.project)
+        .unwrap()
+        .revision;
+    registry
+        .update_project_model_settings(
+            &harness.project,
+            &revision,
+            Some(&serde_json::json!({"provider": "codex", "model": "project-model"})),
+        )
         .unwrap();
-    let text = std::fs::read_to_string(&paths.project_file).unwrap_or_default();
-    std::fs::write(
-        &paths.project_file,
-        format!("{text}\n[model_settings]\nprovider = \"codex\"\nmodel = \"project-model\"\n"),
-    )
-    .unwrap();
     harness.org_role(
         COORDINATOR_ROLE,
         &COORDINATOR_FILE.replacen("---\n", "---\nexecution:\n  llm_model: role-model\n", 1),
@@ -326,10 +330,14 @@ fn a_conversation_model_beats_its_role_file_which_beats_the_project() {
 #[test]
 fn no_role_exists_until_it_is_started_and_started_roles_pin_by_name() {
     let harness = Harness::new();
-    let root = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
+    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
         .ensure_project_paths(&harness.project)
         .unwrap()
-        .root;
+        .project_id;
+    let records = spark_storage::workspace_records::RecordRepository::roles(
+        &harness.settings.data_dir,
+        &project_id,
+    );
     let repository =
         spark_storage::ConversationRepository::new(crate::shared_store(&harness.settings.data_dir));
     let role_threads = || {
@@ -349,17 +357,13 @@ fn no_role_exists_until_it_is_started_and_started_roles_pin_by_name() {
             Err(WorkspaceError::NotFound(_))
         ));
     }
-    assert!(!root.join("roles").exists());
+    assert!(records.list().unwrap().is_empty());
     assert!(role_threads().is_empty());
     assert!(matches!(
         harness.roles.process(&harness.project, COORDINATOR_ROLE),
         Err(WorkspaceError::NotFound(_))
     ));
-    assert!(!root.join("roles/coordinator.json").exists());
-    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
-        .project_paths(&harness.project)
-        .unwrap()
-        .project_id;
+    assert!(records.read(COORDINATOR_ROLE).unwrap().is_none());
     let coordinator = spark_workspace::roles::conversation_id(&project_id, COORDINATOR_ROLE);
     // A trigger does not start a role either.
     let delivered = harness
@@ -387,16 +391,16 @@ fn no_role_exists_until_it_is_started_and_started_roles_pin_by_name() {
 
     // Starting saves the record and creates its conversation.
     harness.start(CHIEF_OF_STAFF_ROLE);
-    assert!(root.join("roles/chief-of-staff.json").exists());
+    assert!(records.read(CHIEF_OF_STAFF_ROLE).unwrap().is_some());
     assert_eq!(role_threads(), [CHIEF_OF_STAFF_ROLE]);
     // A saved record whose conversation is missing, as after an interrupted
     // start, is listed without a thread; starting it creates the conversation.
-    std::fs::write(
-        root.join("roles/coordinator.json"),
-        json!({"name": COORDINATOR_ROLE, "project_id": project_id, "project_path": harness.project})
-            .to_string(),
-    )
-    .unwrap();
+    records
+        .write(
+            COORDINATOR_ROLE,
+            &json!({"name": COORDINATOR_ROLE, "project_id": project_id, "project_path": harness.project}),
+        )
+        .unwrap();
     let names = || {
         harness
             .roles
@@ -548,14 +552,17 @@ fn launches_over_the_role_file_budget_are_refused() {
             && refused.to_string().contains("roles/chief-of-staff.md"),
         "{refused}"
     );
-    let root = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
+    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
         .ensure_project_paths(&harness.project)
         .unwrap()
-        .root;
-    let record = spark_storage::workspace_records::RecordRepository::roles(&root)
-        .read(CHIEF_OF_STAFF_ROLE)
-        .unwrap()
-        .unwrap();
+        .project_id;
+    let record = spark_storage::workspace_records::RecordRepository::roles(
+        &harness.settings.data_dir,
+        &project_id,
+    )
+    .read(CHIEF_OF_STAFF_ROLE)
+    .unwrap()
+    .unwrap();
     // The record holds no budget and no inbox, only whether it is stopped.
     for key in ["budget", "runs", "cursor", "event_seq"] {
         assert!(record.get(key).is_none(), "{record}");

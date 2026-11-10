@@ -295,6 +295,12 @@ fn flow_event_trigger_keeps_static_context_nested() {
         .expect("put trigger");
 
     let service = crate::triggers(settings.clone());
+    assert!(
+        service
+            .activate_trigger(&project_path, "flow-event")
+            .unwrap()
+            .enabled
+    );
     let emit = || {
         service
             .emit_flow_event(Map::from_iter([
@@ -351,6 +357,13 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
         .unwrap()
         .put(&trigger, None)
         .expect("put trigger");
+    let service = crate::triggers(settings.clone());
+    assert!(
+        service
+            .activate_trigger(&project, "role-event")
+            .unwrap()
+            .enabled
+    );
     let mut own = attractor_core::RunRecord::new("run-own", &project);
     own.launch_context = Some(
         [(
@@ -371,7 +384,6 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
             ..Default::default()
         })
         .expect("own run");
-    let service = crate::triggers(settings.clone());
     let emit = |run_id: &str, project: &str| {
         service
             .emit_flow_event(Map::from_iter([
@@ -400,7 +412,7 @@ fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_rol
 }
 
 #[test]
-fn hand_deleted_definitions_stop_firing_without_a_restart() {
+fn hand_written_definitions_fire_only_once_activated_and_stop_when_deleted() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
@@ -424,10 +436,172 @@ fn hand_deleted_definitions_stop_firing_without_a_restart() {
             .expect("emit event")
             .len()
     };
+    // Written outside the API, it is inactive until activated.
+    assert_eq!(emit(), 0);
+    assert!(
+        service
+            .activate_trigger(&project, "flow-event")
+            .unwrap()
+            .enabled
+    );
     assert_eq!(emit(), 1);
     let org = spark_common::project::definitions_dir(Path::new(&project));
     fs::remove_file(org.join("triggers/flow-event.toml")).expect("remove by hand");
     assert_eq!(emit(), 0);
+    // Reconciliation removed its activation: a recreated file stays inactive.
+    let states = spark_storage::TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap();
+    assert_eq!(states.get("flow-event").unwrap(), None);
+    definitions
+        .put(&flow_event_definition("flow-event", Map::new()), None)
+        .expect("recreate trigger");
+    assert!(!service.get_trigger(&project, "flow-event").unwrap().enabled);
+}
+
+#[test]
+fn activation_with_a_disabled_profile_saves_the_trigger_inactive() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    write_flow(&settings, "ops/run");
+    let project = project(&settings, "project");
+    // Saving checks that the profile exists; activation that it can run.
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("execution-profiles.toml"),
+        "[profiles.off]\nlabel = \"Off\"\nmode = \"native\"\nenabled = false\n",
+    )
+    .unwrap();
+    let service = crate::triggers(settings.clone());
+    let created = service
+        .create_trigger(TriggerCreateRequest {
+            project_path: project.clone(),
+            message: None,
+            name: "Profiled".into(),
+            enabled: true,
+            source_type: "flow_event".into(),
+            action: Map::from_iter([
+                ("flow_name".to_string(), json!("ops/run")),
+                ("execution_profile_id".to_string(), json!("off")),
+            ]),
+            source: Map::from_iter([("statuses".to_string(), json!(["completed"]))]),
+        })
+        .expect("the definition is saved");
+    assert!(!created.enabled);
+    let error = created.state.activation_error.expect("reported");
+    assert!(error.contains("disabled"), "{error}");
+    assert!(!service.get_trigger(&project, &created.id).unwrap().enabled);
+}
+
+#[test]
+fn unreadable_definitions_and_projects_are_reported_and_keep_their_activation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    write_flow(&settings, "ops/run");
+    let project = project(&settings, "project");
+    spark_storage::TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap()
+        .put(&flow_event_definition("flow-event", Map::new()), None)
+        .expect("put trigger");
+    let service = crate::triggers(settings.clone());
+    assert!(
+        service
+            .activate_trigger(&project, "flow-event")
+            .unwrap()
+            .enabled
+    );
+    let states = spark_storage::TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project)
+        .unwrap();
+    let armed = states.get("flow-event").unwrap().expect("activation");
+    let emit = |run_id: &str| {
+        service
+            .emit_flow_event(Map::from_iter([
+                ("run_id".to_string(), json!(run_id)),
+                ("flow_name".to_string(), json!("ops/run")),
+                ("project_path".to_string(), json!(project)),
+                ("status".to_string(), json!("completed")),
+            ]))
+            .expect("emit event")
+            .len()
+    };
+
+    // An invalid file is reported and cannot fire, but is not a deletion.
+    let file = spark_common::project::definitions_dir(Path::new(&project))
+        .join("triggers/flow-event.toml");
+    let original = fs::read(&file).unwrap();
+    fs::write(&file, "source_type = [").unwrap();
+    assert_eq!(emit("run-1"), 0);
+    let issues = service.reconcile_triggers().unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.trigger_id.as_deref() == Some("flow-event")),
+        "{issues:?}"
+    );
+    assert_eq!(states.get("flow-event").unwrap(), Some(armed.clone()));
+
+    // An unavailable project is not proof its definitions were removed.
+    let moved = root.join("project-away");
+    fs::rename(&project, &moved).unwrap();
+    let issues = service.reconcile_triggers().unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.project_path == project && issue.trigger_id.is_none()),
+        "{issues:?}"
+    );
+    assert_eq!(states.get("flow-event").unwrap(), Some(armed));
+
+    // Restored unchanged, the definition is the same activated trigger.
+    fs::rename(&moved, &project).unwrap();
+    fs::write(&file, original).unwrap();
+    assert!(service.reconcile_triggers().unwrap().is_empty());
+    assert_eq!(emit("run-1"), 1);
+}
+
+#[test]
+fn concurrent_deliveries_of_one_event_launch_once() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    write_flow(&settings, "ops/run");
+    let project = project(&settings, "project");
+    spark_storage::TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap()
+        .put(&flow_event_definition("flow-event", Map::new()), None)
+        .expect("put trigger");
+    let service = crate::triggers(settings.clone());
+    assert!(
+        service
+            .activate_trigger(&project, "flow-event")
+            .unwrap()
+            .enabled
+    );
+    let event = Map::from_iter([
+        ("run_id".to_string(), json!("run-1")),
+        ("flow_name".to_string(), json!("ops/run")),
+        ("project_path".to_string(), json!(project)),
+        ("status".to_string(), json!("completed")),
+    ]);
+    let launched: usize = std::thread::scope(|scope| {
+        let deliveries = (0..4)
+            .map(|_| scope.spawn(|| service.emit_flow_event(event.clone()).unwrap().len()))
+            .collect::<Vec<_>>();
+        deliveries.into_iter().map(|d| d.join().unwrap()).sum()
+    });
+    assert_eq!(launched, 1);
+    assert_eq!(
+        RunStore::for_settings(&settings)
+            .list_run_records()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {

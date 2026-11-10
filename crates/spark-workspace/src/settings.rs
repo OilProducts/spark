@@ -505,32 +505,25 @@ pub fn update_workspace_settings(
             project_path,
             model_settings,
         } => {
-            let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
-                .project_paths(&project_path)?;
-            if !paths.project_file.exists() {
+            let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+            if registry.read_project_record(&project_path)?.is_none() {
                 return Err(WorkspaceError::NotFound(
                     "Register the project before editing its defaults.".into(),
                 ));
             }
             let Some(model_settings) = model_settings else {
-                let document = read_settings_document(&paths.project_file)?;
-                if document.revision != request.expected_revision {
+                if registry.project_settings(&project_path)?.revision != request.expected_revision {
                     return Err(WorkspaceError::Conflict(
                         "Project settings changed; reload before saving.".into(),
                     ));
                 }
                 return project_model_settings_view(settings, &project_path);
             };
-            let value = model_settings
-                .map(toml::Value::try_from)
-                .transpose()
-                .map_err(|_| WorkspaceError::Validation("Invalid model settings.".into()))?;
-            update_settings_section(
-                &paths.project_file,
+            // Validated above while holding the profile reference lock.
+            registry.update_project_model_settings(
+                &project_path,
                 &request.expected_revision,
-                "model_settings",
-                value,
-                |_| Ok(()),
+                model_settings.map(|value| json!(value)).as_ref(),
             )?;
             return project_model_settings_view(settings, &project_path);
         }
@@ -659,19 +652,26 @@ pub fn project_model_settings_view(
     settings: &SparkSettings,
     project_path: &str,
 ) -> WorkspaceResult<Value> {
-    let path = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .project_paths(project_path)?
-        .project_file;
-    let document = read_settings_document(&path)?;
-    let source = if document.values.contains_key("model_settings") {
+    let stored =
+        spark_storage::ProjectRegistry::new(&settings.data_dir).project_settings(project_path)?;
+    let source = if stored.model_settings.is_some() {
         "project"
     } else {
         "workspace"
     };
-    let mut models = json!({"scope":"project", "project_path":project_path, "revision":document.revision,
-        "stored":document.values.get("model_settings"), "effective":null, "source":source, "restart_fields":[], "validation_errors":[]});
+    let mut models = json!({"scope":"project", "project_path":project_path, "revision":stored.revision,
+        "stored":stored.model_settings, "effective":null, "source":source, "restart_fields":[], "validation_errors":[]});
     let resolved = (|| -> WorkspaceResult<Value> {
-        let stored: Option<ModelSettings> = document.section(&path, "model_settings")?;
+        let stored: Option<ModelSettings> = stored
+            .model_settings
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                WorkspaceError::Validation(
+                    "Invalid project model_settings; check field names and types.".into(),
+                )
+            })?;
         let workspace = workspace_model_settings(settings)?;
         let (effective, _) = resolve_model_settings(&workspace, stored.as_ref(), None)
             .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
@@ -685,14 +685,13 @@ pub fn project_model_settings_view(
             models["repair_defaults"] = json!(ModelSettings::default());
         }
     }
-    let mut execution = json!({"scope":"project", "project_path":project_path, "revision":document.revision,
-        "stored":document.values.get("execution_profile_id"), "effective":null, "source":if document.values.contains_key("execution_profile_id") { "project" } else { "workspace" }, "restart_fields":[], "validation_errors":[]});
+    let mut execution = json!({"scope":"project", "project_path":project_path, "revision":stored.revision,
+        "stored":stored.execution_profile_id, "effective":null, "source":if stored.execution_profile_id.is_some() { "project" } else { "workspace" }, "restart_fields":[], "validation_errors":[]});
     let resolved = (|| -> WorkspaceResult<Value> {
-        let stored: Option<String> = document.section(&path, "execution_profile_id")?;
         let selection = attractor_execution::resolve_execution_profile_by_id(
             settings,
             None,
-            stored.as_deref(),
+            stored.execution_profile_id.as_deref(),
             None,
         )
         .map_err(|error| WorkspaceError::Validation(error.to_string()))?;

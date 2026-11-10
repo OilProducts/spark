@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use spark_common::project::{build_project_id, normalize_project_path};
 use time::OffsetDateTime;
-use toml::map::Map as TomlMap;
 
+use crate::conversation::{open_state_database, STATE_DATABASE_FILE_NAME};
 use crate::error::{Result, StorageError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,11 +16,7 @@ pub struct ProjectPaths {
     pub project_path: String,
     pub display_name: String,
     pub root: PathBuf,
-    pub project_file: PathBuf,
     pub conversations_dir: PathBuf,
-    pub flow_run_requests_dir: PathBuf,
-    pub flow_launches_dir: PathBuf,
-    pub proposed_plans_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +57,21 @@ pub struct ProjectRecordUpdate {
     pub execution_profile_id: Option<Option<String>>,
 }
 
+/// A project's private model and execution defaults, with the revision that
+/// guards their edits: `"absent"` for an unregistered project.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectSettings {
+    pub revision: String,
+    /// The whole stored model selection, as written.
+    pub model_settings: Option<Value>,
+    pub execution_profile_id: Option<String>,
+}
+
+const ABSENT_REVISION: &str = "absent";
+const PROJECT_COLUMNS: &str = "project_id, project_path, display_name, created_at, \
+    last_opened_at, last_accessed_at, is_favorite, active_conversation_id, \
+    execution_profile_id, is_default";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRegistry {
     home_dir: PathBuf,
@@ -83,82 +96,51 @@ impl ProjectRegistry {
         self.workspace_root().join("projects")
     }
 
-    pub fn ensure_project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
-        self.ensure_project_paths_with_profile(project_path, None)
+    fn connection(&self) -> Result<Connection> {
+        open_state_database(&self.home_dir)
     }
 
-    fn ensure_project_paths_with_profile(
+    fn database_path(&self) -> PathBuf {
+        self.home_dir.join(STATE_DATABASE_FILE_NAME)
+    }
+
+    /// Run `work` in one immediate transaction on a fresh connection.
+    fn write<T>(&self, work: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let value = work(&tx)?;
+        tx.commit()?;
+        Ok(value)
+    }
+
+    pub fn ensure_project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
+        self.ensure_project_paths_in(&self.connection()?, project_path)
+    }
+
+    /// `ensure_project_paths` on `connection`, which a caller already inside
+    /// a write transaction on the state database passes.
+    pub(crate) fn ensure_project_paths_in(
         &self,
+        connection: &Connection,
         project_path: &str,
-        initial_profile: Option<&str>,
     ) -> Result<ProjectPaths> {
         let project_paths = self.project_paths(project_path)?;
-        for directory in [
-            &project_paths.root,
-            &project_paths.conversations_dir,
-            &project_paths.flow_run_requests_dir,
-            &project_paths.flow_launches_dir,
-            &project_paths.proposed_plans_dir,
-        ] {
+        for directory in [&project_paths.root, &project_paths.conversations_dir] {
             fs::create_dir_all(directory).map_err(|source| {
                 StorageError::io("create project directory", directory, source)
             })?;
         }
-
-        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
-        let document = crate::settings::read_settings_document(&project_paths.project_file)?;
-        if initial_profile.is_some() && document.revision != "absent" {
-            return Err(StorageError::SettingsConflict {
-                path: project_paths.project_file,
-            });
-        }
-        let payload = document.values;
-        let valid = payload.get("project_id").and_then(toml::Value::as_str)
-            == Some(project_paths.project_id.as_str())
-            && payload.get("project_path").and_then(toml::Value::as_str)
-                == Some(project_paths.project_path.as_str())
-            && ["display_name", "created_at", "last_opened_at"]
-                .iter()
-                .all(|key| {
-                    payload
-                        .get(*key)
-                        .and_then(toml::Value::as_str)
-                        .is_some_and(|value| !value.trim().is_empty())
-                })
-            && [
-                "last_accessed_at",
-                "active_conversation_id",
-                "execution_profile_id",
-            ]
-            .iter()
-            .all(|key| payload.get(*key).is_none_or(toml::Value::is_str))
-            && ["is_favorite", "is_default"]
-                .iter()
-                .all(|key| payload.get(*key).is_none_or(toml::Value::is_bool));
-        if valid {
-            return Ok(project_paths);
-        }
         let now = iso_now();
-        let created_at =
-            read_optional_string(&payload, "created_at").unwrap_or_else(|| now.clone());
-        let record = ProjectRecord {
-            project_id: project_paths.project_id.clone(),
-            project_path: project_paths.project_path.clone(),
-            display_name: read_required_string(&payload, "display_name")
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| project_paths.display_name.clone()),
-            created_at,
-            last_opened_at: read_optional_string(&payload, "last_opened_at").unwrap_or(now),
-            last_accessed_at: read_optional_string(&payload, "last_accessed_at"),
-            is_favorite: read_optional_bool(&payload, "is_favorite", false),
-            active_conversation_id: read_optional_string(&payload, "active_conversation_id"),
-            execution_profile_id: initial_profile
-                .map(str::to_string)
-                .or_else(|| read_optional_string(&payload, "execution_profile_id")),
-            is_default: read_optional_bool(&payload, "is_default", false),
-            folder_exists: false,
-        };
-        write_project_record(&project_paths.project_file, &record)?;
+        connection.execute(
+            "INSERT INTO projects (project_id, project_path, display_name, created_at, \
+             last_opened_at) VALUES (?1, ?2, ?3, ?4, ?4) ON CONFLICT DO NOTHING",
+            params![
+                project_paths.project_id,
+                project_paths.project_path,
+                project_paths.display_name,
+                now
+            ],
+        )?;
         Ok(project_paths)
     }
 
@@ -171,15 +153,24 @@ impl ProjectRegistry {
         project_path: &str,
         initial_profile: Option<&str>,
     ) -> Result<ProjectRecord> {
-        let project_paths =
-            self.ensure_project_paths_with_profile(project_path, initial_profile)?;
-        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
-        let mut record = self
-            .read_project_record_by_id(&project_paths.project_id)?
-            .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))?;
-        record.last_opened_at = iso_now();
-        write_project_record(&project_paths.project_file, &record)?;
-        Ok(record)
+        let project_paths = self.project_paths(project_path)?;
+        self.write(|connection| {
+            if initial_profile.is_some()
+                && read_record(connection, &project_paths.project_id)?.is_some()
+            {
+                return Err(StorageError::SettingsConflict {
+                    path: self.database_path(),
+                });
+            }
+            self.ensure_project_paths_in(connection, project_path)?;
+            connection.execute(
+                "UPDATE projects SET last_opened_at = ?2, \
+                 execution_profile_id = coalesce(?3, execution_profile_id) WHERE project_id = ?1",
+                params![project_paths.project_id, iso_now(), initial_profile],
+            )?;
+            read_record(connection, &project_paths.project_id)?
+                .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))
+        })
     }
 
     pub fn read_project_record(&self, project_path: &str) -> Result<Option<ProjectRecord>> {
@@ -188,89 +179,23 @@ impl ProjectRegistry {
     }
 
     pub fn read_project_paths_by_id(&self, project_id: &str) -> Result<Option<ProjectPaths>> {
-        let root = self.projects_root().join(project_id);
-        let project_file = root.join("project.toml");
-        if !project_file.exists() {
-            return Ok(None);
-        }
-        let payload = read_project_payload_lossy(&project_file);
-        let Some(raw_project_path) = read_required_string(&payload, "project_path") else {
-            return Ok(None);
-        };
-        let Some(project_path) = normalize_project_path_for_storage(&raw_project_path)? else {
-            return Ok(None);
-        };
-        let display_name = read_required_string(&payload, "display_name")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| display_name_for_path(&project_path));
-        Ok(Some(ProjectPaths {
-            project_id: project_id.to_string(),
-            project_path,
-            display_name,
-            conversations_dir: root.join("conversations"),
-            flow_run_requests_dir: root.join("flow-run-requests"),
-            flow_launches_dir: root.join("flow-launches"),
-            proposed_plans_dir: root.join("proposed-plans"),
-            project_file,
-            root,
+        Ok(self.read_project_record_by_id(project_id)?.map(|record| {
+            self.paths_for(record.project_id, record.project_path, record.display_name)
         }))
     }
 
     pub fn read_project_record_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
-        let Some(project_paths) = self.read_project_paths_by_id(project_id)? else {
-            return Ok(None);
-        };
-        let payload = read_project_payload_lossy(&project_paths.project_file);
-        let folder_exists = Path::new(&project_paths.project_path).is_dir();
-        Ok(Some(ProjectRecord {
-            project_id: project_paths.project_id,
-            project_path: project_paths.project_path,
-            display_name: read_required_string(&payload, "display_name")
-                .filter(|value| !value.is_empty())
-                .unwrap_or(project_paths.display_name),
-            created_at: read_required_string(&payload, "created_at").unwrap_or_default(),
-            last_opened_at: read_required_string(&payload, "last_opened_at").unwrap_or_default(),
-            last_accessed_at: read_optional_string(&payload, "last_accessed_at"),
-            is_favorite: read_optional_bool(&payload, "is_favorite", false),
-            active_conversation_id: read_optional_string(&payload, "active_conversation_id"),
-            execution_profile_id: read_optional_string(&payload, "execution_profile_id"),
-            is_default: read_optional_bool(&payload, "is_default", false),
-            folder_exists,
-        }))
+        read_record(&self.connection()?, project_id)
     }
 
     pub fn list_project_records(&self) -> Result<Vec<ProjectRecord>> {
-        let projects_root = self.projects_root();
-        fs::create_dir_all(&projects_root).map_err(|source| {
-            StorageError::io(
-                "create workspace projects directory",
-                &projects_root,
-                source,
-            )
-        })?;
-        let mut entries = fs::read_dir(&projects_root)
-            .map_err(|source| {
-                StorageError::io("read workspace projects directory", &projects_root, source)
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|source| {
-                StorageError::io("read workspace projects directory", &projects_root, source)
-            })?;
-        entries.sort_by_key(|entry| entry.path());
-
-        let mut records = Vec::new();
-        for entry in entries {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some(project_id) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            if let Some(record) = self.read_project_record_by_id(project_id)? {
-                records.push(record);
-            }
-        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {PROJECT_COLUMNS} FROM projects ORDER BY project_id"
+        ))?;
+        let records = statement
+            .query_map([], project_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(records)
     }
 
@@ -281,106 +206,178 @@ impl ProjectRegistry {
     ) -> Result<ProjectRecord> {
         if update.execution_profile_id.is_some() && update.expected_revision.is_none() {
             return Err(StorageError::SettingsValidation {
-                path: self.project_paths(project_path)?.project_file,
+                path: self.database_path(),
                 reason: "expected_revision is required to change project execution settings."
                     .into(),
             });
         }
-        let project_paths = if update.expected_revision.is_some() {
-            self.project_paths(project_path)?
-        } else {
-            self.ensure_project_paths(project_path)?
-        };
-        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
-        let document = crate::settings::read_settings_document(&project_paths.project_file)?;
-        if update
-            .expected_revision
-            .as_ref()
-            .is_some_and(|revision| *revision != document.revision)
-        {
-            return Err(StorageError::SettingsConflict {
-                path: project_paths.project_file,
+        let project_paths = self.project_paths(project_path)?;
+        let id = project_paths.project_id.clone();
+        self.write(|connection| {
+            if let Some(expected) = &update.expected_revision {
+                if *expected != settings_revision(connection, &id)? {
+                    return Err(StorageError::SettingsConflict {
+                        path: self.database_path(),
+                    });
+                }
+            }
+            self.ensure_project_paths_in(connection, project_path)?;
+            let mut changes: Vec<(&str, Option<String>)> = Vec::new();
+            if let Some(name) = update.display_name.and_then(normalize_optional_string) {
+                changes.push(("display_name", Some(name)));
+            }
+            if let Some(value) = update.last_accessed_at {
+                changes.push((
+                    "last_accessed_at",
+                    value.and_then(normalize_optional_string),
+                ));
+            }
+            if let Some(value) = update.active_conversation_id {
+                changes.push((
+                    "active_conversation_id",
+                    value.and_then(normalize_optional_string),
+                ));
+            }
+            if let Some(value) = update.execution_profile_id {
+                changes.push((
+                    "execution_profile_id",
+                    value.and_then(normalize_optional_string),
+                ));
+                connection.execute(
+                    "UPDATE projects SET settings_revision = settings_revision + 1 \
+                     WHERE project_id = ?1",
+                    [&id],
+                )?;
+            }
+            for (column, value) in changes {
+                connection.execute(
+                    &format!("UPDATE projects SET {column} = ?2 WHERE project_id = ?1"),
+                    params![id, value],
+                )?;
+            }
+            if let Some(favorite) = update.is_favorite {
+                connection.execute(
+                    "UPDATE projects SET is_favorite = ?2 WHERE project_id = ?1",
+                    params![id, favorite],
+                )?;
+            }
+            read_record(connection, &id)?
+                .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))
+        })
+    }
+
+    /// The project's stored model and execution defaults.
+    pub fn project_settings(&self, project_path: &str) -> Result<ProjectSettings> {
+        let id = self.project_paths(project_path)?.project_id;
+        let connection = self.connection()?;
+        let row = connection
+            .query_row(
+                "SELECT settings_revision, model_settings, execution_profile_id FROM projects \
+                 WHERE project_id = ?1",
+                [&id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((revision, model_settings, execution_profile_id)) = row else {
+            return Ok(ProjectSettings {
+                revision: ABSENT_REVISION.into(),
+                model_settings: None,
+                execution_profile_id: None,
             });
-        }
-        let payload = document.values;
-        let record = ProjectRecord {
-            project_id: project_paths.project_id.clone(),
-            project_path: project_paths.project_path.clone(),
-            display_name: update
-                .display_name
-                .and_then(normalize_optional_string)
-                .or_else(|| read_required_string(&payload, "display_name"))
-                .unwrap_or_else(|| project_paths.display_name.clone()),
-            created_at: read_required_string(&payload, "created_at").unwrap_or_else(iso_now),
-            last_opened_at: read_required_string(&payload, "last_opened_at")
-                .unwrap_or_else(iso_now),
-            last_accessed_at: update
-                .last_accessed_at
-                .map(|value| value.and_then(normalize_optional_string))
-                .unwrap_or_else(|| read_optional_string(&payload, "last_accessed_at")),
-            is_favorite: update
-                .is_favorite
-                .unwrap_or_else(|| read_optional_bool(&payload, "is_favorite", false)),
-            active_conversation_id: update
-                .active_conversation_id
-                .map(|value| value.and_then(normalize_optional_string))
-                .unwrap_or_else(|| read_optional_string(&payload, "active_conversation_id")),
-            execution_profile_id: update
-                .execution_profile_id
-                .map(|value| value.and_then(normalize_optional_string))
-                .unwrap_or_else(|| read_optional_string(&payload, "execution_profile_id")),
-            is_default: read_optional_bool(&payload, "is_default", false),
-            folder_exists: false,
         };
-        write_project_record(&project_paths.project_file, &record)?;
-        self.read_project_record_by_id(&project_paths.project_id)?
-            .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))
+        let model_settings = model_settings
+            .map(|text| {
+                serde_json::from_str(&text).map_err(|_| StorageError::SettingsValidation {
+                    path: self.database_path(),
+                    reason: format!("Invalid model_settings stored for project {project_path}."),
+                })
+            })
+            .transpose()?;
+        Ok(ProjectSettings {
+            revision: revision.to_string(),
+            model_settings,
+            execution_profile_id,
+        })
+    }
+
+    /// Replace a registered project's whole model selection (`None` inherits
+    /// the workspace defaults) when `expected_revision` is current.
+    pub fn update_project_model_settings(
+        &self,
+        project_path: &str,
+        expected_revision: &str,
+        model_settings: Option<&Value>,
+    ) -> Result<()> {
+        let id = self.project_paths(project_path)?.project_id;
+        let stored = model_settings.map(|value| {
+            let mut value = value.clone();
+            if let Some(object) = value.as_object_mut() {
+                object.retain(|_, field| !field.is_null());
+            }
+            value.to_string()
+        });
+        self.write(|connection| {
+            if expected_revision != settings_revision(connection, &id)?
+                || expected_revision == ABSENT_REVISION
+            {
+                return Err(StorageError::SettingsConflict {
+                    path: self.database_path(),
+                });
+            }
+            connection.execute(
+                "UPDATE projects SET model_settings = ?2, settings_revision = settings_revision + 1 \
+                 WHERE project_id = ?1",
+                params![id, stored],
+            )?;
+            Ok(())
+        })
     }
 
     /// Registers `home_path` as the Home project, named "Home" and marked as
     /// the default, keeping any settings it already has.
     pub fn ensure_home_project(&self, home_path: &str) -> Result<ProjectRecord> {
-        let project_paths = self.ensure_project_paths(home_path)?;
-        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
-        let mut record = self
-            .read_project_record_by_id(&project_paths.project_id)?
-            .ok_or_else(|| invalid_project_path(home_path, "Unable to register project."))?;
-        if !record.is_default || record.display_name != HOME_PROJECT_NAME {
-            record.is_default = true;
-            record.display_name = HOME_PROJECT_NAME.to_string();
-            write_project_record(&project_paths.project_file, &record)?;
-        }
-        Ok(record)
+        let id = self.project_paths(home_path)?.project_id;
+        self.write(|connection| {
+            self.ensure_project_paths_in(connection, home_path)?;
+            connection.execute(
+                "UPDATE projects SET is_default = 1, display_name = ?2 WHERE project_id = ?1",
+                params![id, HOME_PROJECT_NAME],
+            )?;
+            read_record(connection, &id)?
+                .ok_or_else(|| invalid_project_path(home_path, "Unable to register project."))
+        })
     }
 
     /// The registered, non-Home project at `project_path`, validated for
-    /// deletion. Removing its directory is a separate step that only the
-    /// conversation store runs, after the project's conversations are
-    /// tombstoned and checkpointed ([`crate::ConversationStore::delete_project`]).
+    /// deletion. Its rows and directory go in a separate step that only the
+    /// conversation store runs: rows with the tombstones, the directory once
+    /// they are checkpointed ([`crate::ConversationStore::delete_project`]).
     pub fn deletable_project(&self, project_path: &str) -> Result<DeletedProjectRecord> {
         let normalized = normalize_project_path_for_storage(project_path)?
             .ok_or_else(|| invalid_project_path(project_path, "Project path is required."))?;
         let project_id = project_id_for_path(&normalized)?;
-        let Some(project_paths) = self.read_project_paths_by_id(&project_id)? else {
+        let Some(record) = self
+            .read_project_record_by_id(&project_id)?
+            .filter(|record| record.project_path == normalized)
+        else {
             return Err(invalid_project_path(project_path, "Unknown project."));
         };
-        if project_paths.project_path != normalized {
-            return Err(invalid_project_path(project_path, "Unknown project."));
-        }
-        if read_optional_bool(
-            &read_project_payload_lossy(&project_paths.project_file),
-            "is_default",
-            false,
-        ) {
+        if record.is_default {
             return Err(invalid_project_path(
                 project_path,
                 "The Home project can't be removed.",
             ));
         }
         Ok(DeletedProjectRecord {
-            project_id: project_paths.project_id.clone(),
-            project_path: project_paths.project_path.clone(),
-            display_name: project_paths.display_name.clone(),
+            project_id: record.project_id,
+            project_path: record.project_path,
+            display_name: record.display_name,
         })
     }
 
@@ -389,111 +386,65 @@ impl ProjectRegistry {
             .ok_or_else(|| invalid_project_path(project_path, "Project path is required."))?;
         let project_id = project_id_for_path(&normalized)?;
         let display_name = display_name_for_path(&normalized);
+        Ok(self.paths_for(project_id, normalized, display_name))
+    }
+
+    fn paths_for(
+        &self,
+        project_id: String,
+        project_path: String,
+        display_name: String,
+    ) -> ProjectPaths {
         let root = self.projects_root().join(&project_id);
-        Ok(ProjectPaths {
+        ProjectPaths {
             project_id,
-            project_path: normalized,
+            project_path,
             display_name,
-            project_file: root.join("project.toml"),
             conversations_dir: root.join("conversations"),
-            flow_run_requests_dir: root.join("flow-run-requests"),
-            flow_launches_dir: root.join("flow-launches"),
-            proposed_plans_dir: root.join("proposed-plans"),
             root,
-        })
+        }
     }
 }
 
-fn read_project_payload_lossy(path: &Path) -> TomlMap<String, toml::Value> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return TomlMap::new();
-    };
-    let Ok(value) = text.parse::<toml::Value>() else {
-        return TomlMap::new();
-    };
-    value.as_table().cloned().unwrap_or_default()
+fn read_record(connection: &Connection, project_id: &str) -> Result<Option<ProjectRecord>> {
+    Ok(connection
+        .query_row(
+            &format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE project_id = ?1"),
+            [project_id],
+            project_row,
+        )
+        .optional()?)
 }
 
-// Caller holds the shared document lock across reading and replacing the record.
-fn write_project_record(path: &Path, record: &ProjectRecord) -> Result<()> {
-    let mut extra = crate::settings::read_settings_document(path)?.values;
-    for key in [
-        "project_id",
-        "project_path",
-        "display_name",
-        "created_at",
-        "last_opened_at",
-        "last_accessed_at",
-        "is_favorite",
-        "active_conversation_id",
-        "execution_profile_id",
-        "is_default",
-    ] {
-        extra.remove(key);
-    }
-    let mut lines = vec![
-        format!("project_id = {}", toml_string(&record.project_id)),
-        format!("project_path = {}", toml_string(&record.project_path)),
-        format!("display_name = {}", toml_string(&record.display_name)),
-        format!("created_at = {}", toml_string(&record.created_at)),
-        format!("last_opened_at = {}", toml_string(&record.last_opened_at)),
-    ];
-    if let Some(value) = record
-        .last_accessed_at
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("last_accessed_at = {}", toml_string(value)));
-    }
-    lines.push(format!(
-        "is_favorite = {}",
-        if record.is_favorite { "true" } else { "false" }
-    ));
-    if let Some(value) = record
-        .active_conversation_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("active_conversation_id = {}", toml_string(value)));
-    }
-    if let Some(value) = record
-        .execution_profile_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("execution_profile_id = {}", toml_string(value)));
-    }
-    if record.is_default {
-        lines.push("is_default = true".to_string());
-    }
-    lines.push(String::new());
-    if !extra.is_empty() {
-        lines.push(
-            toml::to_string(&extra).map_err(|_| StorageError::SettingsValidation {
-                path: path.into(),
-                reason: "Unable to serialize project settings.".into(),
-            })?,
-        );
-    }
-    crate::write_text_atomic(path, lines.join("\n"))
+fn project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    let project_path: String = row.get(1)?;
+    Ok(ProjectRecord {
+        project_id: row.get(0)?,
+        folder_exists: Path::new(&project_path).is_dir(),
+        project_path,
+        display_name: row.get(2)?,
+        created_at: row.get(3)?,
+        last_opened_at: row.get(4)?,
+        last_accessed_at: row.get(5)?,
+        is_favorite: row.get(6)?,
+        active_conversation_id: row.get(7)?,
+        execution_profile_id: row.get(8)?,
+        is_default: row.get(9)?,
+    })
 }
 
-fn read_required_string(payload: &TomlMap<String, toml::Value>, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(toml::Value::as_str)
-        .map(str::to_string)
-}
-
-fn read_optional_string(payload: &TomlMap<String, toml::Value>, key: &str) -> Option<String> {
-    read_required_string(payload, key).and_then(normalize_optional_string)
-}
-
-fn read_optional_bool(payload: &TomlMap<String, toml::Value>, key: &str, default: bool) -> bool {
-    payload
-        .get(key)
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(default)
+fn settings_revision(connection: &Connection, project_id: &str) -> Result<String> {
+    Ok(connection
+        .query_row(
+            "SELECT settings_revision FROM projects WHERE project_id = ?1",
+            [project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map_or_else(
+            || ABSENT_REVISION.to_string(),
+            |revision| revision.to_string(),
+        ))
 }
 
 fn normalize_optional_string(value: String) -> Option<String> {
@@ -542,21 +493,4 @@ fn iso_now() -> String {
         now.minute(),
         now.second()
     )
-}
-
-fn toml_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
 }
