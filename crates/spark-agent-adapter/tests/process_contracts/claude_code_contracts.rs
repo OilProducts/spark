@@ -2153,6 +2153,198 @@ fn claude_code_session_nodes_resume_the_stored_session_with_its_usage() {
 }
 
 #[test]
+fn claude_code_resumed_prompt_waits_past_results_of_commands_queued_ahead_of_it() {
+    use std::io::Write as _;
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude.log");
+    let usage = |input: u64, output: u64| {
+        json!({"claude-opus-4-8": {"inputTokens": input, "outputTokens": output,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+    };
+    let metadata = BTreeMap::from([
+        (
+            "spark.config_dir".to_string(),
+            json!(temp.path().join("config")),
+        ),
+        (
+            "spark.runtime.claude_code.session_id".to_string(),
+            json!("sess-stored"),
+        ),
+        (
+            spark_agent_adapter::MODEL_USAGE_SNAPSHOT_METADATA_KEY.to_string(),
+            usage(5, 50),
+        ),
+    ]);
+    let mut agent_turn = agent_request(temp.path());
+    agent_turn.metadata = metadata.clone();
+    let codergen = CodergenBackendRequest {
+        node_id: "implement".to_string(),
+        prompt: "Prepare the change.".to_string(),
+        provider: "claude-code".to_string(),
+        model: Some("claude-opus-4-8".to_string()),
+        runtime_mode: CodergenRuntimeMode::agent(),
+        project_path: Some(temp.path().to_path_buf()),
+        metadata,
+        ..CodergenBackendRequest::default()
+    };
+
+    // An empty and a nonempty unrelated result, a nonempty one where only the
+    // prompt's result marks it processed, and a control without one.
+    for mode in [
+        "resumed-stale-empty",
+        "resumed-stale-answer",
+        "resumed-unstarted",
+        "resumed-current",
+    ] {
+        for (operation, payload) in [
+            ("agent-turn", serde_json::to_value(&agent_turn).unwrap()),
+            ("codergen", serde_json::to_value(&codergen).unwrap()),
+        ] {
+            let case = format!("{mode} {operation}");
+            let _ = std::fs::remove_file(&log_path);
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_spark-agent-boundary"))
+                .arg(operation)
+                .env("SPARK_HOME", temp.path())
+                .env("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin())
+                .env("SPARK_FAKE_CLAUDE_CODE_MODE", mode)
+                .env("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("boundary");
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.to_string().as_bytes())
+                .unwrap();
+            let response: serde_json::Value =
+                serde_json::from_slice(&child.wait_with_output().unwrap().stdout).unwrap();
+            let output = &response["output"];
+
+            let (answer, final_usage, events) = if operation == "agent-turn" {
+                (
+                    output["final_assistant_text"].clone(),
+                    output["token_usage"].clone(),
+                    output["events"].as_array().cloned().unwrap_or_default(),
+                )
+            } else {
+                (
+                    output["response"]["value"].clone(),
+                    output["usage"].clone(),
+                    output["events"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|event| event["event_type"] == "claude_code_session_event")
+                        .map(|event| event["payload"]["turn_stream_event"].clone())
+                        .collect(),
+                )
+            };
+            assert_eq!(answer, json!("CURRENT ANSWER"), "{case}: {response}");
+            if operation == "codergen" {
+                assert_eq!(output["response"]["kind"], "text", "{case}");
+            }
+            assert_eq!(final_usage["output_tokens"], json!(40), "{case}");
+
+            let log = std::fs::read_to_string(&log_path).unwrap();
+            let invocations = logged_invocations(&log_path);
+            assert_eq!(invocations.len(), 1, "{case}");
+            assert_eq!(
+                arg_after(&invocations[0], "--resume").as_deref(),
+                Some("sess-stored"),
+                "{case}"
+            );
+            // The frames name the uuid the prompt actually went out with.
+            let prompt = log
+                .lines()
+                .find_map(|line| line.strip_prefix("PROMPT_UUID="))
+                .expect("prompt uuid");
+            assert!(uuid::Uuid::parse_str(prompt).is_ok(), "{case}: {prompt}");
+            if operation == "agent-turn" {
+                let sent = output["raw_log_lines"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|line| line["direction"] == "stdin")
+                    .map(|line| {
+                        serde_json::from_str::<serde_json::Value>(line["line"].as_str().unwrap())
+                            .unwrap()
+                    })
+                    .find(|line| line["type"] == "user")
+                    .expect("prompt on stdin");
+                assert_eq!(sent["uuid"], json!(prompt), "{case}");
+            }
+            let position = |kind: &str, state: &str| {
+                events.iter().position(|event| {
+                    event["kind"] == kind
+                        && event["details"]["command_uuid"] == prompt
+                        && event["details"]["state"] == state
+                })
+            };
+            let queued = position("command_lifecycle", "queued").expect("prompt queued");
+            let started = position("command_lifecycle", "started");
+            assert_eq!(started.is_some(), mode != "resumed-unstarted", "{case}");
+            // The model works on the prompt from here on.
+            let requesting = events
+                .iter()
+                .position(|event| {
+                    event["kind"] == "system_status"
+                        && event["details"]["user_message_uuids"] == json!([prompt])
+                })
+                .expect("prompt requesting");
+            assert!(
+                queued < started.unwrap_or(requesting) && started.unwrap_or(queued) < requesting
+            );
+            // Another command's start, before the prompt's, admits nothing.
+            if mode != "resumed-current" {
+                assert!(events.iter().take(requesting).any(|event| {
+                    event["kind"] == "command_lifecycle"
+                        && event["details"]["command_uuid"] == "foreign-command"
+                        && event["details"]["state"] == "started"
+                }));
+            }
+
+            // Only the current result completes the turn, with its own text and usage.
+            let of_kind = |kind: &str| {
+                events
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, event)| event["kind"] == kind)
+                    .collect::<Vec<_>>()
+            };
+            let completed = of_kind("turn_completed");
+            assert_eq!(completed.len(), 1, "{case}: {events:?}");
+            assert!(completed[0].0 > requesting, "{case}");
+            assert_eq!(completed[0].1["status"], "success", "{case}");
+            assert!(completed[0].1.get("error").is_none(), "{case}");
+            let usages = of_kind("token_usage_updated");
+            assert_eq!(usages.len(), 1, "{case}");
+            assert_eq!(usages[0].1["token_usage"]["output_tokens"], json!(40));
+            let texts = events
+                .iter()
+                .filter_map(|event| event["content_delta"].as_str())
+                .collect::<Vec<_>>();
+            assert!(!texts.is_empty(), "{case}");
+            assert!(
+                texts.iter().all(|text| *text == "CURRENT ANSWER"),
+                "{case}: {texts:?}"
+            );
+            // The context usage request follows the current result.
+            assert_eq!(log.matches("GET_CONTEXT_USAGE").count(), 1, "{case}: {log}");
+            assert!(
+                log.find("CURRENT_RESULT").expect("current result")
+                    < log.find("GET_CONTEXT_USAGE").unwrap(),
+                "{case}: {log}"
+            );
+        }
+    }
+}
+
+#[test]
 fn thinking_without_text_reports_live_progress_only_and_adds_no_transcript_event() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");

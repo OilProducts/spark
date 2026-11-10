@@ -61,6 +61,7 @@ fn main() {
     // Control-protocol mode: with stream-json input the caller drives via
     // control requests (model discovery) instead of a prompt turn, and keeps
     // stdin open, so answer line by line instead of reading to EOF.
+    let mut prompt_uuid = String::new();
     if args
         .windows(2)
         .any(|pair| pair[0] == "--input-format" && pair[1] == "stream-json")
@@ -75,10 +76,10 @@ fn main() {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) {
                 if message["type"] == "user" {
                     assert_eq!(message["message"]["role"], "user");
-                    assert!(
-                        message["uuid"].as_str().is_some(),
-                        "user messages carry a uuid"
-                    );
+                    prompt_uuid = message["uuid"]
+                        .as_str()
+                        .expect("user messages carry a uuid")
+                        .to_string();
                     assert_user_content(&message["message"]["content"]);
                     append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
                     break;
@@ -153,6 +154,15 @@ fn main() {
             json!({"type": "result", "subtype": "success", "is_error": false, "result": "All set.", "session_id": session_id}),
         );
         return;
+    }
+    // A command lifecycle frame names its command; its own uuid is unrelated.
+    let lifecycle = |command: &str, state: &str| {
+        json!({"type": "command_lifecycle", "session_id": session_id, "uuid": format!("frame-{state}"),
+            "command_uuid": command, "state": state})
+    };
+    if mode.starts_with("resumed-") {
+        append_log(&format!("PROMPT_UUID={prompt_uuid}"));
+        emit(&mut out, lifecycle(&prompt_uuid, "queued"));
     }
     if mode == "request-before-init" {
         emit(
@@ -336,6 +346,57 @@ fn main() {
         }
         drain_stdin();
         append_log("STDIN_CLOSED");
+        return;
+    }
+    if mode.starts_with("resumed-") {
+        // As CLI 2.1.296 resumes a session whose background task expired: it
+        // queues the prompt, answers a task notification of its own with an
+        // unrelated result, and only then starts the prompt. -unstarted never
+        // reports the start; only its result names the prompt.
+        let usage = |input: u64, output: u64| {
+            json!({"claude-opus-4-8": {"inputTokens": input, "outputTokens": output,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+        };
+        if mode != "resumed-current" {
+            emit(&mut out, lifecycle("foreign-command", "started"));
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false,
+                    "result": if mode == "resumed-stale-empty" { "" } else { "UNRELATED OLD ANSWER" },
+                    "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [], "modelUsage": usage(7, 70)}),
+            );
+            emit(&mut out, lifecycle("foreign-command", "completed"));
+        }
+        if mode != "resumed-unstarted" {
+            emit(&mut out, lifecycle(&prompt_uuid, "started"));
+        }
+        emit(
+            &mut out,
+            json!({"type": "system", "subtype": "status", "status": "requesting", "session_id": session_id,
+                "user_message_uuids": [prompt_uuid]}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "current-permission", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        // A turn that ended at the unrelated result asks for its context
+        // usage first: answer, and never send the current answer.
+        let reply = read_control();
+        if answer_context_usage(&reply) {
+            return;
+        }
+        assert_eq!(reply["response"]["request_id"], "current-permission");
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "CURRENT ANSWER"}]}}),
+        );
+        append_log("CURRENT_RESULT");
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "CURRENT ANSWER",
+                "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [prompt_uuid], "modelUsage": usage(9, 90)}),
+        );
+        drain_stdin();
         return;
     }
     if mode == "mid-turn-continue" {
@@ -1050,17 +1111,23 @@ fn drain_stdin() {
         .map(|read| read > 0)
         .unwrap_or(false)
     {
-        let message = serde_json::from_str::<Value>(&line).unwrap_or_default();
-        if message["request"]["subtype"] == "get_context_usage" {
-            append_log("GET_CONTEXT_USAGE");
-            println!(
-                "{}",
-                json!({"type": "control_response", "response": {"subtype": "success", "request_id": message["request_id"],
-                    "response": {"totalTokens": 24000, "maxTokens": 1000000, "percentage": 2.4, "categories": []}}})
-            );
-        }
+        answer_context_usage(&serde_json::from_str::<Value>(&line).unwrap_or_default());
         line.clear();
     }
+}
+
+/// Answers a `get_context_usage` request; false for any other message.
+fn answer_context_usage(message: &Value) -> bool {
+    if message["request"]["subtype"] != "get_context_usage" {
+        return false;
+    }
+    append_log("GET_CONTEXT_USAGE");
+    println!(
+        "{}",
+        json!({"type": "control_response", "response": {"subtype": "success", "request_id": message["request_id"],
+            "response": {"totalTokens": 24000, "maxTokens": 1000000, "percentage": 2.4, "categories": []}}})
+    );
+    true
 }
 
 fn read_control() -> Value {
