@@ -52,141 +52,135 @@ pub const HANDLER_FAN_IN: &str = "parallel.fan_in";
 pub const HANDLER_TOOL: &str = "tool";
 pub const HANDLER_MANAGER_LOOP: &str = "stack.manager_loop";
 
-fn materialize_execution_suffix(
+/// Append the transcript record one persisted execution event produces, if
+/// any. Streaming deltas produce none and cost no reads.
+fn project_execution_event(
     activity: &spark_storage::ActivityRepository,
+    stored: &spark_storage::ActivityEvent,
 ) -> spark_storage::Result<()> {
-    let records = activity.read_transcript_records()?;
-    let mut revision = records.len() as u64 + 1;
-    // Messages sent into the turn, so one it never read is marked failed
-    // where it was sent, as chat shows it.
-    let mut user_messages = records
-        .into_iter()
-        .filter_map(|record| match record {
-            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. }
-                if segment.kind == "user_message" =>
-            {
-                Some((segment.id.clone(), segment))
-            }
-            _ => None,
-        })
-        .collect::<BTreeMap<_, _>>();
-    for stored in activity.uncommitted_event_suffix()? {
-        if stored.event.get("type").and_then(Value::as_str) == Some("prompt_resolved") {
-            let prompt = stored
-                .event
-                .get("prompt")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let turn = serde_json::from_value(json!({
-                "id": "prompt", "role": "user", "kind": "message", "content": prompt,
-                "status": "complete", "timestamp": stored.committed_at,
-            }))
-            .map_err(|source| spark_storage::StorageError::JsonWrite {
+    if stored.event.get("type").and_then(Value::as_str) == Some("prompt_resolved") {
+        let prompt = stored
+            .event
+            .get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let turn = serde_json::from_value(json!({
+            "id": "prompt", "role": "user", "kind": "message", "content": prompt,
+            "status": "complete", "timestamp": stored.committed_at,
+        }))
+        .map_err(|source| spark_storage::StorageError::JsonWrite {
+            path: activity.transcript_path(),
+            source,
+        })?;
+        return activity.append_transcript(&spark_storage::TranscriptRecord::TurnUpsert {
+            revision: activity.next_transcript_revision()?,
+            committed_at: stored.committed_at.clone(),
+            source_event_sequence: stored.sequence,
+            turn,
+        });
+    }
+    let Some(unit) = stored
+        .event
+        .get("payload")
+        .and_then(|payload| payload.get("turn_stream_event"))
+    else {
+        return Ok(());
+    };
+    let kind = unit.get("kind").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(
+        kind,
+        "content_completed"
+            | "tool_call_completed"
+            | "tool_call_failed"
+            | "request_user_input_requested"
+            | "context_compaction_completed"
+            | "warning"
+            | "user_message_delivered"
+            | "user_message_not_delivered"
+    ) {
+        return Ok(());
+    }
+    let channel = unit
+        .get("channel")
+        .and_then(Value::as_str)
+        .unwrap_or("assistant");
+    let segment_kind = match kind {
+        "tool_call_completed" | "tool_call_failed" => "tool_call",
+        "request_user_input_requested" => "request_user_input",
+        "context_compaction_completed" => "context_compaction",
+        "warning" => "agent_event",
+        "user_message_delivered" | "user_message_not_delivered" => "user_message",
+        _ => match channel {
+            "reasoning" => "reasoning",
+            "plan" => "plan",
+            _ => "assistant_message",
+        },
+    };
+    let id = if segment_kind == "user_message" {
+        format!(
+            "segment-user-message-{}",
+            unit["source"]["item_id"].as_str().unwrap_or_default()
+        )
+    } else {
+        unit.get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("event-{}", stored.sequence))
+    };
+    let revision = activity.next_transcript_revision()?;
+    let segment = if kind == "user_message_not_delivered" {
+        // A message the turn never read is marked failed where it was sent,
+        // as chat shows it.
+        let sent = activity
+            .read_transcript_records()?
+            .into_iter()
+            .rev()
+            .find_map(|record| match record {
+                spark_storage::TranscriptRecord::SegmentUpsert { segment, .. }
+                    if segment.kind == "user_message" && segment.id == id =>
+                {
+                    Some(segment)
+                }
+                _ => None,
+            });
+        let Some(mut segment) = sent else {
+            return Ok(());
+        };
+        segment.status = "failed".to_string();
+        segment.error = unit
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        segment.updated_at = stored.committed_at.clone();
+        segment
+    } else {
+        let mut segment = json!({
+            "id": id, "turn_id": "response", "order": revision as i64 - 2,
+            "kind": segment_kind,
+            "role": if segment_kind == "user_message" { "user" } else { "assistant" },
+            "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
+            "timestamp": stored.committed_at, "updated_at": stored.committed_at,
+            "completed_at": stored.committed_at,
+            "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
+            "tool_call": unit.get("tool_call"), "request_user_input": unit.get("request_user_input"),
+            "source": unit.get("source"),
+        });
+        if kind == "warning" {
+            segment["category"] = json!("warning");
+        }
+        serde_json::from_value(segment).map_err(|source| {
+            spark_storage::StorageError::JsonWrite {
                 path: activity.transcript_path(),
                 source,
-            })?;
-            activity.append_transcript(&spark_storage::TranscriptRecord::TurnUpsert {
-                revision,
-                committed_at: stored.committed_at,
-                source_event_sequence: stored.sequence,
-                turn,
-            })?;
-            revision += 1;
-            continue;
-        }
-        let Some(unit) = stored
-            .event
-            .get("payload")
-            .and_then(|payload| payload.get("turn_stream_event"))
-        else {
-            continue;
-        };
-        let kind = unit.get("kind").and_then(Value::as_str).unwrap_or_default();
-        if !matches!(
-            kind,
-            "content_completed"
-                | "tool_call_completed"
-                | "tool_call_failed"
-                | "request_user_input_requested"
-                | "context_compaction_completed"
-                | "warning"
-                | "user_message_delivered"
-                | "user_message_not_delivered"
-        ) {
-            continue;
-        }
-        let channel = unit
-            .get("channel")
-            .and_then(Value::as_str)
-            .unwrap_or("assistant");
-        let segment_kind = match kind {
-            "tool_call_completed" | "tool_call_failed" => "tool_call",
-            "request_user_input_requested" => "request_user_input",
-            "context_compaction_completed" => "context_compaction",
-            "warning" => "agent_event",
-            "user_message_delivered" | "user_message_not_delivered" => "user_message",
-            _ => match channel {
-                "reasoning" => "reasoning",
-                "plan" => "plan",
-                _ => "assistant_message",
-            },
-        };
-        let id = if segment_kind == "user_message" {
-            format!(
-                "segment-user-message-{}",
-                unit["source"]["item_id"].as_str().unwrap_or_default()
-            )
-        } else {
-            unit.get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("event-{}", stored.sequence))
-        };
-        let segment = if kind == "user_message_not_delivered" {
-            let Some(mut segment) = user_messages.get(&id).cloned() else {
-                continue;
-            };
-            segment.status = "failed".to_string();
-            segment.error = unit
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            segment.updated_at = stored.committed_at.clone();
-            segment
-        } else {
-            let mut segment = json!({
-                "id": id, "turn_id": "response", "order": revision as i64 - 2,
-                "kind": segment_kind,
-                "role": if segment_kind == "user_message" { "user" } else { "assistant" },
-                "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
-                "timestamp": stored.committed_at, "updated_at": stored.committed_at,
-                "completed_at": stored.committed_at,
-                "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
-                "tool_call": unit.get("tool_call"), "request_user_input": unit.get("request_user_input"),
-                "source": unit.get("source"),
-            });
-            if kind == "warning" {
-                segment["category"] = json!("warning");
             }
-            serde_json::from_value(segment).map_err(|source| {
-                spark_storage::StorageError::JsonWrite {
-                    path: activity.transcript_path(),
-                    source,
-                }
-            })?
-        };
-        if segment_kind == "user_message" {
-            user_messages.insert(id, segment.clone());
-        }
-        activity.append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
-            revision,
-            committed_at: stored.committed_at,
-            source_event_sequence: stored.sequence,
-            segment,
-        })?;
-        revision += 1;
-    }
-    Ok(())
+        })?
+    };
+    activity.append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
+        revision,
+        committed_at: stored.committed_at.clone(),
+        source_event_sequence: stored.sequence,
+        segment,
+    })
 }
 
 fn externalize_codergen_tool_output(
@@ -1026,26 +1020,28 @@ impl RuntimeHandlerRunner {
             .as_ref()
             .map(spark_storage::ActivityRepository::new);
         if let Some(activity) = activity.as_ref() {
-            if activity
-                .read_transcript_records()
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?
-                .is_empty()
-            {
-                if activity
-                    .read_events()
-                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?
-                    .is_empty()
-                {
-                    activity
-                        .append_event(
-                            json!({"type": "prompt_resolved", "prompt": runtime.prompt}),
-                            crate::events::utc_timestamp(),
-                        )
-                        .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+            // Events a crash left after the last transcript record are
+            // projected here, once; the live sink never rereads history.
+            (|| {
+                let committed = activity
+                    .read_transcript_records()?
+                    .last()
+                    .map_or(0, |record| record.source_event_sequence());
+                let mut events = activity.read_events()?;
+                if events.is_empty() {
+                    events.push(activity.append_event(
+                        json!({"type": "prompt_resolved", "prompt": runtime.prompt}),
+                        crate::events::utc_timestamp(),
+                    )?);
                 }
-                materialize_execution_suffix(activity)
-                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            }
+                events
+                    .iter()
+                    .filter(|stored| stored.sequence > committed)
+                    .try_for_each(|stored| project_execution_event(activity, stored))
+            })()
+            .map_err(|error: spark_storage::StorageError| {
+                RuntimeNodeError::runtime(error.to_string())
+            })?;
         }
         let root_run_id = runtime
             .context
@@ -1242,6 +1238,15 @@ impl RuntimeHandlerRunner {
                     return;
                 }
                 write_agent_trace_event(trace_path.as_deref(), &event);
+                // After a failed write, a later record would move the recovery
+                // point past the event that was missed.
+                if sink_error
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .is_some()
+                {
+                    return;
+                }
                 if let Some(activity) = activity.as_ref() {
                     if let Err(error) = externalize_codergen_tool_output(activity, &mut event) {
                         let mut slot = sink_error
@@ -1257,7 +1262,7 @@ impl RuntimeHandlerRunner {
                 let append_result = if let Some(activity) = activity.as_ref() {
                     activity
                         .append_event(value, crate::events::utc_timestamp())
-                        .and_then(|_| materialize_execution_suffix(activity))
+                        .and_then(|stored| project_execution_event(activity, &stored))
                         .map_err(
                             |error| crate::error::RuntimeStorageError::InvalidRuntimeGraph {
                                 reason: error.to_string(),
@@ -1322,10 +1327,6 @@ impl RuntimeHandlerRunner {
         {
             return Err(RuntimeNodeError::runtime(error));
         }
-        if let Some(activity) = activity.as_ref() {
-            materialize_execution_suffix(activity)
-                .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        }
         // Text-only completions never stream a content event, so the final
         // response text would otherwise be invisible to the execution
         // transcript. Journal a synthetic completion for those.
@@ -1353,10 +1354,8 @@ impl RuntimeHandlerRunner {
                     )
                     .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
                 let revision = activity
-                    .read_transcript_records()
-                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?
-                    .len() as u64
-                    + 1;
+                    .next_transcript_revision()
+                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
                 activity
                     .append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
                         revision,

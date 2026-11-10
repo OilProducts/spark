@@ -232,12 +232,16 @@ impl ActivityRepository {
         Ok(transcript)
     }
 
-    /// Only events after the last semantic commit need inspection on recovery.
-    pub fn uncommitted_event_suffix(&self) -> Result<Vec<ActivityEvent>> {
-        let committed = tail_record::<TranscriptRecord>(&self.transcript_path())?
-            .map(|record| record.source_event_sequence())
-            .unwrap_or(0);
-        read_event_suffix(&self.events_path(), committed)
+    /// The revision the next appended transcript record must carry.
+    pub fn next_transcript_revision(&self) -> Result<u64> {
+        let guard = self.lock()?;
+        let tail = match guard.transcript_revision {
+            Some(revision) if guard.transcript_len == file_len(&self.transcript_path())? => {
+                revision
+            }
+            _ => tail_transcript_revision(&self.transcript_path())?,
+        };
+        Ok(tail.saturating_add(1))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, ActivityTail>> {
@@ -435,41 +439,6 @@ fn tail_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         end = start;
     }
     Ok(None)
-}
-
-fn read_event_suffix(path: &Path, committed: u64) -> Result<Vec<ActivityEvent>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let mut file = fs::File::open(path).map_err(|error| activity_io("open", path, error))?;
-    let mut end = file
-        .metadata()
-        .map_err(|error| activity_io("stat", path, error))?
-        .len();
-    let mut bytes = Vec::new();
-    while end > 0 {
-        let start = end.saturating_sub(TAIL_CHUNK_BYTES);
-        file.seek(SeekFrom::Start(start))
-            .map_err(|error| activity_io("seek", path, error))?;
-        let mut chunk = vec![0; (end - start) as usize];
-        file.read_exact(&mut chunk)
-            .map_err(|error| activity_io("read", path, error))?;
-        chunk.extend(bytes);
-        bytes = chunk;
-        let records: Vec<ActivityEvent> = activity_lines(path, &bytes, start > 0)?
-            .into_iter()
-            .filter(|record: &ActivityEvent| record.sequence > committed)
-            .collect();
-        if records
-            .first()
-            .is_some_and(|record| record.sequence == committed + 1)
-            || start == 0
-        {
-            return Ok(records);
-        }
-        end = start;
-    }
-    Ok(Vec::new())
 }
 
 /// Decode a window that ends at end of file, skipping its first (partial)

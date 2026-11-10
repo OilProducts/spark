@@ -841,8 +841,8 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
     }
 }
 
-#[test]
-fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
+/// Runs one `task` node on `StatusEventsBackend` and returns its execution activity.
+fn run_status_events_node(paths: &RunRootPaths) -> spark_storage::ActivityRepository {
     let flow = serde_json::from_value::<FlowDefinition>(json!({
         "schema_version": "2",
         "id": "g",
@@ -855,9 +855,6 @@ fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
     }))
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
-    let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
-    std::fs::create_dir_all(paths.logs_dir()).unwrap();
     RuntimeHandlerRunner::new()
         .with_codergen_backend_factory(|| Box::new(StatusEventsBackend))
         .with_external_event_sink(|_| Ok(()))
@@ -872,7 +869,7 @@ fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
             flow: flow.clone(),
             outgoing_edges: outgoing_routing_edges(&flow, "task").unwrap(),
             run_paths: Some(paths.clone()),
-            run_workdir: temp.path().to_path_buf(),
+            run_workdir: paths.logs_dir(),
             run_id: "run-1".to_string(),
             fallback_model: None,
             fallback_provider: None,
@@ -880,11 +877,76 @@ fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
             fallback_reasoning_effort: None,
         })
         .expect("codergen executes");
+    spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"))
+}
 
-    let records =
-        spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"))
-            .read_transcript_records()
+/// A completion persisted before a crash, but not yet in the transcript, is
+/// projected once when the node resumes, ahead of anything the new turn adds.
+#[test]
+fn resumed_node_projects_events_left_pending_by_a_crash_exactly_once() {
+    let temp = tempdir().unwrap();
+    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let crashed =
+        spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"));
+    crashed
+        .append_event(
+            json!({"type": "prompt_resolved", "prompt": "Ship it"}),
+            "t0",
+        )
+        .unwrap();
+    crashed
+        .append_transcript(&spark_storage::TranscriptRecord::TurnUpsert {
+            revision: 1,
+            committed_at: "t0".to_string(),
+            source_event_sequence: 1,
+            turn: serde_json::from_value(json!({
+                "id": "prompt", "role": "user", "kind": "message", "content": "Ship it",
+                "status": "complete", "timestamp": "t0",
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    for event in [
+        json!({"kind": "content_delta", "content_delta": "before"}),
+        json!({"kind": "content_completed", "message": "before crash"}),
+        json!({"kind": "content_delta", "content_delta": "lost"}),
+    ] {
+        crashed
+            .append_event(json!({"payload": {"turn_stream_event": event}}), "t1")
             .unwrap();
+    }
+
+    for _restart in 0..2 {
+        let contents = run_status_events_node(&paths)
+            .read_transcript_records()
+            .unwrap()
+            .into_iter()
+            .filter_map(|record| match record {
+                spark_storage::TranscriptRecord::SegmentUpsert { segment, .. } => {
+                    Some(segment.content)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(contents[0], "before crash");
+        assert_eq!(
+            contents
+                .iter()
+                .filter(|content| *content == "before crash")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
+    let temp = tempdir().unwrap();
+    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    std::fs::create_dir_all(paths.logs_dir()).unwrap();
+    let records = run_status_events_node(&paths)
+        .read_transcript_records()
+        .unwrap();
     let segments = records
         .iter()
         .filter_map(|record| match record {

@@ -120,10 +120,6 @@ fn activity_repository_keeps_deltas_out_of_the_logical_transcript() {
             .len(),
         1
     );
-    assert!(repository
-        .uncommitted_event_suffix()
-        .expect("suffix")
-        .is_empty());
 }
 
 #[test]
@@ -234,43 +230,6 @@ fn chat_and_execution_repositories_persist_identical_transcript_records() {
     assert_eq!(
         std::fs::read(chat.transcript_path()).expect("chat transcript"),
         std::fs::read(execution.transcript_path()).expect("execution transcript")
-    );
-}
-
-#[test]
-fn missing_completion_is_recovered_exactly_once() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let repository = ActivityRepository::new(temp.path());
-    repository
-        .append_event(
-            json!({"type": "content_completed", "content": "recovered"}),
-            "now",
-        )
-        .expect("completion event");
-
-    for _restart in 0..2 {
-        for event in repository
-            .uncommitted_event_suffix()
-            .expect("uncommitted suffix")
-        {
-            repository
-                .append_transcript(&TranscriptRecord::SegmentUpsert {
-                    revision: repository.read_transcript_records().expect("records").len() as u64
-                        + 1,
-                    committed_at: event.committed_at,
-                    source_event_sequence: event.sequence,
-                    segment: serde_json::from_value(json!({
-                        "id": "answer", "turn_id": "turn", "kind": "assistant_message",
-                        "status": "complete", "content": event.event["content"]
-                    }))
-                    .expect("segment"),
-                })
-                .expect("recover completion");
-        }
-    }
-    assert_eq!(
-        repository.read_transcript_records().expect("records").len(),
-        1
     );
 }
 
@@ -422,10 +381,6 @@ fn power_loss_nul_tails_are_ignored_by_reads_and_repaired_by_append() {
     assert!(records.is_empty());
     assert_eq!(same, cursor);
     assert_eq!(
-        repository.uncommitted_event_suffix().expect("suffix").len(),
-        63
-    );
-    assert_eq!(
         std::fs::read(repository.events_path()).unwrap(),
         damaged_events
     );
@@ -542,22 +497,6 @@ fn terminated_or_earlier_corruption_remains_a_read_error() {
         assert!(repository.hydrate_transcript().is_err());
         assert!(repository.read_transcript_records_from(0).is_err());
     }
-}
-
-#[test]
-fn recovery_suffix_rejects_terminated_corruption() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let repository = ActivityRepository::new(temp.path());
-    repository
-        .append_event(json!({"type": "turn_completed"}), "now")
-        .expect("event");
-    append_raw(&repository.events_path(), b"BROKEN\n");
-    append_raw(
-        &repository.events_path(),
-        b"{\"sequence\":3,\"committed_at\":\"now\",\"event\":{}}\n",
-    );
-    assert!(repository.read_events().is_err());
-    assert!(repository.uncommitted_event_suffix().is_err());
 }
 
 /// A reader racing an append sees the record either whole or not at all:
