@@ -5,7 +5,6 @@ use attractor_core::{CheckpointState, ContextMap, FlowDefinition, RunManifest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::checkpoints::CheckpointWriteOptions;
 use crate::context::INTERNAL_PIPELINE_RETRY_RUN_ID_KEY;
 use crate::error::RuntimeStorageError;
 use crate::events::{
@@ -702,11 +701,7 @@ impl RuntimeControls {
             checkpoint
                 .context
                 .insert(crate::retry::RETRY_REQUEST_KEY.to_string(), json!(request));
-            self.store.save_checkpoint(
-                &bundle.paths,
-                &checkpoint,
-                CheckpointWriteOptions::default(),
-            )?;
+            self.store.save_checkpoint(&bundle.paths, &checkpoint)?;
         }
         if let Some(child) = &request.target.child {
             self.apply_retry_request(&crate::retry::RetryRequest {
@@ -722,11 +717,7 @@ impl RuntimeControls {
         checkpoint
             .context
             .insert(crate::retry::RETRY_REQUEST_KEY.to_string(), json!(ready));
-        self.store.save_checkpoint(
-            &bundle.paths,
-            &checkpoint,
-            CheckpointWriteOptions::default(),
-        )?;
+        self.store.save_checkpoint(&bundle.paths, &checkpoint)?;
         Ok(())
     }
 

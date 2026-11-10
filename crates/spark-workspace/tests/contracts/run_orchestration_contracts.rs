@@ -359,7 +359,7 @@ fn retry_and_continue_record_recovery_artifacts_and_delegate_to_attractor() {
         .expect("source")
         .paths;
     let source_checkpoint_before =
-        fs::read_to_string(source_paths.state_json()).expect("source checkpoint before");
+        fs::read_to_string(source_paths.checkpoint_json()).expect("source checkpoint before");
     let continued = service
         .continue_workspace_run(
             "run-source",
@@ -383,7 +383,7 @@ fn retry_and_continue_record_recovery_artifacts_and_delegate_to_attractor() {
     let continued_run_id = continued["run_id"].as_str().expect("continued run");
     assert_ne!(continued_run_id, "run-source");
     assert_eq!(
-        fs::read_to_string(source_paths.state_json()).expect("source checkpoint after"),
+        fs::read_to_string(source_paths.checkpoint_json()).expect("source checkpoint after"),
         source_checkpoint_before
     );
     let continued_record = store

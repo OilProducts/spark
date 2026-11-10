@@ -77,28 +77,12 @@ impl RunRootPaths {
         self.root.join("events.jsonl")
     }
 
-    pub fn state_json(&self) -> PathBuf {
-        self.root.join("state.json")
-    }
-
     pub fn checkpoint_json(&self) -> PathBuf {
         self.root.join("checkpoint.json")
     }
 
-    pub fn logs_checkpoint_json(&self) -> PathBuf {
-        self.logs_dir().join("checkpoint.json")
-    }
-
     pub fn manifest_json(&self) -> PathBuf {
         self.root.join("manifest.json")
-    }
-
-    pub fn logs_manifest_json(&self) -> PathBuf {
-        self.logs_dir().join("manifest.json")
-    }
-
-    pub fn run_log(&self) -> PathBuf {
-        self.root.join("run.log")
     }
 
     pub fn logs_dir(&self) -> PathBuf {

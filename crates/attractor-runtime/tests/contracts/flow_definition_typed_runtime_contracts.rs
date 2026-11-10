@@ -1883,7 +1883,6 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
                 visit_counts: Default::default(),
                 logs: Vec::new(),
             },
-            Default::default(),
         )
         .expect("checkpoint past the node");
 

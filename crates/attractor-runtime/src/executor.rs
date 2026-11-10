@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::artifacts::NodeArtifacts;
-use crate::checkpoints::CheckpointWriteOptions;
 use crate::context::{
     apply_outcome_context_updates_for_node, checkpoint_from_context, clear_runtime_retry_context,
     initialize_runtime_context, seed_builtin_context, set_runtime_retry_context, CURRENT_NODE_KEY,
@@ -1435,7 +1434,7 @@ fn save_checkpoint_event(
             .map(|(key, value)| (key.clone(), *value)),
         visit_counts,
     );
-    store.save_checkpoint(paths, &checkpoint, CheckpointWriteOptions::default())?;
+    store.save_checkpoint(paths, &checkpoint)?;
     store.append_event(
         paths,
         checkpoint_saved_event(run_id, current_node, completed_nodes.to_vec()),

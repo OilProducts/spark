@@ -6,7 +6,7 @@ use attractor_core::{
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
-    CheckpointWriteOptions, CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore,
+    CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -93,9 +93,8 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
     for path in [
         paths.run_json(),
         paths.events_jsonl(),
-        paths.state_json(),
-        paths.logs_manifest_json(),
-        paths.run_log(),
+        paths.checkpoint_json(),
+        paths.manifest_json(),
         paths.result_json(),
         paths.result_markdown(),
         paths.artifacts_dir().join("flow/flow-definition.json"),
@@ -127,7 +126,17 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
     assert!(paths.logs_dir().join("artifacts").is_dir());
     assert!(paths.artifacts_dir().is_dir());
     assert!(paths.result_dir().is_dir());
-    assert!(!paths.manifest_json().exists());
+    for duplicate in [
+        "state.json",
+        "logs/checkpoint.json",
+        "logs/manifest.json",
+        "run.log",
+    ] {
+        assert!(
+            !paths.root.join(duplicate).exists(),
+            "{duplicate} should not be written"
+        );
+    }
 
     let loaded = store
         .read_run_record(&paths)
@@ -367,61 +376,46 @@ fn raw_event_append_does_not_update_render_transcript() {
 }
 
 #[test]
-fn checkpoint_reads_state_root_checkpoint_and_logs_checkpoint_fallbacks() {
+fn checkpoint_is_written_and_read_only_at_the_run_root() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let runs_dir = temp.path().join("runs");
+    let store = store(&temp);
     let project_path = temp.path().join("Project Four");
     std::fs::create_dir_all(&project_path).expect("project dir");
-    let paths = RunRootPaths::new(runs_dir, project_path.to_string_lossy(), "run-checkpoint")
-        .expect("paths");
-    std::fs::create_dir_all(paths.logs_dir()).expect("logs dir");
+    let paths = store
+        .create_run(CreateRunRequest {
+            record: record("run-checkpoint", &project_path.to_string_lossy()),
+            checkpoint: Some(checkpoint("start", &[])),
+            ..CreateRunRequest::default()
+        })
+        .expect("create run");
 
-    let logs_checkpoint = checkpoint("from-logs", &["a"]);
-    write_json_atomic(
-        paths.logs_checkpoint_json(),
-        &logs_checkpoint,
-        JsonWriteOptions::default(),
-    )
-    .expect("logs checkpoint");
+    store
+        .save_checkpoint(&paths, &checkpoint("work", &["start"]))
+        .expect("save checkpoint");
+    let written: CheckpointState = read_json(paths.checkpoint_json()).expect("root checkpoint");
+    assert_eq!(written.current_node, "work");
     assert_eq!(
-        attractor_runtime::read_checkpoint(&paths)
-            .expect("read logs fallback")
-            .expect("checkpoint")
-            .current_node,
-        "from-logs"
+        store
+            .read_checkpoint(&paths)
+            .expect("read checkpoint")
+            .expect("checkpoint"),
+        written
     );
+    assert!(!paths.root.join("state.json").exists());
+    assert!(!paths.logs_dir().join("checkpoint.json").exists());
 
-    let root_checkpoint = checkpoint("from-root", &["a", "b"]);
-    write_json_atomic(
-        paths.checkpoint_json(),
-        &root_checkpoint,
-        JsonWriteOptions::default(),
-    )
-    .expect("root checkpoint");
+    // The old copies are never consulted, even when they are all that remains.
+    std::fs::remove_file(paths.checkpoint_json()).expect("remove root checkpoint");
+    for old in [
+        paths.root.join("state.json"),
+        paths.logs_dir().join("checkpoint.json"),
+    ] {
+        write_json_atomic(old, &checkpoint("old", &[]), JsonWriteOptions::default())
+            .expect("old checkpoint");
+    }
     assert_eq!(
-        attractor_runtime::read_checkpoint(&paths)
-            .expect("read root fallback")
-            .expect("checkpoint")
-            .current_node,
-        "from-root"
-    );
-
-    let state_checkpoint = checkpoint("from-state", &["a", "b", "c"]);
-    attractor_runtime::save_checkpoint(
-        &paths,
-        &state_checkpoint,
-        CheckpointWriteOptions {
-            write_root_checkpoint: false,
-            mirror_logs_checkpoint: false,
-        },
-    )
-    .expect("state checkpoint");
-    assert_eq!(
-        attractor_runtime::read_checkpoint(&paths)
-            .expect("read state preferred")
-            .expect("checkpoint")
-            .current_node,
-        "from-state"
+        store.read_checkpoint(&paths).expect("read checkpoint"),
+        None
     );
 }
 
@@ -471,12 +465,25 @@ fn result_materialization_selects_successful_response_artifact_and_overlays_mark
         "Raw response body\n"
     );
 
+    let metadata: serde_json::Value = read_json(paths.result_json()).expect("result json");
+    assert_eq!(metadata["source_node_id"], "work");
+    assert!(
+        metadata.get("body_markdown").is_none(),
+        "result.json stores metadata only: {metadata}"
+    );
+
     std::fs::write(paths.result_markdown(), "Edited body\n").expect("edit markdown");
     let reread = store
         .read_result(&paths)
         .expect("read result")
         .expect("result");
     assert_eq!(reread.body_markdown, "Edited body\n");
+
+    std::fs::remove_file(paths.result_markdown()).expect("remove markdown");
+    let error = store
+        .read_result(&paths)
+        .expect_err("missing result.md is an error");
+    assert!(error.to_string().contains("result.md"), "{error}");
 }
 
 #[test]
@@ -595,13 +602,23 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
         artifact.path == "logs/work/initial-context.txt"
             && artifact.context_capture_kind.as_deref() == Some("codex_turn_input")
     }));
-    assert!(paths_only.contains(&"logs/manifest.json"));
+    assert!(paths_only.contains(&"manifest.json"));
+    assert!(paths_only.contains(&"checkpoint.json"));
     assert!(paths_only.contains(&"result/result.json"));
-    assert!(paths_only.contains(&"run.log"));
-    assert!(!paths_only.contains(&"manifest.json"));
-    assert!(!paths_only.contains(&"run.json"));
-    assert!(!paths_only.contains(&"state.json"));
-    assert!(!paths_only.contains(&"events.jsonl"));
+    assert!(paths_only.contains(&"result/result.md"));
+    for absent in [
+        "logs/manifest.json",
+        "logs/checkpoint.json",
+        "state.json",
+        "run.log",
+        "run.json",
+        "events.jsonl",
+    ] {
+        assert!(
+            !paths_only.contains(&absent),
+            "{absent} should not be listed"
+        );
+    }
     assert!(artifacts
         .iter()
         .find(|artifact| artifact.path == "artifacts/flow/flow-definition.json")
@@ -697,7 +714,7 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
     )
     .expect("write python-created run");
     write_json_atomic(
-        paths.logs_checkpoint_json(),
+        paths.checkpoint_json(),
         &json!({
             "completed_nodes": ["start"],
             "context": {
@@ -726,9 +743,9 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
         }),
         JsonWriteOptions::default(),
     )
-    .expect("write python-created logs checkpoint");
+    .expect("write python-created checkpoint");
     write_json_atomic(
-        paths.logs_manifest_json(),
+        paths.manifest_json(),
         &json!({"goal": "fixture", "graph_id": "Fixture", "start_node": "start"}),
         JsonWriteOptions::default(),
     )
@@ -750,7 +767,7 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
     let artifacts = attractor_runtime::list_artifacts(&paths).expect("fixture artifacts");
     assert!(artifacts
         .iter()
-        .any(|artifact| artifact.path == "logs/checkpoint.json"));
+        .any(|artifact| artifact.path == "checkpoint.json"));
 }
 
 fn result_flow(explicit_result_node: Option<&str>) -> FlowDefinition {

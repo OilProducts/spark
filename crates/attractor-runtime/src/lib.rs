@@ -30,9 +30,7 @@ pub use artifacts::{
     write_node_artifacts, write_tool_output_log, write_tool_text_artifact, NodeArtifacts,
     ToolHookFailureRecord,
 };
-pub use checkpoints::{
-    normalize_checkpoint_for_write, read_checkpoint, save_checkpoint, CheckpointWriteOptions,
-};
+pub use checkpoints::{normalize_checkpoint_for_write, read_checkpoint, save_checkpoint};
 pub use codergen::{codergen_outcome, RuntimeCodergen};
 pub use context::{
     apply_outcome_context_updates, checkpoint_from_context, clear_runtime_retry_context,

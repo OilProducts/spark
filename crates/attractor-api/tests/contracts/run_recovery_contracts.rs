@@ -210,7 +210,7 @@ fn manufacture_orphaned_waiting_run(
         logs: Vec::new(),
     };
     store
-        .save_checkpoint(&paths, &checkpoint, Default::default())
+        .save_checkpoint(&paths, &checkpoint)
         .expect("save checkpoint");
     store
         .update_run_record(run_id, |record| {
@@ -306,7 +306,6 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
                 visit_counts: Default::default(),
                 logs: Vec::new(),
             },
-            Default::default(),
         )
         .expect("checkpoint root");
 
@@ -354,7 +353,6 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
                 visit_counts: Default::default(),
                 logs: Vec::new(),
             },
-            Default::default(),
         )
         .expect("checkpoint child");
 
@@ -466,7 +464,6 @@ fn recovery_pause_with_checkpoint_lag_consumes_the_durable_response() {
                 visit_counts: Default::default(),
                 logs: Vec::new(),
             },
-            Default::default(),
         )
         .expect("checkpoint");
     store
@@ -645,7 +642,6 @@ fn recovery_pause_survives_two_startups_without_retry_authorization() {
                 visit_counts: Default::default(),
                 logs: Vec::new(),
             },
-            Default::default(),
         )
         .expect("checkpoint");
 
@@ -1888,11 +1884,7 @@ fn restart_finishes_partial_tree_preparation_once_and_consumes_successful_childr
             .write_run_record(&bundle.paths, &bundle.record.unwrap())
             .unwrap();
         store
-            .save_checkpoint(
-                &bundle.paths,
-                &bundle.checkpoint.unwrap(),
-                Default::default(),
-            )
+            .save_checkpoint(&bundle.paths, &bundle.checkpoint.unwrap())
             .unwrap();
     }
     let root = store.read_run_bundle("retry-root").unwrap().unwrap();
@@ -1901,9 +1893,7 @@ fn restart_finishes_partial_tree_preparation_once_and_consumes_successful_childr
         .context
         .get_mut(attractor_runtime::retry::RETRY_REQUEST_KEY)
         .unwrap()["preparing"] = json!(true);
-    store
-        .save_checkpoint(&root.paths, &checkpoint, Default::default())
-        .unwrap();
+    store.save_checkpoint(&root.paths, &checkpoint).unwrap();
     store
         .update_run_record("retry-root", |r| r.status = "failed".into())
         .unwrap();
@@ -1933,9 +1923,7 @@ fn restart_finishes_partial_tree_preparation_once_and_consumes_successful_childr
         "_attractor.node_outcomes".into(),
         json!({"branch": {"status": "error", "decision": ""}}),
     );
-    store
-        .save_checkpoint(&root.paths, &checkpoint, Default::default())
-        .unwrap();
+    store.save_checkpoint(&root.paths, &checkpoint).unwrap();
     let child_checkpoint = controls.get_checkpoint("retry-child").unwrap();
     let response = blocking_gate_service(&settings).retry_pipeline_route("retry-root");
     assert_eq!(response.status_code, 200, "{:?}", response.body);
@@ -1970,9 +1958,7 @@ fn explicit_retry_rejects_invalid_lineage_and_cancellation_before_preparation() 
             let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
             let mut checkpoint = bundle.checkpoint.unwrap();
             checkpoint.current_node = "missing".into();
-            store
-                .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
-                .unwrap();
+            store.save_checkpoint(&bundle.paths, &checkpoint).unwrap();
         }
         if case == "flow" {
             let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
@@ -2013,9 +1999,7 @@ fn replace_retry_leaf(store: &RunStore, source: Value, node: &str) {
         "_attractor.node_outcomes".into(),
         json!({node: {"status": "error", "decision": ""}}),
     );
-    store
-        .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
-        .unwrap();
+    store.save_checkpoint(&bundle.paths, &checkpoint).unwrap();
 }
 
 #[test]
@@ -2190,9 +2174,7 @@ fn direct_child_retry_recovers_all_crash_windows_with_failed_parent() {
                 .context
                 .get_mut(attractor_runtime::retry::RETRY_REQUEST_KEY)
                 .unwrap()["preparing"] = json!(true);
-            store
-                .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
-                .unwrap();
+            store.save_checkpoint(&bundle.paths, &checkpoint).unwrap();
             store
                 .update_run_record("retry-leaf", |r| r.status = "failed".into())
                 .unwrap();
