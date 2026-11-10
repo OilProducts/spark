@@ -1,14 +1,10 @@
 use std::collections::BTreeMap;
 
-use attractor_core::{ContextMap, DotAttribute, DotGraph, DotNode, DotValue, DotValueType};
+use attractor_core::{ContextMap, DotAttribute, DotGraph, DotValue, DotValueType};
 use serde_json::{Number, Value};
 
 const DEFAULT_MAX_RETRIES_KEY: &str = "default_max_retries";
-const ALLOWED_STYLE_PROPERTIES: [&str; 8] = [
-    "llm_model",
-    "llm_provider",
-    "llm_profile",
-    "reasoning_effort",
+const REASONING_DEFAULT_PROPERTIES: [&str; 4] = [
     "thinking",
     "thinking_budget_tokens",
     "reasoning_mode",
@@ -52,7 +48,7 @@ impl TransformPipeline {
 pub fn build_transform_pipeline() -> TransformPipeline {
     let mut pipeline = TransformPipeline::new();
     pipeline.register(GoalVariableTransform);
-    pipeline.register(ModelStylesheetTransform);
+    pipeline.register(ReasoningDefaultsTransform);
     pipeline
 }
 
@@ -113,11 +109,6 @@ impl GraphTransform for AttributeDefaultsTransform {
             ),
             (
                 "label",
-                DotValueType::String,
-                DotValue::String(String::new()),
-            ),
-            (
-                "model_stylesheet",
                 DotValueType::String,
                 DotValue::String(String::new()),
             ),
@@ -243,24 +234,45 @@ impl GraphTransform for GoalVariableTransform {
     }
 }
 
+/// Copies the flow's default reasoning controls onto nodes that do not set them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ModelStylesheetTransform;
+pub struct ReasoningDefaultsTransform;
 
-impl GraphTransform for ModelStylesheetTransform {
+impl GraphTransform for ReasoningDefaultsTransform {
     fn apply(&self, graph: &mut DotGraph) {
-        let (rules, stylesheet_line) = match graph.graph_attrs.get("model_stylesheet") {
-            Some(attr) => match &attr.value {
-                DotValue::String(value) if !value.trim().is_empty() => {
-                    (parse_style_rules(value), attr.line.max(1))
-                }
-                _ => (Vec::new(), 0),
-            },
-            None => (Vec::new(), 0),
-        };
-        let graph_defaults = graph_default_model_attrs(graph);
-
         for node in graph.nodes.values_mut() {
-            apply_style_rules_to_node(node, &rules, stylesheet_line, &graph_defaults);
+            for property in REASONING_DEFAULT_PROPERTIES {
+                if node.explicit_attr_keys.contains(property) {
+                    continue;
+                }
+                // A node's own non-budget thinking choice drops an inherited budget.
+                if property == "thinking_budget_tokens"
+                    && node.explicit_attr_keys.contains("thinking")
+                    && node
+                        .attrs
+                        .get("thinking")
+                        .is_some_and(|v| dot_value_text(&v.value) != "budget")
+                {
+                    node.attrs.remove(property);
+                    continue;
+                }
+                let Some(attr) = graph.graph_attrs.get(property) else {
+                    continue;
+                };
+                let value = dot_value_text(&attr.value).trim().to_string();
+                if value.is_empty() {
+                    continue;
+                }
+                node.attrs.insert(
+                    property.to_string(),
+                    DotAttribute {
+                        key: property.to_string(),
+                        value: DotValue::String(value),
+                        value_type: DotValueType::String,
+                        line: attr.line,
+                    },
+                );
+            }
         }
     }
 }
@@ -297,362 +309,6 @@ fn set_default(
             value_type,
             line: 0,
         });
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StyleRule {
-    selector: String,
-    properties: BTreeMap<String, String>,
-    order: usize,
-}
-
-fn apply_style_rules_to_node(
-    node: &mut DotNode,
-    rules: &[StyleRule],
-    stylesheet_line: usize,
-    graph_defaults: &BTreeMap<String, (String, usize)>,
-) {
-    let mut candidates: BTreeMap<String, (i32, usize, String)> = BTreeMap::new();
-    for rule in rules {
-        if !selector_matches(&rule.selector, node) {
-            continue;
-        }
-        let specificity = selector_specificity(&rule.selector);
-        for (property, value) in &rule.properties {
-            let entry = (specificity, rule.order, value.clone());
-            if candidates
-                .get(property)
-                .map(|current| entry > *current)
-                .unwrap_or(true)
-            {
-                candidates.insert(property.clone(), entry);
-            }
-        }
-    }
-
-    for property in ALLOWED_STYLE_PROPERTIES {
-        if node.explicit_attr_keys.contains(property) {
-            continue;
-        }
-
-        // A more specific non-budget thinking choice clears a lower-scope budget.
-        if property == "thinking_budget_tokens"
-            && node
-                .attrs
-                .get("thinking")
-                .is_some_and(|v| dot_value_text(&v.value) != "budget")
-            && (node.explicit_attr_keys.contains("thinking")
-                || (candidates.contains_key("thinking") && !candidates.contains_key(property)))
-        {
-            node.attrs.remove(property);
-            continue;
-        }
-        let Some((value, line)) = candidates
-            .get(property)
-            .map(|(_, _, value)| (value.clone(), stylesheet_line))
-            .or_else(|| graph_defaults.get(property).cloned())
-            .or_else(|| {
-                (!node.attrs.contains_key(property)
-                    && !matches!(
-                        property,
-                        "thinking"
-                            | "thinking_budget_tokens"
-                            | "reasoning_mode"
-                            | "reasoning_summary"
-                    ))
-                .then(|| (system_model_default(property).to_string(), 0))
-            })
-        else {
-            continue;
-        };
-
-        node.attrs.insert(
-            property.to_string(),
-            DotAttribute {
-                key: property.to_string(),
-                value: DotValue::String(value),
-                value_type: DotValueType::String,
-                line,
-            },
-        );
-    }
-}
-
-fn parse_style_rules(stylesheet: &str) -> Vec<StyleRule> {
-    let text = stylesheet.trim();
-    let mut rules = Vec::new();
-    let mut index = 0;
-    let mut order = 0;
-
-    while index < text.len() {
-        index = skip_ascii_whitespace(text, index);
-        if index >= text.len() {
-            break;
-        }
-
-        let Some(brace) = find_unquoted(text, '{', index) else {
-            break;
-        };
-        let selector = text[index..brace].trim();
-        let Some(close) = find_unquoted(text, '}', brace + 1) else {
-            break;
-        };
-        let body = text[brace + 1..close].trim();
-
-        let mut properties = BTreeMap::new();
-        let mut rule_is_valid = selector_is_valid(selector);
-        for statement in split_unquoted(body, ';') {
-            let statement = statement.trim();
-            if statement.is_empty() {
-                continue;
-            }
-            if count_unquoted(statement, ':') != 1 {
-                rule_is_valid = false;
-                break;
-            }
-            let Some(colon) = find_unquoted(statement, ':', 0) else {
-                rule_is_valid = false;
-                break;
-            };
-            let key = statement[..colon].trim();
-            let value = parse_style_value(statement[colon + 1..].trim());
-            let Some(value) = value else {
-                rule_is_valid = false;
-                break;
-            };
-            if !ALLOWED_STYLE_PROPERTIES.contains(&key) || value.is_empty() {
-                rule_is_valid = false;
-                break;
-            }
-            properties.insert(key.to_string(), value);
-        }
-
-        if !selector.is_empty() && !properties.is_empty() && rule_is_valid {
-            rules.push(StyleRule {
-                selector: selector.to_string(),
-                properties,
-                order,
-            });
-        }
-        order += 1;
-        index = close + 1;
-    }
-
-    rules
-}
-
-fn selector_is_valid(selector: &str) -> bool {
-    if selector == "*" {
-        return true;
-    }
-    if let Some(class_name) = selector.strip_prefix('.') {
-        return !class_name.is_empty()
-            && class_name
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-');
-    }
-    if let Some(node_id) = selector.strip_prefix('#') {
-        return is_node_id(node_id);
-    }
-    is_shape_selector(selector)
-}
-
-fn selector_matches(selector: &str, node: &DotNode) -> bool {
-    let selector = selector.trim();
-    if selector == "*" {
-        return true;
-    }
-    if let Some(node_id) = selector.strip_prefix('#') {
-        return node.node_id == node_id;
-    }
-    if let Some(class_name) = selector.strip_prefix('.') {
-        let Some(class_attr) = node.attrs.get("class") else {
-            return false;
-        };
-        return dot_value_text(&class_attr.value)
-            .split(',')
-            .map(str::trim)
-            .any(|candidate| candidate == class_name);
-    }
-
-    let Some(shape_attr) = node.attrs.get("shape") else {
-        return false;
-    };
-    dot_value_text(&shape_attr.value)
-        .trim()
-        .to_ascii_lowercase()
-        == selector.trim().to_ascii_lowercase()
-}
-
-fn selector_specificity(selector: &str) -> i32 {
-    let selector = selector.trim();
-    if selector.starts_with('#') {
-        3
-    } else if selector.starts_with('.') {
-        2
-    } else if is_shape_selector(selector) {
-        1
-    } else if selector == "*" {
-        0
-    } else {
-        -1
-    }
-}
-
-fn parse_style_value(value: &str) -> Option<String> {
-    if value.starts_with('"') || value.ends_with('"') {
-        if !(value.starts_with('"') && value.ends_with('"')) || value.len() <= 2 {
-            return None;
-        }
-        return unescape_quoted_style_value(&value[1..value.len() - 1]);
-    }
-    (!value.contains('"')).then(|| value.to_string())
-}
-
-fn unescape_quoted_style_value(value: &str) -> Option<String> {
-    let mut output = String::new();
-    let mut chars = value.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '"' {
-            return None;
-        }
-        if ch != '\\' {
-            output.push(ch);
-            continue;
-        }
-        let escaped = chars.next()?;
-        match escaped {
-            '"' => output.push('"'),
-            '\\' => output.push('\\'),
-            'n' => output.push('\n'),
-            't' => output.push('\t'),
-            other => {
-                output.push('\\');
-                output.push(other);
-            }
-        }
-    }
-    Some(output)
-}
-
-fn graph_default_model_attrs(graph: &DotGraph) -> BTreeMap<String, (String, usize)> {
-    let mut defaults = BTreeMap::new();
-    for property in ALLOWED_STYLE_PROPERTIES {
-        let Some(attr) = graph.graph_attrs.get(property) else {
-            continue;
-        };
-        if attr.line == 0
-            && !matches!(
-                property,
-                "thinking" | "thinking_budget_tokens" | "reasoning_mode" | "reasoning_summary"
-            )
-        {
-            continue;
-        }
-        let value = dot_value_text(&attr.value).trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        defaults.insert(property.to_string(), (value, attr.line));
-    }
-    defaults
-}
-
-fn system_model_default(property: &str) -> &'static str {
-    match property {
-        "reasoning_effort" => "high",
-        _ => "",
-    }
-}
-
-fn is_shape_selector(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_alphabetic() && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-fn is_node_id(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-fn skip_ascii_whitespace(text: &str, start: usize) -> usize {
-    let mut index = start;
-    while index < text.len() {
-        let Some(ch) = text[index..].chars().next() else {
-            break;
-        };
-        if !ch.is_ascii_whitespace() {
-            break;
-        }
-        index += ch.len_utf8();
-    }
-    index
-}
-
-fn find_unquoted(text: &str, token: char, start: usize) -> Option<usize> {
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for (offset, ch) in text[start..].char_indices() {
-        if ch == '\\' && in_quotes && !escaped {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' && !escaped {
-            in_quotes = !in_quotes;
-        } else if ch == token && !in_quotes {
-            return Some(start + offset);
-        }
-        escaped = false;
-    }
-    None
-}
-
-fn count_unquoted(text: &str, token: char) -> usize {
-    let mut count = 0;
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for ch in text.chars() {
-        if ch == '\\' && in_quotes && !escaped {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' && !escaped {
-            in_quotes = !in_quotes;
-        } else if ch == token && !in_quotes {
-            count += 1;
-        }
-        escaped = false;
-    }
-    count
-}
-
-fn split_unquoted(text: &str, token: char) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for (index, ch) in text.char_indices() {
-        if ch == '\\' && in_quotes && !escaped {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' && !escaped {
-            in_quotes = !in_quotes;
-        } else if ch == token && !in_quotes {
-            parts.push(text[start..index].to_string());
-            start = index + ch.len_utf8();
-        }
-        escaped = false;
-    }
-    parts.push(text[start..].to_string());
-    parts
 }
 
 fn resolve_default_max_retries_value(attrs: &BTreeMap<String, DotAttribute>, default: i64) -> i64 {

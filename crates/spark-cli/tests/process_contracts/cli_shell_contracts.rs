@@ -162,6 +162,8 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "implementation",
             "--reasoning-effort",
             "FutureEffort",
+            "--node-overrides-json",
+            r#"{"verify":{"llm_model":"gpt-5.5","reasoning_effort":"high"}}"#,
             "--execution-profile",
             "local-dev",
             "--base-url",
@@ -194,10 +196,86 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "llm_profile": "implementation",
             "llm_provider": "openai",
             "model": "gpt-5",
+            "node_overrides": {"verify": {"llm_model": "gpt-5.5", "reasoning_effort": "high"}},
             "reasoning_effort": "FutureEffort",
             "summary": "Run the approved scope"
         })
     );
+}
+
+#[test]
+fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
+    let env = BTreeMap::new();
+    let command = |base_url: &str, overrides: &str| -> Vec<String> {
+        [
+            "--flow",
+            "test",
+            "--summary",
+            "Launch",
+            "--node-overrides-json",
+            overrides,
+            "--base-url",
+            base_url,
+        ]
+        .map(str::to_string)
+        .to_vec()
+    };
+    for prefix in [
+        [
+            "spark",
+            "convo",
+            "run-request",
+            "--conversation",
+            "amber-otter",
+        ],
+        ["spark", "run", "launch", "--project", "/tmp/project"],
+    ] {
+        // An empty `"$OVERRIDES"` must not launch without the overrides.
+        for (overrides, error) in [
+            ("", "Node overrides must be valid JSON"),
+            ("  ", "Node overrides must be valid JSON"),
+            (
+                r#"["verify"]"#,
+                "Node overrides must be a JSON object keyed by node id.",
+            ),
+        ] {
+            let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
+            let args = prefix
+                .map(str::to_string)
+                .into_iter()
+                .chain(command(&base_url, overrides));
+            let output = run_with_args_and_env(args, &env);
+            assert_eq!(output.exit_code, 1, "{prefix:?} {overrides:?}: {output:?}");
+            assert_eq!(output.stdout, "");
+            assert!(
+                output
+                    .stderr
+                    .starts_with(&format!("{{\"ok\": false, \"error\": \"{error}")),
+                "{prefix:?} {overrides:?}: {}",
+                output.stderr
+            );
+            assert!(
+                requests.recv_timeout(Duration::from_millis(200)).is_err(),
+                "{prefix:?} {overrides:?} dispatched a request"
+            );
+        }
+
+        // An empty object is still a valid value and is sent as given.
+        let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
+        let args = prefix
+            .map(str::to_string)
+            .into_iter()
+            .chain(command(&base_url, "{}"));
+        let output = run_with_args_and_env(args, &env);
+        assert_eq!(output.exit_code, 0, "{prefix:?}: {output:?}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        assert_eq!(
+            serde_json::from_str::<Value>(&request.body).expect("request json")["node_overrides"],
+            serde_json::json!({})
+        );
+    }
 }
 
 #[test]
@@ -848,26 +926,49 @@ fn flow_validate_rejects_file_option_and_single_flow_files() {
 }
 
 #[test]
-fn flow_validate_dir_checks_stylesheet_controls_and_inherited_budgets() {
+fn flow_validate_dir_checks_reasoning_controls_and_inherited_budgets() {
     let temp_dir = temp_dir("flow-validate-reasoning");
     let flow_path = temp_dir.join("flow");
-    for (stylesheet, valid) in [
-        ("* { reasoning_mode: fast; }", false),
-        ("* { thinking: invalid; }", false),
-        ("* { thinking_budget_tokens: 12; }", false),
-        ("* { reasoning_summary: none; }", false),
-        ("* { thinking: off; thinking_budget_tokens: 2048; }", false),
+    let budget = serde_json::json!({"thinking":"budget", "thinking_budget_tokens":2048});
+    for (defaults, execution, valid) in [
         (
-            "* { thinking: budget; thinking_budget_tokens: 2048; }",
+            serde_json::json!({"reasoning_mode":"fast"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"thinking":"invalid"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"reasoning_summary":"none"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            serde_json::json!({"thinking":"budget"}),
+            serde_json::json!({}),
+            false,
+        ),
+        (
+            budget.clone(),
+            serde_json::json!({"thinking_budget_tokens":4096}),
             true,
+        ),
+        // An explicit non-budget thinking drops the inherited budget.
+        (budget.clone(), serde_json::json!({"thinking":"off"}), true),
+        (
+            budget.clone(),
+            serde_json::json!({"thinking":"off", "thinking_budget_tokens":4096}),
+            false,
         ),
     ] {
         let source = serde_json::json!({"schema_version":"2", "id":"flow",
-            "defaults":{"thinking":"budget", "thinking_budget_tokens":2048},
-            "metadata":{"model_stylesheet":stylesheet},
+            "defaults":defaults,
             "nodes":{
                 "start":{"kind":"start", "config":{"kind":"start"}, "routes":{"next":{"to":"work", "description":"Enter the first workflow step."}}},
-                "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "contracts":{"response":"decision_envelope"}, "execution":{"thinking_budget_tokens":4096}, "routes":{"done":{"to":"end", "description":"The work is complete."}}},
+                "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "contracts":{"response":"decision_envelope"}, "execution":execution, "routes":{"done":{"to":"end", "description":"The work is complete."}}},
                 "end":{"kind":"exit", "config":{"kind":"exit", "result":{"name":"completed", "outcome":"success"}}}
             }
         });

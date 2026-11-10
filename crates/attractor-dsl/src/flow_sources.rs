@@ -352,12 +352,7 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
     flow.validate()?;
     let diagnostics: Vec<_> = crate::validate_graph(&flow.to_runtime_dot_graph())
         .into_iter()
-        .filter(|d| {
-            matches!(
-                d.rule_id.as_str(),
-                "reasoning_controls" | "stylesheet_syntax"
-            )
-        })
+        .filter(|d| d.rule_id == "reasoning_controls")
         .map(|d| FlowDiagnostic {
             rule_id: d.rule_id,
             message: d.message,

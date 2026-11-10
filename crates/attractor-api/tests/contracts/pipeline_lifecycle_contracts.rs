@@ -978,3 +978,238 @@ fn retry_retains_captured_execution_profile_after_configuration_changes() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+/// `a` authors a model and effort, `b` and `c` share session `s`, and `r`
+/// takes its model from a role.
+fn node_override_flow() -> serde_json::Value {
+    let task = |next: &str| {
+        json!({
+            "kind": "agent_task",
+            "config": {"kind": "agent_task", "prompt": "Do the step."},
+            "contracts": {"response": "decision_envelope"},
+            "routes": {"done": {"to": next, "description": "The step is complete."}}
+        })
+    };
+    let mut flow = json!({
+        "schema_version": "2",
+        "id": "node_overrides",
+        "nodes": {
+            "start": {
+                "kind": "start",
+                "config": {"kind": "start"},
+                "routes": {"next": {"to": "a", "description": "Enter the first workflow step."}}
+            },
+            "a": task("b"),
+            "b": task("c"),
+            "c": task("r"),
+            "r": task("done"),
+            "done": {
+                "kind": "exit",
+                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+            }
+        }
+    });
+    flow["nodes"]["a"]["execution"] = json!({"llm_model": "M0", "reasoning_effort": "low"});
+    flow["nodes"]["b"]["runtime"] = json!({"session": "s"});
+    flow["nodes"]["c"]["runtime"] = json!({"session": "s"});
+    flow["nodes"]["r"]["role"] = json!("pinned");
+    flow
+}
+
+#[test]
+fn node_overrides_patch_the_snapshot_and_reject_invalid_targets_and_split_sessions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).expect("roles");
+    fs::write(
+        roles.join("pinned.md"),
+        "---\ntype: Role\nexecution:\n  llm_model: role-model\n---\n\nYou do the step.\n",
+    )
+    .expect("role");
+    let project_path = temp.path().join("Project Overrides");
+    let service = AttractorApiService::new(settings.clone());
+    let store = RunStore::for_settings(&settings);
+    let flow_name = crate::install_flow(&settings, node_override_flow());
+    let mut explicit = node_override_flow();
+    explicit["id"] = json!("node_overrides_explicit");
+    explicit["nodes"]["b"]["execution"] = json!({"llm_model": "M0"});
+    explicit["nodes"]["c"]["execution"] = json!({"llm_model": "M0"});
+    let explicit_name = crate::install_flow(&settings, explicit);
+    let launch = |flow_name: &str, run_id: &str, model: Option<&str>, overrides| {
+        service.start_pipeline(PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some(run_id.to_string()),
+            flow_name: Some(flow_name.to_string()),
+            working_directory: project_path.to_string_lossy().to_string(),
+            model: model.map(str::to_string),
+            node_overrides: serde_json::from_value(overrides).expect("node overrides"),
+            ..PipelineStartRequest::default()
+        })
+    };
+    let snapshot = |run_id: &str| {
+        let paths = store.find_run_root(run_id).unwrap().expect("run exists");
+        let flow = store.read_graph_source(&paths).unwrap().expect("snapshot");
+        let record = store.read_run_record(&paths).unwrap().expect("record");
+        let files = fs::read_to_string(paths.artifacts_dir().join("flow/files.json")).unwrap();
+        (flow, record.effective_flow_hash, files)
+    };
+    let execution = |flow: &attractor_core::FlowDefinition, node: &str| {
+        flow.nodes[node].execution.clone().unwrap_or_default()
+    };
+
+    let plain = launch(&flow_name, "run-plain", Some("M2"), json!(null));
+    assert_eq!(plain.body["status"], "started", "{}", plain.body);
+    let patched = launch(
+        &flow_name,
+        "run-patched",
+        Some("M2"),
+        json!({"a": {"llm_model": "M1"}, "r": {"llm_model": "M3"}}),
+    );
+    assert_eq!(patched.body["status"], "started", "{}", patched.body);
+    let (plain_flow, plain_hash, plain_files) = snapshot("run-plain");
+    let (flow, hash, files) = snapshot("run-patched");
+    // The override beats the node's own value and its role's; nothing else moves.
+    assert_eq!(execution(&flow, "a").llm_model.as_deref(), Some("M1"));
+    assert_eq!(
+        execution(&flow, "a").reasoning_effort.as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        execution(&plain_flow, "r").llm_model.as_deref(),
+        Some("role-model")
+    );
+    assert_eq!(execution(&flow, "r").llm_model.as_deref(), Some("M3"));
+    for node in ["b", "c"] {
+        assert_eq!(flow.nodes[node], plain_flow.nodes[node], "{node}");
+    }
+    assert_eq!(files, plain_files);
+    assert_ne!(hash, plain_hash);
+
+    // A snapshot continuation keeps the patched node.
+    let continued = service.continue_pipeline_route(
+        "run-patched",
+        attractor_api::ContinuePipelineRequest {
+            start_node: "a".to_string(),
+            flow_source_mode: "snapshot".to_string(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(continued.body["status"], "started", "{}", continued.body);
+    let continued = continued.body["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    wait_for_terminal_status(&settings, &continued);
+    assert_eq!(
+        execution(&snapshot(&continued).0, "a").llm_model.as_deref(),
+        Some("M1")
+    );
+
+    for (run_id, flow_name, model, overrides, error) in [
+        (
+            "run-unknown",
+            &flow_name,
+            Some("M2"),
+            json!({"missing": {"llm_model": "M1"}}),
+            "node_overrides names unknown node 'missing'".to_string(),
+        ),
+        (
+            "run-start-target",
+            &flow_name,
+            Some("M2"),
+            json!({"start": {"llm_model": "M1"}}),
+            "node_overrides target 'start' is start; only agent_task nodes can be overridden"
+                .to_string(),
+        ),
+        (
+            "run-blank",
+            &flow_name,
+            Some("M2"),
+            json!({"a": {"llm_model": "  "}}),
+            "node_overrides.a.llm_model must not be blank".to_string(),
+        ),
+        (
+            "run-split-launch-model",
+            &flow_name,
+            Some("M2"),
+            json!({"b": {"llm_model": "M1"}}),
+            "session 's' members must use the same provider, profile and model: b=codex/-/M1, c=codex/-/M2; set the same values on every member through node_overrides".to_string(),
+        ),
+        (
+            "run-split-default-model",
+            &flow_name,
+            None,
+            json!({"b": {"llm_model": "M1"}}),
+            "session 's' members must use the same provider, profile and model: b=codex/-/M1, c=codex/-/default; set the same values on every member through node_overrides".to_string(),
+        ),
+        (
+            "run-split-profile",
+            &flow_name,
+            Some("M2"),
+            json!({"b": {"llm_profile": "gw"}}),
+            "session 's' members must use the same provider, profile and model: b=codex/gw/M2, c=codex/-/M2; set the same values on every member through node_overrides".to_string(),
+        ),
+        (
+            "run-split-explicit",
+            &explicit_name,
+            Some("M2"),
+            json!({"b": {"llm_model": "M1"}}),
+            "session 's' members must use the same provider, profile and model: b=codex/-/M1, c=codex/-/M0; set the same values on every member through node_overrides".to_string(),
+        ),
+    ] {
+        let response = launch(flow_name, run_id, model, overrides);
+        assert_eq!(
+            response.body,
+            json!({"status": "validation_error", "error": error}),
+            "{run_id}"
+        );
+        assert!(store.find_run_root(run_id).unwrap().is_none(), "{run_id}");
+    }
+
+    for (run_id, overrides) in [
+        (
+            "run-session-together",
+            json!({"b": {"llm_model": "M1"}, "c": {"llm_model": "M1"}}),
+        ),
+        (
+            "run-session-effort",
+            json!({"b": {"reasoning_effort": "high"}}),
+        ),
+    ] {
+        let response = launch(&flow_name, run_id, Some("M2"), overrides);
+        assert_eq!(
+            response.body["status"], "started",
+            "{run_id}: {}",
+            response.body
+        );
+    }
+}
+
+#[test]
+fn mounted_start_route_rejects_unknown_node_override_properties() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let body = json!({
+        "run_id": "run-mounted-override",
+        "flow_name": crate::install_flow(&settings, simple_flow()),
+        "working_directory": temp.path().join("Project Route"),
+        "node_overrides": {"task": {"model": "x"}}
+    })
+    .to_string();
+
+    let response =
+        handle_attractor_request("POST", "/attractor/pipelines", &body, settings.clone());
+
+    assert_eq!(response.status_code, 400);
+    let detail = response.body["detail"].as_str().expect("detail");
+    assert!(
+        detail.starts_with("Invalid pipeline start request JSON") && detail.contains("model"),
+        "{detail}"
+    );
+    assert!(RunStore::for_settings(&settings)
+        .find_run_root("run-mounted-override")
+        .unwrap()
+        .is_none());
+}

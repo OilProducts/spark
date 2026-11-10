@@ -197,8 +197,8 @@ Notes:
 - `spark convo run-request` launches any flow, resolved through the conversation's project.
 - Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
-- Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.
-- `spark run launch` and `spark convo run-request` do not take `--llm-profile`; use flow defaults such as `ui_default_llm_profile`, or use `--llm-profile` on supported recovery commands.
+- Use `--model`, `--llm-provider`, `--llm-profile`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply. The model, provider, profile and reasoning-effort options apply run-wide but do not change nodes whose own or role execution sets those fields.
+- To change specific nodes, pass `--node-overrides-json '<JSON object>'` keyed by node ids from `spark flow get`; each value may set only `llm_model`, `llm_provider`, `llm_profile` and `reasoning_effort`, and a supplied field beats the node's and its role's. Only `agent_task` nodes can be overridden, and every member of a shared `runtime.session` must end up on the same provider, profile and model. For example, `--node-overrides-json '{"verify_findings":{"reasoning_effort":"high"}}'` with `--flow software-development/audit-codebase` raises only that node's reasoning effort.
 - A launch created without `--conversation` is project-scoped only, so no flow-launch card appears in chat.
 
 ## Recover Runs
