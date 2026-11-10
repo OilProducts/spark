@@ -635,8 +635,8 @@ export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): Parallel
 }
 
 /**
- * One visit's segments as transcript entries. Questions and flow requests are left to the raw
- * journal, so the transcript stays on the agent exchange; ids stay segment ids, unique within
+ * One visit's segments as transcript entries. Questions, flow requests, launches and run
+ * recoveries are left to the raw journal, so the transcript stays on the agent exchange; ids stay segment ids, unique within
  * the visit's one execution.
  */
 export function visitTranscriptEntries(visit: RunVisit, segments: RunTranscriptSegment[]): ConversationTimelineEntry[] {
@@ -650,6 +650,7 @@ export function visitTranscriptEntries(visit: RunVisit, segments: RunTranscriptS
                 || entry.kind === 'request_user_input'
                 || entry.kind === 'flow_run_request'
                 || entry.kind === 'flow_launch'
+                || entry.kind === 'run_recovery'
                 || ((entry.kind === 'message' || entry.kind === 'plan') && isStatusEnvelope(entry.content))
             ) {
                 return []

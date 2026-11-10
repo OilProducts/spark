@@ -8,9 +8,11 @@ import { formatDuration, formatRunStatusLabel, runRecordTone } from "@/features/
 import type { PipelineResultResponse } from "@/lib/attractorClient"
 import { useStore } from "@/store"
 import { loadPipelineResult } from "../services/conversationArtifacts"
+import { describeRunRecovery, getRunRecoveryStatusPresentation } from "../model/presentation"
 import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
+    ProjectRunRecovery,
 } from "../model/types"
 import { ProjectConversationMarkdown } from "./ProjectConversationMarkdown"
 
@@ -256,5 +258,73 @@ export function ProjectFlowLaunchEntry({
             onOpenFlowRun={onOpenFlowRun}
             formatConversationTimestamp={formatConversationTimestamp}
         />
+    )
+}
+
+/**
+ * A `spark run continue` or `retry` as a card like a launch's: its operation and source run,
+ * linking to the run it started or resumed once there is one, with that run's live status.
+ */
+export function ProjectRunRecoveryEntry({
+    runRecovery,
+    onOpenFlowRun,
+    formatConversationTimestamp,
+}: {
+    runRecovery: ProjectRunRecovery | null
+    onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
+    formatConversationTimestamp: (value: string) => string
+}) {
+    const resultRunId = runRecovery?.result_run_id ?? null
+    const run = useStore((state) => resultRunId ? state.runsListSession.runs.find((entry) => entry.run_id === resultRunId) : undefined)
+    if (!runRecovery) {
+        return (
+            <Well className="w-full px-4 py-3 text-xs text-muted-foreground">
+                Run recovery artifact unavailable. Refresh the project chat to reload it.
+            </Well>
+        )
+    }
+    const label = describeRunRecovery(runRecovery)
+    const presentation = getRunRecoveryStatusPresentation(runRecovery.status)
+    // A pending or failed recovery keeps its own status: the run it names may predate it, as a
+    // retry names its source run from the start.
+    const liveRun = runRecovery.status === "pending" || runRecovery.status === "failed" ? undefined : run
+    return (
+        <div data-testid="project-run-recovery-surface" className="w-full max-w-[72ch] rounded-xl border border-border">
+            <RunCard
+                className="rounded-none border-0 p-3"
+                kicker={runRecovery.flow_name ? `Run recovery · ${flowTitle(runRecovery.flow_name)}` : "Run recovery"}
+                title={resultRunId ? (
+                    <button
+                        type="button"
+                        data-testid="project-run-recovery-open-run-button"
+                        onClick={() => onOpenFlowRun({ run_id: resultRunId, flow_name: runRecovery.flow_name ?? "" })}
+                        className="max-w-full truncate text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        {label}
+                    </button>
+                ) : label}
+                tone={liveRun ? runRecordTone(liveRun) : presentation.tone}
+                status={liveRun ? formatRunStatusLabel(liveRun) : presentation.label}
+                duration={liveRun ? formatDuration(liveRun.started_at, liveRun.ended_at, liveRun.status) : undefined}
+            />
+            <div className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
+                <p>
+                    Source run: <span className="font-mono text-foreground">{runRecovery.source_run_id}</span>
+                    {" · "}<span className="font-mono">{runRecovery.id}</span>
+                    {" · "}Updated {formatConversationTimestamp(runRecovery.updated_at)}
+                </p>
+                {runRecovery.flow_name ? <p>Flow: <span className="font-mono text-foreground">{runRecovery.flow_name}</span></p> : null}
+                {runRecovery.model ? <p>Model override: <span className="font-mono text-foreground">{runRecovery.model}</span></p> : null}
+                {runRecovery.llm_provider ? <p>Provider override: <span className="font-mono text-foreground">{runRecovery.llm_provider}</span></p> : null}
+                {runRecovery.reasoning_effort ? <p>Reasoning effort: <span className="font-mono text-foreground">{runRecovery.reasoning_effort}</span></p> : null}
+                {runRecovery.recovery_error ? <p className="text-destructive">Recovery error: {runRecovery.recovery_error}</p> : null}
+                {resultRunId ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span>Run: <span className="font-mono text-foreground">{resultRunId}</span></span>
+                        <ProjectFlowResultPreview runId={resultRunId} />
+                    </div>
+                ) : null}
+            </div>
+        </div>
     )
 }

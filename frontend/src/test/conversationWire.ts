@@ -125,6 +125,7 @@ export function conversationRows(fixture: Fixture, revision = fixtureRevision(fi
         ...segments.map((segment) => segmentRow(conversationId, segment, revision)),
         ...artifacts('flow_run_requests'),
         ...artifacts('flow_launches'),
+        ...artifacts('run_recoveries'),
         ...artifacts('proposed_plans'),
     ]
 }

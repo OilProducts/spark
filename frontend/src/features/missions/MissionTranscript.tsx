@@ -15,6 +15,7 @@ import {
     type NormalizedConversationRecord,
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
+import { describeRunRecovery, getRunRecoveryStatusPresentation } from '@/features/projects/model/presentation'
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
@@ -75,7 +76,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     const title = (runId: string | null, fallback: string) => (runId && runs.get(runId)?.title) || fallback || runId || 'Run'
     const when = (at: string) => <time dateTime={at}>{formatTime(at)}</time>
 
-    /** The mission's own rows: user turns carry its events, launches are run cards, and the agent's questions are answered here. */
+    /** The mission's own rows: user turns carry its events, launches and recoveries are run cards, and the agent's questions are answered here. */
     function renderEntry(entry: Entry): ReactNode | undefined {
         switch (entry.kind) {
             case 'message': return entry.role === 'user' ? userTurn(entry) : undefined
@@ -97,6 +98,25 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
                 return <li><RunCard data-testid="mission-run-card" kicker={`Launched run · ${flowTitle(launch.flow_name)}`}
                     title={<RunLink runId={launch.run_id}>{title(launch.run_id, launch.summary)}</RunLink>}
                     tone={run ? runKinds[run.kind].tone : 'neutral'} status={run ? runStatusLabel(run) : 'Launched'} duration={run?.duration || undefined} /></li>
+            }
+            case 'run_recovery': {
+                const recovery = record?.runRecoveriesById[entry.artifactId]
+                if (!recovery) return <li><EventLine at={when(entry.timestamp)}>Run recovery unavailable</EventLine></li>
+                const label = describeRunRecovery(recovery)
+                const resultRunId = recovery.result_run_id
+                // A recovery that failed, or has no run yet, is an event line; a failed one keeps its error.
+                if (recovery.status === 'failed' || !resultRunId) {
+                    const failed = recovery.status === 'failed'
+                    return <li><EventLine icon={failed ? <X className="text-destructive" /> : <Play className="text-info" />} at={when(entry.timestamp)} title={recovery.recovery_error ?? undefined}>
+                        <b>{resultRunId ? <RunLink runId={resultRunId}>{label}</RunLink> : label}</b>{failed ? <> failed{recovery.recovery_error && `: ${recovery.recovery_error}`}</> : '…'}
+                    </EventLine></li>
+                }
+                // A pending retry already names its source run; that run's status is not the recovery's.
+                const run = recovery.status === 'pending' ? undefined : runs.get(resultRunId)
+                const presentation = getRunRecoveryStatusPresentation(recovery.status)
+                return <li><RunCard data-testid="mission-run-recovery-card" kicker={`Run recovery · ${label}`}
+                    title={<RunLink runId={resultRunId}>{title(resultRunId, resultRunId)}</RunLink>}
+                    tone={run ? runKinds[run.kind].tone : presentation.tone} status={run ? runStatusLabel(run) : presentation.label} duration={run?.duration || undefined} /></li>
             }
             case 'request_user_input': return <li className="flex min-w-0 justify-start">
                 <ProjectConversationRequestUserInputCard actionError={inputError} entry={entry} formatConversationTimestamp={formatTime} isSubmitting={submitting[entry.requestUserInput.requestId] === true} onSubmitRequestUserInput={submitInput} />

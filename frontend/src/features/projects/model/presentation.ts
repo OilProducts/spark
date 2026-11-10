@@ -2,6 +2,7 @@ import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
     ProjectProposedPlan,
+    ProjectRunRecovery,
 } from './types'
 
 // Transcript-facing presentation (tones, tool-call/thinking helpers) lives in
@@ -44,6 +45,26 @@ export const getFlowLaunchStatusPresentation = (status: ProjectFlowLaunch['statu
         return { label: 'Launch failed', tone: 'danger' as const }
     }
     return { label: 'Launching', tone: 'info' as const }
+}
+
+/** A run recovery's operation and source run, as "Continue <run> from <node>" or "Retry <run>". */
+export const describeRunRecovery = (recovery: ProjectRunRecovery) => (
+    recovery.operation === 'continue'
+        ? `Continue ${recovery.source_run_id}${recovery.start_node ? ` from ${recovery.start_node}` : ''}`
+        : `Retry ${recovery.source_run_id}`
+)
+
+export const getRunRecoveryStatusPresentation = (status: ProjectRunRecovery['status']) => {
+    if (status === 'pending') {
+        return { label: 'Starting', tone: 'info' as const }
+    }
+    if (status === 'failed') {
+        return { label: 'Failed', tone: 'danger' as const }
+    }
+    if (status === 'started') {
+        return { label: 'Started', tone: 'success' as const }
+    }
+    return { label: status, tone: 'neutral' as const }
 }
 
 export const getProposedPlanStatusPresentation = (status: ProjectProposedPlan['status']) => {

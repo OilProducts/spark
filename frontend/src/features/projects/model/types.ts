@@ -6,6 +6,7 @@ import type {
     FlowLaunchResponse,
     FlowRunRequestResponse,
     ProposedPlanArtifactResponse,
+    RunRecoveryResponse,
 } from '@/lib/workspaceClient'
 import type { TranscriptToolCall } from '@/components/app/transcript/SegmentRows'
 
@@ -24,6 +25,7 @@ export type ProjectConversationSummary = ConversationSummaryResponse
 export type ProjectFlowLaunch = FlowLaunchResponse
 export type ProjectFlowRunRequest = FlowRunRequestResponse
 export type ProjectProposedPlan = ProposedPlanArtifactResponse
+export type ProjectRunRecovery = RunRecoveryResponse
 export type ConversationTurnStatus = ConversationTurnResponse['status']
 export type ConversationSegmentStatus = ConversationSegmentResponse['status']
 
@@ -124,7 +126,7 @@ export type ConversationTimelineEntry =
     }
     | {
     id: string
-    kind: 'flow_run_request' | 'flow_launch'
+    kind: 'flow_run_request' | 'flow_launch' | 'run_recovery'
     role: 'system'
     artifactId: string
     timestamp: string

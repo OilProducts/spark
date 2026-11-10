@@ -49,7 +49,7 @@ export interface ConversationSegmentResponse {
     turn_id: string
     order: number
     /** `user_message`: a message delivered into the running turn. */
-    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch' | 'user_message' | 'agent_event'
+    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch' | 'run_recovery' | 'user_message' | 'agent_event'
     /** An `agent_event`'s category; only `warning` is shown. */
     category?: string | null
     role: 'assistant' | 'system' | 'user'
@@ -157,6 +157,31 @@ export interface FlowLaunchResponse {
     reasoning_effort?: string | null
     run_id?: string | null
     launch_error?: string | null
+}
+
+/** A `spark run continue` or `retry` recorded in the conversation it names. */
+export interface RunRecoveryResponse {
+    id: string
+    created_at: string
+    updated_at: string
+    operation: 'continue' | 'retry'
+    source_run_id: string
+    project_path: string
+    conversation_id: string
+    source_turn_id: string
+    /** `pending` until the runtime answers; else the runtime's status, or `failed`. */
+    status: string
+    source_segment_id?: string | null
+    /** The run the recovery started or resumed; unset until there is one. */
+    result_run_id?: string | null
+    recovery_error?: string | null
+    start_node?: string | null
+    flow_source_mode?: string | null
+    flow_name?: string | null
+    model?: string | null
+    llm_provider?: string | null
+    llm_profile?: string | null
+    reasoning_effort?: string | null
 }
 
 export interface ProposedPlanArtifactResponse {
@@ -286,7 +311,7 @@ export type ConversationRow =
     | (ConversationRowBase & {
         kind: 'artifact'
         collection: ConversationArtifactCollection
-        payload: FlowRunRequestResponse | FlowLaunchResponse | ProposedPlanArtifactResponse | WorkflowEventResponse | Record<string, unknown> | null
+        payload: FlowRunRequestResponse | FlowLaunchResponse | RunRecoveryResponse | ProposedPlanArtifactResponse | WorkflowEventResponse | null
     })
 
 export interface ConversationBatch {
@@ -450,6 +475,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         || record.kind === 'request_user_input'
         || record.kind === 'flow_run_request'
         || record.kind === 'flow_launch'
+        || record.kind === 'run_recovery'
         || record.kind === 'user_message'
         || record.kind === 'agent_event'
         ? record.kind
@@ -666,6 +692,46 @@ function parseFlowLaunchResponse(value: unknown): FlowLaunchResponse | null {
     }
 }
 
+function parseRunRecoveryResponse(value: unknown): RunRecoveryResponse | null {
+    const record = asUnknownRecord(value)
+    if (
+        !record
+        || typeof record.id !== 'string'
+        || typeof record.created_at !== 'string'
+        || typeof record.updated_at !== 'string'
+        || (record.operation !== 'continue' && record.operation !== 'retry')
+        || typeof record.source_run_id !== 'string'
+        || typeof record.project_path !== 'string'
+        || typeof record.conversation_id !== 'string'
+        || typeof record.source_turn_id !== 'string'
+        || typeof record.status !== 'string'
+    ) {
+        return null
+    }
+    return {
+        id: record.id,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        operation: record.operation,
+        source_run_id: record.source_run_id,
+        project_path: record.project_path,
+        conversation_id: record.conversation_id,
+        source_turn_id: record.source_turn_id,
+        status: record.status,
+        source_segment_id: asOptionalNullableString(record.source_segment_id),
+        // A continue that has not started a run records an empty id.
+        result_run_id: asOptionalNullableString(record.result_run_id) || null,
+        recovery_error: asOptionalNullableString(record.recovery_error),
+        start_node: asOptionalNullableString(record.start_node),
+        flow_source_mode: asOptionalNullableString(record.flow_source_mode),
+        flow_name: asOptionalNullableString(record.flow_name),
+        model: asOptionalNullableString(record.model),
+        llm_provider: asOptionalNullableString(record.llm_provider),
+        llm_profile: asOptionalNullableString(record.llm_profile),
+        reasoning_effort: asOptionalNullableString(record.reasoning_effort),
+    }
+}
+
 function parseProposedPlanArtifactResponse(value: unknown): ProposedPlanArtifactResponse | null {
     const record = asUnknownRecord(value)
     if (
@@ -740,7 +806,7 @@ const ARTIFACT_PARSERS: Record<ConversationArtifactCollection, (value: unknown) 
     flow_launches: parseFlowLaunchResponse,
     proposed_plans: parseProposedPlanArtifactResponse,
     event_log: parseWorkflowEventResponse,
-    run_recoveries: asUnknownRecord,
+    run_recoveries: parseRunRecoveryResponse,
 }
 
 function parseConversationRow(value: unknown, endpoint: string): ConversationRow {
