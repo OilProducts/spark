@@ -876,15 +876,17 @@ impl RuntimeControls {
         crate::handlers::cancel_unsettled_branches(paths).map_err(|error| {
             RuntimeControlError::Conflict(format!("settlement incomplete: {error}"))
         })?;
-        self.cancel_orphaned_children(run_id, last_error)
+        self.cancel_orphaned_children(run_id, None, last_error)
     }
 
-    /// Cancels every unfinished child of a run, and their descendants. Only
-    /// for a run whose executor is gone or runs no node: children execute
-    /// inside their parent's node, so none of these has an executor left.
+    /// Cancels every unfinished child of a run, or of one of its nodes, and
+    /// their descendants. Only for a run whose executor is gone or runs no
+    /// node, or a node that is not running: children execute inside their
+    /// parent's node, so none of these has an executor left.
     pub(crate) fn cancel_orphaned_children(
         &self,
         run_id: &str,
+        node_id: Option<&str>,
         last_error: &str,
     ) -> ControlResult<()> {
         for record in self.store.list_run_records()? {
@@ -892,7 +894,10 @@ impl RuntimeControls {
                 crate::records::normalize_run_status(&record.status).as_str(),
                 "completed" | "failed" | "canceled"
             ) && !crate::manager_loop::restart_marked_record(&record);
-            if record.parent_run_id.as_deref() == Some(run_id) && !finished {
+            if record.parent_run_id.as_deref() == Some(run_id)
+                && node_id.is_none_or(|node| record.parent_node_id.as_deref() == Some(node))
+                && !finished
+            {
                 self.mark_canceled(&record.run_id, last_error)?;
             }
         }

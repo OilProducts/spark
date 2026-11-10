@@ -716,7 +716,20 @@ fn a_blocked_branch_ends_the_owner_at_its_failure_exit() {
             ("b", vec![b_answer.clone()]),
             ("synth", vec![completed("done")]),
         ]);
-        let (runner, calls) = scripted_runner(answers, false);
+        // `a` and `b` answer only once both have started, so neither is
+        // canceled before it runs, whichever settles first.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut runner = RuntimeHandlerRunner::new();
+        let (seen, started) = (calls.clone(), std::sync::atomic::AtomicUsize::new(0));
+        runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime| {
+            if runtime.node_id != "synth" {
+                started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                while started.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+            Ok(answer(&answers, &seen, &runtime))
+        });
         let run = execute(fork_flow(tolerate), runner, None);
         assert_eq!(run.result.status, expected_status, "{b_answer:?}");
         assert_eq!(count(&calls, "synth"), 0);
@@ -1421,16 +1434,22 @@ fn branches_retry_execution_errors_like_the_root() {
 }
 
 /// `b` returns only after `a` blocked and the fork raised cancellation, so
-/// its error lands while the cancellation flag is set.
+/// its error lands while the cancellation flag is set. `a` blocks only once
+/// `b` has started, so the fork cannot cancel `b` before it runs.
 fn after_cancellation(error: Outcome) -> RuntimeHandlerRunner {
+    let b_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut runner = RuntimeHandlerRunner::new();
     runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime: HandlerRuntime| {
         if runtime.node_id == "a" {
+            while !b_started.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
             return Ok(Outcome {
                 notes: "a cannot review".into(),
                 ..completed("blocked")
             });
         }
+        b_started.store(true, std::sync::atomic::Ordering::SeqCst);
         let cancel = runtime.cancel.clone().expect("branch cancellation flag");
         while !cancel.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -3042,65 +3061,97 @@ fn an_independent_child_failure_after_sibling_cancellation_stays_an_error() {
 
 const GATED_CHILD_ENV: &str = "SPARK_GATED_CHILD_INTERRUPT_DIR";
 
+/// On resume the sibling blocks at once: either `sub` adopts its waiting child
+/// first, or, held back here until the sibling settled, it is canceled before
+/// it can. Either way the child ends canceled.
 #[test]
 fn a_recovered_fork_cancels_its_waiting_child_when_a_sibling_blocks() {
-    let temp = tempfile::tempdir().unwrap();
-    let dir = std::env::var(GATED_CHILD_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| temp.path().to_path_buf());
-    let runs = dir.join("runs");
-    if std::env::var(GATED_CHILD_ENV).is_ok() {
+    if let Ok(dir) = std::env::var(GATED_CHILD_ENV).map(PathBuf::from) {
         // The process dies while the child waits on its gate.
-        let (runner, _) = gated_runner(runs, completed("blocked"), true);
+        let (runner, _) = gated_runner(dir.join("runs"), completed("blocked"), true);
         run_parent(&dir, gated_child_fork(false), runner, ContextMap::new());
         panic!("the parent should have been interrupted");
     }
-    write_gate_child(&dir);
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "routing_model_contracts::a_recovered_fork_cancels_its_waiting_child_when_a_sibling_blocks",
-            "--nocapture",
-        ])
-        .env(GATED_CHILD_ENV, &dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap();
-    assert!(!status.success());
-    assert_eq!(gated_child_record(&runs).status, "waiting");
+    for hold_sub in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let runs = dir.join("runs");
+        write_gate_child(dir);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "routing_model_contracts::a_recovered_fork_cancels_its_waiting_child_when_a_sibling_blocks",
+                "--nocapture",
+            ])
+            .env(GATED_CHILD_ENV, dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert_eq!(gated_child_record(&runs).status, "waiting");
 
-    let store = RunStore::for_runs_dir(runs.clone());
-    let bundle = store.read_run_bundle("run-parent").unwrap().unwrap();
-    let checkpoint = bundle.checkpoint.unwrap();
-    assert_eq!(checkpoint.current_node, "fork");
-    let (runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
-    let result = PipelineExecutor::new(runner)
-        .execute(ExecuteRunRequest {
-            store,
-            record: bundle.record.unwrap(),
-            flow: gated_child_fork(false),
-            flow_definition_json: None,
-            launch_context: LaunchContext::empty(),
-            runtime_context: ContextMap::new(),
-            max_steps: None,
-            start: ExecutionStart::Resume {
-                paths: bundle.paths,
-                checkpoint,
-            },
-        })
-        .unwrap();
-    assert_eq!(result.status, "completed", "{}", result.failure_reason);
-    assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
-    assert!(!result.route_trace.contains(&"join".to_string()));
-    assert_eq!(count(&calls, "synth"), 0);
-    // The recovered invocation adopted the existing child and settled it.
-    let children = RunStore::for_runs_dir(runs)
-        .list_run_records()
-        .unwrap()
-        .into_iter()
-        .filter(|record| record.parent_node_id.as_deref() == Some("sub"))
-        .collect::<Vec<_>>();
-    assert_eq!(children.len(), 1, "{children:?}");
-    assert_eq!(children[0].status, "canceled");
+        let store = RunStore::for_runs_dir(runs.clone());
+        let bundle = store.read_run_bundle("run-parent").unwrap().unwrap();
+        let checkpoint = bundle.checkpoint.unwrap();
+        assert_eq!(checkpoint.current_node, "fork");
+        let (mut runner, calls) = gated_runner(runs.clone(), completed("blocked"), false);
+        if hold_sub {
+            let sibling_settled = std::sync::atomic::AtomicBool::new(false);
+            runner.set_external_event_sink(move |event| {
+                let index = event.payload.get("index");
+                if event.event_type == "ParallelBranchCompleted" && index == Some(&json!(1)) {
+                    sibling_settled.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while event.event_type == "ParallelBranchStarted"
+                    && index == Some(&json!(0))
+                    && !sibling_settled.load(std::sync::atomic::Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Ok(())
+            });
+        }
+        let result = PipelineExecutor::new(runner)
+            .execute(ExecuteRunRequest {
+                store,
+                record: bundle.record.unwrap(),
+                flow: gated_child_fork(false),
+                flow_definition_json: None,
+                launch_context: LaunchContext::empty(),
+                runtime_context: ContextMap::new(),
+                max_steps: None,
+                start: ExecutionStart::Resume {
+                    paths: bundle.paths,
+                    checkpoint,
+                },
+            })
+            .unwrap();
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        assert_eq!(result.outcome_reason_code.as_deref(), Some("blocked"));
+        assert!(!result.route_trace.contains(&"join".to_string()));
+        assert_eq!(count(&calls, "synth"), 0);
+        let sub = &result.context["parallel.results"][0];
+        assert_eq!(
+            sub["status"],
+            json!("canceled"),
+            "hold_sub={hold_sub}: {sub}"
+        );
+        if hold_sub {
+            assert!(
+                sub.get("interruption").is_none(),
+                "held back, it must not run: {sub}"
+            );
+        }
+        let children = RunStore::for_runs_dir(runs)
+            .list_run_records()
+            .unwrap()
+            .into_iter()
+            .filter(|record| record.parent_node_id.as_deref() == Some("sub"))
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 1, "{children:?}");
+        assert_eq!(children[0].status, "canceled", "hold_sub={hold_sub}");
+    }
 }

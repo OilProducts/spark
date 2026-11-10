@@ -1944,7 +1944,7 @@ impl RuntimeHandlerRunner {
             crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
                 paths.runs_dir.clone(),
             ))
-            .cancel_orphaned_children(&runtime.run_id, "aborted_by_user")
+            .cancel_orphaned_children(&runtime.run_id, None, "aborted_by_user")
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
         }
         let cancel = Arc::new(AtomicBool::new(stopped));
@@ -2263,10 +2263,27 @@ impl RuntimeHandlerRunner {
             {
                 // A child that failed on its own before this stop stays the
                 // branch's error, though a crash kept the branch from seeing it.
+                // Any other unfinished child here is one an earlier executor
+                // left, which no invocation adopts now: it settles first.
                 return match runtime.run_paths.as_ref().map_or(Ok(None), |paths| {
                     crate::manager_loop::recorded_child_failure(paths, &current)
                 }) {
-                    Ok(None) => record!("canceled", json!({"canceled_at": current})),
+                    Ok(None) => match runtime.run_paths.as_ref().map_or(Ok(()), |paths| {
+                        crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
+                            paths.runs_dir.clone(),
+                        ))
+                        .cancel_orphaned_children(
+                            &runtime.run_id,
+                            Some(&current),
+                            "aborted_by_user",
+                        )
+                    }) {
+                        Ok(()) => record!("canceled", json!({"canceled_at": current})),
+                        Err(error) => record!(
+                            "error",
+                            error_value(&current, FailureKind::Runtime, &error.to_string(), 0)
+                        ),
+                    },
                     Ok(Some((kind, reason))) => {
                         let attempts = retries.get(&current).copied().unwrap_or(0) + 1;
                         record!("error", error_value(&current, kind, &reason, attempts))

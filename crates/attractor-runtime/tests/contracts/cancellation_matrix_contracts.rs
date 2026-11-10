@@ -63,6 +63,7 @@ const HOOK_PHASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_HOOK_PHASE";
 const FAILED_CHILD_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_DIR";
 const ACCEPTED_DIR_ENV: &str = "SPARK_CANCELLATION_MATRIX_ACCEPTED_DIR";
 const FAILED_CHILD_CASE_ENV: &str = "SPARK_CANCELLATION_MATRIX_FAILED_CHILD_CASE";
+const NEW_GROUP_ENV: &str = "SPARK_CANCELLATION_MATRIX_NEW_GROUP";
 const CRASH_EXIT_CODE: i32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -430,6 +431,41 @@ fn step_tool(signals: &Signals, node: &str, next: &str) -> Value {
 /// Records the shell's process group for the stopped-process assertions.
 const RECORD_GROUP: &str = "ps -o pgid= -p $$ | tr -d ' '";
 
+/// Child process entry point: execs the arguments after `--` as the leader of
+/// a new process group, after libtest's banner went to its output. A no-op in
+/// the ordinary test run.
+#[cfg(unix)]
+#[test]
+fn exec_in_new_group() {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os(NEW_GROUP_ENV).is_none() {
+        return;
+    }
+    let args = std::env::args_os()
+        .skip_while(|arg| arg != "--")
+        .skip(1)
+        .collect::<Vec<_>>();
+    let error = Command::new(&args[0])
+        .args(&args[1..])
+        .process_group(0)
+        .exec();
+    panic!("{args:?}: {error}");
+}
+
+/// Starts `script` in the background, like `( script ) &`, but as the leader of
+/// a new process group, so `$!` is the group's ID; `set -m` would need a `sh`
+/// with job control, which dash has only with a terminal. The script runs only
+/// once it leads the group. Its `$1` is the shell that started it.
+fn in_new_group(script: &str) -> String {
+    format!(
+        "{NEW_GROUP_ENV}=1 '{exe}' --exact \
+         routing_model_contracts::cancellation_matrix_contracts::exec_in_new_group \
+         -- sh -c '{script}' sh $$ &",
+        exe = std::env::current_exe().unwrap().display(),
+        script = script.replace('\'', r"'\''"),
+    )
+}
+
 /// While `hold` is raised, the commands that make a shell survive TERM, so only
 /// a KILL settles it once the executor is gone. TERM leaves a signal. Stderr
 /// goes first: with the executor gone, the shell's notice of a killed job would
@@ -502,19 +538,21 @@ fn detached_work_tool(signals: &Signals, next: &str) -> Value {
 }
 
 /// A `work` tool whose descendant leaves the group for its own, closes the
-/// record it inherited, and outlives the shell. `set -m` needs a shell with job
-/// control; elsewhere the row runs as the in-group one.
+/// record it inherited, and outlives the shell.
 fn left_group_work_tool(signals: &Signals, next: &str) -> Value {
     let p = |name: &str| signals.path(name).display().to_string();
+    let descendant = format!(
+        "{survive}; exec 9<&-; while ps -o stat= -p $1 | grep -qv Z; do sleep 0.02; done; {hold}",
+        survive = survive_term(signals),
+        hold = hold_work(signals),
+    );
     tool(
         format!(
-            "set -m; echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; \
-             ( {survive}; exec 9<&-; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; \
-             {hold} ) & echo $! >> '{pids}'; exit 0",
+            "echo work >> '{calls}'; {RECORD_GROUP} >> '{pids}'; {job} \
+             echo $! >> '{pids}'; exit 0",
             calls = p("calls.log"),
             pids = p("pids"),
-            survive = survive_term(signals),
-            hold = hold_work(signals),
+            job = in_new_group(&descendant),
         ),
         next,
     )
@@ -1618,8 +1656,9 @@ impl HookPhase {
 }
 
 /// The case's flow, its `work` tool finishing at once but for a hook that holds,
-/// with a descendant in its own group that holds the hook's output. The hook
-/// raises `started`, so the case's trigger fires while it runs.
+/// with a descendant in its own group that holds the hook's output. The
+/// descendant raises `started` once both are on record, so the case's trigger
+/// fires while they run.
 fn hooked_flow(case: Case, signals: &Signals, phase: HookPhase) -> FlowDefinition {
     hooked_flow_with(case, signals, phase, "", "")
 }
@@ -1634,19 +1673,18 @@ fn hooked_flow_with(
     hook_head: &str,
 ) -> FlowDefinition {
     let p = |name: &str| signals.path(name).display().to_string();
+    let (survive, pids, calls) = (survive_term(signals), p("pids"), p("calls.log"));
+    let hold = format!(
+        "i=0; while [ ! -f '{release}' ] && [ $i -lt 1800 ]; do sleep 0.05; i=$((i+1)); done",
+        release = p("release"),
+    );
     let hook = format!(
         "[ \"$ATTRACTOR_TOOL_NODE_ID\" = work ] || exit 0; {hook_head}\
-         {survive}; set -m; {RECORD_GROUP} >> '{pids}'; \
-         ( {survive}; {hold} ) & echo $! >> '{pids}'; {hold}",
-        survive = survive_term(signals),
-        pids = p("pids"),
-        hold = format!(
-            "echo hook >> '{calls}'; i=0; touch '{started}'; \
-             while [ ! -f '{release}' ] && [ $i -lt 1800 ]; do sleep 0.05; i=$((i+1)); done",
-            calls = p("calls.log"),
+         {survive}; {RECORD_GROUP} >> '{pids}'; echo hook >> '{calls}'; {job} {hold}",
+        job = in_new_group(&format!(
+            "{survive}; echo $$ >> '{pids}'; echo hook >> '{calls}'; touch '{started}'; {hold}",
             started = p("started"),
-            release = p("release"),
-        ),
+        )),
     );
     let mut flow = flow(case, signals);
     let command = format!(
@@ -2352,11 +2390,14 @@ fn a_cleanup_never_signals_a_group_id_its_anchor_no_longer_holds() {
             "",
         );
         let command = format!(
-            "set -m; ( exec 9<&-; while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; \
-             touch '{started}'; exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
-            started = p("started"),
+            "{job} echo $! >> '{holder}'; exit 0",
+            job = in_new_group(&format!(
+                "exec 9<&-; while ps -o stat= -p $1 | grep -qv Z; do sleep 0.02; done; \
+                 touch '{started}'; exec sleep {seconds}",
+                started = p("started"),
+                seconds = DEADLINE.as_secs() * 2,
+            )),
             holder = p("holder"),
-            seconds = DEADLINE.as_secs() * 2,
         );
         let mut flow = flow(ISOLATED_CASE, &signals);
         let work = flow.nodes.get_mut("work").unwrap();
@@ -3044,12 +3085,15 @@ fn a_failed_live_cleanup_keeps_ownership_and_publishes_nothing_until_it_settles(
             ),
         );
         let command = format!(
-            "set -m; ( exec 9<&-; echo descendant-output; \
-             while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
-             exec sleep {seconds} ) & echo $! >> '{holder}'; exit 0",
-            started = p("started"),
+            "{job} echo $! >> '{holder}'; exit 0",
+            job = in_new_group(&format!(
+                "exec 9<&-; echo descendant-output; \
+                 while ps -o stat= -p $1 | grep -qv Z; do sleep 0.02; done; touch '{started}'; \
+                 exec sleep {seconds}",
+                started = p("started"),
+                seconds = DEADLINE.as_secs() * 2,
+            )),
             holder = p("holder"),
-            seconds = DEADLINE.as_secs() * 2,
         );
         let mut flow = flow(ISOLATED_CASE, &signals);
         let work = flow.nodes.get_mut("work").unwrap();
@@ -3228,11 +3272,9 @@ enum Holds {
 
 /// A tool's deadline and cancellation still work once its shell has exited, and
 /// the runtime stops a descendant that left the group, by whatever it still
-/// holds, and settles the output before it returns. `set -m` gives a background
-/// job its own group where the shell supports it; elsewhere that row runs as the
-/// in-group one. A record-only descendant redirected its output, so its shell
-/// stays: with the shell gone and the output closed the tool has simply ended,
-/// and a daemon it started on purpose stays.
+/// holds, and settles the output before it returns. A record-only descendant
+/// redirected its output, so its shell stays: with the shell gone and the output
+/// closed the tool has simply ended, and a daemon it started on purpose stays.
 #[test]
 fn a_tool_settles_when_a_descendant_outlives_its_shell() {
     for (deadline, left_group, holds) in [
@@ -3256,27 +3298,29 @@ fn a_tool_settles_when_a_descendant_outlives_its_shell() {
         let (drop_handles, await_shell, shell_tail) = match holds {
             Holds::Everything => (
                 "",
-                "while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; ",
+                "while ps -o stat= -p $1 | grep -qv Z; do sleep 0.02; done; ",
                 "exit 0",
             ),
             Holds::OnlyOutput => (
                 "exec 9<&-; ",
-                "while ps -o stat= -p $$ | grep -qv Z; do sleep 0.02; done; ",
+                "while ps -o stat= -p $1 | grep -qv Z; do sleep 0.02; done; ",
                 "exit 0",
             ),
             Holds::OnlyRecord => ("exec >/dev/null 2>&1; ", "", "while :; do sleep 0.05; done"),
         };
         // Longer than every wait here, so a settlement that needs it to end
-        // on its own fails the case.
-        let command = format!(
-            "{job_control}\
-             ( {drop_handles}{await_shell}touch '{started}'; \
-             exec sleep {seconds} ) & echo $! >> '{holder}'; {shell_tail}",
-            job_control = if left_group { "set -m; " } else { "" },
+        // on its own fails the case. Its `$1` is the shell.
+        let descendant = format!(
+            "{drop_handles}{await_shell}touch '{started}'; exec sleep {seconds}",
             started = p("started"),
-            holder = p("holder"),
             seconds = DEADLINE.as_secs() * 2,
         );
+        let job = if left_group {
+            in_new_group(&descendant)
+        } else {
+            format!("( set -- $$; {descendant} ) &")
+        };
+        let command = format!("{job} echo $! >> '{}'; {shell_tail}", p("holder"));
         let mut flow = flow(case, &signals);
         let work = flow.nodes.get_mut("work").unwrap();
         *work = serde_json::from_value(tool(command, "join")).unwrap();
