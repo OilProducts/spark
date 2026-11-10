@@ -351,9 +351,7 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
                 attractor_runtime::retry::RETRY_REQUEST_KEY.into(),
                 json!(request),
             );
-            store
-                .save_checkpoint(&failed.paths, &checkpoint, Default::default())
-                .unwrap();
+            store.save_checkpoint(&failed.paths, &checkpoint).unwrap();
             store
                 .update_run_record("retry", |record| record.status = "failed".into())
                 .unwrap();

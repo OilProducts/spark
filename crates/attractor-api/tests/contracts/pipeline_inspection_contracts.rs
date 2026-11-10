@@ -131,11 +131,36 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
 
     let artifacts = service.list_pipeline_artifacts("run-inspect");
     assert_eq!(artifacts.status_code, 200);
-    assert!(artifacts.body["artifacts"]
+    let listed = artifacts.body["artifacts"]
         .as_array()
         .expect("artifacts")
         .iter()
-        .any(|artifact| artifact["path"] == json!("artifacts/flow/flow-definition.json")));
+        .map(|artifact| artifact["path"].as_str().expect("path"))
+        .collect::<Vec<_>>();
+    for present in [
+        "artifacts/flow/flow-definition.json",
+        "manifest.json",
+        "checkpoint.json",
+    ] {
+        assert!(
+            listed.contains(&present),
+            "{present} missing from {listed:?}"
+        );
+    }
+    for absent in [
+        "run.log",
+        "state.json",
+        "logs/manifest.json",
+        "logs/checkpoint.json",
+    ] {
+        assert!(!listed.contains(&absent), "{absent} listed in {listed:?}");
+    }
+    assert_eq!(
+        service
+            .get_pipeline_artifact_file("run-inspect", "run.log")
+            .status_code,
+        404
+    );
 
     let source =
         service.get_pipeline_artifact_file("run-inspect", "artifacts/flow/flow-definition.json");
@@ -179,6 +204,59 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     let preview = service.get_pipeline_graph_preview("run-inspect", false);
     assert_eq!(preview.status_code, 200);
     assert_eq!(preview.body["status"], json!("ok"));
+}
+
+#[test]
+fn result_route_assembles_prose_from_markdown_and_reports_missing_markdown() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = temp.path().join("Project Result");
+    fs::create_dir_all(&project).expect("project");
+    let store = RunStore::for_settings(&settings);
+    let mut record = attractor_core::RunRecord::new("run-result", project.to_string_lossy());
+    record.status = "completed".to_string();
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .expect("run");
+    store
+        .write_result(
+            &paths,
+            &attractor_core::RunResult {
+                run_id: "run-result".to_string(),
+                status: "completed".to_string(),
+                state: "ready".to_string(),
+                display_mode: Some("summary".to_string()),
+                body_markdown: "# Report\n".to_string(),
+                ..Default::default()
+            },
+        )
+        .expect("write result");
+
+    let stored: Value =
+        serde_json::from_str(&fs::read_to_string(paths.result_json()).expect("result json"))
+            .expect("result JSON");
+    assert_eq!(stored["display_mode"], json!("summary"));
+    assert!(stored.get("body_markdown").is_none(), "{stored}");
+
+    let service = AttractorApiService::new(settings);
+    let result = service.get_pipeline_result("run-result");
+    assert_eq!(result.status_code, 200);
+    assert_eq!(result.body["state"], json!("ready"));
+    assert_eq!(result.body["body_markdown"], json!("# Report\n"));
+
+    fs::remove_file(paths.result_markdown()).expect("remove result.md");
+    let missing = service.get_pipeline_result("run-result");
+    assert_eq!(missing.status_code, 500, "{:?}", missing.body);
+    assert!(
+        missing.body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("result.md")),
+        "{:?}",
+        missing.body
+    );
 }
 
 #[cfg(unix)]

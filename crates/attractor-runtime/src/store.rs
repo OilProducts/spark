@@ -12,7 +12,7 @@ use spark_common::settings::SparkSettings;
 use spark_storage::{write_json_atomic, write_text_atomic, JsonWriteOptions};
 
 use crate::artifacts::{ensure_run_layout, list_artifacts, write_node_artifacts, NodeArtifacts};
-use crate::checkpoints::{read_checkpoint, save_checkpoint, CheckpointWriteOptions};
+use crate::checkpoints::{read_checkpoint, save_checkpoint};
 use crate::error::{Result, RuntimeStorageError};
 use crate::events::{
     append_event, lifecycle_event, run_metadata_event_with_graph_paths, runtime_status_event,
@@ -276,7 +276,7 @@ impl RunStore {
         let checkpoint = request
             .checkpoint
             .unwrap_or_else(|| CheckpointState::new(""));
-        save_checkpoint(&paths, &checkpoint, CheckpointWriteOptions::default())?;
+        save_checkpoint(&paths, &checkpoint)?;
 
         let manifest = request.manifest.unwrap_or_else(|| RunManifest {
             goal: String::new(),
@@ -286,7 +286,7 @@ impl RunStore {
             extra: Default::default(),
         });
         write_json_atomic(
-            paths.logs_manifest_json(),
+            paths.manifest_json(),
             &manifest,
             JsonWriteOptions::default(),
         )?;
@@ -323,12 +323,7 @@ impl RunStore {
             ),
         )?;
         append_event(&paths, run_metadata_event_with_graph_paths(&record, &paths))?;
-        write_json_atomic(
-            paths.result_json(),
-            &RunResult::pending(&record.run_id, &record.status),
-            JsonWriteOptions::default(),
-        )?;
-        write_text_atomic(paths.result_markdown(), "")?;
+        write_run_result(&paths, &RunResult::pending(&record.run_id, &record.status))?;
         self.notify_run_event(&record.run_id);
         Ok(paths)
     }
@@ -537,9 +532,8 @@ impl RunStore {
         &self,
         paths: &RunRootPaths,
         checkpoint: &CheckpointState,
-        options: CheckpointWriteOptions,
     ) -> Result<()> {
-        save_checkpoint(paths, checkpoint, options)?;
+        save_checkpoint(paths, checkpoint)?;
         self.notify_run_event(&paths.run_id);
         Ok(())
     }

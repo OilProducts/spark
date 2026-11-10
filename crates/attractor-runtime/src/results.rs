@@ -97,18 +97,22 @@ pub fn read_materialized_run_result(paths: &RunRootPaths) -> Result<Option<RunRe
     let Some(mut result) = read_json_optional::<RunResult>(paths.result_json())? else {
         return Ok(None);
     };
-    if paths.result_markdown().exists() {
-        result.body_markdown =
-            std::fs::read_to_string(paths.result_markdown()).map_err(|source| {
-                RuntimeStorageError::io("read result markdown", paths.result_markdown(), source)
-            })?;
-    }
+    result.body_markdown = std::fs::read_to_string(paths.result_markdown()).map_err(|source| {
+        RuntimeStorageError::io("read result markdown", paths.result_markdown(), source)
+    })?;
     Ok(Some(result))
 }
 
+/// Writes the prose to `result.md`, then the metadata, without the prose, to
+/// `result.json`. A reader that finds the JSON therefore finds the Markdown.
 pub fn write_run_result(paths: &RunRootPaths, result: &RunResult) -> Result<()> {
     write_text_atomic(paths.result_markdown(), &result.body_markdown)?;
-    write_json_atomic(paths.result_json(), result, JsonWriteOptions::default())?;
+    let mut metadata = serde_json::to_value(result)
+        .map_err(|source| RuntimeStorageError::json(paths.result_json(), source))?;
+    if let Some(fields) = metadata.as_object_mut() {
+        fields.remove("body_markdown");
+    }
+    write_json_atomic(paths.result_json(), &metadata, JsonWriteOptions::default())?;
     Ok(())
 }
 

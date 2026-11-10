@@ -625,8 +625,7 @@ impl RuntimeControlService {
         let store = self.controls.store();
         match store.read_run_bundle(pipeline_id) {
             Ok(Some(bundle)) => {
-                let result_available =
-                    bundle.paths.result_json().exists() || bundle.paths.result_markdown().exists();
+                let result_available = bundle.paths.result_json().exists();
                 match store.list_child_run_bundles(pipeline_id) {
                     Ok(children) => RuntimeRouteResponse::json(
                         200,
@@ -3976,7 +3975,7 @@ fn pipeline_detail_payload(bundle: &RunBundle, children: &[RunBundle]) -> Value 
     );
     payload.insert(
         "result_available".to_string(),
-        json!(bundle.paths.result_json().exists() || bundle.paths.result_markdown().exists()),
+        json!(bundle.paths.result_json().exists()),
     );
     payload.insert(
         "child_runs".to_string(),

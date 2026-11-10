@@ -37,9 +37,6 @@ pub fn ensure_run_layout(paths: &RunRootPaths) -> Result<()> {
         fs::create_dir_all(&dir)
             .map_err(|source| RuntimeStorageError::io("create directory", dir, source))?;
     }
-    if !paths.run_log().exists() {
-        write_text_atomic(paths.run_log(), "")?;
-    }
     Ok(())
 }
 
@@ -180,38 +177,14 @@ pub fn list_artifacts(paths: &RunRootPaths) -> Result<Vec<ArtifactInfo>> {
     let canonical_run_root = fs::canonicalize(&paths.root)
         .map_err(|source| RuntimeStorageError::io("canonicalize run root", &paths.root, source))?;
     let mut files = BTreeMap::<String, PathBuf>::new();
-    if !paths.logs_manifest_json().is_file() {
-        add_file(
-            &mut files,
-            &paths.root,
-            &canonical_run_root,
-            paths.manifest_json(),
-        )?;
-    }
-    add_file(
-        &mut files,
-        &paths.root,
-        &canonical_run_root,
+    for path in [
+        paths.manifest_json(),
         paths.checkpoint_json(),
-    )?;
-    add_file(
-        &mut files,
-        &paths.root,
-        &canonical_run_root,
-        paths.run_log(),
-    )?;
-    add_file(
-        &mut files,
-        &paths.root,
-        &canonical_run_root,
         paths.result_json(),
-    )?;
-    add_file(
-        &mut files,
-        &paths.root,
-        &canonical_run_root,
         paths.result_markdown(),
-    )?;
+    ] {
+        add_file(&mut files, &paths.root, &canonical_run_root, path)?;
+    }
     add_files_recursive(
         &mut files,
         &paths.root,
@@ -309,19 +282,6 @@ fn initial_context_node_id(path: &str) -> Option<&str> {
         .strip_suffix("/initial-context.txt")
 }
 
-pub fn append_run_log(paths: &RunRootPaths, message: &str) -> Result<()> {
-    let line = format!(
-        "[{} UTC] {}\n",
-        crate::events::utc_timestamp()
-            .split_once('T')
-            .map(|(date, time)| format!("{date} {}", time.trim_end_matches('Z')))
-            .unwrap_or_else(|| crate::events::utc_timestamp()),
-        message
-    );
-    spark_storage::append_line(paths.run_log(), line)?;
-    Ok(())
-}
-
 fn add_files_recursive(
     files: &mut BTreeMap<String, PathBuf>,
     run_root: &Path,
@@ -380,7 +340,7 @@ fn add_file(
 }
 
 fn is_internal_file(relative_path: &str) -> bool {
-    matches!(relative_path, "run.json" | "state.json" | "events.jsonl")
+    matches!(relative_path, "run.json" | "events.jsonl")
 }
 
 fn artifact_media_type(path: &Path) -> String {
