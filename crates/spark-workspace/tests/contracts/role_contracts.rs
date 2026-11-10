@@ -878,12 +878,22 @@ fn restarts_keep_trimmed_runs_out_of_the_roster_and_restore_missing_ones_in_laun
             .unwrap();
         assert!(crate::deliver_run_events(&harness.settings, &run));
     }
+    // The agent cannot steer, so a batch that arrives mid-turn queues behind
+    // it, and the role reads idle between that turn and the queued one.
     wait_for("every report consumed", || {
         repository
             .pending_inbox_events(&conversation)
             .unwrap()
             .is_empty()
             && harness.get(CHIEF_OF_STAFF_ROLE).state != RoleState::Working
+            && !harness
+                .conversations()
+                .get_snapshot(&conversation, Some(&harness.project))
+                .unwrap()["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|turn| turn["status"] == "queued")
     });
     let roster = |repository: &spark_storage::ConversationRepository| {
         repository
