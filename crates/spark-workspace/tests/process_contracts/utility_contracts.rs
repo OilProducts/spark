@@ -570,7 +570,7 @@ fn launch(service: &WorkspaceConversationService, project: &Path) -> String {
     let response = service
         .launch_workspace_run(RunLaunchRequest {
             flow_name: "ops/titled".into(),
-            summary: "Launch.".into(),
+            summary: "Repair the staging deploy.".into(),
             project_path: Some(project.to_string_lossy().into_owned()),
             launch_context: Some(json!({"context.request.objective": "fix the deploy pipeline"})),
             ..RunLaunchRequest::default()
@@ -623,6 +623,10 @@ fn root_run_gets_a_generated_title_in_the_background() {
     assert!(input.contains("Implement Change"), "{input}");
     assert!(input.contains("Implement the requested change."), "{input}");
     assert!(
+        input.contains("Request: Repair the staging deploy."),
+        "{input}"
+    );
+    assert!(
         input.contains("Objective: fix the deploy pipeline"),
         "{input}"
     );
@@ -649,7 +653,7 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
     let (temp, settings) = fixture();
     let (service, _updates) = run_service_with_updates(settings.clone());
     let run_id = launch(&service, temp.path());
-    assert!(service.generate_run_title(&run_id).unwrap().is_none());
+    assert!(service.generate_run_title(&run_id, None).unwrap().is_none());
     assert_eq!(stored_run_title(&settings, &run_id), None);
 
     // Failing: launch succeeds, one call, nothing stored.
@@ -681,7 +685,10 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
         })
         .unwrap();
     let (service, _updates) = run_service_with_updates(settings.clone());
-    assert!(service.generate_run_title("child-run").unwrap().is_none());
+    assert!(service
+        .generate_run_title("child-run", None)
+        .unwrap()
+        .is_none());
     assert_eq!(call_count(&calls), 0);
     assert_eq!(stored_run_title(&settings, "child-run"), None);
 }

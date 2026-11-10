@@ -3702,7 +3702,11 @@ impl WorkspaceConversationService {
                 ..PipelineStartRequest::default()
             });
         if let Ok(outcome) = flow_start_outcome_from_response(&response) {
-            self.spawn_run_title_generation(outcome.run_id);
+            let request = artifact
+                .get("summary")
+                .and_then(Value::as_str)
+                .and_then(non_empty_string);
+            self.spawn_run_title_generation(outcome.run_id, request);
         }
         response
     }
@@ -3711,20 +3715,22 @@ impl WorkspaceConversationService {
     /// wait. Every launch path here starts a root run; child runs start inside
     /// the runtime and get no title. The record write reaches live clients as
     /// a run-record update through the run event observer.
-    fn spawn_run_title_generation(&self, run_id: String) {
+    fn spawn_run_title_generation(&self, run_id: String, request: Option<String>) {
         let service = self.clone();
         std::thread::spawn(move || {
             // Off or failed: nothing is stored and nothing retries.
-            let _ = service.generate_run_title(&run_id);
+            let _ = service.generate_run_title(&run_id, request.as_deref());
         });
     }
 
     /// Stores a utility-generated title on a root run from its flow's title
-    /// and goal and its labelled launch inputs. Returns the updated record, or
-    /// `None` when utility inference is off or the run already has a title.
+    /// and goal, the launch request's summary, and its labelled launch inputs.
+    /// Returns the updated record, or `None` when utility inference is off or
+    /// the run already has a title.
     pub fn generate_run_title(
         &self,
         run_id: &str,
+        request: Option<&str>,
     ) -> WorkspaceResult<Option<attractor_core::RunRecord>> {
         let internal = |error: attractor_runtime::RuntimeStorageError| {
             WorkspaceError::Internal(error.to_string())
@@ -3749,7 +3755,14 @@ impl WorkspaceConversationService {
                 WorkspaceError::Internal(format!("Run {run_id} has no flow snapshot"))
             })?;
         let launch_context = record.launch_context.unwrap_or_default();
-        let mut input = format!("Flow: {}\nGoal: {}\n\nInputs:", flow.title, flow.goal);
+        let mut input = format!("Flow: {}\nGoal: {}\n", flow.title, flow.goal);
+        if let Some(request) = request {
+            input.push_str(&format!(
+                "Request: {}\n",
+                truncate_text(request, TITLE_INPUT_CHARS)
+            ));
+        }
+        input.push_str("\nInputs:");
         for flow_input in &flow.inputs {
             let value = match launch_context.get(&flow_input.key) {
                 Some(Value::String(text)) => text.clone(),
@@ -4876,7 +4889,7 @@ fn truncate_tool_call_outputs(snapshot: &mut Value) {
 
 const TITLE_INSTRUCTIONS: &str = "You name chat threads. Given the first message and reply of a conversation, write a short title of at most six words that says what it is about. Reply with the title only: plain text, no quotes, no trailing punctuation.";
 const TITLE_INPUT_CHARS: usize = 2000;
-const RUN_TITLE_INSTRUCTIONS: &str = "You name workflow runs. Given the flow that ran and the inputs it was launched with, write a short title of at most six words that says what this run is doing. Reply with the title only: plain text, no quotes, no trailing punctuation.";
+const RUN_TITLE_INSTRUCTIONS: &str = "You name workflow runs. Given the flow that ran, the request that launched it and its inputs, write a short title of at most six words that says what this run is doing. Reply with the title only: plain text, no quotes, no trailing punctuation.";
 
 /// The first non-empty line of a utility reply, stripped of quoting and
 /// markdown, as a title.
