@@ -380,106 +380,8 @@ pub fn flow_attr_text(flow: &FlowDefinition, key: &str) -> Option<String> {
         .and_then(value_to_non_empty_text)
 }
 
-pub fn node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
-    if is_core_node_attr_key(key) {
-        return typed_node_attr_text(node, key);
-    }
-    node.context
-        .get(key)
-        .or_else(|| node.extensions.get(key))
-        .and_then(value_to_non_empty_text)
-}
-
-pub fn node_attr_bool(node: &FlowNode, key: &str, default: bool) -> bool {
-    if is_core_node_attr_key(key) {
-        return typed_node_attr_bool(node, key).unwrap_or(default);
-    }
-    node.context
-        .get(key)
-        .or_else(|| node.extensions.get(key))
-        .map(value_to_bool)
-        .unwrap_or(default)
-}
-
 fn is_core_node_attr_key(key: &str) -> bool {
     CORE_NODE_EXTENSION_KEYS.contains(&key)
-}
-
-fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
-    let typed = match key {
-        "class" => node.runtime.as_ref()?.class.clone(),
-        "max_visits" => node
-            .runtime
-            .as_ref()?
-            .max_visits
-            .map(|value| value.to_string()),
-        "retry_policy" => node.retry.as_ref()?.policy.clone(),
-        "max_retries" => node
-            .retry
-            .as_ref()?
-            .max_retries
-            .map(|value| value.to_string()),
-        "max_parallel" => match node.config.as_ref()? {
-            NodeConfig::Parallel { max_parallel, .. } => {
-                max_parallel.map(|value| value.to_string())
-            }
-            _ => None,
-        },
-        "stack.child_flow_ref" => match node.config.as_ref()? {
-            NodeConfig::Subflow { flow_ref, .. } => Some(flow_ref.clone()),
-            _ => None,
-        },
-        "manager.poll_interval" => node.manager.as_ref()?.poll_interval.clone(),
-        "manager.max_cycles" => node
-            .manager
-            .as_ref()?
-            .max_cycles
-            .map(|value| value.to_string()),
-        "manager.stop_condition" => node.manager.as_ref()?.stop_condition.clone(),
-        "manager.actions" => {
-            let actions = &node.manager.as_ref()?.actions;
-            (!actions.is_empty()).then(|| actions.join(","))
-        }
-        "manager.steer_cooldown" => node.manager.as_ref()?.steer_cooldown.clone(),
-        "llm_provider" => node.execution.as_ref()?.llm_provider.clone(),
-        "llm_profile" => node.execution.as_ref()?.llm_profile.clone(),
-        "llm_model" => node.execution.as_ref()?.llm_model.clone(),
-        "reasoning_effort" => node.execution.as_ref()?.reasoning_effort.clone(),
-        "thinking" => node.execution.as_ref()?.thinking.clone(),
-        "thinking_budget_tokens" => node
-            .execution
-            .as_ref()?
-            .thinking_budget_tokens
-            .map(|v| v.to_string()),
-        "reasoning_mode" => node.execution.as_ref()?.reasoning_mode.clone(),
-        "reasoning_summary" => node.execution.as_ref()?.reasoning_summary.clone(),
-
-        "tool.command" => match node.config.as_ref()? {
-            NodeConfig::Tool { command, .. } => Some(command.clone()),
-            _ => None,
-        },
-        "prompt" => match node.config.as_ref()? {
-            NodeConfig::AgentTask { prompt } | NodeConfig::HumanGate { prompt } => {
-                Some(prompt.clone())
-            }
-            _ => None,
-        },
-        _ => None,
-    };
-    typed.and_then(|value| {
-        let trimmed = value.trim().to_string();
-        (!trimmed.is_empty()).then_some(trimmed)
-    })
-}
-
-fn typed_node_attr_bool(node: &FlowNode, key: &str) -> Option<bool> {
-    match key {
-        "stack.child_autostart" => node
-            .manager
-            .as_ref()
-            .and_then(|manager| manager.child_autostart),
-        _ => None,
-    }
 }
 
 pub fn apply_runtime_context_fields(
@@ -515,15 +417,6 @@ fn value_to_non_empty_text(value: &Value) -> Option<String> {
         Value::Array(_) | Value::Object(_) => value.to_string(),
     };
     (!text.is_empty()).then_some(text)
-}
-
-fn value_to_bool(value: &Value) -> bool {
-    match value {
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_i64().unwrap_or_default() != 0,
-        Value::String(value) => value.trim().eq_ignore_ascii_case("true"),
-        Value::Null | Value::Array(_) | Value::Object(_) => false,
-    }
 }
 
 fn insert_string_attr(attrs: &mut BTreeMap<String, DotAttribute>, key: &str, value: &str) {
