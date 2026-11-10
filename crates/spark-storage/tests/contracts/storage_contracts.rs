@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 use spark_storage::{
     append_jsonl, read_json, read_jsonl, read_toml, write_json_atomic, write_toml_atomic,
-    AppendLogRepository, DocumentRepository, JsonLinesOptions, JsonRepository, JsonWriteOptions,
-    JsonlRepository, KnownFields, StorageError, StorageFormat, TomlRepository, UnknownFieldPolicy,
+    JsonLinesOptions, JsonWriteOptions, KnownFields, StorageError, UnknownFieldPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,49 +233,6 @@ a_extra = false
     )
     .expect("collect toml unknown fields");
     assert_eq!(collected.unknown_fields(), ["a_extra", "z_extra"]);
-}
-
-#[test]
-fn repository_adapters_use_public_codecs_and_expose_paths() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let document = DemoDocument {
-        schema_version: 1,
-        name: "repo".to_string(),
-        enabled: true,
-    };
-
-    let json_repo = JsonRepository::<DemoDocument>::new(temp.path().join("state/demo.json"))
-        .expect("json repo");
-    assert_eq!(json_repo.format(), StorageFormat::Json);
-    assert_eq!(json_repo.path(), temp.path().join("state/demo.json"));
-    assert_eq!(json_repo.read_optional().expect("missing optional"), None);
-    json_repo.write(&document).expect("write json repo");
-    assert_eq!(json_repo.read().expect("read json repo"), document);
-
-    let toml_repo = TomlRepository::<DemoDocument>::new(temp.path().join("state/demo.toml"))
-        .expect("toml repo");
-    assert_eq!(toml_repo.format(), StorageFormat::Toml);
-    toml_repo.write(&document).expect("write toml repo");
-    assert_eq!(toml_repo.read().expect("read toml repo"), document);
-
-    let jsonl_repo = JsonlRepository::<JournalRecord>::new(temp.path().join("state/journal.jsonl"))
-        .expect("jsonl repo")
-        .with_read_options(JsonLinesOptions::allow_blank_lines());
-    assert_eq!(jsonl_repo.format(), StorageFormat::Jsonl);
-    jsonl_repo
-        .append(&JournalRecord {
-            sequence: 1,
-            label: "first".to_string(),
-        })
-        .expect("append repo");
-    std::fs::write(
-        jsonl_repo.path(),
-        "{\"sequence\":1,\"label\":\"first\"}\n\n{\"sequence\":2,\"label\":\"second\"}\n",
-    )
-    .expect("insert blank line");
-    let records = jsonl_repo.read_all().expect("read repo jsonl");
-    assert_eq!(records.len(), 2);
-    assert_eq!(StorageFormat::Json.extension(), "json");
 }
 
 #[test]

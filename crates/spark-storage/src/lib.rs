@@ -2,9 +2,8 @@
 
 //! Filesystem storage primitives for the Rust rewrite.
 //!
-//! This crate reserves the reusable JSON, TOML, JSONL, atomic file, unknown
-//! field policy, and repository trait boundaries. Schema-specific repositories
-//! remain owned by later milestones.
+//! This crate provides the reusable JSON, TOML, JSONL, atomic file, and unknown
+//! field policy primitives, plus the schema-specific stores built on them.
 
 /// Atomic filesystem operations.
 pub mod atomic;
@@ -20,9 +19,6 @@ pub mod conversation;
 
 /// Storage error types.
 pub mod error;
-
-/// Schema-neutral repository traits and adapters.
-pub mod repository;
 
 /// Revision-checked settings documents and backed-up version transitions.
 pub mod settings;
@@ -50,10 +46,6 @@ pub use codecs::{
 };
 pub use conversation::ConversationStore;
 pub use error::{Result, StorageError};
-pub use repository::{
-    AppendLogRepository, DocumentRepository, JsonRepository, JsonlRepository, StorageFormat,
-    TomlRepository,
-};
 pub use unknown_fields::{
     validate_json_object_fields, validate_json_object_fields_for, validate_toml_table_fields,
     validate_toml_table_fields_for, KnownFields, UnknownFieldPolicy, UnknownFieldReport,
