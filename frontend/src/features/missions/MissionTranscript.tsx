@@ -111,7 +111,8 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
                         <b>{resultRunId ? <RunLink runId={resultRunId}>{label}</RunLink> : label}</b>{failed ? <> failed{recovery.recovery_error && `: ${recovery.recovery_error}`}</> : '…'}
                     </EventLine></li>
                 }
-                const run = runs.get(resultRunId)
+                // A pending retry already names its source run; that run's status is not the recovery's.
+                const run = recovery.status === 'pending' ? undefined : runs.get(resultRunId)
                 const presentation = getRunRecoveryStatusPresentation(recovery.status)
                 return <li><RunCard data-testid="mission-run-recovery-card" kicker={`Run recovery · ${label}`}
                     title={<RunLink runId={resultRunId}>{title(resultRunId, resultRunId)}</RunLink>}

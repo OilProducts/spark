@@ -1221,11 +1221,14 @@ describe('ProjectConversationHistory', () => {
                 segment('segment-artifact-run-recovery-1', 2, 'run_recovery', { artifact_id: 'run-recovery-1' }),
                 segment('segment-artifact-run-recovery-2', 3, 'run_recovery', { artifact_id: 'run-recovery-2' }),
                 segment('segment-artifact-run-recovery-3', 4, 'run_recovery', { artifact_id: 'run-recovery-3' }),
+                segment('segment-artifact-run-recovery-4', 5, 'run_recovery', { artifact_id: 'run-recovery-4' }),
             ],
             run_recoveries: [
                 recovery('run-recovery-1', { operation: 'continue', start_node: 'verify_findings' }),
                 recovery('run-recovery-2', { operation: 'retry', status: 'failed', result_run_id: 'run-source', recovery_error: 'Run is still active.' }),
                 recovery('run-recovery-3', { operation: 'continue', status: 'pending', result_run_id: '', start_node: 'review' }),
+                // The backend's pending retry names its source run as the result from the start.
+                recovery('run-recovery-4', { operation: 'retry', status: 'pending', result_run_id: 'run-source' }),
             ],
         })), 'window') ?? null
         const viewModel = buildProjectsHomeViewModel({
@@ -1233,12 +1236,20 @@ describe('ProjectConversationHistory', () => {
             pendingConversationTurn: null, pendingMessages: [], projectGitMetadata: {},
             uiDefaults: { llm_model: '', llm_provider: '', reasoning_effort: '' },
         })
+        const runRecord = (run_id: string, status: string) => ({
+            run_id, flow_name: 'work/build.yaml', status, working_directory: '/tmp/project', model: 'gpt-5.4',
+            started_at: '2026-11-10T02:50:00Z', ended_at: status === 'running' ? null : '2026-11-10T02:52:00Z',
+        })
+        useStore.setState((state) => ({
+            runsListSession: { ...state.runsListSession, runs: [runRecord('run-source', 'failed'), runRecord('run-result', 'running')] },
+        }))
         renderHistory(viewModel.activeConversationHistory, { activeRunRecoveriesById: viewModel.activeRunRecoveriesById, onOpenFlowRun })
 
         expect(screen.getByText('Done.')).toBeInTheDocument()
-        const [continued, retried, pending] = screen.getAllByTestId('project-run-recovery-surface')
+        const [continued, retried, pending, pendingRetry] = screen.getAllByTestId('project-run-recovery-surface')
         expect(continued).toHaveTextContent('Continue run-source from verify_findings')
-        expect(continued).toHaveTextContent('Started')
+        // A started recovery shows its run's live status.
+        expect(continued).toHaveTextContent('Running')
         expect(continued).toHaveTextContent('Source run: run-source')
         await user.click(within(continued).getByRole('button', { name: 'Continue run-source from verify_findings' }))
         expect(onOpenFlowRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-result' }))
@@ -1251,6 +1262,12 @@ describe('ProjectConversationHistory', () => {
         expect(pending).toHaveTextContent('Continue run-source from review')
         expect(pending).toHaveTextContent('Starting')
         expect(within(pending).queryAllByRole('button')).toHaveLength(0)
+
+        // A pending retry stays pending although the run it names has already failed, and still opens it.
+        expect(pendingRetry).toHaveTextContent('Starting')
+        expect(pendingRetry).not.toHaveTextContent('Failed')
+        await user.click(within(pendingRetry).getByRole('button', { name: 'Retry run-source' }))
+        expect(onOpenFlowRun).toHaveBeenLastCalledWith(expect.objectContaining({ run_id: 'run-source' }))
     })
 
     it('keeps tool command and output rows literal and unchanged', async () => {

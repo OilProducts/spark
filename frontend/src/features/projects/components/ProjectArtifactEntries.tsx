@@ -285,8 +285,9 @@ export function ProjectRunRecoveryEntry({
     }
     const label = describeRunRecovery(runRecovery)
     const presentation = getRunRecoveryStatusPresentation(runRecovery.status)
-    // A failed recovery keeps its own status; the run it names may predate it.
-    const liveRun = runRecovery.status === "failed" ? undefined : run
+    // A pending or failed recovery keeps its own status: the run it names may predate it, as a
+    // retry names its source run from the start.
+    const liveRun = runRecovery.status === "pending" || runRecovery.status === "failed" ? undefined : run
     return (
         <div data-testid="project-run-recovery-surface" className="w-full max-w-[72ch] rounded-xl border border-border">
             <RunCard
