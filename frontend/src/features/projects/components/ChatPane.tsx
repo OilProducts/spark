@@ -77,9 +77,10 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
             <div
                 {...(scrolls ? { ref: follow.ref, onScroll: follow.onScroll } : {})}
                 data-testid="project-ai-conversation-body"
-                className={cn('px-6 pb-3 pt-6', scrolls && 'min-h-0 flex-1 overflow-y-auto')}
+                className={cn('px-6 pb-3 pt-6', scrolls && 'flex min-h-0 flex-1 flex-col overflow-y-auto')}
             >
-                <div className="mx-auto w-full max-w-3xl">{children}</div>
+                {/* Fills the pane, so an empty state centres in it like every other view's. */}
+                <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">{children}</div>
             </div>
             <div className="shrink-0 px-6 pb-5 pt-2">
                 <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">

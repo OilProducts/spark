@@ -381,15 +381,14 @@ export const formatDuration = (start?: string, end?: string | null, status?: str
         endMs = now ?? Date.now()
     }
     if (endMs === null) return '—'
-    const delta = Math.max(0, endMs - startMs)
-    if (delta < 1000) return '<1s'
     // The same "1m 37s" a step's duration reads, so a run and its last step agree.
-    return formatElapsed(delta)
+    return formatElapsed(endMs - startMs)
 }
 
-/** "45s", "1m 07s", "2h 05m": whole units elapsed, so a ticking clock never runs ahead. */
+/** "<1s", "45s", "1m 07s", "2h 05m": whole units elapsed, so a ticking clock never runs ahead. */
 export const formatElapsed = (durationMs: number): string => {
     const seconds = Math.floor(Math.max(0, durationMs) / 1000)
+    if (seconds < 1) return '<1s'
     if (seconds < 60) return `${seconds}s`
     const minutes = Math.floor(seconds / 60)
     if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`

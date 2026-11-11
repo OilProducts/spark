@@ -41,10 +41,11 @@ describe('EditorCanvasToolbar', () => {
         expect(props.onArrange).toHaveBeenCalledOnce()
     })
 
-    it('keeps the docked toolbar on one row and hides editing actions in expanded mode', () => {
+    it('wraps the docked toolbar rather than scroll actions away, and hides editing actions in expanded mode', () => {
         renderToolbar({ childFlowsExpanded: true, runDisabledReason: 'Save pending' })
 
-        expect(screen.getByLabelText('Canvas toolbar')).not.toHaveClass('flex-wrap')
+        expect(screen.getByLabelText('Canvas toolbar')).toHaveClass('flex-wrap')
+        expect(screen.getByLabelText('Canvas toolbar')).not.toHaveClass('overflow-x-auto')
         expect(screen.getByRole('group', { name: 'Child flows' })).toBeInTheDocument()
         expect(screen.queryByRole('group', { name: 'Layout' })).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()

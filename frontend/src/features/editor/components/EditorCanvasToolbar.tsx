@@ -53,11 +53,11 @@ export function EditorCanvasToolbar({
     const canEditLayout = isStructured && !childFlowsExpanded
 
     return (
-        // ponytail: one nowrap row; scrolls sideways only below the 480px minimum canvas width.
+        // One row; on a phone-width canvas the actions wrap to a second row rather than scroll out of sight.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="@container flex h-11 shrink-0 items-center gap-2 overflow-x-auto border-b bg-background px-3"
+            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b bg-background px-3 py-1.5"
         >
             <SegmentedControl
                 data-testid="editor-mode-toggle"

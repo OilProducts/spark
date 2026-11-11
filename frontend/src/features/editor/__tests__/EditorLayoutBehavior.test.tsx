@@ -82,10 +82,12 @@ vi.mock('@/lib/flowPersistence', async () => {
 
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react')
+  const stableReactFlowInstance = { fitView: async () => true }
 
   return {
     ...actual,
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    useReactFlow: () => stableReactFlowInstance,
     ReactFlow: (props: {
       nodes: Node[]
       edges: Edge[]

@@ -63,8 +63,8 @@ const ELK_OPTIONS = {
     'elk.edgeRouting': 'ORTHOGONAL',
     // Gaps must clear the router's obstacle padding on both nodes plus a lane for edges,
     // or ports escape straight through the next node.
-    'elk.layered.spacing.nodeNodeBetweenLayers': '72',
-    'elk.spacing.nodeNode': '56',
+    'elk.layered.spacing.nodeNodeBetweenLayers': '48',
+    'elk.spacing.nodeNode': '40',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
 }
 

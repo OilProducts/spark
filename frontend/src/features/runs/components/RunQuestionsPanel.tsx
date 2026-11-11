@@ -18,7 +18,8 @@ interface RunQuestionsPanelProps {
 }
 
 // Each question is a card: the prompt, its details, an optional note, then the answers as
-// full-size buttons. The flow lists its expected answer first, so that one is filled.
+// full-size buttons of equal weight: a flow's option order says nothing about which answer
+// is expected, so none is styled as the default.
 export function RunQuestionsPanel({
     confirmedQuestionIds,
     className,
@@ -96,7 +97,7 @@ export function RunQuestionsPanel({
                                                     disabled={disabled}
                                                     aria-label="Answer"
                                                     placeholder="Type your answer…"
-                                                    className="h-9 min-w-[18rem] flex-1 bg-background"
+                                                    className="h-9 min-w-0 flex-[1_1_14rem] bg-background"
                                                 />
                                                 <Button
                                                     type="button"
@@ -132,12 +133,12 @@ export function RunQuestionsPanel({
                                                     </div>
                                                 )}
                                                 <div className="flex flex-wrap items-start gap-2">
-                                                    {gate.options.map((option, optionIndex) => {
+                                                    {gate.options.map((option) => {
                                                         const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
                                                         const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
                                                             && Boolean(option.description)
                                                         return (
-                                                            <div key={option.value} className="flex max-w-xs flex-col gap-1">
+                                                            <div key={option.value} className="flex min-w-0 max-w-[min(20rem,100%)] flex-col gap-1">
                                                                 <Button
                                                                     type="button"
                                                                     data-testid={`run-pending-human-gate-answer-${option.value}`}
@@ -145,9 +146,9 @@ export function RunQuestionsPanel({
                                                                         onSubmitPendingGateAnswer(gate, option.value, gateNote)
                                                                     }}
                                                                     disabled={disabled}
-                                                                    variant={optionIndex === 0 && !isFreeform ? 'default' : 'outline'}
+                                                                    variant="outline"
                                                                     size="sm"
-                                                                    className="self-start"
+                                                                    className="h-auto min-h-8 max-w-full self-start whitespace-normal py-1.5 text-left"
                                                                 >
                                                                     {option.label}
                                                                 </Button>

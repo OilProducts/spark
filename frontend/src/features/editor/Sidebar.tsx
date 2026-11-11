@@ -519,7 +519,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
             data-inspector-active-scope={activeInspectorScope}
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`bg-background flex flex-col shrink-0 overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[46vh] border-b' : 'border-r'
+                isNarrowViewport ? 'w-full max-h-[40vh] border-t' : 'border-r'
             }`}
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >

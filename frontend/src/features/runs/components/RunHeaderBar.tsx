@@ -125,7 +125,7 @@ export function RunHeaderBar({
                         title={selectedVisitLabel
                             ? `Start a new run from ${selectedVisitLabel}`
                             : 'Start a new run from a node you pick on the graph'}
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
                     >
                         {selectedVisitLabel ? 'Continue from here' : 'Continue from…'}

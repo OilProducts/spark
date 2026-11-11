@@ -44,8 +44,8 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
-// Node labels are text-sm, so they render at 12px or more from this zoom up.
-const READABLE_ZOOM = 0.86
+// React Flow's own zoom floor: below it a fitted graph's labels are too small to read.
+const MIN_FIT_ZOOM = 0.5
 const FIT_PADDING = 24
 // The zoom controls sit at the bottom left; keep content to their right.
 const CONTROLS_GUTTER = 52
@@ -98,13 +98,13 @@ function RunGraphCanvasInner({
         })
     ), [nodes, nodeStatusesById, selectedNodeId])
 
-    // Fit each loaded graph, but never below a readable zoom: a graph too big for the pane
-    // opens at its top-left (the start of the flow) and the Fit view control shows the whole.
+    // Fit each loaded graph whole. Only a graph too big to read whole opens at its top-left
+    // (the start of the flow), and the Fit view control still shows all of it.
     useEffect(() => {
         if (nodes.length === 0) {
             return
         }
-        void fitView({ padding: FIT_VIEW_PADDING, minZoom: READABLE_ZOOM, maxZoom: 1 }).then(() => {
+        void fitView({ padding: FIT_VIEW_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }).then(() => {
             const pane = paneRef.current
             if (!pane) {
                 return

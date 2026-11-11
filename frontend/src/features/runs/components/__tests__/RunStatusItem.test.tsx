@@ -101,9 +101,9 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
     expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
     expect(screen.getByTestId('run-status-item')).toHaveTextContent('Completed · 14m')
-    // A success exit's evidence is not a warning.
-    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('commit chose done (completed)')
-    expect(screen.getByTestId('run-status-outcome-reason')).not.toHaveClass('text-warning')
+    // A success exit's evidence is a run fact, not a line above the result.
+    expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent('commit chose done (completed)')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
     expect(didNotPass).toHaveTextContent('Review (runtime error, tolerable): Missing a test. · wrote review.required_changes')
@@ -127,6 +127,25 @@ describe('RunStatusItem', () => {
     expect(item).not.toHaveTextContent('Completed ·')
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('review chose blocked: no tests (blocked)')
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveClass('text-warning')
+  })
+
+  it('indents a raw JSON result in a code block', () => {
+    render(
+      <RunStatusItem
+        run={run({ outcome: 'success' })}
+        kind="completed"
+        now={Date.parse('2026-09-29T11:00:00Z')}
+        visits={[]}
+        flowNodes={{}}
+        result={{ ...result, body_markdown: '{"decision":"done"}' }}
+        resultError={null}
+        artifactEntries={[]}
+        question={null}
+        onSelectVisit={vi.fn()}
+        onViewArtifact={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('run-result-body').querySelector('pre code')).toHaveTextContent('{ "decision": "done" }')
   })
 
   it('shows a failed run failure, its kind, and the visit it stopped in', () => {
