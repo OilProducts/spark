@@ -154,13 +154,21 @@ async fn poll_sources_fetch_items_honor_headers_and_do_not_dedupe_ids() {
                 (
                     "headers".to_string(),
                     json!({
+                        "authorization": "Bearer poll-token",
                         "x-test": "compat",
                     }),
                 ),
             ]),
         })
         .expect("create poll");
+    // The headers are private state; the shared definition never holds them.
     let definition = definition(&settings, &project, &created.id);
+    assert_eq!(definition.source.get("headers"), None);
+    let file = spark_common::project::definitions_dir(Path::new(&project))
+        .join(format!("triggers/{}.toml", created.id));
+    assert!(!std::fs::read_to_string(file)
+        .unwrap()
+        .contains("poll-token"));
     let runtime = TriggerSourceRuntime::new(TriggerRepositories::from_settings(&settings));
 
     let outcomes = runtime
@@ -173,6 +181,7 @@ async fn poll_sources_fetch_items_honor_headers_and_do_not_dedupe_ids() {
     assert_eq!(outcomes[1].source_payload["poll_item"]["id"], "a");
     let request = request_rx.recv().expect("captured request");
     assert!(request.contains("x-test: compat"));
+    assert!(request.contains("authorization: Bearer poll-token"));
     let state = load_state(&settings, &project, &created.id);
     assert_eq!(state.last_result.as_deref(), Some("success"));
     assert_eq!(state.last_error, None);

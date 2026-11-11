@@ -122,6 +122,8 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
     ] {
         definition.revision = repository.put(&definition, None).expect("write definition");
         definition.project_path = repository.project_path().to_string();
+        // Poll headers may be credentials: the shared file never holds them.
+        definition.source.remove("headers");
         assert_eq!(
             repository
                 .get(&definition.id)

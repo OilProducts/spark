@@ -631,7 +631,7 @@ minute = 0"#,
 }
 
 #[tokio::test]
-async fn poll_trigger_headers_use_python_stringification_contract() {
+async fn poll_trigger_headers_stay_private_on_create_and_update_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     install_run_flow(&settings);
@@ -639,12 +639,13 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
     let app = build_app(settings.clone()).expect("app");
 
     let created = request_json(
-        app,
+        app.clone(),
         "POST",
         "/workspace/api/triggers",
         Some(json!({
             "project_path": project,
             "name": "Compat poll",
+            "enabled": true,
             "source_type": "poll",
             "action": {"flow_name": RUN_FLOW},
             "source": {
@@ -653,6 +654,7 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
                 "items_path": "items",
                 "item_id_path": "id",
                 "headers": {
+                    "Authorization": "Bearer create-token",
                     "x-bool": true,
                     "x-false": false,
                     "x-null": null,
@@ -664,40 +666,116 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
     )
     .await;
 
-    assert_eq!(created.0, StatusCode::OK);
-    assert_eq!(
-        created.1["source"]["headers"],
-        json!({
-            "x-bool": "True",
-            "x-false": "False",
-            "x-null": "None",
-            "x-number": "5",
-            "x-text": "ok"
-        })
-    );
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], true);
+    let headers = json!({
+        "Authorization": "Bearer create-token",
+        "x-bool": "True",
+        "x-false": "False",
+        "x-null": "None",
+        "x-number": "5",
+        "x-text": "ok"
+    });
+    assert_eq!(created.1["source"]["headers"], headers);
+    assert_eq!(created.1["state"].get("poll_headers"), None);
     let trigger_id = created.1["id"].as_str().expect("trigger id");
     let definitions = TriggerRepositories::from_settings(&settings)
         .definitions(&project)
         .unwrap();
-    let persisted = definitions
-        .get(trigger_id)
-        .expect("read persisted trigger")
-        .expect("persisted trigger");
-    assert_eq!(
-        persisted.source["headers"],
-        json!({
-            "x-bool": "True",
-            "x-false": "False",
-            "x-null": "None",
-            "x-number": "5",
-            "x-text": "ok"
-        })
+    let persisted = || {
+        let definition = definitions
+            .get(trigger_id)
+            .expect("read persisted trigger")
+            .expect("persisted trigger");
+        let text = fs::read_to_string(definitions.definition_path(trigger_id).unwrap())
+            .expect("definition toml");
+        (definition, text)
+    };
+    let (definition, text) = persisted();
+    assert_eq!(definition.source.get("headers"), None);
+    assert!(
+        !text.contains("headers") && !text.contains("token"),
+        "{text}"
     );
-    let definition_text = fs::read_to_string(definitions.definition_path(trigger_id).unwrap())
-        .expect("definition toml");
-    assert!(definition_text.contains("headers_json = "));
-    assert!(definition_text.contains(r#"\"x-bool\": \"True\""#));
-    assert!(definition_text.contains(r#"\"x-null\": \"None\""#));
+    let state = load_state(&settings, &project, trigger_id);
+    assert_eq!(Value::Object(state.poll_headers), headers);
+
+    let url = format!("/workspace/api/triggers/{trigger_id}?project_path={project}");
+    let mut source = created.1["source"].clone();
+    source["headers"] = json!({"Authorization": "Bearer update-token"});
+    let updated = request_json(
+        app.clone(),
+        "PATCH",
+        &url,
+        Some(json!({
+            "expected_revision": created.1["revision"],
+            "enabled": true,
+            "source": source
+        })),
+    )
+    .await;
+    assert_eq!(updated.0, StatusCode::OK, "{}", updated.1);
+    assert_eq!(updated.1["enabled"], true);
+    assert_eq!(
+        updated.1["source"]["headers"],
+        json!({"Authorization": "Bearer update-token"})
+    );
+    let (definition, text) = persisted();
+    assert_eq!(definition.source.get("headers"), None);
+    assert!(
+        !text.contains("headers") && !text.contains("token"),
+        "{text}"
+    );
+    assert_eq!(
+        Value::Object(load_state(&settings, &project, trigger_id).poll_headers),
+        json!({"Authorization": "Bearer update-token"})
+    );
+    let listed = request_json(app, "GET", "/workspace/api/triggers", None).await;
+    assert_eq!(
+        listed.1[0]["source"]["headers"],
+        json!({"Authorization": "Bearer update-token"})
+    );
+}
+
+#[tokio::test]
+async fn enabled_creation_naming_a_missing_profile_saves_an_inactive_definition() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Profiled", "enabled": true,
+            "source_type": "webhook", "source": {},
+            "action": {"flow_name": RUN_FLOW, "execution_profile_id": "missing"}
+        })),
+    )
+    .await;
+
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], false);
+    let error = created.1["state"]["activation_error"].as_str().unwrap();
+    assert!(error.contains("missing"), "{error}");
+    let id = created.1["id"].as_str().unwrap();
+    let definition = TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .expect("definition saved");
+    assert_eq!(
+        definition.action.execution_profile_id.as_deref(),
+        Some("missing")
+    );
+    let listed = request_json(app, "GET", "/workspace/api/triggers", None).await;
+    assert_eq!(listed.1[0]["id"], id);
+    assert_eq!(listed.1[0]["enabled"], false);
+    assert_eq!(listed.1[0]["state"]["activation_error"], error);
 }
 
 async fn request_json(

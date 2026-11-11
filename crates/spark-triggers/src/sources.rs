@@ -197,22 +197,24 @@ impl TriggerSourceRuntime {
             .and_then(Value::as_i64)
             .ok_or_else(|| TriggerError::Validation("Poll interval is missing.".to_string()))?;
         let states = self.repositories.runtime_state(&definition.project_path)?;
-        let mut due = false;
+        let mut due = None;
         states.update_existing(&definition.id, |trigger_state| {
-            due = trigger_state.is_active_for(definition)
+            if trigger_state.is_active_for(definition)
                 && !state::parse_iso_datetime(trigger_state.next_run_at.as_deref())
-                    .is_some_and(|next_run_at| now < next_run_at);
-            if due {
+                    .is_some_and(|next_run_at| now < next_run_at)
+            {
                 trigger_state.next_run_at = Some(state::datetime_to_iso(
                     now + Duration::seconds(interval_seconds),
                 ));
+                // Fetched with the private headers.
+                due = Some(trigger_state.bind(definition.clone()));
             }
         })?;
-        if !due {
+        let Some(bound) = due else {
             return Ok(Vec::new());
-        }
+        };
 
-        let payload = match self.fetch_poll_payload(definition).await {
+        let payload = match self.fetch_poll_payload(&bound).await {
             Ok(payload) => payload,
             Err(message) => {
                 return self

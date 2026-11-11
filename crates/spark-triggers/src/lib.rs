@@ -91,8 +91,8 @@ impl TriggerService {
         self.serialize_current(definition).map(Some)
     }
 
-    /// Saves the definition, then its private state (mission binding and
-    /// webhook credentials), inactive. `enabled` then activates it; a
+    /// Saves the definition, then its private state (mission binding, poll
+    /// headers and webhook credentials), inactive. `enabled` then activates it; a
     /// failed activation leaves the definition available but inactive, with
     /// the reason in `state.activation_error`.
     pub fn create_trigger(
@@ -105,6 +105,7 @@ impl TriggerService {
         let mut definition = normalize_trigger_create(request)?;
         definition.project_path = repository.project_path().to_string();
         let mission_id = definition.action.mission_id.clone();
+        let poll_headers = take_poll_headers(&mut definition);
         definition.revision = repository.put(&definition, message.as_deref())?;
         let mut webhook_secret = None;
         self.repositories
@@ -113,6 +114,7 @@ impl TriggerService {
                 // Whatever a removed namesake left is never restored.
                 *state = TriggerState {
                     mission_id,
+                    poll_headers,
                     ..TriggerState::default()
                 };
                 if definition.source_type == SOURCE_WEBHOOK {
@@ -129,8 +131,8 @@ impl TriggerService {
     }
 
     /// Commits the definition only when its file content changed: a mission
-    /// binding, switching `enabled` or regenerating a webhook secret writes
-    /// private state alone. `enabled: true` revalidates and activates;
+    /// binding or poll headers, switching `enabled` or regenerating a webhook
+    /// secret writes private state alone. `enabled: true` revalidates and activates;
     /// `false` deactivates; a changed binding or operational content
     /// (see [`spark_storage::definition_fingerprint`]) deactivates.
     pub fn update_trigger(
@@ -155,14 +157,16 @@ impl TriggerService {
             }
             .into());
         }
-        let current = states.get(trigger_id)?;
-        let existing_binding = current.as_ref().and_then(|state| state.mission_id.clone());
+        let current = states.get(trigger_id)?.unwrap_or_default();
+        let existing_binding = (current.mission_id.clone(), current.poll_headers.clone());
         let enabled = request.enabled;
         let regenerate = request.regenerate_webhook_secret;
         let message = request.message.clone();
-        let mut definition =
-            normalize_trigger_update(current.unwrap_or_default().bind(existing.clone()), request)?;
-        let mission_id = definition.action.mission_id.take();
+        let mut definition = normalize_trigger_update(current.bind(existing.clone()), request)?;
+        let binding = (
+            definition.action.mission_id.take(),
+            take_poll_headers(&mut definition),
+        );
         let unchanged = TriggerDefinition {
             updated_at: existing.updated_at.clone(),
             ..definition.clone()
@@ -184,12 +188,12 @@ impl TriggerService {
             }
             definition.revision = repository.put(&definition, message.as_deref())?;
         }
-        let rebound = mission_id != existing_binding;
+        let rebound = binding != existing_binding;
         let mut webhook_secret = None;
         if rebound || regenerate || enabled == Some(false) {
             states.update(trigger_id, |state| {
                 if rebound {
-                    state.mission_id = mission_id;
+                    (state.mission_id, state.poll_headers) = binding;
                     state.enabled = false;
                 }
                 if enabled == Some(false) {
@@ -348,6 +352,15 @@ fn set_webhook_credentials(state: &mut TriggerState) -> String {
     secret
 }
 
+/// Moves a poll definition's headers, which may carry credentials, out of
+/// the definition, for its private state.
+fn take_poll_headers(definition: &mut TriggerDefinition) -> serde_json::Map<String, Value> {
+    match definition.source.remove("headers") {
+        Some(Value::Object(headers)) => headers,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// The active webhook trigger a request's key and secret authenticate,
 /// with its private bindings, rechecked against its definition as it
 /// reads now.
@@ -384,8 +397,8 @@ pub(crate) fn authenticate_webhook_request(
 }
 
 /// The API's trigger: `enabled` is whether the activation matches the
-/// definition, the mission binding and webhook key come from private state;
-/// the secret hash never leaves it.
+/// definition, the mission binding, poll headers and webhook key come from
+/// private state; the secret hash never leaves it.
 pub fn serialize_trigger(
     definition: TriggerDefinition,
     mut state: TriggerState,
@@ -397,6 +410,7 @@ pub fn serialize_trigger(
     state.secret_hash = None;
     state.fingerprint = None;
     state.flow_event_deliveries.clear();
+    state.poll_headers.clear();
     if let Some(key) = state.webhook_key.take() {
         source.insert("webhook_key".to_string(), Value::String(key));
     }

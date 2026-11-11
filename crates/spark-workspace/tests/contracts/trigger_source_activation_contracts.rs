@@ -466,7 +466,7 @@ fn activation_with_a_disabled_profile_saves_the_trigger_inactive() {
     let settings = settings(&root);
     write_flow(&settings, "ops/run");
     let project = project(&settings, "project");
-    // Saving checks that the profile exists; activation that it can run.
+    // Saving checks no profile; activation that it exists and can run.
     fs::create_dir_all(&settings.config_dir).unwrap();
     fs::write(
         settings.config_dir.join("execution-profiles.toml"),

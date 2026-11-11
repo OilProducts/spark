@@ -21,6 +21,7 @@ const SOURCE_SCHEDULE: &str = "schedule";
 const SOURCE_POLL: &str = "poll";
 const SOURCE_WEBHOOK: &str = "webhook";
 const SOURCE_FLOW_EVENT: &str = "flow_event";
+const POLL_HEADERS: &str = "headers";
 const ACTION_MODE_STATIC: &str = "static";
 const WEEKDAY_ORDER: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const TERMINAL_PIPELINE_STATUSES: &[&str] = &[
@@ -109,6 +110,10 @@ pub struct TriggerState {
     pub webhook_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_hash: Option<String>,
+    /// A poll source's request headers, which may carry credentials, so
+    /// they bind here and never enter the shared definition.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub poll_headers: Map<String, Value>,
     /// `<run id>:<status>` keys of the flow events this trigger already fired
     /// for, newest last, so a re-published terminal run fires it only once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -126,6 +131,12 @@ impl TriggerState {
         if definition.action.mode == "mission" {
             definition.action.mission_id = self.mission_id.clone();
         }
+        if definition.source_type == SOURCE_POLL {
+            definition.source.insert(
+                POLL_HEADERS.into(),
+                Value::Object(self.poll_headers.clone()),
+            );
+        }
         definition
     }
 }
@@ -142,9 +153,11 @@ pub fn definition_fingerprint(definition: &TriggerDefinition) -> String {
         mission_id: None,
         ..definition.action.clone()
     };
+    let mut source = definition.source.clone();
+    source.remove(POLL_HEADERS);
     let content = serde_json::json!({
         "source_type": definition.source_type,
-        "source": definition.source,
+        "source": source,
         "action": action,
     });
     format!("{:x}", Sha1::digest(content.to_string().as_bytes()))
@@ -256,11 +269,9 @@ impl TriggerDefinitionRepository {
     /// Writes the definition and returns its new revision. `_message`
     /// describes the change; nothing records it.
     pub fn put(&self, definition: &TriggerDefinition, _message: Option<&str>) -> Result<String> {
+        // Profile references are checked on activation and dispatch; a
+        // definition naming a missing profile is still saved, inactive.
         let _references = crate::settings::lock_profile_references(&self.config_dir)?;
-        crate::settings::validate_profile_references(
-            &self.config_dir,
-            &serde_json::json!(definition.action),
-        )?;
         let path = self.definition_path(&definition.id)?;
         let _lock = self.lock(&definition.id)?;
         let current = crate::settings::read_settings_document(&path)?;
@@ -275,7 +286,7 @@ impl TriggerDefinitionRepository {
         let payload: toml::Table = toml::from_str(&trigger_definition_toml(definition))
             .map_err(|_| invalid_trigger(&path, "Invalid trigger TOML."))?;
         // Written as normalized, which drops anything the file never holds,
-        // such as webhook credentials.
+        // such as webhook credentials and poll headers.
         let text =
             trigger_definition_toml(&parse_trigger_definition(&definition.id, &payload, &path)?);
         fs::create_dir_all(self.root_dir())
@@ -731,11 +742,13 @@ fn parse_trigger_definition(
     let source_type = toml_scalar_to_string(payload.get("source_type"))
         .trim()
         .to_string();
-    let source = normalize_trigger_source_payload_at(
+    let mut source = normalize_trigger_source_payload_at(
         &source_type,
         &parse_source(source_payload, path)?,
         path,
     )?;
+    // Nor does it hold poll headers, which may be credentials.
+    source.remove(POLL_HEADERS);
     Ok(TriggerDefinition {
         revision: String::new(),
         project_path: String::new(),
