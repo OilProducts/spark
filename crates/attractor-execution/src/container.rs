@@ -708,22 +708,10 @@ fn project_work_mount(work: &Path, declared: &[String]) -> Result<String, Runtim
 }
 
 fn mount_arg(source: &Path, target: &Path) -> String {
-    format!("{}:{}:rw", host_path(source).display(), target.display())
-}
-
-fn host_path(path: &Path) -> PathBuf {
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    for (container_prefix, env_key) in [
-        (Path::new("/projects"), "SPARK_PROJECTS_HOST_DIR"),
-        (Path::new("/spark"), "SPARK_DOCKER_HOME"),
-    ] {
-        if let Ok(relative) = resolved.strip_prefix(container_prefix) {
-            if let Ok(host_prefix) = std::env::var(env_key) {
-                return PathBuf::from(host_prefix).join(relative);
-            }
-        }
-    }
-    resolved
+    let source = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    format!("{}:{}:rw", source.display(), target.display())
 }
 
 fn dedupe(values: impl IntoIterator<Item = String>) -> Vec<String> {

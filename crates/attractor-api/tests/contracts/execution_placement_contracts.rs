@@ -764,7 +764,8 @@ fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcom
 }
 
 /// Run with an existing worker image, without invoking a model:
-/// SPARK_WORKER_IMAGE=spark:package cargo test -p attractor-api real_docker_run_lifetime -- --ignored
+/// cargo test --workspace --all-features --test contracts real_docker_run_lifetime -- --ignored
+/// The default image is containers/mathlab's; set SPARK_WORKER_IMAGE to use another.
 #[test]
 #[ignore = "requires a running Docker daemon and an existing Spark worker image"]
 fn real_docker_run_lifetime() {
@@ -799,7 +800,8 @@ fn real_docker_run_lifetime() {
     );
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    let image = std::env::var("SPARK_WORKER_IMAGE").unwrap_or_else(|_| "spark:package".into());
+    let image =
+        std::env::var("SPARK_WORKER_IMAGE").unwrap_or_else(|_| "spark-mathlab:latest".into());
     assert!(
         std::process::Command::new("docker")
             .args(["image", "inspect", &image])
