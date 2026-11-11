@@ -53,7 +53,8 @@ reverts to the bundled flow; bundled flows cannot be deleted.
 Flows keep durable working data (checkouts, ledgers, generated scripts) in
 the project's private work area, outside the project: Spark supplies it to
 every run of the project, root and child alike, as the context binding
-`internal.project_work_dir` and to every tool as `SPARK_PROJECT_WORK_DIR`.
+`internal.project_work_dir` and to every tool and agent shell as
+`SPARK_PROJECT_WORK_DIR`.
 Each flow uses its own subdirectory, such as `checkouts/` or
 `spec-implementation/`. An agent node that needs the path declares
 `internal.project_work_dir` in `contracts.reads_context`. The area outlives

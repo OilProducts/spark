@@ -13,6 +13,25 @@ use crate::history::HistoryTurn;
 /// text, so compaction cannot drop them.
 pub const AGENT_INSTRUCTIONS_METADATA_KEY: &str = "spark.agent.instructions";
 
+/// Metadata key for the run's project work area; every agent process and
+/// shell a turn starts sees it as `SPARK_PROJECT_WORK_DIR`.
+pub const PROJECT_WORK_DIR_METADATA_KEY: &str = "spark.runtime.project_work_dir";
+
+/// The environment a turn's metadata binds for its agent processes.
+pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
+    metadata
+        .get(PROJECT_WORK_DIR_METADATA_KEY)
+        .and_then(Value::as_str)
+        .map(|work| {
+            (
+                spark_common::project::PROJECT_WORK_DIR_ENV.to_string(),
+                work.to_string(),
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
 pub type AgentTurnEventSink = Arc<dyn Fn(TurnStreamEvent) + Send + Sync + 'static>;
 
 /// Writes lines to an agent process's stdin from its own thread, so a process

@@ -34,8 +34,7 @@ CREATE TABLE store_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     schema_version INTEGER NOT NULL,
     generation TEXT NOT NULL CHECK (length(generation) > 0),
-    next_revision INTEGER NOT NULL CHECK (next_revision >= 1),
-    reset_complete INTEGER NOT NULL DEFAULT 0 CHECK (reset_complete IN (0, 1))
+    next_revision INTEGER NOT NULL CHECK (next_revision >= 1)
 );
 
 CREATE TABLE project_deletions (
@@ -639,12 +638,6 @@ impl ConversationDatabase {
     }
 
     /// Statements that change only cleanup bookkeeping, outside revisions.
-    pub(crate) fn mark_reset_complete(&self) -> Result<()> {
-        self.lock()
-            .execute("UPDATE store_meta SET reset_complete = 1", [])?;
-        Ok(())
-    }
-
     pub(crate) fn remove_project_deletion(&self, project_path: &str) -> Result<()> {
         self.lock().execute(
             "DELETE FROM project_deletions WHERE project_path = ?1",
@@ -1687,14 +1680,6 @@ impl ReadTransaction<'_> {
                 })
             })
             .collect()
-    }
-
-    pub fn reset_complete(&self) -> Result<bool> {
-        Ok(self.tx.query_row(
-            "SELECT reset_complete FROM store_meta WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )?)
     }
 
     fn json_rows<T>(

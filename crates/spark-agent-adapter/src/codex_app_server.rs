@@ -217,6 +217,7 @@ impl CodexAppServerBackend {
             PathBuf::from(&request.project_path),
             trace_path,
             native,
+            crate::agent::agent_turn_env(&request.metadata),
             Some((Arc::clone(&stop), inbox)),
         )
         // Startup can fail before a client exists to close the turn.
@@ -532,14 +533,16 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
     ) -> Result<Self, CodexAppServerError> {
-        Self::connect_with_settings(working_dir, trace_path, None, None)
+        Self::connect_with_settings(working_dir, trace_path, None, BTreeMap::new(), None)
     }
 
     /// `controls` are a registered turn's; a standalone client gets its own.
+    /// `turn_env` adds to the runtime environment the turn's own bindings.
     fn connect_with_settings(
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
         native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+        turn_env: BTreeMap<String, String>,
         controls: Option<(Arc<TurnStop>, Receiver<Inbox>)>,
     ) -> Result<Self, CodexAppServerError> {
         let (stop, inbox) = controls.unwrap_or_else(TurnStop::new);
@@ -561,6 +564,7 @@ impl CodexAppServerClient {
             .arg("app-server")
             .current_dir(&working_dir)
             .envs(build_codex_runtime_environment_with_settings(native)?)
+            .envs(turn_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -2381,8 +2385,14 @@ pub fn list_available_codex_models_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
 ) -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
     let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
-    let mut client = CodexAppServerClient::connect_with_settings(working_dir, None, native, None)
-        .map_err(log_model_discovery_error)?;
+    let mut client = CodexAppServerClient::connect_with_settings(
+        working_dir,
+        None,
+        native,
+        BTreeMap::new(),
+        None,
+    )
+    .map_err(log_model_discovery_error)?;
     let result = client
         .list_models()
         .map_err(|error| log_model_discovery_error(error))?;

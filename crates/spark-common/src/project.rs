@@ -81,6 +81,9 @@ pub fn project_storage_dir_for(home: &Path, project_path: &str) -> Result<PathBu
     Ok(project_storage_dir(home, &build_project_id(project_path)?))
 }
 
+/// The shell variable naming a run's [`project_work_dir`], for tools and agents.
+pub const PROJECT_WORK_DIR_ENV: &str = "SPARK_PROJECT_WORK_DIR";
+
 /// `G/work`: durable working files flows and agents keep for a project,
 /// bound to runs as `internal.project_work_dir` / `SPARK_PROJECT_WORK_DIR`.
 pub fn project_work_dir(home: &Path, project_path: &str) -> Result<PathBuf> {

@@ -314,11 +314,16 @@ impl ExecutionEnvironment {
         self.backend.list_directory(path.as_ref(), depth)
     }
 
+    /// Runs `command` with the environment's own variables, which a
+    /// command's `env_vars` extend.
     pub fn exec_command(
         &self,
         command: impl AsRef<str>,
-        options: CommandOptions,
+        mut options: CommandOptions,
     ) -> EnvironmentResult<ExecResult> {
+        let mut env_vars = self.env.clone();
+        env_vars.append(&mut options.env_vars);
+        options.env_vars = env_vars;
         self.backend.exec_command(command.as_ref(), options)
     }
 

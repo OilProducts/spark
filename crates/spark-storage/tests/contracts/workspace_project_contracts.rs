@@ -1015,29 +1015,33 @@ fn a_second_store_on_the_same_home_is_refused_until_the_first_closes() {
 }
 
 #[test]
-fn first_open_wipes_only_legacy_conversations_and_the_handle_index() {
+fn startup_leaves_historical_files_in_place_and_imports_none_of_them() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let registry = ProjectRegistry::new(&home);
     let paths = registry.ensure_project_paths("/projects/legacy").unwrap();
-    let legacy = paths.conversations_dir.join("old-chat");
-    fs::create_dir_all(&legacy).unwrap();
-    fs::write(legacy.join("conversation.json"), "{}").unwrap();
-    let handles = home.join("workspace/conversation-handles.json");
-    fs::create_dir_all(handles.parent().unwrap()).unwrap();
-    fs::write(&handles, "{}").unwrap();
-    let store = ConversationStore::open(&home).unwrap();
-    assert!(!paths.conversations_dir.exists());
-    assert!(!handles.exists());
-    assert!(registry
-        .read_project_record("/projects/legacy")
-        .unwrap()
-        .is_some());
-    drop(store);
-    // Later opens never wipe again.
-    fs::create_dir_all(&legacy).unwrap();
-    ConversationStore::open(&home).unwrap();
-    assert!(legacy.exists());
+    let historical = [
+        home.join("workspace/conversation-handles.json"),
+        home.join("workspace/projects/legacy/conversations/old-chat/conversation.json"),
+        paths.conversations_dir.join("old-chat/conversation.json"),
+    ];
+    for file in &historical {
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, r#"{"id":"old-chat"}"#).unwrap();
+    }
+    // Fresh state, then a restart over the same state.
+    for _ in 0..2 {
+        let store = ConversationStore::open(&home).unwrap();
+        for file in &historical {
+            assert_eq!(fs::read_to_string(file).unwrap(), r#"{"id":"old-chat"}"#);
+        }
+        let repo = ConversationRepository::new(store.clone());
+        assert!(repo.conversation_summaries(None).unwrap().is_empty());
+        assert!(registry
+            .read_project_record("/projects/legacy")
+            .unwrap()
+            .is_some());
+    }
 }
 
 #[test]

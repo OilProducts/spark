@@ -765,6 +765,50 @@ fn app_server_launch_requests_raw_reasoning_from_the_harness() {
     );
 }
 
+/// The app-server, whose shell commands inherit its environment, gets the
+/// turn's project work area.
+#[cfg(unix)]
+#[test]
+fn app_server_runs_with_the_turns_project_work_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let seen = temp.path().join("work-dir.log");
+    let wrapper = temp.path().join("codex");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$SPARK_PROJECT_WORK_DIR\" > '{}'\nexec '{}' \"$@\"\n",
+            seen.display(),
+            fake_codex_app_server_bin()
+        ),
+    )
+    .expect("wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("executable");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", wrapper.as_os_str());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let mut request = turn_request(temp.path(), "codex-work");
+    request.metadata.insert(
+        spark_agent_adapter::PROJECT_WORK_DIR_METADATA_KEY.to_string(),
+        json!("/spark-home/projects/p/work"),
+    );
+
+    CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .expect("turn completes");
+
+    assert_eq!(
+        fs::read_to_string(&seen).expect("recorded"),
+        "/spark-home/projects/p/work"
+    );
+}
+
 #[test]
 fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
     let _lock = ENV_LOCK

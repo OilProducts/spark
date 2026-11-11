@@ -1191,6 +1191,12 @@ impl RuntimeHandlerRunner {
             if let Some(root) = execution_root.as_ref() {
                 metadata.insert("spark.runtime.execution_root".to_string(), json!(root));
             }
+            if let Some(work) = runtime.context.get(crate::PROJECT_WORK_DIR_KEY) {
+                metadata.insert(
+                    spark_agent_adapter::PROJECT_WORK_DIR_METADATA_KEY.to_string(),
+                    work.clone(),
+                );
+            }
             metadata
         })
         .with_session(session);
