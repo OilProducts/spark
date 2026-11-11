@@ -183,16 +183,12 @@ fn init_creates_runtime_layout_and_bundled_library() {
             bundled.display(),
         )
     );
-    for relative in [
-        "config",
-        "runtime",
-        "logs",
-        "workspace",
-        "workspace/projects",
-        "attractor",
-        "attractor/runs",
-    ] {
+    for relative in ["config", "runtime"] {
         assert!(data_dir.join(relative).is_dir(), "missing {relative}");
+    }
+    // No obsolete registration, global log or shared runs directories.
+    for relative in ["logs", "workspace", "attractor"] {
+        assert!(!data_dir.join(relative).exists(), "obsolete {relative}");
     }
     assert_eq!(
         list_flow_files(&bundled.join("flows")),
@@ -703,7 +699,7 @@ fn assert_worker_stops_stalled_agent(provider: &str, cancel: bool) {
         "backend_name": null,
         "model": null,
         "config_dir": null,
-        "run_root": {"runs_dir": paths.runs_dir, "project_id": paths.project_id, "root": paths.root}
+        "run_root": {"runs_root": paths.runs_root, "project_id": paths.project_id, "root": paths.root}
     });
     let started = std::time::Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
@@ -841,7 +837,7 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     )
     .unwrap();
     let captured = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
-    assert_eq!(captured.runs_dir, first);
+    assert_eq!(captured.runs_dir, Some(first.clone()));
     fs::write(
         &path,
         format!(
@@ -851,8 +847,8 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     )
     .unwrap();
     let restarted = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
-    assert_eq!(restarted.runs_dir, second);
-    assert_eq!(captured.runs_dir, first);
+    assert_eq!(restarted.runs_dir, Some(second));
+    assert_eq!(captured.runs_dir, Some(first.clone()));
     assert_eq!(restarted.data_dir, home);
     let overrides = SettingsOverrides {
         runs_dir: Some(first.clone()),
@@ -862,7 +858,7 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
         resolve_server_settings_with_executable_path(&overrides, &env, None)
             .unwrap()
             .runs_dir,
-        first
+        Some(first)
     );
     fs::write(&path, "[runtime]\nruns_dir = 123\n").unwrap();
     assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());

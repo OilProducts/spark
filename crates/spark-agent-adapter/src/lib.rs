@@ -29,7 +29,7 @@ pub mod truncation;
 pub use agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
-    AGENT_INSTRUCTIONS_METADATA_KEY,
+    AGENT_INSTRUCTIONS_METADATA_KEY, PROJECT_WORK_DIR_METADATA_KEY,
 };
 pub use attachments::{AgentAttachment, AGENT_ATTACHMENTS_METADATA_KEY};
 pub use claude_code::{

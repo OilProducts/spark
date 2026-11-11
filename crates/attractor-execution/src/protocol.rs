@@ -37,7 +37,7 @@ pub struct WorkerNodeRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRootMetadata {
-    pub runs_dir: PathBuf,
+    pub runs_root: spark_common::project::RunsRoot,
     pub project_id: String,
     pub root: PathBuf,
 }

@@ -213,6 +213,7 @@ fn a_delete_whose_file_removal_fails_still_clears_the_activation() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -222,10 +223,10 @@ fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
     let created = service
         .create_trigger(webhook_create_request(&project))
         .expect("create");
-    // A file where the staging directory belongs makes every write fail.
-    let tmp = Path::new(&project).join(".spark/state/tmp");
-    std::fs::remove_dir_all(&tmp).unwrap();
-    std::fs::write(&tmp, "").unwrap();
+    // A read-only definitions directory makes every staged write fail.
+    use std::os::unix::fs::PermissionsExt;
+    let triggers = spark_common::project::definitions_dir(Path::new(&project)).join("triggers");
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     assert!(service
         .create_trigger(TriggerCreateRequest {
@@ -250,7 +251,7 @@ fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
     assert_eq!((current.name.as_str(), current.enabled), ("Webhook", true));
     assert_eq!(current.revision, created.revision);
 
-    std::fs::remove_file(&tmp).unwrap();
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o755)).unwrap();
     let retried = service
         .update_trigger(&project, &created.id, edit)
         .expect("retry with the original revision");
@@ -933,11 +934,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }

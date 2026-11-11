@@ -47,15 +47,13 @@ target_moved=true
 if [ "$(git merge-base "$target_commit" "$source_commit" || true)" = "$target_commit" ]; then
   target_moved=false
 fi
-repo_root=$(git rev-parse --show-toplevel)
-# Worktrees live under <repo>/.spark/state, never inside .git: tooling
-# such as Vite refuses to serve or resolve paths matching **/.git/**. The
-# state directory ignores itself so the target checkout stays clean.
-integration_root="${repo_root}/.spark/state/integrations"
+# Worktrees live in the project's private work area, outside the checkout
+# and never inside .git: tooling such as Vite refuses to serve or resolve
+# paths matching **/.git/**.
+integration_root="${SPARK_PROJECT_WORK_DIR}/integrations"
 worktree="${integration_root}/${SPARK_RUN_ID}"
 if [ ! -d "$worktree" ]; then
   mkdir -p "$integration_root"
-  [ -e "${repo_root}/.spark/state/.gitignore" ] || printf '*\n' > "${repo_root}/.spark/state/.gitignore"
   git worktree add --detach "$worktree" "$target_commit" >/dev/null
 fi
 cd "$worktree"

@@ -286,6 +286,7 @@ impl ClaudeCodeBackend {
         let native = configuration.as_ref().map(|config| &config.native);
         let (executable, mut command) = claude_command(native);
         command
+            .envs(crate::agent::agent_turn_env(&request.metadata))
             .arg("-p")
             .arg("--output-format")
             .arg("stream-json")

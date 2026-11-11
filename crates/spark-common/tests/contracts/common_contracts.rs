@@ -10,9 +10,12 @@ use spark_common::events::{
 use spark_common::logging::spark_target;
 use spark_common::paths::{ensure_directory, resolve_runtime_workspace_path_with_env};
 use spark_common::process::ProcessLineReader;
-use spark_common::project::{build_project_id, normalize_project_path};
+use spark_common::project::{
+    build_project_id, normalize_project_path, project_storage_dir, project_work_dir, RunsRoot,
+};
 use spark_common::settings::{
     parse_project_roots, resolve_settings_with_env, validate_settings, SettingsOverrides,
+    SparkSettings,
 };
 use spark_common::source_checkout::{
     default_api_target_refusal_message, default_runtime_home_refusal_message,
@@ -60,16 +63,67 @@ fn settings_resolution_preserves_precedence_and_derived_paths() {
     assert_eq!(settings.data_dir, cli_home);
     assert_eq!(settings.config_dir, settings.data_dir.join("config"));
     assert_eq!(settings.runtime_dir, settings.data_dir.join("runtime"));
-    assert_eq!(settings.logs_dir, settings.data_dir.join("logs"));
-    assert_eq!(settings.workspace_dir, settings.data_dir.join("workspace"));
+    // Runs default to each project's private storage `G/runs`.
+    assert_eq!(settings.runs_dir, None);
+    let runs = settings.runs_root();
+    assert_eq!(runs, RunsRoot::Home(cli_home.clone()));
+    assert_eq!(runs.projects_dir(), cli_home.join("projects"));
     assert_eq!(
-        settings.projects_dir,
-        settings.data_dir.join("workspace/projects")
+        runs.project_runs_dir("demo-0123456789ab"),
+        project_storage_dir(&cli_home, "demo-0123456789ab").join("runs")
     );
-    assert_eq!(settings.attractor_dir, settings.data_dir.join("attractor"));
-    assert_eq!(settings.runs_dir, settings.data_dir.join("attractor/runs"));
+    assert_eq!(
+        project_storage_dir(&cli_home, "demo-0123456789ab"),
+        cli_home.join("projects/demo-0123456789ab")
+    );
+    let project = "/work/demo";
+    assert_eq!(
+        project_work_dir(&cli_home, project).unwrap(),
+        cli_home
+            .join("projects")
+            .join(build_project_id(project).unwrap())
+            .join("work")
+    );
+    // A configured external root keeps `<root>/<project-id>/<run-id>`.
+    let external = RunsRoot::External(cli_home.join("elsewhere"));
+    assert_eq!(external.projects_dir(), cli_home.join("elsewhere"));
+    assert_eq!(
+        external.project_runs_dir("demo-0123456789ab"),
+        cli_home.join("elsewhere/demo-0123456789ab")
+    );
     assert_eq!(settings.bundled_dir(), settings.data_dir.join("bundled"));
     assert_eq!(settings.ui_dir, Some(ui));
+}
+
+/// This repository's ignore rules admit authored definitions and keep Spark's
+/// staging names and other local `.spark` data out.
+#[test]
+fn repository_ignore_rules_admit_definitions_and_exclude_staging() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let ignored = |path: &str| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["check-ignore", "-q", "--no-index", path])
+            .status()
+            .expect("git check-ignore")
+            .success()
+    };
+    for path in [
+        ".spark/definitions/flows/review/flow.md",
+        ".spark/definitions/roles/reviewer.md",
+        ".spark/definitions/triggers/nightly.toml",
+    ] {
+        assert!(!ignored(path), "{path}");
+    }
+    for path in [
+        ".spark/definitions/flows/.spark-deleting-abc/flow.md",
+        ".spark/definitions/triggers/.spark-storage-abc",
+        ".spark/state/checkouts/run/file",
+        ".spark/tmp/file",
+    ] {
+        assert!(ignored(path), "{path}");
+    }
 }
 
 #[test]
@@ -123,17 +177,20 @@ fn validate_settings_creates_runtime_directories_and_checks_ui_index() {
 
     validate_settings(&settings).expect("valid settings");
 
-    for path in [
-        &settings.config_dir,
-        &settings.runtime_dir,
-        &settings.logs_dir,
-        &settings.workspace_dir,
-        &settings.projects_dir,
-        &settings.attractor_dir,
-        &settings.runs_dir,
-    ] {
+    for path in [&settings.config_dir, &settings.runtime_dir] {
         assert!(path.is_dir(), "{} should be created", path.display());
     }
+    // No obsolete registration, global log or shared runs directories.
+    for obsolete in ["logs", "workspace", "attractor", "projects"] {
+        assert!(!settings.data_dir.join(obsolete).exists(), "{obsolete}");
+    }
+    let external = temp.path().join("external-runs");
+    validate_settings(&SparkSettings {
+        runs_dir: Some(external.clone()),
+        ..settings
+    })
+    .expect("valid external runs root");
+    assert!(external.is_dir());
 }
 
 #[test]

@@ -428,7 +428,7 @@ pub fn execution_configuration(
     Ok(ExecutionConfiguration {
         config_dir: config_dir.to_path_buf(),
         runtime: spark_common::settings::RuntimeSettings {
-            runs_dir: Some(runtime.runs_dir),
+            runs_dir: runtime.runs_dir,
             ui_dir: runtime.ui_dir,
             project_roots: runtime.project_roots,
         },

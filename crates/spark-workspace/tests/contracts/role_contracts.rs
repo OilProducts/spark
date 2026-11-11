@@ -193,7 +193,10 @@ fn missions_roles_and_ordinary_chats_each_get_their_own_frame() {
         role.contains("standing Coordinator (coordinator)"),
         "{role}"
     );
-    assert!(role.contains(".spark/state/memory/coordinator"));
+    assert!(role.contains(&format!(
+        "Your memory is {}",
+        memory_dir(&harness, COORDINATOR_ROLE).display()
+    )));
     harness.finish_turn(COORDINATOR_ROLE);
     let chat = frame(&harness.user_turn("chat-1"));
     assert!(
@@ -965,8 +968,16 @@ fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
     }
 }
 
+fn memory_dir(harness: &Harness, role: &str) -> std::path::PathBuf {
+    spark_common::project::project_storage_dir_for(&harness.settings.data_dir, &harness.project)
+        .unwrap()
+        .join("memory")
+        .join(role)
+}
+
+#[cfg(unix)]
 #[test]
-fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted() {
+fn a_roles_memory_lives_outside_the_project_where_its_prompt_and_the_memory_api_agree() {
     let harness = Harness::new();
     let project = std::path::Path::new(&harness.project);
     let git = |args: &[&str]| {
@@ -982,30 +993,52 @@ fn a_roles_first_turn_makes_its_memory_ignored_and_again_after_state_is_deleted(
     git(&["init", "-q"]);
     // A project copy of the role: definitions stay visible to Git.
     harness.org_role(COORDINATOR_ROLE, COORDINATOR_FILE);
-    let state = project.join(".spark/state");
-    let memory = state.join("memory/coordinator");
+    let memory = memory_dir(&harness, COORDINATOR_ROLE);
     harness.start(COORDINATOR_ROLE);
-    let _ = std::fs::remove_dir_all(&state);
-    for (turn, pass) in ["fresh", "after state deletion"].into_iter().enumerate() {
-        assert!(!state.exists(), "{pass}");
-        harness.message(COORDINATOR_ROLE, "Note what you know.");
-        let role = frame(&harness.request(turn + 1));
-        assert!(role.contains(&memory.display().to_string()), "{pass}");
-        assert_eq!(
-            std::fs::read_to_string(state.join(".gitignore")).unwrap(),
-            "*\n",
-            "{pass}"
-        );
-        // The memory the frame tells the role to create.
-        std::fs::create_dir_all(&memory).unwrap();
-        std::fs::write(memory.join("index.md"), "---\ntype: Memory\n---\n").unwrap();
-        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
-        assert!(!status.contains(".spark/state"), "{pass}: {status}");
+    harness.message(COORDINATOR_ROLE, "Note what you know.");
+    let role = frame(&harness.request(1));
+    assert!(role.contains(&memory.display().to_string()), "{role}");
+    // The memory the frame tells the role to create.
+    std::fs::create_dir_all(memory.join("notes")).unwrap();
+    std::fs::write(memory.join("index.md"), "---\ntype: Memory\n---\n").unwrap();
+    std::fs::write(memory.join("notes/a.md"), "note\n").unwrap();
+    let outside = harness._temp.path().join("outside.md");
+    std::fs::write(&outside, "secret\n").unwrap();
+    std::os::unix::fs::symlink(&outside, memory.join("leak.md")).unwrap();
+    assert_eq!(
+        git(&["status", "--porcelain", "--untracked-files=all"]),
+        "?? .spark/definitions/roles/coordinator.md\n"
+    );
+    harness.finish_turn(COORDINATOR_ROLE);
+
+    let api = spark_workspace::definitions::WorkspaceDefinitionService::new(
+        harness.settings.clone(),
+        crate::shared_store(&harness.settings.data_dir),
+    );
+    let listed = api
+        .memory(&harness.project, COORDINATOR_ROLE, None)
+        .unwrap();
+    assert_eq!(
+        listed["files"],
+        serde_json::json!(["index.md", "notes/a.md"])
+    );
+    let note = api
+        .memory(&harness.project, COORDINATOR_ROLE, Some("notes/a.md"))
+        .unwrap();
+    assert_eq!(note["content"], "note\n");
+    for escaping in [
+        "leak.md",
+        "../coordinator/../../memory/coordinator/index.md",
+        "/etc/passwd",
+        "missing.md",
+    ] {
         assert!(
-            status.contains("?? .spark/definitions/roles/coordinator.md"),
-            "{pass}: {status}"
+            api.memory(&harness.project, COORDINATOR_ROLE, Some(escaping))
+                .is_err(),
+            "{escaping}"
         );
-        harness.finish_turn(COORDINATOR_ROLE);
-        std::fs::remove_dir_all(&state).unwrap();
     }
+    // A role name that looks like a file has no memory, not someone else's.
+    let lookalike = api.memory(&harness.project, "index.md", None).unwrap();
+    assert_eq!(lookalike["files"], serde_json::json!([]));
 }

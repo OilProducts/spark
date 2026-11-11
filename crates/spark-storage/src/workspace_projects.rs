@@ -88,14 +88,6 @@ impl ProjectRegistry {
         &self.home_dir
     }
 
-    pub fn workspace_root(&self) -> PathBuf {
-        self.home_dir.join("workspace")
-    }
-
-    pub fn projects_root(&self) -> PathBuf {
-        self.workspace_root().join("projects")
-    }
-
     fn connection(&self) -> Result<Connection> {
         open_state_database(&self.home_dir)
     }
@@ -395,7 +387,7 @@ impl ProjectRegistry {
         project_path: String,
         display_name: String,
     ) -> ProjectPaths {
-        let root = self.projects_root().join(&project_id);
+        let root = spark_common::project::project_storage_dir(&self.home_dir, &project_id);
         ProjectPaths {
             project_id,
             project_path,

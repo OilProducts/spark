@@ -1,6 +1,5 @@
 //! Profile sections of the installation settings document, edited through
 //! its shared revision/lock boundary.
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -232,32 +231,6 @@ pub fn validate_profile_candidate(
         json!(candidate),
         settings.config_dir.join("spark.toml").display().to_string(),
     );
-    // Inspect authored metadata only, including unregistered project directories.
-    // Turns, checkpoints, runtime sessions and historical snapshots are not references.
-    visit_metadata(&settings.projects_dir, &mut |path| {
-        if path
-            .file_name()
-            .is_some_and(|name| name == "conversation.json")
-        {
-            let bytes = std::fs::read(path).map_err(|error| {
-                WorkspaceError::Validation(format!(
-                    "Cannot check references in {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let record: Value = serde_json::from_slice(&bytes).map_err(|_| {
-                WorkspaceError::Validation(format!(
-                    "Invalid conversation metadata in {}; repair it before deleting profiles.",
-                    path.display()
-                ))
-            })?;
-            inspect(
-                record.get("model_settings").cloned().unwrap_or(Value::Null),
-                format!("{}.model_settings", path.display()),
-            );
-        }
-        Ok(())
-    })?;
     let registry = spark_storage::ProjectRegistry::new(settings.data_dir.clone());
     let projects = registry.list_project_records()?;
     let triggers = spark_storage::TriggerRepositories::from_settings(settings);
@@ -362,45 +335,4 @@ fn find_references(
         }
         _ => (),
     }
-}
-
-fn visit_metadata(
-    projects_dir: &Path,
-    visit: &mut impl FnMut(&Path) -> WorkspaceResult<()>,
-) -> WorkspaceResult<()> {
-    for project in subdirectories(projects_dir)? {
-        for conversation in subdirectories(&project.join("conversations"))? {
-            let path = conversation.join("conversation.json");
-            if path.exists() {
-                visit(&path)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn subdirectories(path: &Path) -> WorkspaceResult<Vec<std::path::PathBuf>> {
-    let entries = match std::fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => {
-            return Err(WorkspaceError::Validation(format!(
-                "Cannot check profile references in {}.",
-                path.display()
-            )))
-        }
-    };
-    let mut directories = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|_| {
-            WorkspaceError::Validation("Cannot enumerate profile references.".into())
-        })?;
-        let kind = entry
-            .file_type()
-            .map_err(|_| WorkspaceError::Validation("Cannot inspect profile references.".into()))?;
-        if kind.is_dir() {
-            directories.push(entry.path());
-        }
-    }
-    Ok(directories)
 }

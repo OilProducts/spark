@@ -31,7 +31,7 @@ fn project_registry_registers_lists_and_survives_restart_as_rows() {
     assert!(!record.is_favorite);
     assert!(record.folder_exists);
     assert!(!record.created_at.is_empty());
-    let project_root = home.join("workspace/projects").join(&record.project_id);
+    let project_root = home.join("projects").join(&record.project_id);
     assert!(project_root.join("conversations").is_dir());
     // The registry is a database row: no project.toml, no lock, and no
     // obsolete artifact directories.
@@ -111,7 +111,7 @@ fn project_registry_never_reads_project_toml() {
     let home = temp.path().join("spark-home");
     let project_path = "/projects/file-created";
     let project_id = build_project_id(project_path).expect("project id");
-    let root = home.join("workspace/projects").join(&project_id);
+    let root = home.join("projects").join(&project_id);
     fs::create_dir_all(&root).expect("root");
     let stray = format!(
         "project_id = \"{project_id}\"\nproject_path = \"{project_path}\"\ndisplay_name = \"File\"\n\
@@ -205,10 +205,10 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     assert_ne!(stored.revision, current);
 
     // Validation alone never removes anything; the store removes the
-    // directory after tombstoning the project's conversations.
+    // conversation files after tombstoning, then `G` once it is empty.
     let deleted = registry.deletable_project(project_path).expect("deletable");
     assert_eq!(deleted.project_id, updated.project_id);
-    let project_root = home.join("workspace/projects").join(&updated.project_id);
+    let project_root = home.join("projects").join(&updated.project_id);
     assert!(project_root.exists());
     let store = ConversationStore::open(&home).expect("store");
     store.delete_project(&deleted, &|_| {}).expect("delete");
@@ -293,7 +293,7 @@ fn initialization_recreates_directories_and_reads_preserve_metadata() {
     let registry = ProjectRegistry::new(temp.path());
     let path = "/projects/idempotent";
     assert_eq!(registry.read_project_record(path).unwrap(), None);
-    assert!(!registry.workspace_root().exists());
+    assert!(!registry.home_dir().join("projects").exists());
     let paths = seed_historical_metadata(&registry, path);
     let record = registry.read_project_record(path).unwrap().unwrap();
     assert_eq!(record.display_name, "Custom project name");
@@ -365,7 +365,7 @@ fn project_operations_reject_empty_paths_without_initializing() {
             .update_project_record(path, ProjectRecordUpdate::default())
             .is_err());
     }
-    assert!(!registry.workspace_root().exists());
+    assert!(!registry.home_dir().join("projects").exists());
 }
 
 #[test]
@@ -619,17 +619,18 @@ fn assert_private_rows_removed(home: &std::path::Path, path: &str, project_id: &
 }
 
 #[test]
-fn project_deletion_tombstones_everything_then_removes_the_directory() {
+fn project_deletion_tombstones_everything_then_removes_only_conversation_files() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let path = "/projects/doomed";
     let (store, deleted) = seeded_project(&home, path);
     let repo = ConversationRepository::new(store.clone());
     let handle = repo.conversation_handle("chat-a", None).unwrap();
-    let project_root = home.join("workspace/projects").join(&deleted.project_id);
+    let project_root = home.join("projects").join(&deleted.project_id);
     assert!(project_root
         .join("conversations/chat-a/tool-output")
         .exists());
+    let retained = Retained::seed(&home, &deleted.project_id, temp.path());
 
     let cancelled = std::sync::Mutex::new(Vec::new());
     store
@@ -638,7 +639,9 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
         })
         .unwrap();
     assert_eq!(*cancelled.lock().unwrap(), vec!["chat-a", "chat-b"]);
-    assert!(!project_root.exists());
+    assert!(!project_root.join("conversations").exists());
+    retained.assert_intact();
+    // Retained trees keep `G` but never the cleanup marker.
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
     assert_private_rows_removed(&home, path, &deleted.project_id);
     for id in ["chat-a", "chat-b"] {
@@ -672,11 +675,13 @@ fn project_deletion_tombstones_everything_then_removes_the_directory() {
     assert!(record(&repo, "chat-a", path, "turn-a", tool_event("late", "late")).is_err());
     assert!(start(&repo, "chat-a", path, "turn-late", &[]).is_err());
     assert!(settle(&repo, "chat-a", path, "turn-a").is_err());
-    assert!(!project_root.exists());
+    assert!(!project_root.join("conversations").exists());
 
-    // Re-registration starts fresh; the deleted handle is free again but a
-    // deleted conversation id never comes back.
+    // Re-registration starts fresh over the retained memory, work and runs;
+    // the deleted handle is free again but a deleted conversation id never
+    // comes back.
     ProjectRegistry::new(&home).register_project(path).unwrap();
+    retained.assert_intact();
     assert_eq!(
         spark_storage::TriggerRepositories::new(home.join("config"), &home)
             .runtime_state(path)
@@ -716,6 +721,111 @@ fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     files
 }
 
+/// What project removal keeps: learned memory with a symlink out, a Git
+/// worktree under `work` with an uncommitted edit, default and external run
+/// roots, and an unknown sibling in `G`.
+struct Retained {
+    roots: Vec<std::path::PathBuf>,
+    snapshot: Vec<Vec<(std::path::PathBuf, Vec<u8>)>>,
+    worktree: std::path::PathBuf,
+    outside: std::path::PathBuf,
+}
+
+impl Retained {
+    fn seed(home: &std::path::Path, project_id: &str, scratch: &std::path::Path) -> Self {
+        let storage = home.join("projects").join(project_id);
+        let outside = scratch.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("target.md"), "outside bytes").unwrap();
+        let memory = storage.join("memory/coordinator");
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(memory.join("index.md"), "learned").unwrap();
+        std::os::unix::fs::symlink(outside.join("target.md"), memory.join("link.md")).unwrap();
+        // Conversation cleanup removes a link, never what it points at.
+        let conversations = storage.join("conversations/chat-a");
+        std::os::unix::fs::symlink(&outside, conversations.join("escape")).unwrap();
+
+        let source = scratch.join("source-repo");
+        fs::create_dir_all(&source).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-C"])
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&source, &["init", "-q"]);
+        fs::write(source.join("tracked.txt"), "committed").unwrap();
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-q", "-m", "seed"]);
+        let worktree = storage.join("work/checkouts/run-kept");
+        fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        git(
+            &source,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "kept",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(worktree.join("tracked.txt"), "uncommitted edit").unwrap();
+        fs::write(storage.join("work/ledger.md"), "ledger").unwrap();
+
+        let default_run = storage.join("runs/run-default");
+        fs::create_dir_all(&default_run).unwrap();
+        fs::write(default_run.join("run.json"), "{}").unwrap();
+        let external_run = scratch
+            .join("external-runs")
+            .join(project_id)
+            .join("run-ext");
+        fs::create_dir_all(&external_run).unwrap();
+        fs::write(external_run.join("run.json"), "{}").unwrap();
+        fs::create_dir_all(storage.join("unknown")).unwrap();
+        fs::write(storage.join("unknown/keep.bin"), "sibling").unwrap();
+
+        let roots = vec![
+            storage.join("memory"),
+            storage.join("work"),
+            storage.join("runs"),
+            storage.join("unknown"),
+            scratch.join("external-runs"),
+        ];
+        let snapshot = roots.iter().map(|root| tree(root)).collect();
+        Self {
+            roots,
+            snapshot,
+            worktree,
+            outside,
+        }
+    }
+
+    fn assert_intact(&self) {
+        let now: Vec<_> = self.roots.iter().map(|root| tree(root)).collect();
+        assert_eq!(now, self.snapshot);
+        assert_eq!(
+            fs::read_to_string(self.outside.join("target.md")).unwrap(),
+            "outside bytes"
+        );
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.worktree)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{status:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&status.stdout).trim(),
+            "M tracked.txt"
+        );
+    }
+}
+
 /// The tombstone commit is durable under NORMAL, but no checkpoint barrier
 /// that is busy, incomplete, without a WAL, or failing removes a byte of the
 /// project; restart finishes the cleanup, and another project's live rows
@@ -734,7 +844,8 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
         .create_attachment("chat-a-finished", survivor, "kept.txt", b"kept bytes")
         .unwrap();
     start(&repo, "chat-a-finished", survivor, "turn-kept", &[&kept.id]).unwrap();
-    let project_root = home.join("workspace/projects").join(&deleted.project_id);
+    let project_root = home.join("projects").join(&deleted.project_id);
+    let retained = Retained::seed(&home, &deleted.project_id, temp.path());
     // Everything so far is checkpointed; the deletion commits under NORMAL.
     store.database().after_checkpoint(|_| Ok(())).unwrap();
     let before = tree(&project_root);
@@ -775,7 +886,8 @@ fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
     drop(store);
 
     let store = ConversationStore::open(&home).unwrap();
-    assert!(!project_root.exists());
+    assert!(!project_root.join("conversations").exists());
+    retained.assert_intact();
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
     let stored = store
         .database()
@@ -796,8 +908,9 @@ fn failed_directory_removal_keeps_the_marker_and_is_retried() {
     let home = temp.path().join("home");
     let path = "/projects/stuck";
     let (store, deleted) = seeded_project(&home, path);
+    let retained = Retained::seed(&home, &deleted.project_id, temp.path());
     let conversations = home
-        .join("workspace/projects")
+        .join("projects")
         .join(&deleted.project_id)
         .join("conversations");
     fs::set_permissions(&conversations, fs::Permissions::from_mode(0o555)).unwrap();
@@ -807,13 +920,30 @@ fn failed_directory_removal_keeps_the_marker_and_is_retried() {
         store.pending_project_deletion(path).unwrap(),
         Some(deleted.clone())
     );
+    retained.assert_intact();
+    assert_private_rows_removed(&home, path, &deleted.project_id);
     // Registration of the same path cannot proceed until cleanup finishes.
     assert!(store.finish_project_deletion(path).is_err());
     fs::set_permissions(&conversations, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(store.finish_project_deletion(path).unwrap());
-    assert!(!conversations.exists());
+    // Registration finishes the pending cleanup first, then reuses the
+    // retained trees without importing a deleted record.
+    store
+        .register_project(path, || ProjectRegistry::new(&home).register_project(path))
+        .unwrap();
+    assert!(!conversations.join("chat-a").exists());
+    retained.assert_intact();
     assert_eq!(store.pending_project_deletion(path).unwrap(), None);
-    assert_private_rows_removed(&home, path, &deleted.project_id);
+    let records =
+        spark_storage::workspace_records::RecordRepository::roles(&home, &deleted.project_id);
+    assert!(records.list().unwrap().is_empty());
+    assert_eq!(
+        spark_storage::TriggerRepositories::new(home.join("config"), &home)
+            .runtime_state(path)
+            .unwrap()
+            .get("trigger-a")
+            .unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -839,10 +969,7 @@ fn deletion_during_provider_output_stops_the_writer_without_recreating_files() {
         matches!(error, StorageError::ConversationCommitRejected { .. }),
         "{error}"
     );
-    assert!(!home
-        .join("workspace/projects")
-        .join(&deleted.project_id)
-        .exists());
+    assert!(!home.join("projects").join(&deleted.project_id).exists());
 }
 
 #[test]
@@ -888,28 +1015,33 @@ fn a_second_store_on_the_same_home_is_refused_until_the_first_closes() {
 }
 
 #[test]
-fn first_open_wipes_only_legacy_conversations_and_the_handle_index() {
+fn startup_leaves_historical_files_in_place_and_imports_none_of_them() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let registry = ProjectRegistry::new(&home);
     let paths = registry.ensure_project_paths("/projects/legacy").unwrap();
-    let legacy = paths.conversations_dir.join("old-chat");
-    fs::create_dir_all(&legacy).unwrap();
-    fs::write(legacy.join("conversation.json"), "{}").unwrap();
-    let handles = home.join("workspace/conversation-handles.json");
-    fs::write(&handles, "{}").unwrap();
-    let store = ConversationStore::open(&home).unwrap();
-    assert!(!paths.conversations_dir.exists());
-    assert!(!handles.exists());
-    assert!(registry
-        .read_project_record("/projects/legacy")
-        .unwrap()
-        .is_some());
-    drop(store);
-    // Later opens never wipe again.
-    fs::create_dir_all(&legacy).unwrap();
-    ConversationStore::open(&home).unwrap();
-    assert!(legacy.exists());
+    let historical = [
+        home.join("workspace/conversation-handles.json"),
+        home.join("workspace/projects/legacy/conversations/old-chat/conversation.json"),
+        paths.conversations_dir.join("old-chat/conversation.json"),
+    ];
+    for file in &historical {
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, r#"{"id":"old-chat"}"#).unwrap();
+    }
+    // Fresh state, then a restart over the same state.
+    for _ in 0..2 {
+        let store = ConversationStore::open(&home).unwrap();
+        for file in &historical {
+            assert_eq!(fs::read_to_string(file).unwrap(), r#"{"id":"old-chat"}"#);
+        }
+        let repo = ConversationRepository::new(store.clone());
+        assert!(repo.conversation_summaries(None).unwrap().is_empty());
+        assert!(registry
+            .read_project_record("/projects/legacy")
+            .unwrap()
+            .is_some());
+    }
 }
 
 #[test]
@@ -921,7 +1053,7 @@ fn uploads_after_or_during_project_deletion_recreate_nothing() {
     // Pending cleanup: the upload is refused before any file is written.
     let pending = "/projects/pending-upload";
     let (store, deleted) = seeded_project(&home, pending);
-    let pending_root = home.join("workspace/projects").join(&deleted.project_id);
+    let pending_root = home.join("projects").join(&deleted.project_id);
     store
         .database()
         .fail_next_checkpoints([spark_storage::conversation::CheckpointFault::Busy]);
@@ -950,10 +1082,7 @@ fn uploads_after_or_during_project_deletion_recreate_nothing() {
         matches!(error, StorageError::ConversationCommitRejected { .. }),
         "{error}"
     );
-    assert!(!home
-        .join("workspace/projects")
-        .join(&deleted.project_id)
-        .exists());
+    assert!(!home.join("projects").join(&deleted.project_id).exists());
     assert_eq!(registry.read_project_record(finished).unwrap(), None);
 }
 
@@ -1119,10 +1248,7 @@ fn work_arriving_during_deletion_cancellation_is_refused() {
             .unwrap(),
         None
     );
-    assert!(!home
-        .join("workspace/projects")
-        .join(&deleted.project_id)
-        .exists());
+    assert!(!home.join("projects").join(&deleted.project_id).exists());
 }
 
 /// A project-state update and a deletion serialize on the lifecycle gate:

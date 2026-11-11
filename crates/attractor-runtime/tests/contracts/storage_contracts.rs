@@ -6,14 +6,16 @@ use attractor_core::{
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
-    CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore,
+    CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore, RunsRoot,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use spark_storage::{read_json, write_json_atomic, JsonWriteOptions};
 
 fn store(temp: &tempfile::TempDir) -> RunStore {
-    RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"))
+    RunStore::for_runs_root(attractor_runtime::RunsRoot::Home(
+        temp.path().join("spark-home"),
+    ))
 }
 
 fn checkpoint(current_node: &str, completed_nodes: &[&str]) -> CheckpointState {
@@ -86,9 +88,9 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
     assert_eq!(
         paths.root,
         temp.path()
-            .join("spark-home/attractor/runs")
+            .join("spark-home/projects")
             .join(&paths.project_id)
-            .join("run-create")
+            .join("runs/run-create")
     );
     for path in [
         paths.run_json(),
@@ -662,14 +664,73 @@ fn artifact_listing_refuses_symlink_directory_escape() {
     assert!(!paths_only.contains(&"artifacts/outside/secret.txt"));
 }
 
+/// Default runs live in each project's private storage `G/runs`; a
+/// configured external root keeps `<root>/<project-id>/<run-id>`. Both are
+/// found by directory alone, with no project registration, and resetting runs
+/// removes only run directories.
+#[test]
+fn default_and_external_run_roots_resolve_enumerate_and_reset_by_layout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let project = "/projects/layout";
+    let project_id = spark_common::project::build_project_id(project).unwrap();
+    let storage = home.join("projects").join(&project_id);
+    let create = |store: &RunStore, run_id: &str| {
+        store
+            .create_run(CreateRunRequest {
+                record: RunRecord::new(run_id, project),
+                ..CreateRunRequest::default()
+            })
+            .unwrap()
+    };
+
+    let default = RunStore::for_runs_root(RunsRoot::Home(home.clone()));
+    let paths = create(&default, "run-default");
+    assert_eq!(paths.root, storage.join("runs/run-default"));
+    let external_root = temp.path().join("external");
+    let external = RunStore::for_runs_dir(&external_root);
+    let external_paths = create(&external, "run-external");
+    assert_eq!(
+        external_paths.root,
+        external_root.join(&project_id).join("run-external")
+    );
+
+    // Private siblings of `runs` are not runs, and are never reset.
+    std::fs::create_dir_all(storage.join("work/checkout")).unwrap();
+    std::fs::create_dir_all(home.join("projects/no-runs/memory")).unwrap();
+    let found = default.find_run_root("run-default").unwrap().unwrap();
+    assert_eq!(found, paths);
+    assert!(default.read_run_meta("run-default").unwrap().is_some());
+    assert!(default.find_run_root("run-external").unwrap().is_none());
+    let ids: Vec<_> = default
+        .list_run_records()
+        .unwrap()
+        .into_iter()
+        .map(|record| record.run_id)
+        .collect();
+    assert_eq!(ids, vec!["run-default"]);
+    assert!(external.read_run_meta("run-external").unwrap().is_some());
+
+    default.delete_all_runs().unwrap();
+    assert!(!storage.join("runs").exists());
+    assert!(storage.join("work/checkout").is_dir());
+    assert!(home.join("projects/no-runs/memory").is_dir());
+    assert!(external_paths.root.is_dir());
+    assert!(default.list_run_records().unwrap().is_empty());
+}
+
 #[test]
 fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runs_dir = temp.path().join("runs");
     let project_path = temp.path().join("Project Fixture");
     std::fs::create_dir_all(&project_path).expect("project dir");
-    let paths =
-        RunRootPaths::new(runs_dir, project_path.to_string_lossy(), "run-fixture").expect("paths");
+    let paths = RunRootPaths::new(
+        RunsRoot::External(runs_dir),
+        project_path.to_string_lossy(),
+        "run-fixture",
+    )
+    .expect("paths");
     std::fs::create_dir_all(paths.logs_dir()).expect("logs dir");
 
     write_json_atomic(

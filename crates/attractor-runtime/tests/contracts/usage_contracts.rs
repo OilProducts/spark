@@ -558,7 +558,9 @@ fn record(run_id: &str, project_path: &Path) -> RunRecord {
 #[test]
 fn executed_runs_persist_token_usage_and_estimated_cost_on_the_record() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let store = RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"));
+    let store = RunStore::for_runs_root(attractor_runtime::RunsRoot::Home(
+        temp.path().join("spark-home"),
+    ));
     let project_path = temp.path().join("project");
     std::fs::create_dir_all(&project_path).expect("project dir");
 

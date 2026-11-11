@@ -6,7 +6,7 @@ use attractor_runtime::{
 };
 
 fn store(temp: &tempfile::TempDir) -> RunStore {
-    RunStore::for_runs_dir(temp.path().join("spark-home/attractor/runs"))
+    RunStore::for_runs_root(attractor_runtime::RunsRoot::Home(temp.path().join("spark-home")))
 }
 
 fn record(run_id: &str, project_path: &str, parent: Option<&str>) -> RunRecord {

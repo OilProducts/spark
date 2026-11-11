@@ -27,7 +27,7 @@ if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --other
   exit 0
 fi
 message="Complete milestone item"
-state_dir=".spark/state/spec-implementation/current"
+state_dir="${SPARK_PROJECT_WORK_DIR}/spec-implementation/current"
 if command -v jq >/dev/null 2>&1; then
   milestone=$(jq -r '.id // empty' "$state_dir/current-milestone.json" 2>/dev/null || true)
   if [ -n "$milestone" ]; then

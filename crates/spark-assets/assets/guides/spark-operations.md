@@ -51,9 +51,11 @@ library. Copy a bundled file into the project's definitions to change it
 there; the editor does this when you save a bundled flow. The bundled library
 also holds `$SPARK_HOME/bundled/guides`, read-only references such as the
 flow authoring guide; guides take no part in project lookup.
-Working data, such as run checkouts and role memory, lives under
-`.spark/state/`, which ignores itself with a `*` `.gitignore`. Spark runs no
-Git in `.spark`; versioning the definitions is the operator's choice.
+To choose models for one flow or node in a project, copy the flow into the
+project's definitions and set them there; there is no project settings file.
+Spark writes nothing else into `.spark`: run history, memory and working data
+are private to the installation (see Storage, Removal And Reset). Spark runs
+no Git in `.spark`; versioning the definitions is the operator's choice.
 
 List flows:
 
@@ -443,7 +445,9 @@ curl -X DELETE 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?projec
 Trigger operation notes:
 
 - Every create, update and delete writes the trigger's file in the project's definitions; the optional message is descriptive and Spark makes no Git commit. A definition edited by hand is picked up on the next tick.
-- `enabled` is runtime state kept by Spark: switching it writes no definition.
+- A definition makes a trigger available; it fires only once this installation activates it. Creating or updating with `enabled: true` validates the action's target and execution profile, then activates; a failed activation leaves the trigger inactive with `state.activation_error`. Activation is private state and writes no definition. A definition added by hand or arriving with a clone starts inactive.
+- Changing a trigger's source or action, including its execution profile, deactivates it until it is activated again; descriptive edits do not. Deleting a definition, through Spark or on disk, removes its activation and secrets, and recreating it restores neither. An unreadable or invalid definition is reported, never treated as deleted, and never fires.
+- A `mission` action's `mission_id` and a poll source's headers are private bindings: Spark keeps them with the activation, not in the definition.
 - Protected triggers reject edits and deletes through the same CLI and HTTP surfaces.
 - Webhook triggers use the shared Workspace webhook ingress route and validate their secret before dispatch. Their key and secret hash live only in Spark's runtime state, never in the project's definitions; a webhook definition copied from another project has no key until its secret is regenerated.
 - An action's `mode` is `static` (launch `flow_name` in the trigger's project, the default), `mission` (deliver to `mission_id` in the trigger's project), or `role` (deliver to the standing role `role` in the trigger's project). `flow_event` triggers fire only for runs in their own project.
@@ -473,6 +477,47 @@ Operational rules:
 - The service loads provider secrets from `$SPARK_HOME/config/provider.env` when that file exists.
 - Source checkouts should use `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- init` and `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- serve --port 8010` instead of mutating a stable packaged runtime.
 - Packaged container workflows use `compose.package.yaml` and keep host-visible runtime state under the configured Spark home volume.
+
+## Storage, Removal And Reset
+
+Spark stores data by owner. Below, `P` is a project's `.spark/` directory, `H`
+is the data directory (`$SPARK_HOME`, default `~/.spark`) and `G` is
+`H/projects/<project-id>/`. The project id derives from the project's
+normalized path, so a checkout at another path is another project with its own
+private history.
+
+```text
+P/definitions/{flows,roles,playbooks,triggers}/   authored; shareable, normally committed
+H/config/spark.toml                              installation settings and profiles
+H/config/provider.env                            provider secrets, operator-managed
+H/state.sqlite3                                  private records (SQLite files beside it)
+H/projects/<project-id>/
+  conversations/<conversation-id>/               attachments, full tool outputs, traces
+  memory/<role>/                                 standing-role memory
+  runs/<run-id>/                                 pipeline run records and content
+  work/                                          durable private working files
+H/runtime/{codex,claude}/                        agent homes
+H/bundled/                                       rewritten on every start
+```
+
+- `config/spark.toml` holds the core settings and the profiles: `[llm_profiles.<name>]`, `[execution_profiles.<name>]` and `[execution_defaults]` (`execution_profile_id`). A settings edit replaces its own section and keeps the others. Credentials and host or container details belong here, never in a project.
+- `state.sqlite3` holds the project registry, with each project's private model and execution-profile defaults, plus conversations, standing roles, missions, trigger activations and secrets, and the workflow milestones. Runs have no index there: run files are the record, and run listings read their directories.
+- Runs live in `G/runs/<run-id>/` unless `[runtime] runs_dir` in `spark.toml` names an external root, which holds `<runs_dir>/<project-id>/<run-id>/`.
+- Every run of a project, root and child alike, gets `G/work` as `internal.project_work_dir` and as `SPARK_PROJECT_WORK_DIR`; a local container mounts it at the same path. Flows keep checkouts and ledgers there, each in its own subdirectory. A Git worktree there still depends on its source repository.
+- Temporary `.spark-storage-*` and `.spark-deleting-*` entries appear beside definitions while Spark replaces or deletes them; definition listings skip them.
+
+Removing a project (the Projects page, or `DELETE /workspace/api/projects?project_path=...`) interrupts its conversation turns, then deletes its registration and private defaults, its conversations and `G/conversations/`, its standing roles and missions, and its trigger activations and secrets. It keeps the project's files, `G/memory`, `G/work`, every run in either runs root, the milestones and anything else under `G`. Pipelines already running continue and keep writing their run files. Registering the same path again reuses the retained memory, work and runs; it restores no conversation, role, mission or activation. A standing role restarts only when started, in a new conversation with its retained memory; its removed conversation stays deleted.
+
+Spark migrates, imports and purges nothing from older layouts. Stop Spark before deleting any of these, and save authored files and uncommitted work first:
+
+| Deleted | Consequence |
+| --- | --- |
+| A project's `P` | Its definitions are gone; bundled flows still supply the names they have. Its private history, memory and work survive. Its triggers stop firing and lose their activations. |
+| `state.sqlite3` | Registrations, private defaults, conversations, roles, missions, activations and milestones are gone. Surviving definitions never re-arm triggers; run and work files stay but are not imported. |
+| `G/work` or `G/memory` | Uncommitted work, in-progress ledgers or learned knowledge are lost, and resuming a run that used them may fail. They are data, not cache. |
+| All of `H` | Also loses the installation settings, default runs, work, memory and agent homes. An external runs root survives, but its `runs_dir` must be configured again. Startup creates fresh state and bundled assets. |
+
+The Home project is the user's home folder, registered at startup. With the default data directory its `P` is `H` itself: `H/definitions/{flows,roles,playbooks}` are Home's project definitions, not an installation-wide fallback for other projects, so deleting `~/.spark` loses both. Home has no project settings file; its private defaults live in `state.sqlite3` like any project's.
 
 ## Project missions
 
@@ -529,7 +574,7 @@ Create rejects an unknown playbook. On start, the mission snapshots the playbook
 
 ## Standing roles
 
-A standing role is a role file (`roles/<name>.md`, resolved from the project's definitions, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. No role runs until it is started: a project with no started roles has no role conversations. Each role keeps its memory in `<project>/.spark/state/memory/<name>/` (`index.md`, `log.md`).
+A standing role is a role file (`roles/<name>.md`, resolved from the project's definitions, then bundled) bound to one long-lived conversation per project, `role-<project id>-<name>`. No role runs until it is started: a project with no started roles has no role conversations. Each role keeps its memory in `$SPARK_HOME/projects/<project id>/memory/<name>/` (`index.md`, `log.md`), outside the project; removing the project keeps it.
 
 ```bash
 spark role list --project /absolute/project

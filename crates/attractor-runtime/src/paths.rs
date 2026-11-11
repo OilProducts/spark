@@ -1,26 +1,12 @@
 use std::path::{Component, Path, PathBuf};
 
-use spark_common::project::build_project_id;
-use spark_common::settings::SparkSettings;
+use spark_common::project::{build_project_id, RunsRoot};
 
 use crate::error::{Result, RuntimeStorageError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimePaths {
-    pub runs_dir: PathBuf,
-}
-
-impl RuntimePaths {
-    pub fn for_settings(settings: &SparkSettings) -> Self {
-        Self {
-            runs_dir: settings.runs_dir.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRootPaths {
-    pub runs_dir: PathBuf,
+    pub runs_root: RunsRoot,
     pub project_id: String,
     pub run_id: String,
     pub root: PathBuf,
@@ -28,16 +14,15 @@ pub struct RunRootPaths {
 
 impl RunRootPaths {
     pub fn new(
-        runs_dir: impl Into<PathBuf>,
+        runs_root: RunsRoot,
         project_path: impl AsRef<str>,
         run_id: impl AsRef<str>,
     ) -> Result<Self> {
-        let runs_dir = runs_dir.into();
         let run_id = validate_run_id(run_id.as_ref())?;
         let project_id = build_project_id(project_path.as_ref())?;
-        let root = runs_dir.join(&project_id).join(&run_id);
+        let root = runs_root.project_runs_dir(&project_id).join(&run_id);
         Ok(Self {
-            runs_dir,
+            runs_root,
             project_id,
             run_id,
             root,
@@ -45,14 +30,14 @@ impl RunRootPaths {
     }
 
     pub fn from_existing_root(
-        runs_dir: impl Into<PathBuf>,
+        runs_root: RunsRoot,
         project_id: impl Into<String>,
         run_id: impl AsRef<str>,
         root: impl Into<PathBuf>,
     ) -> Result<Self> {
         let run_id = validate_run_id(run_id.as_ref())?;
         Ok(Self {
-            runs_dir: runs_dir.into(),
+            runs_root,
             project_id: project_id.into(),
             run_id,
             root: root.into(),

@@ -15,11 +15,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -60,7 +56,7 @@ fn parent_flow() -> serde_json::Value {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "set -eu\nrepo_root=$(git rev-parse --show-toplevel)\nbranch=\"spark/lifecycle/${SPARK_RUN_ID}\"\ncheckout_root=\"${repo_root}/.spark/state/checkouts\"\nworktree=\"${checkout_root}/${SPARK_RUN_ID}\"\nmkdir -p \"$checkout_root\"\n[ -e \"${repo_root}/.spark/state/.gitignore\" ] || printf '*\\n' > \"${repo_root}/.spark/state/.gitignore\"\ngit worktree add -b \"$branch\" \"$worktree\" HEAD >/dev/null\nprintf '{\"path\":\"%s\",\"branch\":\"%s\"}' \"$worktree\" \"$branch\"\n",
+                    "command": "set -eu\nbranch=\"spark/lifecycle/${SPARK_RUN_ID}\"\ncheckout_root=\"${SPARK_PROJECT_WORK_DIR}/checkouts\"\nworktree=\"${checkout_root}/${SPARK_RUN_ID}\"\nmkdir -p \"$checkout_root\"\ngit worktree add -b \"$branch\" \"$worktree\" HEAD >/dev/null\nprintf '{\"path\":\"%s\",\"branch\":\"%s\"}' \"$worktree\" \"$branch\"\n",
                     "env_map": {"SPARK_RUN_ID": "internal.run_id"},
                     "output_map": {
                         "context.workspace.path": "path",
@@ -137,7 +133,7 @@ fn child_flow() -> serde_json::Value {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "printf 'produced by child' > produced.txt",
+                    "command": "printf 'produced by child' > produced.txt\nprintf '%s' \"$SPARK_PROJECT_WORK_DIR\" > work_dir.txt",
                     "exit_codes": {"0": "done"}
                 },
                 "routes": {"done": {"to": "done", "description": "The step chose done."}}
@@ -200,6 +196,13 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
         !branch_files.contains("dirty.txt"),
         "dirty source-checkout files must not reach the branch: {branch_files}"
     );
+    // The child runs in the worktree but keeps the root project's work area.
+    let work = spark_common::project::project_work_dir(&settings.data_dir, &repo.to_string_lossy())
+        .unwrap();
+    assert_eq!(
+        git_in(&repo, &["show", &format!("{branch}:work_dir.txt")]),
+        work.to_string_lossy()
+    );
     let subject = git_in(&repo, &["log", "-1", "--format=%s", branch]);
     assert_eq!(subject, "lifecycle change");
     assert!(
@@ -207,25 +210,19 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
         "the worktree directory must never be committed: {branch_files}"
     );
 
-    let worktree = repo.join(".spark/state/checkouts/run-lifecycle");
     assert!(
-        !worktree.exists(),
+        !work.join("checkouts/run-lifecycle").exists(),
         "successful runs must remove their worktree"
     );
+    assert!(work.join("checkouts").is_dir());
     assert!(
         !repo.join(".git/spark").exists(),
         "worktrees must not be created inside .git"
     );
-    let status = git_in(&repo, &["status", "--porcelain"]);
     assert!(
-        !status.contains(".spark"),
-        "the .spark directory must be invisible to git status: {status}"
+        !repo.join(".spark").exists(),
+        "working files stay out of the source checkout"
     );
-    assert_eq!(
-        fs::read_to_string(repo.join(".spark/state/.gitignore")).unwrap(),
-        "*\n"
-    );
-    assert!(!repo.join(".spark/.gitignore").exists());
     assert!(
         repo.join("dirty.txt").exists(),
         "the source checkout must be left untouched"
@@ -255,7 +252,7 @@ fn runs_root_flow() -> serde_json::Value {
                 "kind": "tool",
                 "config": {
                     "kind": "tool",
-                    "command": "printf '%s' \"$SPARK_RUNS_ROOT\"",
+                    "command": "printf '%s\\n%s' \"$SPARK_RUNS_ROOT\" \"$SPARK_PROJECT_WORK_DIR\"",
                     "env_map": {"SPARK_RUNS_ROOT": "internal.runs_dir"},
                     "exit_codes": {"0": "done"}
                 },
@@ -272,40 +269,69 @@ fn runs_root_flow() -> serde_json::Value {
     })
 }
 
+/// Runs default to the owning project's `G/runs`, or a configured external
+/// root's `<root>/<project-id>`; tools see the runs root and `G/work`, which
+/// the launch creates.
 #[test]
-fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
+fn tool_nodes_see_the_runtime_runs_root_and_project_work_dir() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let default = settings(temp.path());
+    let external = SparkSettings {
+        runs_dir: Some(temp.path().join("external-runs")),
+        ..default.clone()
+    };
+    fs::create_dir_all(&default.config_dir).expect("config dir");
     let project = temp.path().join("project");
     fs::create_dir_all(&project).expect("project dir");
+    let project_id = spark_common::project::build_project_id(project.to_string_lossy()).unwrap();
+    let storage = default.data_dir.join("projects").join(&project_id);
+    let flow = crate::install_flow(&default, runs_root_flow());
 
-    let service = AttractorApiService::new(settings.clone());
-    let response = service.start_pipeline(PipelineStartRequest {
-        wait: Some(true),
-        run_id: Some("run-runs-root".to_string()),
-        flow_name: Some(crate::install_flow(&settings, runs_root_flow())),
-        working_directory: project.to_string_lossy().to_string(),
-        ..PipelineStartRequest::default()
-    });
-    assert_eq!(response.body["terminal_status"], json!("completed"));
+    for (settings, runs_root, run_root) in [
+        (
+            &default,
+            default.data_dir.join("projects"),
+            storage.join("runs/run-default"),
+        ),
+        (
+            &external,
+            temp.path().join("external-runs"),
+            temp.path()
+                .join("external-runs")
+                .join(&project_id)
+                .join("run-external"),
+        ),
+    ] {
+        let run_id = run_root.file_name().unwrap().to_string_lossy().to_string();
+        let service = AttractorApiService::new(settings.clone());
+        let response = service.start_pipeline(PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some(run_id.clone()),
+            flow_name: Some(flow.clone()),
+            working_directory: project.to_string_lossy().to_string(),
+            ..PipelineStartRequest::default()
+        });
+        assert_eq!(response.body["terminal_status"], json!("completed"));
 
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    let bundle = store
-        .read_run_bundle("run-runs-root")
-        .expect("read bundle")
-        .expect("bundle exists");
-    let result = store
-        .read_result(&bundle.paths)
-        .expect("read result")
-        .expect("result exists");
-    let probed = std::path::PathBuf::from(result.body_markdown.trim());
-    assert_eq!(
-        probed, settings.runs_dir,
-        "internal.runs_dir must resolve to the runtime's runs root"
-    );
-    assert!(
-        bundle.paths.root.starts_with(&probed),
-        "the probed root must actually contain this run"
-    );
+        let store = attractor_runtime::RunStore::for_settings(settings);
+        let bundle = store
+            .read_run_bundle(&run_id)
+            .expect("read bundle")
+            .expect("bundle exists");
+        assert_eq!(bundle.paths.root, run_root);
+        let result = store
+            .read_result(&bundle.paths)
+            .expect("read result")
+            .expect("result exists");
+        let probed: Vec<_> = result.body_markdown.trim().lines().collect();
+        assert_eq!(
+            probed,
+            [
+                runs_root.to_string_lossy().as_ref(),
+                storage.join("work").to_string_lossy().as_ref()
+            ],
+            "internal.runs_dir and SPARK_PROJECT_WORK_DIR come from the runtime"
+        );
+        assert!(storage.join("work").is_dir());
+    }
 }

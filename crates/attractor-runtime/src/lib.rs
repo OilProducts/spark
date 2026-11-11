@@ -36,9 +36,9 @@ pub use context::{
     apply_outcome_context_updates, checkpoint_from_context, clear_runtime_retry_context,
     graph_attr_context_seed, initialize_runtime_context, seed_builtin_context,
     set_runtime_retry_context, CURRENT_NODE_KEY, DEFAULT_MAX_RETRIES_KEY,
-    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, RUNTIME_RETRY_ATTEMPT_KEY,
-    RUNTIME_RETRY_FAILURE_REASON_KEY, RUNTIME_RETRY_MAX_ATTEMPTS_KEY, RUNTIME_RETRY_NODE_ID_KEY,
-    RUNTIME_SESSIONS_KEY,
+    INTERNAL_PIPELINE_RETRY_RUN_ID_KEY, NODE_OUTCOMES_KEY, PROJECT_WORK_DIR_ENV,
+    PROJECT_WORK_DIR_KEY, RUNTIME_RETRY_ATTEMPT_KEY, RUNTIME_RETRY_FAILURE_REASON_KEY,
+    RUNTIME_RETRY_MAX_ATTEMPTS_KEY, RUNTIME_RETRY_NODE_ID_KEY, RUNTIME_SESSIONS_KEY,
 };
 pub use controls::disk_execution_control;
 pub use controls::{
@@ -74,7 +74,7 @@ pub use handlers::{
     HANDLER_PARALLEL, HANDLER_START, HANDLER_SWITCH, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
 pub use journals::{journal_entries_from_events, journal_entry_from_event};
-pub use paths::{RunRootPaths, RuntimePaths};
+pub use paths::RunRootPaths;
 pub use records::{
     mark_record_cancel_requested, mark_record_canceled, mark_record_paused,
     mark_record_retry_started, normalize_run_status, read_run_record, write_run_record,
@@ -91,6 +91,7 @@ pub use routing::{
     is_exit_node, outgoing_routing_edges, resolve_start_node, select_transition, Transition,
     NO_MATCHING_ROUTE, VISIT_LIMIT_REACHED,
 };
+pub use spark_common::project::RunsRoot;
 pub use store::{
     CreateRunRequest, NodeExecution, RunArtifactFile, RunBundle, RunEventObserver, RunMeta,
     RunStore, FLOW_FILES_MANIFEST,

@@ -2237,6 +2237,7 @@ fn build_agent_session_for_source(
             config.environment_inheritance,
         ),
     )
+    .with_env(crate::agent::agent_turn_env(&llm_request.request.metadata))
     .with_metadata(llm_request.request.metadata);
 
     let plan_mode = metadata_chat_mode

@@ -342,6 +342,37 @@ fn native_node_reply_ending_with_a_question_does_not_wait() {
 }
 
 #[test]
+fn native_node_shell_sees_the_runs_project_work_dir() {
+    let (client, adapter) = Scripted::client(|request| match tool_results(request).get("env") {
+        Some(output) => text(output),
+        None => (
+            String::new(),
+            vec![call(
+                "env",
+                "shell",
+                json!({"command": "printf '%s' \"$SPARK_PROJECT_WORK_DIR\""}),
+            )],
+        ),
+    });
+    let mut request = node_request("Show the work area", CodergenRuntimeMode::agent());
+    request.metadata.insert(
+        spark_agent_adapter::PROJECT_WORK_DIR_METADATA_KEY.to_string(),
+        json!("/spark-home/projects/p/work"),
+    );
+
+    let output = RustLlmCodergenBackend::new(client)
+        .run(request)
+        .expect("node output");
+
+    assert_eq!(adapter.requests().len(), 2);
+    assert!(
+        response_text(&output.response).contains("/spark-home/projects/p/work"),
+        "{:?}",
+        output.response
+    );
+}
+
+#[test]
 fn native_plan_mode_proposes_a_plan_with_write_tools_unavailable() {
     let (client, adapter) = Scripted::client(|_| {
         (

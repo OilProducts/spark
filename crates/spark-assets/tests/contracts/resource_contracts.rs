@@ -412,10 +412,10 @@ fn writing_principles_live_in_the_authoring_guide_and_roles_stand_alone() {
     }
 }
 
-/// No bundled instruction keeps working data outside `.spark/state/` or
-/// writes ignore rules elsewhere.
+/// No bundled instruction keeps working data in the project checkout: it
+/// belongs in the project's private work area.
 #[test]
-fn bundled_instructions_keep_working_data_under_state() {
+fn bundled_instructions_keep_working_data_out_of_the_checkout() {
     let mut texts = Vec::new();
     for name in flows::starter_flow_names().expect("names") {
         for (file, text) in flows::starter_flow_files(&name).expect("files") {
@@ -438,6 +438,7 @@ fn bundled_instructions_keep_working_data_under_state() {
     for (path, text) in &texts {
         for stale in [
             ".spark/.gitignore",
+            ".spark/state",
             ".spark/checkouts",
             ".spark/integrations",
             ".spark/spec-implementation",
@@ -823,6 +824,8 @@ fn merge_change_skips_validation_only_when_the_target_is_the_merge_base() {
         "already-integrated",
     ] {
         let temp = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let integration = work.path().join("integrations/merge-check");
         let repo = temp.path();
         seed_change_repository(repo);
         run_git(repo, &["branch", "-M", "target"]);
@@ -856,6 +859,7 @@ fn merge_change_skips_validation_only_when_the_target_is_the_merge_base() {
             .current_dir(repo)
             .env("SPARK_SOURCE_REF", "source")
             .env("SPARK_RUN_ID", "merge-check")
+            .env("SPARK_PROJECT_WORK_DIR", work.path())
             .output()
             .unwrap();
         if matches!(scenario, "unrelated" | "already-integrated") {
@@ -871,15 +875,8 @@ fn merge_change_skips_validation_only_when_the_target_is_the_merge_base() {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(result["path"]
-            .as_str()
-            .unwrap()
-            .ends_with(".spark/state/integrations/merge-check"));
-        assert_eq!(
-            fs::read_to_string(repo.join(".spark/state/.gitignore")).unwrap(),
-            "*\n"
-        );
-        assert!(!repo.join(".spark/.gitignore").exists());
+        assert_eq!(Path::new(result["path"].as_str().unwrap()), integration);
+        assert!(!repo.join(".spark").exists());
         let status = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(repo)
@@ -926,9 +923,45 @@ fn merge_change_skips_validation_only_when_the_target_is_the_merge_base() {
                     .count(),
                 2
             );
-            assert!(!repo.join(".spark/state/integrations/merge-check").exists());
+            assert!(!integration.exists());
         }
     }
+}
+
+#[test]
+fn run_retrospective_locates_default_and_external_run_directories() {
+    let flow = bundled_flow("software-development/run-retrospective");
+    let config = serde_json::to_value(&flow.nodes["locate_run"].config).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    for dir in ["project-a/runs/run-default", "project-b/run-external"] {
+        fs::create_dir_all(temp.path().join(dir)).unwrap();
+        fs::write(temp.path().join(dir).join("run.json"), "{}").unwrap();
+    }
+    // A directory named like a run but holding no run record is not one.
+    fs::create_dir_all(temp.path().join("project-a/work/run-other")).unwrap();
+    fs::create_dir_all(temp.path().join("project-a/run-other")).unwrap();
+    let locate = |run: &str| {
+        Command::new("sh")
+            .arg("-c")
+            .arg(config["command"].as_str().unwrap())
+            .env("SPARK_RUNS_ROOT", temp.path())
+            .env("SPARK_TARGET_RUN_ID", run)
+            .output()
+            .unwrap()
+    };
+    for (run, dir) in [
+        ("run-default", "project-a/runs/run-default"),
+        ("run-external", "project-b/run-external"),
+    ] {
+        let output = locate(run);
+        assert!(output.status.success(), "{run}");
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            Path::new(result["run_dir"].as_str().unwrap()),
+            temp.path().join(dir)
+        );
+    }
+    assert!(!locate("run-other").status.success());
 }
 
 #[test]
@@ -1028,7 +1061,11 @@ fn prepare_change_workspace(repo: &Path, run: &str, artifact: &str) -> std::proc
     command
         .arg("-c")
         .arg(config["command"].as_str().unwrap())
-        .current_dir(repo);
+        .current_dir(repo)
+        .env(
+            "SPARK_PROJECT_WORK_DIR",
+            repo.parent().unwrap().join("work"),
+        );
     for (name, key) in config["env_map"].as_object().unwrap() {
         command.env(
             name,
@@ -1050,8 +1087,8 @@ fn seed_change_repository(repo: &Path) {
 #[test]
 fn change_workspace_carries_only_the_request_and_preserves_retry_content() {
     let temp = tempfile::tempdir().unwrap();
-    // The prepared path is canonical; macOS temp dirs sit behind /var -> /private/var.
-    let repo = &temp.path().canonicalize().unwrap();
+    let repo = &temp.path().join("project");
+    fs::create_dir(repo).unwrap();
     seed_change_repository(repo);
     let artifact = "changes/request with spaces.md";
     fs::create_dir(repo.join("changes")).unwrap();
@@ -1067,22 +1104,14 @@ fn change_workspace_carries_only_the_request_and_preserves_retry_content() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["source_dirty"], true);
     let checkout = Path::new(result["path"].as_str().unwrap());
-    assert_eq!(
-        checkout,
-        repo.join(".spark/state/checkouts/request-handoff")
-    );
+    assert_eq!(checkout, temp.path().join("work/checkouts/request-handoff"));
     assert_eq!(
         fs::read(checkout.join(artifact)).unwrap(),
         b"approved request\n"
     );
     assert!(!checkout.join("unrelated.txt").exists());
-    let ignore = repo.join(".spark/state/.gitignore");
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "*\n");
-    assert!(!repo.join(".spark/.gitignore").exists());
-    // An existing state ignore file is the operator's and is left alone.
-    fs::write(&ignore, "*\n# kept\n").unwrap();
+    assert!(!repo.join(".spark").exists());
     assert!(prepare().status.success());
-    assert_eq!(fs::read_to_string(&ignore).unwrap(), "*\n# kept\n");
     fs::write(checkout.join(artifact), "retained checkout request").unwrap();
     let conflict = prepare();
     assert!(!conflict.status.success());
@@ -1133,7 +1162,7 @@ fn change_workspace_rejects_missing_and_escaping_request_paths() {
         let output = prepare_change_workspace(&repo, "invalid-request", artifact);
         assert!(!output.status.success(), "{artifact}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("task artifact:"));
-        assert!(!repo.join(".spark/state/checkouts/invalid-request").exists());
+        assert!(!temp.path().join("work/checkouts/invalid-request").exists());
     }
     #[cfg(unix)]
     {
@@ -1159,7 +1188,7 @@ fn change_workspace_rejects_destination_symlinks_without_writing_outside() {
         .success());
     fs::create_dir(repo.join("changes")).unwrap();
     fs::write(repo.join("changes/request.md"), "approved request").unwrap();
-    let checkout = repo.join(".spark/state/checkouts/destination-link");
+    let checkout = temp.path().join("work/checkouts/destination-link");
     std::os::unix::fs::symlink(temp.path(), checkout.join("changes")).unwrap();
     let output = prepare_change_workspace(&repo, "destination-link", "changes/request.md");
     assert!(!output.status.success());
@@ -1292,11 +1321,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }

@@ -428,13 +428,17 @@ fn wait_for_tree(data_dir: &Path, ready: impl Fn(&[Value]) -> bool) -> Vec<Value
 }
 
 fn run_records(data_dir: &Path) -> Vec<Value> {
-    let runs = data_dir.join("attractor/runs");
-    let Ok(projects) = fs::read_dir(runs) else {
+    let Ok(projects) = fs::read_dir(data_dir.join("projects")) else {
         return Vec::new();
     };
     projects
         .flatten()
-        .flat_map(|project| fs::read_dir(project.path()).into_iter().flatten().flatten())
+        .flat_map(|project| {
+            fs::read_dir(project.path().join("runs"))
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
         .filter_map(|run| fs::read(run.path().join("run.json")).ok())
         .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
         .collect()

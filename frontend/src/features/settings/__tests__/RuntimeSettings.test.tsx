@@ -33,3 +33,13 @@ it('retains edits across late reads and failed saves', async () => {
     expect(input).toHaveValue('/draft')
     expect(saveRuntimeSettings).toHaveBeenCalledWith('revision-1', { ...view.stored, runs_dir: '/draft' })
 })
+
+it('describes an unset runs directory as per-project storage', async () => {
+    const unset = { runs_dir: null, ui_dir: null, project_roots: [] }
+    vi.mocked(fetchRuntimeSettings).mockResolvedValue({
+        scope: 'workspace', revision: 'revision-1', restart_fields: ['runs_dir'], stored: unset, effective: unset,
+    })
+    render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
+    expect(await screen.findByText(/Effective: Each project's private storage/)).toBeInTheDocument()
+    expect(screen.getByText(/Effective: Not configured/)).toBeInTheDocument()
+})

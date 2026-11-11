@@ -137,6 +137,7 @@ impl CodexConnection {
             None,
             Some(native),
             Default::default(),
+            Default::default(),
         )?;
         match client.read_account(true) {
             Err(error) if requires_login(&error.message) => Ok(
@@ -174,6 +175,7 @@ impl CodexConnection {
             working_dir.to_path_buf(),
             None,
             Some(native),
+            Default::default(),
             Default::default(),
         )?;
         let result = client.account_request(

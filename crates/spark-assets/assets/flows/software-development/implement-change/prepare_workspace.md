@@ -57,13 +57,12 @@ if [ -n "$artifact" ]; then
 fi
 base_commit=$(git rev-parse --verify "${SPARK_BASE_REF}^{commit}")
 branch="spark/implement-change/${SPARK_RUN_ID}"
-# Worktrees live under <repo>/.spark/state, never inside .git: tooling
-# such as Vite refuses to serve or resolve paths matching **/.git/**. The
-# state directory ignores itself so the source checkout stays clean.
-checkout_root="${repo_root}/.spark/state/checkouts"
+# Worktrees live in the project's private work area, outside the checkout
+# and never inside .git: tooling such as Vite refuses to serve or resolve
+# paths matching **/.git/**.
+checkout_root="${SPARK_PROJECT_WORK_DIR}/checkouts"
 worktree="${checkout_root}/${SPARK_RUN_ID}"
 mkdir -p "$checkout_root"
-[ -e "${repo_root}/.spark/state/.gitignore" ] || printf '*\n' > "${repo_root}/.spark/state/.gitignore"
 if [ -d "$worktree" ] && git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1; then
   existing=$(git -C "$worktree" rev-parse --abbrev-ref HEAD)
   if [ "$existing" != "$branch" ]; then

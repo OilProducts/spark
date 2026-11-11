@@ -5,6 +5,7 @@ runtime: {}
 contracts:
   reads_context:
   - context.milestone.id
+  - internal.project_work_dir
   response: decision_envelope
 execution:
   llm_provider: claude-code
@@ -22,4 +23,4 @@ routes:
     description: Required work for this bounded node invocation remains and can be continued in the same session; no completed judgment is being asserted.
 ---
 
-Read context.milestone.id, .spark/state/spec-implementation/current/milestones.json, and .spark/state/spec-implementation/current/rewrite-milestones.json. Treat context.milestone.id as the authoritative milestone to replace even if shared runtime bindings under .spark/state/spec-implementation/current/current-milestone.json or state.json.current_milestone_id drifted during the child run. Replace that milestone with the milestone entries from rewrite-milestones.json, set each replacement milestone status to pending and attempts to 0 unless already provided, clear current_milestone_id in .spark/state/spec-implementation/current/state.json, remove or clear .spark/state/spec-implementation/current/current-milestone.json, and keep both JSON files valid. Choose `done` only after the milestone plan is updated. Respond with ONLY a JSON decision envelope.
+Read context.milestone.id, <internal.project_work_dir>/spec-implementation/current/milestones.json, and <internal.project_work_dir>/spec-implementation/current/rewrite-milestones.json. Treat context.milestone.id as the authoritative milestone to replace even if shared runtime bindings under <internal.project_work_dir>/spec-implementation/current/current-milestone.json or state.json.current_milestone_id drifted during the child run. Replace that milestone with the milestone entries from rewrite-milestones.json, set each replacement milestone status to pending and attempts to 0 unless already provided, clear current_milestone_id in <internal.project_work_dir>/spec-implementation/current/state.json, remove or clear <internal.project_work_dir>/spec-implementation/current/current-milestone.json, and keep both JSON files valid. Choose `done` only after the milestone plan is updated. Respond with ONLY a JSON decision envelope.

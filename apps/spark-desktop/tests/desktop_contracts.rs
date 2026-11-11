@@ -416,7 +416,7 @@ fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
     let restarted =
         bootstrap_desktop_runtime(&load_desktop_settings(&paths).unwrap(), &spark_home(&paths))
             .unwrap();
-    assert_eq!(restarted.settings.runs_dir, runs);
+    assert_eq!(restarted.settings.runs_dir, Some(runs.clone()));
     let mut second = start_desktop_server(restarted.settings, LOCAL_BIND_HOST).unwrap();
     assert_ne!(second.url(), first_url);
     assert_eq!(

@@ -56,7 +56,7 @@ fn runtime_choices_keep_cli_environment_persisted_default_precedence() {
     };
     let env = BTreeMap::new();
     let settings = resolve_settings_with_persisted(&overrides, &env, &persisted).unwrap();
-    assert_eq!(Some(settings.runs_dir), persisted.runs_dir.clone());
+    assert_eq!(settings.runs_dir, persisted.runs_dir.clone());
     assert_eq!(settings.config_dir, root.join("home/config"));
     let overrides = SettingsOverrides {
         runs_dir: Some(root.join("cli-runs")),
@@ -66,7 +66,7 @@ fn runtime_choices_keep_cli_environment_persisted_default_precedence() {
         resolve_settings_with_persisted(&overrides, &env, &persisted)
             .unwrap()
             .runs_dir,
-        root.join("cli-runs")
+        Some(root.join("cli-runs"))
     );
 }
 

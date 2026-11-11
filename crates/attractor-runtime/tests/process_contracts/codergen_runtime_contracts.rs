@@ -519,7 +519,12 @@ fn codergen_external_sink_wins_over_reconstructed_run_paths() {
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let streamed = Arc::new(Mutex::new(Vec::new()));
     let sink_events = Arc::clone(&streamed);
@@ -626,7 +631,12 @@ fn node_thinking_reaches_the_publisher_without_touching_the_run_record() {
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-thinking").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-thinking",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let seen_at_notice = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&seen_at_notice);
@@ -885,7 +895,12 @@ fn run_status_events_node(paths: &RunRootPaths) -> spark_storage::ActivityReposi
 #[test]
 fn resumed_node_projects_events_left_pending_by_a_crash_exactly_once() {
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     let crashed =
         spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"));
     crashed
@@ -942,7 +957,12 @@ fn resumed_node_projects_events_left_pending_by_a_crash_exactly_once() {
 #[test]
 fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let records = run_status_events_node(&paths)
         .read_transcript_records()
@@ -1806,4 +1826,102 @@ fn agent_task_runs_in_the_directory_named_by_runtime_workdir_from() {
         );
         assert!(paths.is_empty());
     }
+}
+
+/// A native agent's own process, and so its shell, sees the run's project
+/// work area: in a worktree execution directory and after the run resumes
+/// from its checkpoint without a new launch context.
+#[cfg(unix)]
+#[test]
+fn agent_processes_see_the_project_work_dir_in_worktrees_and_after_resume() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempdir().unwrap();
+    let work = temp.path().join("home/projects/p/work");
+    let checkout = temp.path().join("home/projects/p/work/checkouts/run");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let claude = temp.path().join("claude");
+    std::fs::write(
+        &claude,
+        r#"#!/usr/bin/env python3
+import json, os, sys
+sys.stdin.readline()
+with open('agent-env.txt', 'a') as f:
+    f.write(os.environ.get('SPARK_PROJECT_WORK_DIR', '<unset>') + '\n')
+for line in [
+    {'type': 'system', 'subtype': 'init', 'session_id': 's1', 'model': 'm', 'tools': [], 'capabilities': []},
+    {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '{"decision": "done"}', 'session_id': 's1'},
+]:
+    print(json.dumps(line), flush=True)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut agents = spark_common::agent_settings::SessionConfig::default();
+    agents.native.claude_binary = Some(claude.to_string_lossy().into_owned());
+    let task = |to: &str| {
+        let mut task = agent_in(None, to);
+        task["runtime"] = json!({"workdir_from": "context.checkout"});
+        task["execution"] = json!({"llm_provider": "claude-code", "llm_model": "m"});
+        task
+    };
+    let flow = session_flow(json!({
+        "start": start_to("first"), "first": task("second"), "second": task("done"),
+        "done": exit_node(),
+    }));
+    let runner = || {
+        RuntimeHandlerRunner::new()
+            .with_codergen_backend_factory(|| Box::new(RustLlmCodergenBackend::new(Client::new())))
+    };
+    let store = attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs"));
+    let seen = || std::fs::read_to_string(checkout.join("agent-env.txt")).unwrap_or_default();
+    let expected = format!("{}\n", work.display());
+
+    // Stop after `first`, as if the process died before `second` ran.
+    let paused = attractor_runtime::PipelineExecutor::new(runner())
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: store.clone(),
+            record: attractor_core::RunRecord::new("run-work", temp.path().to_string_lossy()),
+            flow: flow.clone(),
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::new(ContextMap::from([(
+                "context.checkout".to_string(),
+                json!(checkout.to_string_lossy()),
+            )]))
+            .unwrap(),
+            runtime_context: ContextMap::from([
+                (
+                    attractor_runtime::PROJECT_WORK_DIR_KEY.to_string(),
+                    json!(work.to_string_lossy()),
+                ),
+                (
+                    "internal.execution_configuration_snapshot".to_string(),
+                    json!({"agents": agents}),
+                ),
+            ]),
+            max_steps: Some(2),
+            start: Default::default(),
+        })
+        .expect("run executes");
+    assert_ne!(paused.status, "completed", "{}", paused.failure_reason);
+    assert_eq!(seen(), expected);
+
+    // The resumed run's binding comes from its checkpoint alone.
+    let bundle = store.read_run_bundle("run-work").unwrap().unwrap();
+    let resumed = attractor_runtime::PipelineExecutor::new(runner())
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: store.clone(),
+            record: bundle.record.unwrap(),
+            flow,
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context: ContextMap::new(),
+            max_steps: None,
+            start: attractor_runtime::ExecutionStart::Resume {
+                paths: bundle.paths,
+                checkpoint: bundle.checkpoint.unwrap(),
+            },
+        })
+        .expect("run resumes");
+    assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
+    assert_eq!(seen(), expected.repeat(2));
 }

@@ -169,10 +169,11 @@ impl WorkspaceProjectService {
     }
 
     /// Deletes a project through the app's conversation store: its running
-    /// turns are interrupted, everything it owns is tombstoned with a
-    /// durable cleanup marker, and its directory is removed only after that
-    /// commit is checkpointed. A failed cleanup keeps the marker and is
-    /// reported; deleting again retries it.
+    /// turns are interrupted, its private records are tombstoned with a
+    /// durable cleanup marker, and its conversation files are removed only
+    /// after that commit is checkpointed. Memory, work, run files and
+    /// running pipelines are left alone. A failed cleanup keeps the marker
+    /// and is reported; deleting again retries it.
     pub fn delete_project(
         &self,
         conversations: &WorkspaceConversationService,

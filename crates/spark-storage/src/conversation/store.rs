@@ -28,7 +28,6 @@ pub(crate) const ALL_COLLECTIONS: [super::ArtifactCollection; 4] = [
     super::ArtifactCollection::RunRecoveries,
     super::ArtifactCollection::ProposedPlans,
 ];
-const LEGACY_HANDLE_INDEX: &str = "workspace/conversation-handles.json";
 /// How often a passive checkpoint runs when writes occurred.
 const PASSIVE_CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -108,9 +107,6 @@ impl ConversationStore {
             commit_listener: RwLock::new(None),
             _home_lock: lock,
         };
-        if !store.database.read(|read| read.reset_complete())? {
-            store.reset_legacy_conversations()?;
-        }
         for marker in markers {
             // A failure keeps the marker; deletion or registration retries it.
             if let Err(error) = store.finish_project_deletion(&marker.project_path) {
@@ -224,7 +220,7 @@ impl ConversationStore {
 
     /// Delete a registered project: fence its work, tombstone everything it
     /// owns with a durable cleanup marker in one transaction, then remove its
-    /// directory once the cleanup barrier allows. `cancel` then interrupts
+    /// conversation files once the cleanup barrier allows. `cancel` then interrupts
     /// each tombstoned conversation's running work. A cleanup failure keeps the
     /// marker and is returned; repeating the deletion retries it.
     pub fn delete_project(
@@ -342,14 +338,33 @@ impl ConversationStore {
             self.pending_deletions().remove(project_path);
             return Ok(());
         };
-        let root = self.registry.projects_root().join(&marker.project_id);
+        let root = spark_common::project::project_storage_dir(
+            self.registry.home_dir(),
+            &marker.project_id,
+        );
         self.database.after_checkpoint(|view| {
             if view.project_has_live_conversations(project_path)? {
                 return Err(StorageError::CleanupDeferred {
                     reason: format!("project {project_path} has live conversations again"),
                 });
             }
-            remove_dir_if_exists(&root, "delete workspace project directory")
+            // Conversation files are the only project storage removal deletes;
+            // memory, work, runs and unknown entries stay, and keep `root`.
+            remove_dir_if_exists(
+                &root.join("conversations"),
+                "delete project conversations directory",
+            )?;
+            match fs::remove_dir(&root) {
+                Err(source)
+                    if !matches!(
+                        source.kind(),
+                        ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty
+                    ) =>
+                {
+                    Err(StorageError::io("delete project directory", &root, source))
+                }
+                _ => Ok(()),
+            }
         })?;
         self.database.remove_project_deletion(project_path)?;
         self.pending_deletions().remove(project_path);
@@ -421,26 +436,6 @@ impl ConversationStore {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/")
-    }
-
-    fn reset_legacy_conversations(&self) -> Result<()> {
-        for project in self.registry.list_project_records()? {
-            let paths = self.registry.project_paths(&project.project_path)?;
-            remove_dir_if_exists(&paths.conversations_dir, "delete legacy conversations")?;
-        }
-        let index = self.home_dir.join(LEGACY_HANDLE_INDEX);
-        match fs::remove_file(&index) {
-            Ok(()) => {}
-            Err(source) if source.kind() == ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(StorageError::io(
-                    "delete legacy conversation handles",
-                    index,
-                    source,
-                ))
-            }
-        }
-        self.database.mark_reset_complete()
     }
 
     fn pending_deletions(&self) -> MutexGuard<'_, HashSet<String>> {

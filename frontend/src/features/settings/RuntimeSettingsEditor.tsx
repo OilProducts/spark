@@ -16,7 +16,7 @@ export function RuntimeSettingsEditor() {
                 {(['runs_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
                     <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
-                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective[key] ?? 'Not configured' : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective[key] ?? ({ runs_dir: "Each project's private storage", ui_dir: 'Not configured' })[key] : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
                 </Field>)}
                 <Field>
                     <FieldLabel htmlFor="runtime-project-roots">Project roots (one absolute path per line)</FieldLabel>
@@ -29,7 +29,7 @@ export function RuntimeSettingsEditor() {
                     <Button aria-label="Discard runtime paths changes" variant="ghost" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
-            {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
+            {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: runs {saved.active_startup.runs_dir ?? "each project's private storage"}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
             {!draft && saved?.repair_defaults && <Button variant="outline" disabled={pending} onClick={() => setDraft(saved!.repair_defaults!)}>Reset to defaults</Button>}
             {saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={message} error={error} dirty={dirty} />

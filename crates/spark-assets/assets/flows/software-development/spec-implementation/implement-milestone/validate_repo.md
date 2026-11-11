@@ -10,7 +10,6 @@ runtime: {}
 execution:
   reasoning_effort: xhigh
 extensions:
-  tool.artifacts.paths: .spark/state/spec-implementation/current/run-milestone-validation.sh,.spark/state/spec-implementation/current/validation-plan.json,.spark/state/spec-implementation/current/validation-plan.json,.spark/state/spec-implementation/current/validation.stdout.txt,.spark/state/spec-implementation/current/validation.stderr.txt
   tool.artifacts.stderr: validate-node.stderr.txt
   tool.artifacts.stdout: validate-node.stdout.txt
 routes:
@@ -26,5 +25,7 @@ routes:
 ---
 
 ```sh
-bash .spark/state/spec-implementation/current/run-milestone-validation.sh
+# ponytail: tool artifacts capture only checkout files, so the validation
+# evidence stays in the work area; capture it when tools can name other roots.
+bash "${SPARK_PROJECT_WORK_DIR}/spec-implementation/current/run-milestone-validation.sh"
 ```

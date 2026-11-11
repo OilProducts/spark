@@ -10,7 +10,7 @@ provider = "codex"
 reasoning_effort = "high"
 ```
 
-A model group selects exactly one `provider` or `llm_profile`. Omitted model and reasoning fields mean provider defaults. A project group in `project.toml`, or a conversation group in `conversation.json`, replaces the entire inherited group. Clearing an override restores inheritance. Conversation messages resolve workspace → project → conversation immediately before starting.
+A model group selects exactly one `provider` or `llm_profile`. Omitted model and reasoning fields mean provider defaults. A project group or a conversation group, both kept in Spark's private state database (`$SPARK_HOME/state.sqlite3`), replaces the entire inherited group. Clearing an override restores inheritance. Conversation messages resolve workspace → project → conversation immediately before starting.
 
 Workflow launches read project/workspace defaults at start, below existing explicit launch, launch-context, flow and node values. Incompatible explicit provider/profile selectors do not borrow the inherited group's model. Runs capture LLM-profile definitions and the selected execution profile in their checkpoint context. The Rust LLM backend uses captured profile definitions; retries use captured execution-profile contents. Older runs without captures retain the existing recovery compatibility checks. Profile snapshots contain environment-variable references, never resolved credential values.
 
@@ -297,7 +297,10 @@ under the existing reference and document locks. Historical execution snapshots
 are excluded. Rejected candidates leave the document unchanged.
 
 Desktop, server and CLI resolve the same Spark home: `$SPARK_HOME`, else
-`~/.spark`. Runtime and agent-home sources are captured at startup and reported with
+`~/.spark`. Pipeline runs live in `$SPARK_HOME/projects/<project-id>/runs/`
+unless the runtime `runs_dir` names an external root, which holds
+`<runs_dir>/<project-id>/<run-id>/`; the operations guide lists the rest of the
+layout. Runtime and agent-home sources are captured at startup and reported with
 restart retention. Connection views separate the running server from the target
 for new CLI commands; `--base-url` still takes precedence, then
 `SPARK_API_BASE_URL`, then the target in the CLI-resolved Spark home and the

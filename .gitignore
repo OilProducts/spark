@@ -1,5 +1,11 @@
 node_modules/
-.spark/
+# Spark project data: only the authored definitions are shareable. Local
+# state, checkouts and generated output under .spark stay ignored.
+/.spark/*
+!/.spark/definitions/
+# Spark's temporary replacement and deletion staging beside definitions.
+.spark-storage-*
+.spark-deleting-*
 codex-app-server.schema/
 .DS_Store
 artifacts/
@@ -7,14 +13,6 @@ build/
 dist/
 target/
 frontend/.tmp-*/
-.spark/rust-rewrite/current/validation/generated/cli/**
-.spark/rust-rewrite/current/validation/generated/filesystem/**
-.spark/rust-rewrite/current/validation/generated/http/**
-.spark/rust-rewrite/current/validation/generated/sse/**
-.spark/rust-rewrite/current/validation/generated/dsl/**
-.spark/rust-rewrite/current/validation/generated/runtime/**
-.spark/rust-rewrite/current/validation/generated/frontend/**
-.spark/rust-rewrite/current/validation/generated/packaging/**
 .idea/
 .planflow/
 .codex
