@@ -255,6 +255,80 @@ fn concurrent_updates_from_one_revision_admit_exactly_one() {
     );
 }
 
+/// An update reads, checks the revision and writes inside one immediate
+/// transaction: it waits for a writer holding the database (as another
+/// process would) and sees its change. An update whose write fails leaves
+/// the record unchanged and publishes nothing; a retry publishes once.
+#[test]
+fn mission_updates_serialize_with_other_writers_and_publish_only_commits() {
+    let h = Harness::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let published = events.clone();
+    install_runtime(
+        &h.settings,
+        InboxRuntime {
+            agent_turn_backend: h.agent.clone(),
+            publish: Arc::new(move |event| published.lock().unwrap().push(event)),
+        },
+    );
+    let mission = h.create(json!({"title": "Shared"}));
+    let database = rusqlite::Connection::open(
+        h.settings
+            .data_dir
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    database.execute_batch("BEGIN IMMEDIATE").unwrap();
+    database
+        .execute(
+            "UPDATE missions SET payload = json_set(payload, '$.revision', 2, \
+             '$.fields.title', 'Elsewhere') WHERE mission_id = ?1",
+            [&mission.id],
+        )
+        .unwrap();
+    let raced = std::thread::scope(|scope| {
+        let update = scope.spawn(|| {
+            h.missions.update(
+                &h.project,
+                &mission.id,
+                mutation(json!({"revision": 1, "fields": {"title": "Mine"}})),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!update.is_finished(), "the update waits for the writer");
+        database.execute_batch("COMMIT").unwrap();
+        update.join().unwrap()
+    });
+    assert!(
+        matches!(raced, Err(WorkspaceError::Conflict(_))),
+        "{raced:?}"
+    );
+    assert_eq!(h.get(&mission.id).fields.title, "Elsewhere");
+
+    events.lock().unwrap().clear();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_mission_write BEFORE UPDATE ON missions \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .unwrap();
+    let edit = || {
+        h.missions.update(
+            &h.project,
+            &mission.id,
+            mutation(json!({"revision": 2, "fields": {"title": "Kept"}})),
+        )
+    };
+    assert!(edit().is_err());
+    assert_eq!(h.get(&mission.id).fields.title, "Elsewhere");
+    assert!(events.lock().unwrap().is_empty());
+    database
+        .execute_batch("DROP TRIGGER fail_mission_write")
+        .unwrap();
+    assert_eq!(edit().unwrap().fields.title, "Kept");
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn mutations_accept_only_editable_fields_and_reject_stale_revisions() {
     let harness = Harness::new();

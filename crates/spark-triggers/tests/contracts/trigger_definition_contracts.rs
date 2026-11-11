@@ -748,8 +748,9 @@ run_at = "2026-06-23T10:00:00Z""#,
 #[test]
 fn state_helpers_record_outcomes_and_bound_recent_history() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let repository = TriggerRepositories::from_settings(&settings(temp.path()))
-        .runtime_state("/spark-contract-fixture/project")
+    let settings = settings(temp.path());
+    let repository = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project(&settings, "project"))
         .unwrap();
     let mut trigger_state = repository
         .load("trigger-state-history")

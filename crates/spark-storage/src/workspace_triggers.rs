@@ -130,6 +130,10 @@ impl TriggerState {
     }
 }
 
+/// Why an active trigger whose operational content changed was disarmed.
+pub const DEFINITION_CHANGED: &str =
+    "The definition's source or action changed; activate it again.";
+
 /// Identifies the operational content of a definition (its source and
 /// action, including the execution profile); descriptive fields and private
 /// bindings are excluded.
@@ -431,11 +435,15 @@ impl TriggerRuntimeStateRepository {
         let id = validate_trigger_id(trigger_id)?;
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(mut state) = self
-            .read_in(&tx, id)?
-            .or_else(|| create.then(TriggerState::default))
-        else {
-            return Ok(None);
+        // Project removal deletes existing rows in its own transaction, so
+        // only a new row needs the registration check.
+        let mut state = match self.read_in(&tx, id)? {
+            Some(state) => state,
+            None if create => {
+                crate::workspace_projects::require_registered(&tx, &self.project_id)?;
+                TriggerState::default()
+            }
+            None => return Ok(None),
         };
         update(&mut state);
         self.write_in(&tx, id, &state)?;
@@ -496,8 +504,10 @@ impl TriggerRepositories {
         Ok(TriggerDefinitionRepository {
             config_dir: self.config_dir.clone(),
             project_path: paths.project_path,
-            // Revision locks of the authored definitions.
-            lock_dir: paths.root.join("triggers"),
+            // Revision locks of the authored definitions. Kept outside the
+            // project root that removal deletes, so a definition write racing
+            // a removal neither blocks its cleanup nor recreates the root.
+            lock_dir: self.data_dir.join("locks/triggers").join(&paths.project_id),
         })
     }
 
@@ -551,6 +561,34 @@ impl TriggerRepositories {
     /// unreadable or invalid definition is reported, keeping its row.
     pub fn reconcile_project(&self, project_path: &str) -> Result<TriggerReconciliation> {
         let repository = self.definitions(project_path)?;
+        let result = Self::scan(&repository);
+        if result.issues.iter().any(|issue| issue.trigger_id.is_none()) {
+            return Ok(result);
+        }
+        self.reconcile_rows(&repository, result)
+    }
+
+    /// The definitions that cannot run in `project_path`, or in every
+    /// registered project, and the projects whose definitions could not be
+    /// listed. Reads only.
+    pub fn issues(&self, project_path: Option<&str>) -> Result<Vec<TriggerIssue>> {
+        let projects = match project_path {
+            Some(path) => vec![path.to_string()],
+            None => ProjectRegistry::new(self.data_dir.clone())
+                .list_project_records()?
+                .into_iter()
+                .map(|project| project.project_path)
+                .collect(),
+        };
+        let mut issues = Vec::new();
+        for project in projects {
+            issues.extend(Self::scan(&self.definitions(&project)?).issues);
+        }
+        Ok(issues)
+    }
+
+    /// Reads a project's definitions, reporting what cannot be read.
+    fn scan(repository: &TriggerDefinitionRepository) -> TriggerReconciliation {
         let project_path = repository.project_path.clone();
         let issue = |trigger_id: Option<&str>, error: String| TriggerIssue {
             project_path: project_path.clone(),
@@ -562,13 +600,13 @@ impl TriggerRepositories {
             result
                 .issues
                 .push(issue(None, "Project folder is unavailable.".into()));
-            return Ok(result);
+            return result;
         }
         let names = match repository.definition_names() {
             Ok(names) => names,
             Err(error) => {
                 result.issues.push(issue(None, error.to_string()));
-                return Ok(result);
+                return result;
             }
         };
         for name in &names {
@@ -578,6 +616,22 @@ impl TriggerRepositories {
                 Err(error) => result.issues.push(issue(Some(name), error.to_string())),
             }
         }
+        result
+    }
+
+    /// Deletes the rows of definitions confirmed removed and deactivates
+    /// rows whose definition's operational content changed.
+    fn reconcile_rows(
+        &self,
+        repository: &TriggerDefinitionRepository,
+        mut result: TriggerReconciliation,
+    ) -> Result<TriggerReconciliation> {
+        let project_path = repository.project_path.clone();
+        let issue = |trigger_id: Option<&str>, error: String| TriggerIssue {
+            project_path: project_path.clone(),
+            trigger_id: trigger_id.map(str::to_string),
+            error,
+        };
         let states = self.runtime_state(&project_path)?;
         let mut connection = states.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -627,8 +681,7 @@ impl TriggerRepositories {
             };
             if state.enabled && !state.is_active_for(&definition) {
                 state.enabled = false;
-                state.activation_error =
-                    Some("The definition's source or action changed; activate it again.".into());
+                state.activation_error = Some(DEFINITION_CHANGED.into());
                 states.write_in(&tx, &trigger_id, &state)?;
             }
         }

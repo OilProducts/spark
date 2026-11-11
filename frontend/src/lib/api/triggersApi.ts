@@ -132,6 +132,32 @@ export async function fetchTriggerListValidated(projectPath?: string): Promise<T
     return fetchWorkspaceJsonValidated(`/triggers${query}`, undefined, '/workspace/api/triggers', parseTriggerListResponse)
 }
 
+/** A definition that cannot run, or a project whose definitions could not be listed. */
+export interface TriggerIssueResponse {
+    project_path: string
+    trigger_id: string | null
+    error: string
+}
+
+export function parseTriggerIssuesResponse(payload: unknown, endpoint = '/workspace/api/trigger-issues'): TriggerIssueResponse[] {
+    if (!Array.isArray(payload)) {
+        throw new ApiSchemaError(endpoint, 'Expected an array of trigger issues.')
+    }
+    return payload.map((entry) => {
+        const record = expectObjectRecord(entry, endpoint)
+        return {
+            project_path: expectString(record.project_path, endpoint, 'project_path'),
+            trigger_id: asOptionalNullableString(record.trigger_id) ?? null,
+            error: expectString(record.error, endpoint, 'error'),
+        }
+    })
+}
+
+/** The definitions the trigger list cannot show, because they cannot run. */
+export async function fetchTriggerIssuesValidated(): Promise<TriggerIssueResponse[]> {
+    return fetchWorkspaceJsonValidated('/trigger-issues', undefined, '/workspace/api/trigger-issues', parseTriggerIssuesResponse)
+}
+
 export async function fetchTriggerValidated(projectPath: string, triggerId: string): Promise<TriggerResponse> {
     return fetchWorkspaceJsonValidated(
         triggerPath(projectPath, triggerId),

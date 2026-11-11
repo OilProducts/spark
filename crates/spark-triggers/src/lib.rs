@@ -131,7 +131,8 @@ impl TriggerService {
     /// Commits the definition only when its file content changed: a mission
     /// binding, switching `enabled` or regenerating a webhook secret writes
     /// private state alone. `enabled: true` revalidates and activates;
-    /// `false` deactivates; a changed binding deactivates.
+    /// `false` deactivates; a changed binding or operational content
+    /// (see [`spark_storage::definition_fingerprint`]) deactivates.
     pub fn update_trigger(
         &self,
         project_path: &str,
@@ -169,6 +170,18 @@ impl TriggerService {
         if unchanged {
             definition = existing;
         } else {
+            // Disarmed before the edit is saved, and persistently: reverting
+            // the edit does not restore the activation.
+            if spark_storage::definition_fingerprint(&definition)
+                != spark_storage::definition_fingerprint(&existing)
+            {
+                states.update_existing(trigger_id, |state| {
+                    if state.enabled {
+                        state.enabled = false;
+                        state.activation_error = Some(spark_storage::DEFINITION_CHANGED.into());
+                    }
+                })?;
+            }
             definition.revision = repository.put(&definition, message.as_deref())?;
         }
         let rebound = mission_id != existing_binding;
@@ -292,6 +305,12 @@ impl TriggerService {
     /// cannot run and the projects that could not be read.
     pub fn reconcile(&self) -> TriggerResult<Vec<TriggerIssue>> {
         Ok(self.repositories.reconcile()?.issues)
+    }
+
+    /// The definitions of `project_path` (or of every registered project)
+    /// that cannot run, without reconciling anything.
+    pub fn trigger_issues(&self, project_path: Option<&str>) -> TriggerResult<Vec<TriggerIssue>> {
+        Ok(self.repositories.issues(project_path)?)
     }
 
     pub fn handle_webhook(

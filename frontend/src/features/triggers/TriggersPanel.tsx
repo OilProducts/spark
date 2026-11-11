@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react"
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
 import {
@@ -14,6 +14,7 @@ import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
 import { triggerKey } from "@/lib/workspaceClient"
+import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/api/triggersApi"
 import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
 import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
@@ -78,6 +79,18 @@ export function TriggersPanel() {
     () => [...customTriggers, ...systemTriggers],
     [customTriggers, systemTriggers],
   )
+  // Definitions that cannot run are missing from the list; show why.
+  const [issues, setIssues] = useState<TriggerIssueResponse[]>([])
+  useEffect(() => {
+    if (status !== 'ready') {
+      return
+    }
+    let disposed = false
+    void fetchTriggerIssuesValidated()
+      .then((next) => { if (!disposed) setIssues(next) })
+      .catch(() => { if (!disposed) setIssues([]) })
+    return () => { disposed = true }
+  }, [status, triggersSession.triggers])
 
   useEffect(() => {
     // Keep a restored selection until the list has loaded.
@@ -182,6 +195,18 @@ export function TriggersPanel() {
 
         {error ? (
           <InlineError>{error}</InlineError>
+        ) : null}
+
+        {issues.length > 0 ? (
+          <InlineError title="Definitions that cannot run" data-testid="trigger-issues">
+            <ul className="space-y-1">
+              {issues.map((issue) => (
+                <li key={`${issue.project_path}\u0000${issue.trigger_id ?? ''}`}>
+                  {issue.trigger_id ?? 'Definitions'} in {issue.project_path}: {issue.error}
+                </li>
+              ))}
+            </ul>
+          </InlineError>
         ) : null}
 
         <div className="grid gap-6">

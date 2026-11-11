@@ -101,6 +101,7 @@ pub fn router() -> Router<HttpAppState> {
         .route("/projects/browse", get(browse_project_directories))
         .route("/projects/chat-models", get(project_chat_models))
         .route("/triggers", get(list_triggers).post(create_trigger))
+        .route("/trigger-issues", get(list_trigger_issues))
         .route("/webhooks", post(post_trigger_webhook))
         .route("/live/events", get(workspace_live_events))
         .route(
@@ -1321,6 +1322,25 @@ async fn list_triggers(
     let query = query_payload(payload)?;
     WorkspaceTriggerService::new((*settings).clone(), store.clone())
         .list_triggers(
+            query
+                .project_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty()),
+        )
+        .map(Json)
+        .map_err(Into::into)
+}
+
+/// Definitions that cannot run (unreadable or invalid), which the trigger
+/// list cannot show.
+async fn list_trigger_issues(
+    State(settings): State<Arc<SparkSettings>>,
+    State(store): State<Arc<ConversationStore>>,
+    payload: Result<Query<TriggerListQuery>, QueryRejection>,
+) -> ApiResult<Vec<spark_storage::TriggerIssue>> {
+    let query = query_payload(payload)?;
+    WorkspaceTriggerService::new((*settings).clone(), store.clone())
+        .trigger_issues(
             query
                 .project_path
                 .as_deref()

@@ -120,13 +120,26 @@ impl TriggerSourceRuntime {
         &self,
         now: OffsetDateTime,
     ) -> TriggerResult<Vec<TriggerActivationOutcome>> {
+        Ok(self.process_due_sources_reporting(now).await?.0)
+    }
+
+    /// [`Self::process_due_sources`], also returning what the tick's
+    /// reconciliation could not read.
+    pub async fn process_due_sources_reporting(
+        &self,
+        now: OffsetDateTime,
+    ) -> TriggerResult<(
+        Vec<TriggerActivationOutcome>,
+        Vec<spark_storage::TriggerIssue>,
+    )> {
         let mut outcomes = Vec::new();
         // ponytail: reconciles every registered project's triggers each tick,
         // so hand edits and removals apply without a restart; cache by
         // directory mtime if projects or triggers grow large.
         // ponytail: polls run one at a time, each bounded by POLL_TIMEOUT;
         // run them concurrently if there are many.
-        for definition in self.repositories.reconcile()?.definitions {
+        let reconciliation = self.repositories.reconcile()?;
+        for definition in reconciliation.definitions {
             match definition.source_type.as_str() {
                 SOURCE_SCHEDULE => {
                     outcomes.extend(self.process_schedule_source(&definition, now)?);
@@ -137,7 +150,7 @@ impl TriggerSourceRuntime {
                 _ => {}
             }
         }
-        Ok(outcomes)
+        Ok((outcomes, reconciliation.issues))
     }
 
     pub fn process_schedule_source(

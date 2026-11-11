@@ -272,12 +272,12 @@ impl ProjectRegistry {
         let connection = self.connection()?;
         let row = connection
             .query_row(
-                "SELECT settings_revision, model_settings, execution_profile_id FROM projects \
-                 WHERE project_id = ?1",
+                "SELECT registration || '-' || settings_revision, model_settings, \
+                 execution_profile_id FROM projects WHERE project_id = ?1",
                 [&id],
                 |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, Option<String>>(2)?,
                     ))
@@ -300,7 +300,7 @@ impl ProjectRegistry {
             })
             .transpose()?;
         Ok(ProjectSettings {
-            revision: revision.to_string(),
+            revision,
             model_settings,
             execution_profile_id,
         })
@@ -433,18 +433,34 @@ fn project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
     })
 }
 
+/// Fails unless `project_id` is registered. Called inside the write
+/// transaction that creates a project's private rows, so a write racing the
+/// project's removal either precedes the removal (which deletes it) or fails.
+pub(crate) fn require_registered(connection: &Connection, project_id: &str) -> Result<()> {
+    let registered: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE project_id = ?1)",
+        [project_id],
+        |row| row.get(0),
+    )?;
+    if registered {
+        Ok(())
+    } else {
+        Err(StorageError::ProjectNotRegistered {
+            project_id: project_id.to_string(),
+        })
+    }
+}
+
 fn settings_revision(connection: &Connection, project_id: &str) -> Result<String> {
     Ok(connection
         .query_row(
-            "SELECT settings_revision FROM projects WHERE project_id = ?1",
+            "SELECT registration || '-' || settings_revision FROM projects \
+             WHERE project_id = ?1",
             [project_id],
-            |row| row.get::<_, i64>(0),
+            |row| row.get::<_, String>(0),
         )
         .optional()?
-        .map_or_else(
-            || ABSENT_REVISION.to_string(),
-            |revision| revision.to_string(),
-        ))
+        .unwrap_or_else(|| ABSENT_REVISION.to_string()))
 }
 
 fn normalize_optional_string(value: String) -> Option<String> {

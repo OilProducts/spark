@@ -210,16 +210,7 @@ fn build_app_on_store(
         )
         .reconcile_triggers()
         {
-            Ok(issues) => {
-                for issue in issues {
-                    eprintln!(
-                        "Trigger {} in {} cannot run: {}",
-                        issue.trigger_id.as_deref().unwrap_or("definitions"),
-                        issue.project_path,
-                        issue.error
-                    );
-                }
-            }
+            Ok(issues) => log_trigger_issues(&issues, &[]),
             Err(error) => eprintln!("Unable to reconcile triggers: {error}"),
         }
         let _ = service.recover_interrupted_runs();
@@ -1974,6 +1965,21 @@ mod incremental_usage_tests {
     }
 }
 
+/// Logs each trigger issue not in `reported`.
+fn log_trigger_issues(
+    issues: &[spark_storage::TriggerIssue],
+    reported: &[spark_storage::TriggerIssue],
+) {
+    for issue in issues.iter().filter(|issue| !reported.contains(issue)) {
+        eprintln!(
+            "Trigger {} in {} cannot run: {}",
+            issue.trigger_id.as_deref().unwrap_or("definitions"),
+            issue.project_path,
+            issue.error
+        );
+    }
+}
+
 async fn run_trigger_source_loop(
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
@@ -1981,6 +1987,8 @@ async fn run_trigger_source_loop(
     run_event_observer: RunEventObserverHandle,
 ) {
     let mut interval = time::interval(Duration::from_secs(1));
+    // Each tick logs the trigger issues the previous tick did not report.
+    let mut reported = Vec::new();
     loop {
         tokio::select! {
             _ = cancellation.cancelled() => break,
@@ -1992,8 +2000,10 @@ async fn run_trigger_source_loop(
                 if let Some(observer) = &run_event_observer.0 {
                     service = service.with_run_event_observer(observer.clone());
                 }
-                if let Ok(outcomes) = service.process_due_trigger_sources().await {
+                if let Ok((outcomes, issues)) = service.process_due_trigger_sources().await {
                     publish_trigger_activation_outcomes(&settings, &live_hub, outcomes);
+                    log_trigger_issues(&issues, &reported);
+                    reported = issues;
                 }
             }
         }

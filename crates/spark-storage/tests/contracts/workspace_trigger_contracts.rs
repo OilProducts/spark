@@ -319,6 +319,9 @@ fn a_failed_or_partial_write_leaves_the_original_definition_and_nothing_malforme
 fn runtime_state_updates_serialize_in_database_transactions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
+    let paths = spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+        .ensure_project_paths(&project)
+        .unwrap();
     let states = repositories.runtime_state(&project).expect("states");
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -366,7 +369,7 @@ fn runtime_state_updates_serialize_in_database_transactions() {
         (false, Some("rotated"), Some("next"))
     );
     // Rows in the state database: no state file or lock anywhere.
-    assert!(!temp.path().join("spark-home/workspace").exists());
+    assert!(!paths.root.join("triggers").exists());
     assert!(!org(&project).join("triggers").exists());
 }
 
@@ -629,6 +632,15 @@ fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
         repository.get("trigger-state").expect("still missing"),
         None
     );
+    // Only a registered project gets activation rows.
+    assert!(matches!(
+        repository.update("trigger-state", |state| state.enabled = true),
+        Err(spark_storage::StorageError::ProjectNotRegistered { .. })
+    ));
+    assert_eq!(repository.get("trigger-state").unwrap(), None);
+    spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+        .ensure_project_paths(&project)
+        .unwrap();
 
     let saved = TriggerState {
         last_result: Some("queued".to_string()),

@@ -692,10 +692,11 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     let project = project.to_str().unwrap();
     let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
     registry.ensure_project_paths(project).unwrap();
+    let revision = registry.project_settings(project).unwrap().revision;
     registry
         .update_project_model_settings(
             project,
-            "1",
+            &revision,
             Some(&json!({"provider": "codex", "model": "project-model"})),
         )
         .unwrap();

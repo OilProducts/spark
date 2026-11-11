@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::{ModelSettings, SparkSettings};
 use spark_storage::{
-    workspace_records::RecordRepository, ConversationStore, ProjectPaths, ProjectRegistry,
+    workspace_records::{LoadedRecord, RecordRepository},
+    ConversationStore, ProjectPaths, ProjectRegistry,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -217,19 +218,22 @@ impl WorkspaceRoleService {
     /// pending inbox events when `deliver` is set, saves a changed record,
     /// and publishes the role's summary once the lock is released.
     /// `create` admits a role that is not saved yet; a changed record is saved.
+    /// As for missions, saves check for other writers in their own
+    /// transaction, and a failed save publishes nothing.
     fn locked(
         &self,
         project: &str,
         name: &str,
         create: bool,
         deliver: bool,
-        work: impl FnOnce(&RecordRepository, &mut RoleRecord) -> WorkspaceResult<()>,
+        work: impl FnOnce(&mut LoadedRecord<'_>, &mut RoleRecord) -> WorkspaceResult<()>,
     ) -> WorkspaceResult<RoleRecord> {
         let scope = self.scope(project)?;
         let mut written = false;
         let role = RecordRepository::roles(&self.settings.data_dir, &scope.project_id)
             .locked::<_, WorkspaceError>(|repo| {
-            let saved = repo.read(name)?;
+            let mut record = repo.load(name)?;
+            let saved = record.stored().cloned();
             let mut role: RoleRecord = match &saved {
                 Some(value) => decode(value.clone())?,
                 None if create => Self::default_record(&scope, name),
@@ -241,7 +245,7 @@ impl WorkspaceRoleService {
             };
             role.conversation_id = conversation_id(&role.project_id, &role.name);
             role.inbox = Inbox::read(&self.store, &role.conversation_id)?;
-            work(repo, &mut role)?;
+            work(&mut record, &mut role)?;
             if deliver {
                 self.deliver_pending(&role, None)?;
             }
@@ -253,7 +257,7 @@ impl WorkspaceRoleService {
             }
             let after = stored(&role);
             if saved.as_ref() != Some(&after) {
-                repo.write(name, &after)?;
+                record.save(&after)?;
                 written = true;
             }
             Ok(role)
@@ -292,14 +296,14 @@ impl WorkspaceRoleService {
                 "Role {name} cannot be started: its role file (roles/{name}.md) does not declare standing: true"
             )));
         }
-        self.locked(project, name, true, false, |repo, role| {
-            let begin = repo
-                .read(name)?
+        self.locked(project, name, true, false, |record, role| {
+            let begin = record
+                .stored()
                 .is_none()
                 .then(|| "Begin your work as this project's standing role.".to_string());
             role.stopped_at = None;
             // The first turn's frame is built from the stored record.
-            repo.write(name, &stored(role))?;
+            record.save(&stored(role))?;
             self.materialize(role)?;
             self.deliver_pending(role, begin.as_deref())
         })

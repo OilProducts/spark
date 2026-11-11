@@ -2058,6 +2058,99 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     assert_eq!(cleared.1["execution"]["source"], "workspace");
 }
 
+/// A settings draft read before a project's removal conflicts after its
+/// re-registration, for model and execution defaults alike, instead of
+/// overwriting the new registration's defaults.
+#[tokio::test]
+async fn project_settings_drafts_from_a_removed_registration_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("execution-profiles.toml"),
+        "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+    )
+    .unwrap();
+    let project_dir = temp.path().join("again");
+    fs::create_dir_all(&project_dir).unwrap();
+    let app = build_app(settings.clone()).expect("app");
+    let register = || {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/projects/register",
+            Some(json!({"project_path": project_dir})),
+        )
+    };
+    let registered = register().await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    let project = registered.1["project_path"].as_str().unwrap().to_string();
+    let uri = format!(
+        "/workspace/api/settings?project_path={}",
+        crate::encode_query(&project)
+    );
+    let stale = request_json(app.clone(), "GET", &uri, None).await.1;
+    let removal = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project)
+    );
+    let removed = request_json(app.clone(), "DELETE", &removal, None).await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    assert_eq!(register().await.0, StatusCode::OK);
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let fresh = registry.project_settings(&project).unwrap();
+
+    let models = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_models", "expected_revision": stale["models"]["revision"],
+            "value": {"project_path": project, "model_settings": {"provider": "claude-code"}}
+        })),
+    )
+    .await;
+    assert_eq!(models.0, StatusCode::CONFLICT, "{models:?}");
+    let execution = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_execution", "expected_revision": stale["execution"]["revision"],
+            "value": {"project_path": project, "execution_profile_id": "dev"}
+        })),
+    )
+    .await;
+    assert_eq!(execution.0, StatusCode::CONFLICT, "{execution:?}");
+    let state = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({
+            "project_path": project, "execution_profile_id": "dev",
+            "expected_revision": stale["execution"]["revision"]
+        })),
+    )
+    .await;
+    assert_eq!(state.0, StatusCode::CONFLICT, "{state:?}");
+    assert_eq!(registry.project_settings(&project).unwrap(), fresh);
+
+    // The new registration's own revision is accepted.
+    let current = request_json(app.clone(), "GET", &uri, None).await.1;
+    let saved = request_json(
+        app,
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_execution", "expected_revision": current["execution"]["revision"],
+            "value": {"project_path": project, "execution_profile_id": "dev"}
+        })),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{saved:?}");
+    assert_eq!(saved.1["execution"]["stored"], "dev");
+}
+
 #[tokio::test]
 async fn client_preferences_are_isolated_revision_checked_and_validated() {
     let temp = tempfile::tempdir().unwrap();
@@ -2324,10 +2417,14 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                         (key.to_string(), json!(value.trim_matches('\'')))
                     })
                     .collect::<serde_json::Map<_, _>>();
+                let revision = registry
+                    .project_settings(project.to_str().unwrap())
+                    .unwrap()
+                    .revision;
                 registry
                     .update_project_model_settings(
                         project.to_str().unwrap(),
-                        "1",
+                        &revision,
                         Some(&json!(models)),
                     )
                     .unwrap();

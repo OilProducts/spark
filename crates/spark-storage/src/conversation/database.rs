@@ -23,7 +23,7 @@ use crate::error::{Result, StorageError};
 /// File name of the state database inside the Spark home.
 pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 4;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 5;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -199,7 +199,10 @@ CREATE TABLE projects (
     model_settings TEXT CHECK (model_settings IS NULL OR json_type(model_settings) = 'object'),
     execution_profile_id TEXT,
     -- Bumped by every change to model_settings or execution_profile_id.
-    settings_revision INTEGER NOT NULL DEFAULT 1 CHECK (settings_revision >= 1)
+    settings_revision INTEGER NOT NULL DEFAULT 1 CHECK (settings_revision >= 1),
+    -- Fresh for each registration, so a revision read before a removal never
+    -- matches the re-registered project's settings.
+    registration TEXT NOT NULL DEFAULT (lower(hex(randomblob(8))))
 ) WITHOUT ROWID;
 CREATE TABLE standing_roles (
     project_id TEXT NOT NULL,

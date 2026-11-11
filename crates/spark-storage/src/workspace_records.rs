@@ -95,22 +95,52 @@ impl RecordRepository {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         payloads.iter().map(|text| self.parse(text)).collect()
     }
-    pub fn write(&self, id: &str, value: &Value) -> Result<(), StorageError> {
+    /// Reads the record, applies `change` and writes a changed result, all
+    /// in one immediate transaction, so concurrent writers (in any process)
+    /// serialize and a failed change or commit leaves the record as it was.
+    /// Only a registered project's records are written.
+    pub fn update<E: From<StorageError>>(
+        &self,
+        id: &str,
+        change: impl FnOnce(Option<Value>) -> Result<Value, E>,
+    ) -> Result<Value, E> {
         let mut connection = self.connection()?;
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        self.write_in(&tx, id, value)?;
-        tx.commit()?;
-        Ok(())
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(StorageError::from)?;
+        let current = self.read_in(&tx, id)?;
+        let next = change(current.clone())?;
+        if current.as_ref() != Some(&next) {
+            crate::workspace_projects::require_registered(&tx, &self.project_id)?;
+            self.write_in(&tx, id, &next)?;
+            tx.commit().map_err(StorageError::from)?;
+        }
+        Ok(next)
+    }
+    pub fn write(&self, id: &str, value: &Value) -> Result<(), StorageError> {
+        self.update(id, |_| Ok::<_, StorageError>(value.clone()))
+            .map(drop)
+    }
+    /// The record as read now, for an operation that must not hold a write
+    /// transaction (it also writes the conversation tables or runs agent
+    /// turns, which use their own connections to the same database).
+    pub fn load(&self, id: &str) -> Result<LoadedRecord<'_>, StorageError> {
+        Ok(LoadedRecord {
+            repo: self,
+            id: id.to_string(),
+            stored: self.read(id)?,
+        })
     }
     /// Runs `work` while holding this process's lock for the project's
-    /// records of this kind, so composite operations (which also write the
-    /// conversation tables, and so cannot hold one transaction) serialize.
+    /// records of this kind, so composite operations keep their side
+    /// effects in order. Writes still check, in their own transaction, that
+    /// no other writer changed the record.
     pub fn locked<T, E: From<StorageError>>(
         &self,
         work: impl FnOnce(&Self) -> Result<T, E>,
     ) -> Result<T, E> {
-        // ponytail: one in-process lock per project and kind; only the server
-        // process writes records. Use per-record locks if throughput requires it.
+        // ponytail: one in-process lock per project and kind. Use per-record
+        // locks if throughput requires it.
         static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
         let key = format!(
             "{}\0{}\0{}",
@@ -127,6 +157,37 @@ impl RecordRepository {
             .clone();
         let _guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
         work(self)
+    }
+}
+
+/// A record read by [`RecordRepository::load`]. Each save is a compare and
+/// swap in one immediate transaction: it fails with
+/// [`StorageError::RecordChanged`] if another writer changed the record since
+/// it was read or last saved here.
+pub struct LoadedRecord<'a> {
+    repo: &'a RecordRepository,
+    id: String,
+    stored: Option<Value>,
+}
+impl LoadedRecord<'_> {
+    /// The payload as last read or saved.
+    pub fn stored(&self) -> Option<&Value> {
+        self.stored.as_ref()
+    }
+    pub fn save(&mut self, next: &Value) -> Result<(), StorageError> {
+        if self.stored.as_ref() == Some(next) {
+            return Ok(());
+        }
+        self.repo.update(&self.id, |current| {
+            if current != self.stored {
+                return Err(StorageError::RecordChanged {
+                    id: self.id.clone(),
+                });
+            }
+            Ok(next.clone())
+        })?;
+        self.stored = Some(next.clone());
+        Ok(())
     }
 }
 

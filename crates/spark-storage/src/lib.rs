@@ -63,6 +63,6 @@ pub use workspace_triggers::{
     definition_fingerprint, normalize_trigger_action_payload, normalize_trigger_source_payload,
     TriggerAction, TriggerDefinition, TriggerDefinitionRepository, TriggerIssue,
     TriggerReconciliation, TriggerRepositories, TriggerRuntimeStateRepository, TriggerState,
-    TriggerStateHistoryEntry,
+    TriggerStateHistoryEntry, DEFINITION_CHANGED,
 };
 pub mod workspace_records;

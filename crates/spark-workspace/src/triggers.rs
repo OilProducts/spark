@@ -165,11 +165,18 @@ impl WorkspaceTriggerService {
             .map_err(Into::into)
     }
 
+    /// One background tick: the activations it ran and what its
+    /// reconciliation could not read.
     pub async fn process_due_trigger_sources(
         &self,
-    ) -> WorkspaceResult<Vec<TriggerActivationOutcome>> {
-        self.process_due_trigger_sources_at(OffsetDateTime::now_utc())
+    ) -> WorkspaceResult<(
+        Vec<TriggerActivationOutcome>,
+        Vec<spark_storage::TriggerIssue>,
+    )> {
+        self.source_runtime()
+            .process_due_sources_reporting(OffsetDateTime::now_utc())
             .await
+            .map_err(Into::into)
     }
 
     pub async fn process_due_trigger_sources_at(
@@ -280,6 +287,16 @@ impl WorkspaceTriggerService {
     pub fn reconcile_triggers(&self) -> WorkspaceResult<Vec<spark_storage::TriggerIssue>> {
         TriggerService::new(self.settings.clone())
             .reconcile()
+            .map_err(Into::into)
+    }
+
+    /// The definitions that cannot run; reads only.
+    pub fn trigger_issues(
+        &self,
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<Vec<spark_storage::TriggerIssue>> {
+        TriggerService::new(self.settings.clone())
+            .trigger_issues(project_path)
             .map_err(Into::into)
     }
 

@@ -76,6 +76,15 @@ pub enum StorageError {
     #[error("Invalid repository path {path}: {reason}")]
     InvalidRepositoryPath { path: PathBuf, reason: String },
 
+    /// A private write for a project that is not registered, such as one
+    /// racing the project's removal.
+    #[error("Project {project_id} is not registered.")]
+    ProjectNotRegistered { project_id: String },
+
+    /// A record another writer changed since it was read.
+    #[error("Record {id} changed since it was read; reload and retry.")]
+    RecordChanged { id: String },
+
     #[error("{reason}")]
     InvalidConversationState { path: PathBuf, reason: String },
 

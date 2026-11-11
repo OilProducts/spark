@@ -54,24 +54,33 @@ fn project_registry_registers_lists_and_survives_restart_as_rows() {
 
     // Private model and execution defaults are columns of the same row.
     let path = record.project_path.as_str();
+    let first = registry.project_settings(path).unwrap().revision;
     registry
-        .update_project_model_settings(path, "1", Some(&json!({"provider": "codex", "model": "m"})))
+        .update_project_model_settings(
+            path,
+            &first,
+            Some(&json!({"provider": "codex", "model": "m"})),
+        )
         .unwrap();
+    let second = registry.project_settings(path).unwrap().revision;
+    assert_ne!(second, first);
     registry
         .update_project_record(
             path,
             ProjectRecordUpdate {
-                expected_revision: Some("2".into()),
+                expected_revision: Some(second.clone()),
                 execution_profile_id: Some(Some("native-dev".into())),
                 ..ProjectRecordUpdate::default()
             },
         )
         .unwrap();
     let restarted = ProjectRegistry::new(&home);
+    let third = restarted.project_settings(path).unwrap().revision;
+    assert!(third != first && third != second);
     assert_eq!(
         restarted.project_settings(path).unwrap(),
         spark_storage::ProjectSettings {
-            revision: "3".into(),
+            revision: third,
             model_settings: Some(json!({"provider": "codex", "model": "m"})),
             execution_profile_id: Some("native-dev".into()),
         }
@@ -208,6 +217,51 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     assert_eq!(
         registry.project_settings(project_path).unwrap().revision,
         "absent"
+    );
+    // A revision read before the removal never matches the next registration.
+    registry.ensure_project_paths(project_path).unwrap();
+    assert!(matches!(
+        registry.update_project_model_settings(project_path, &stored.revision, Some(&models)),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+    assert!(matches!(
+        registry.update_project_record(
+            project_path,
+            ProjectRecordUpdate {
+                execution_profile_id: Some(Some("native".into())),
+                expected_revision: Some(stored.revision.clone()),
+                ..ProjectRecordUpdate::default()
+            },
+        ),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+}
+
+/// A loaded record saves only over the payload it read: a change another
+/// writer made meanwhile is a conflict, and the refused save writes nothing.
+#[test]
+fn a_loaded_record_saves_only_over_what_it_read() {
+    use spark_storage::workspace_records::RecordRepository;
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let paths = ProjectRegistry::new(&home)
+        .ensure_project_paths("/projects/records")
+        .unwrap();
+    let roles = RecordRepository::roles(&home, &paths.project_id);
+    let mut record = roles.load("lead").unwrap();
+    assert_eq!(record.stored(), None);
+    record.save(&json!({"name": "lead", "n": 1})).unwrap();
+    record.save(&json!({"name": "lead", "n": 2})).unwrap();
+    roles
+        .write("lead", &json!({"name": "lead", "n": 3}))
+        .unwrap();
+    assert!(matches!(
+        record.save(&json!({"name": "lead", "n": 4})),
+        Err(StorageError::RecordChanged { .. })
+    ));
+    assert_eq!(
+        roles.read("lead").unwrap(),
+        Some(json!({"name": "lead", "n": 3}))
     );
 }
 
@@ -543,6 +597,20 @@ fn assert_private_rows_removed(home: &std::path::Path, path: &str, project_id: &
         None
     );
     assert_eq!(states.get("trigger-a").unwrap(), None);
+    // A late activation or record write fails and recreates nothing.
+    assert!(matches!(
+        states.update("trigger-a", |state| state.enabled = true),
+        Err(StorageError::ProjectNotRegistered { .. })
+    ));
+    assert_eq!(states.get("trigger-a").unwrap(), None);
+    assert!(matches!(
+        RecordRepository::missions(home, project_id).write("late", &json!({"id": "late"})),
+        Err(StorageError::ProjectNotRegistered { .. })
+    ));
+    assert!(RecordRepository::missions(home, project_id)
+        .list()
+        .unwrap()
+        .is_empty());
     assert!(WorkflowMilestones::new(home)
         .tail(100)
         .unwrap()

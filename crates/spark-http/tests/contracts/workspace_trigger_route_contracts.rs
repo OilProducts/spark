@@ -1072,3 +1072,257 @@ async fn trigger_revisions_reject_missing_and_stale_http_writes() {
     assert_eq!(loaded.1["name"], "Saved");
     assert_eq!(loaded.1["revision"], saved.1["revision"]);
 }
+
+async fn fire_webhook(app: axum::Router, key: &str, secret: &str) -> (StatusCode, Value) {
+    request_json_with_headers(
+        app,
+        "POST",
+        "/workspace/api/webhooks",
+        &[
+            ("X-Spark-Webhook-Key", key),
+            ("X-Spark-Webhook-Secret", secret),
+        ],
+        Some(json!({})),
+    )
+    .await
+}
+
+/// An API edit of a trigger's source or action disarms its saved state at
+/// once: reverting the edit, before any background reconciliation, does not
+/// re-arm it, and webhooks are refused until it is activated again. A
+/// descriptive edit keeps it armed.
+#[tokio::test]
+async fn an_operational_edit_disarms_until_activated_even_once_reverted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+    let action =
+        |origin: &str| json!({"flow_name": RUN_FLOW, "static_context": {"origin": origin}});
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Hook", "enabled": true,
+            "source_type": "webhook", "action": action("first"), "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], true);
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let key = created.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret = created.1["webhook_secret"].as_str().unwrap().to_string();
+    let url = format!("/workspace/api/triggers/{id}?project_path={project}");
+    let patch = |body: Value| request_json(app.clone(), "PATCH", &url, Some(body));
+
+    let renamed =
+        patch(json!({"expected_revision": created.1["revision"], "name": "Renamed"})).await;
+    assert_eq!(renamed.0, StatusCode::OK, "{}", renamed.1);
+    assert_eq!(renamed.1["enabled"], true);
+
+    let edited =
+        patch(json!({"expected_revision": renamed.1["revision"], "action": action("second")}))
+            .await;
+    assert_eq!(edited.0, StatusCode::OK, "{}", edited.1);
+    assert_eq!(edited.1["enabled"], false);
+    assert_eq!(
+        edited.1["state"]["activation_error"],
+        spark_storage::DEFINITION_CHANGED
+    );
+
+    let reverted =
+        patch(json!({"expected_revision": edited.1["revision"], "action": action("first")})).await;
+    assert_eq!(reverted.0, StatusCode::OK, "{}", reverted.1);
+    assert_eq!(reverted.1["enabled"], false);
+    assert!(!load_state(&settings, &project, &id).enabled);
+    let refused = fire_webhook(app.clone(), &key, &secret).await;
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.1["detail"], "Webhook trigger is disabled.");
+    assert!(load_state(&settings, &project, &id).last_fired_at.is_none());
+
+    let activated =
+        patch(json!({"expected_revision": reverted.1["revision"], "enabled": true})).await;
+    assert_eq!(activated.0, StatusCode::OK, "{}", activated.1);
+    assert_eq!(activated.1["enabled"], true);
+    assert_eq!(fire_webhook(app, &key, &secret).await.0, StatusCode::OK);
+}
+
+/// Trigger creation racing project removal never leaves an activation or
+/// credentials behind: each create either precedes the removal, which
+/// deletes its row, or fails. Re-registration finds the definitions left in
+/// the project inactive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trigger_creation_racing_project_removal_leaves_no_activation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+    let mut creates = (0..16)
+        .map(|index| {
+            let (app, project) = (app.clone(), project.clone());
+            tokio::spawn(async move {
+                request_json(
+                    app,
+                    "POST",
+                    "/workspace/api/triggers",
+                    Some(json!({
+                        "project_path": project, "name": format!("Hook {index}"),
+                        "enabled": true, "source_type": "webhook",
+                        "action": {"flow_name": RUN_FLOW}, "source": {}
+                    })),
+                )
+                .await
+            })
+        })
+        .collect::<Vec<_>>();
+    // The removal starts once one create has finished, while the rest run.
+    let first = creates.remove(0).await.unwrap();
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    let removal = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project)
+    );
+    let removed = request_json(app.clone(), "DELETE", &removal, None).await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    let mut keys = vec![first.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string()];
+    for create in creates {
+        let (status, body) = create.await.unwrap();
+        if status == StatusCode::OK {
+            keys.push(body["source"]["webhook_key"].as_str().unwrap().to_string());
+        } else {
+            assert!(status.is_client_error(), "{status} {body}");
+        }
+    }
+    let repositories = TriggerRepositories::from_settings(&settings);
+    let states = repositories.runtime_state(&project).unwrap();
+    let ids = repositories
+        .definitions(&project)
+        .unwrap()
+        .definition_names()
+        .unwrap();
+    for id in &ids {
+        assert_eq!(states.get(id).unwrap(), None, "{id}");
+    }
+    for key in &keys {
+        assert_eq!(repositories.find_webhook_key(key).unwrap(), None);
+    }
+
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    let listed = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/triggers?project_path={project}"),
+        None,
+    )
+    .await;
+    assert_eq!(listed.1.as_array().unwrap().len(), ids.len());
+    for trigger in listed.1.as_array().unwrap() {
+        assert_eq!(trigger["enabled"], false, "{trigger}");
+        assert!(trigger["source"].get("webhook_key").is_none(), "{trigger}");
+    }
+}
+
+/// A definition broken after startup, and an invalid one added after it,
+/// are reported (by the issues route and by each background tick), cannot
+/// fire, and keep their activation until their removal is confirmed.
+#[tokio::test]
+async fn definitions_broken_after_startup_are_reported_and_cannot_fire() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = crate::store_app_default(settings.clone());
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Hook", "enabled": true,
+            "source_type": "webhook", "action": {"flow_name": RUN_FLOW}, "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.1["enabled"], true, "{}", created.1);
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let key = created.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret = created.1["webhook_secret"].as_str().unwrap().to_string();
+    let issues = || request_json(app.clone(), "GET", "/workspace/api/trigger-issues", None);
+    assert_eq!(issues().await, (StatusCode::OK, json!([])));
+
+    let dir = spark_common::project::definitions_dir(Path::new(&project)).join("triggers");
+    fs::write(dir.join(format!("{id}.toml")), "not = [toml").unwrap();
+    write_persisted_trigger_toml(&project, "trigger-added", "unknown", RUN_FLOW, "");
+    let reported = issues().await;
+    assert_eq!(reported.0, StatusCode::OK);
+    let reported_ids = reported
+        .1
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| {
+            assert_eq!(issue["project_path"], project.as_str());
+            assert!(!issue["error"].as_str().unwrap().is_empty());
+            issue["trigger_id"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>();
+    let mut expected = vec![id.clone(), "trigger-added".to_string()];
+    expected.sort();
+    assert_eq!(reported_ids, expected);
+    let triggers = spark_workspace::WorkspaceTriggerService::new(
+        settings.clone(),
+        crate::shared_store(&settings.data_dir),
+    );
+    let tick = triggers.process_due_trigger_sources().await.unwrap();
+    assert_eq!(tick.1.len(), 2, "{:?}", tick.1);
+    assert_eq!(
+        request_json(app.clone(), "GET", "/workspace/api/triggers", None)
+            .await
+            .1,
+        json!([])
+    );
+    assert_ne!(
+        fire_webhook(app.clone(), &key, &secret).await.0,
+        StatusCode::OK
+    );
+    let kept = load_state(&settings, &project, &id);
+    assert!(kept.enabled && kept.last_fired_at.is_none());
+
+    // Confirmed removal deletes the activation and clears the report.
+    fs::remove_file(dir.join(format!("{id}.toml"))).unwrap();
+    fs::remove_file(dir.join("trigger-added.toml")).unwrap();
+    assert!(triggers
+        .process_due_trigger_sources()
+        .await
+        .unwrap()
+        .1
+        .is_empty());
+    assert_eq!(
+        TriggerRepositories::from_settings(&settings)
+            .runtime_state(&project)
+            .unwrap()
+            .get(&id)
+            .unwrap(),
+        None
+    );
+    assert_eq!(issues().await, (StatusCode::OK, json!([])));
+}
