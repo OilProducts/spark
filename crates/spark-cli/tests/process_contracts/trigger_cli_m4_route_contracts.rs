@@ -74,9 +74,9 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     assert!(repositories
         .runtime_state(project)
         .unwrap()
-        .state_path(&trigger_id)
+        .get(&trigger_id)
         .unwrap()
-        .exists());
+        .is_some());
 
     let listed = run_spark(
         temp.path(),
@@ -270,10 +270,18 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
             server.base_url.as_str(),
         ],
     );
-    assert_eq!(unknown_flow.status.code(), Some(3));
+    // Saved but not activated: the reason is in its state.
     assert_eq!(
-        stderr(&unknown_flow),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
+        unknown_flow.status.code(),
+        Some(0),
+        "{}",
+        stderr(&unknown_flow)
+    );
+    let unknown_flow: Value = serde_json::from_slice(&unknown_flow.stdout).unwrap();
+    assert_eq!(unknown_flow["enabled"], false);
+    assert_eq!(
+        unknown_flow["state"]["activation_error"],
+        "Unknown flow: missing"
     );
     assert!(definitions
         .get("trigger-protected")
@@ -604,15 +612,18 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         );
         assert_ne!(output.status.code(), Some(0), "{key}");
     }
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
+    let project_id = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project)
         .unwrap()
-        .root;
+        .project_id;
     assert_eq!(
-        spark_storage::workspace_records::RecordRepository::missions(&root)
-            .read(id)
-            .unwrap()
-            .unwrap()["activity"]
+        spark_storage::workspace_records::RecordRepository::missions(
+            &settings.data_dir,
+            &project_id
+        )
+        .read(id)
+        .unwrap()
+        .unwrap()["activity"]
             .as_array()
             .unwrap()
             .len(),

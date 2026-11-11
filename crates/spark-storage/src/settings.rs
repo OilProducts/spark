@@ -350,11 +350,21 @@ pub fn read_project_model_defaults(
     let workspace: ModelSettings = read_settings_document(&core)?
         .section(&core, "models")?
         .unwrap_or_default();
-    let project_file = crate::ProjectRegistry::new(&settings.data_dir)
-        .project_paths(project_path)?
-        .project_file;
+    let stored = crate::ProjectRegistry::new(&settings.data_dir)
+        .project_settings(project_path)?
+        .model_settings;
     let project: Option<ModelSettings> =
-        read_settings_document(&project_file)?.section(&project_file, "model_settings")?;
+        stored
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                invalid(
+                    &settings
+                        .data_dir
+                        .join(crate::conversation::STATE_DATABASE_FILE_NAME),
+                    "Invalid project model_settings; check field names and types.",
+                )
+            })?;
     let (group, source) = resolve_model_settings(&workspace, project.as_ref(), None)
         .map_err(|_| invalid(&core, "Invalid model defaults; select exactly one provider or profile and nonempty optional fields."))?;
     Ok((group.clone(), source))

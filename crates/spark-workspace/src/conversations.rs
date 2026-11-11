@@ -751,12 +751,15 @@ impl WorkspaceConversationService {
         let project_paths = repository.project_paths(&project_path)?;
         // A mission's conversation belongs to its mission, not the Threads list.
         let mission_ids: std::collections::HashSet<String> =
-            spark_storage::workspace_records::RecordRepository::missions(&project_paths.root)
-                .list()
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|mission| mission["id"].as_str().map(str::to_string))
-                .collect();
+            spark_storage::workspace_records::RecordRepository::missions(
+                &self.settings.data_dir,
+                &project_paths.project_id,
+            )
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|mission| mission["id"].as_str().map(str::to_string))
+            .collect();
         let mut summaries = Vec::new();
         for row in repository.conversation_summaries(Some(&project_path))? {
             if mission_ids.contains(&row.id) {

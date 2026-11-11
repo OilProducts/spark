@@ -252,12 +252,7 @@ pub fn validate_profile_candidate(
     // Inspect authored metadata only, including unregistered project directories.
     // Turns, checkpoints, runtime sessions and historical snapshots are not references.
     visit_metadata(&settings.projects_dir, &mut |path| {
-        if path.file_name().is_some_and(|name| name == "project.toml") {
-            inspect(
-                json!(read_settings_document(path)?.values),
-                path.display().to_string(),
-            );
-        } else if path
+        if path
             .file_name()
             .is_some_and(|name| name == "conversation.json")
         {
@@ -280,10 +275,18 @@ pub fn validate_profile_candidate(
         }
         Ok(())
     })?;
-    let projects =
-        spark_storage::ProjectRegistry::new(settings.data_dir.clone()).list_project_records()?;
+    let registry = spark_storage::ProjectRegistry::new(settings.data_dir.clone());
+    let projects = registry.list_project_records()?;
     let triggers = spark_storage::TriggerRepositories::from_settings(settings);
     for project in &projects {
+        let stored = registry.project_settings(&project.project_path)?;
+        inspect(
+            json!({
+                "model_settings": stored.model_settings,
+                "execution_profile_id": stored.execution_profile_id,
+            }),
+            format!("project defaults of {}", project.project_path),
+        );
         for trigger in triggers.definitions(&project.project_path)?.list()? {
             inspect(
                 json!(trigger.action),
@@ -383,7 +386,6 @@ fn visit_metadata(
     visit: &mut impl FnMut(&Path) -> WorkspaceResult<()>,
 ) -> WorkspaceResult<()> {
     for project in subdirectories(projects_dir)? {
-        visit(&project.join("project.toml"))?;
         for conversation in subdirectories(&project.join("conversations"))? {
             let path = conversation.join("conversation.json");
             if path.exists() {

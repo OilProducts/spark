@@ -68,6 +68,10 @@ impl From<spark_storage::StorageError> for WorkspaceError {
             spark_storage::StorageError::ConversationCommitRejected { reason, .. } => {
                 Self::Conflict(reason)
             }
+            error @ (spark_storage::StorageError::ProjectNotRegistered { .. }
+            | spark_storage::StorageError::RecordChanged { .. }) => {
+                Self::Conflict(error.to_string())
+            }
             spark_storage::StorageError::CleanupDeferred { reason } => {
                 Self::ServiceUnavailable(format!("Cleanup is not finished: {reason}. Try again."))
             }

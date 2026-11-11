@@ -1613,7 +1613,10 @@ fn listed_summary_rows(
                 .project_paths(&project_path)
                 .ok()
                 .map(|paths| {
-                    spark_storage::workspace_records::RecordRepository::missions(&paths.root)
+                    spark_storage::workspace_records::RecordRepository::missions(
+                        &service.settings().data_dir,
+                        &paths.project_id,
+                    )
                 });
             if missions.is_some_and(|missions| matches!(missions.read(&row.id), Ok(Some(_)))) {
                 return None;

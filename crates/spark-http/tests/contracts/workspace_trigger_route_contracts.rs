@@ -78,8 +78,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let states = TriggerRepositories::from_settings(&settings)
         .runtime_state(&project)
         .unwrap();
-    let state_path = states.state_path(&trigger_id).unwrap();
-    assert!(state_path.exists());
+    assert!(states.get(&trigger_id).unwrap().is_some());
 
     let url = format!("/workspace/api/triggers/{trigger_id}?project_path={project}");
     let unscoped = request_json(
@@ -152,7 +151,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
         json!({"status": "deleted", "id": trigger_id, "project_path": project})
     );
     assert!(!definition_path.exists());
-    assert!(!state_path.exists());
+    assert_eq!(states.get(&trigger_id).unwrap(), None);
     assert_eq!(fs::read_dir(org.join("triggers")).unwrap().count(), 0);
 }
 
@@ -449,8 +448,13 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
         })),
     )
     .await;
-    assert_eq!(unknown_flow.0, StatusCode::NOT_FOUND);
-    assert_eq!(unknown_flow.1, json!({"detail": "Unknown flow: missing"}));
+    // Saved, but activation fails: inactive, with the reason reported.
+    assert_eq!(unknown_flow.0, StatusCode::OK);
+    assert_eq!(unknown_flow.1["enabled"], false);
+    assert_eq!(
+        unknown_flow.1["state"]["activation_error"],
+        "Unknown flow: missing"
+    );
 
     assert!(definitions
         .get("trigger-protected")
@@ -492,14 +496,10 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
         .unwrap()
         .definition_path("trigger-protected")
         .unwrap();
-    let state_path = states.state_path("trigger-protected").unwrap();
     let delete_url = format!(
         "/workspace/api/triggers/trigger-protected?project_path={project}&expected_revision=protected"
     );
     let original_definition_text = fs::read_to_string(&definition_path).expect("definition text");
-    let original_state_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&state_path).expect("state text"))
-            .expect("state json");
     let app = build_app(settings.clone()).expect("app");
 
     let protected_delete = request_json(app.clone(), "DELETE", &delete_url, None).await;
@@ -512,19 +512,19 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
         fs::read_to_string(&definition_path).expect("definition unchanged"),
         original_definition_text
     );
-    let state_after_delete: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&state_path).expect("state unchanged"))
-            .expect("state json");
-    assert_eq!(state_after_delete, original_state_value);
+    assert_eq!(
+        states.get("trigger-protected").unwrap(),
+        Some(original_state.clone())
+    );
 
-    fs::remove_file(&state_path).expect("remove state file");
+    states.delete("trigger-protected").expect("remove state");
     let protected_delete_without_state = request_json(app, "DELETE", &delete_url, None).await;
     assert_eq!(protected_delete_without_state.0, StatusCode::BAD_REQUEST);
     assert_eq!(
         protected_delete_without_state.1,
         json!({"detail": "Protected triggers cannot be deleted."})
     );
-    assert!(!state_path.exists());
+    assert_eq!(states.get("trigger-protected").unwrap(), None);
     assert_eq!(
         fs::read_to_string(&definition_path).expect("definition unchanged"),
         original_definition_text
@@ -631,7 +631,7 @@ minute = 0"#,
 }
 
 #[tokio::test]
-async fn poll_trigger_headers_use_python_stringification_contract() {
+async fn poll_trigger_headers_stay_private_on_create_and_update_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     install_run_flow(&settings);
@@ -639,12 +639,13 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
     let app = build_app(settings.clone()).expect("app");
 
     let created = request_json(
-        app,
+        app.clone(),
         "POST",
         "/workspace/api/triggers",
         Some(json!({
             "project_path": project,
             "name": "Compat poll",
+            "enabled": true,
             "source_type": "poll",
             "action": {"flow_name": RUN_FLOW},
             "source": {
@@ -653,6 +654,7 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
                 "items_path": "items",
                 "item_id_path": "id",
                 "headers": {
+                    "Authorization": "Bearer create-token",
                     "x-bool": true,
                     "x-false": false,
                     "x-null": null,
@@ -664,40 +666,116 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
     )
     .await;
 
-    assert_eq!(created.0, StatusCode::OK);
-    assert_eq!(
-        created.1["source"]["headers"],
-        json!({
-            "x-bool": "True",
-            "x-false": "False",
-            "x-null": "None",
-            "x-number": "5",
-            "x-text": "ok"
-        })
-    );
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], true);
+    let headers = json!({
+        "Authorization": "Bearer create-token",
+        "x-bool": "True",
+        "x-false": "False",
+        "x-null": "None",
+        "x-number": "5",
+        "x-text": "ok"
+    });
+    assert_eq!(created.1["source"]["headers"], headers);
+    assert_eq!(created.1["state"].get("poll_headers"), None);
     let trigger_id = created.1["id"].as_str().expect("trigger id");
     let definitions = TriggerRepositories::from_settings(&settings)
         .definitions(&project)
         .unwrap();
-    let persisted = definitions
-        .get(trigger_id)
-        .expect("read persisted trigger")
-        .expect("persisted trigger");
-    assert_eq!(
-        persisted.source["headers"],
-        json!({
-            "x-bool": "True",
-            "x-false": "False",
-            "x-null": "None",
-            "x-number": "5",
-            "x-text": "ok"
-        })
+    let persisted = || {
+        let definition = definitions
+            .get(trigger_id)
+            .expect("read persisted trigger")
+            .expect("persisted trigger");
+        let text = fs::read_to_string(definitions.definition_path(trigger_id).unwrap())
+            .expect("definition toml");
+        (definition, text)
+    };
+    let (definition, text) = persisted();
+    assert_eq!(definition.source.get("headers"), None);
+    assert!(
+        !text.contains("headers") && !text.contains("token"),
+        "{text}"
     );
-    let definition_text = fs::read_to_string(definitions.definition_path(trigger_id).unwrap())
-        .expect("definition toml");
-    assert!(definition_text.contains("headers_json = "));
-    assert!(definition_text.contains(r#"\"x-bool\": \"True\""#));
-    assert!(definition_text.contains(r#"\"x-null\": \"None\""#));
+    let state = load_state(&settings, &project, trigger_id);
+    assert_eq!(Value::Object(state.poll_headers), headers);
+
+    let url = format!("/workspace/api/triggers/{trigger_id}?project_path={project}");
+    let mut source = created.1["source"].clone();
+    source["headers"] = json!({"Authorization": "Bearer update-token"});
+    let updated = request_json(
+        app.clone(),
+        "PATCH",
+        &url,
+        Some(json!({
+            "expected_revision": created.1["revision"],
+            "enabled": true,
+            "source": source
+        })),
+    )
+    .await;
+    assert_eq!(updated.0, StatusCode::OK, "{}", updated.1);
+    assert_eq!(updated.1["enabled"], true);
+    assert_eq!(
+        updated.1["source"]["headers"],
+        json!({"Authorization": "Bearer update-token"})
+    );
+    let (definition, text) = persisted();
+    assert_eq!(definition.source.get("headers"), None);
+    assert!(
+        !text.contains("headers") && !text.contains("token"),
+        "{text}"
+    );
+    assert_eq!(
+        Value::Object(load_state(&settings, &project, trigger_id).poll_headers),
+        json!({"Authorization": "Bearer update-token"})
+    );
+    let listed = request_json(app, "GET", "/workspace/api/triggers", None).await;
+    assert_eq!(
+        listed.1[0]["source"]["headers"],
+        json!({"Authorization": "Bearer update-token"})
+    );
+}
+
+#[tokio::test]
+async fn enabled_creation_naming_a_missing_profile_saves_an_inactive_definition() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Profiled", "enabled": true,
+            "source_type": "webhook", "source": {},
+            "action": {"flow_name": RUN_FLOW, "execution_profile_id": "missing"}
+        })),
+    )
+    .await;
+
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], false);
+    let error = created.1["state"]["activation_error"].as_str().unwrap();
+    assert!(error.contains("missing"), "{error}");
+    let id = created.1["id"].as_str().unwrap();
+    let definition = TriggerRepositories::from_settings(&settings)
+        .definitions(&project)
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .expect("definition saved");
+    assert_eq!(
+        definition.action.execution_profile_id.as_deref(),
+        Some("missing")
+    );
+    let listed = request_json(app, "GET", "/workspace/api/triggers", None).await;
+    assert_eq!(listed.1[0]["id"], id);
+    assert_eq!(listed.1[0]["enabled"], false);
+    assert_eq!(listed.1[0]["state"]["activation_error"], error);
 }
 
 async fn request_json(
@@ -1071,4 +1149,258 @@ async fn trigger_revisions_reject_missing_and_stale_http_writes() {
     let loaded = request_json(app, "GET", &url, None).await;
     assert_eq!(loaded.1["name"], "Saved");
     assert_eq!(loaded.1["revision"], saved.1["revision"]);
+}
+
+async fn fire_webhook(app: axum::Router, key: &str, secret: &str) -> (StatusCode, Value) {
+    request_json_with_headers(
+        app,
+        "POST",
+        "/workspace/api/webhooks",
+        &[
+            ("X-Spark-Webhook-Key", key),
+            ("X-Spark-Webhook-Secret", secret),
+        ],
+        Some(json!({})),
+    )
+    .await
+}
+
+/// An API edit of a trigger's source or action disarms its saved state at
+/// once: reverting the edit, before any background reconciliation, does not
+/// re-arm it, and webhooks are refused until it is activated again. A
+/// descriptive edit keeps it armed.
+#[tokio::test]
+async fn an_operational_edit_disarms_until_activated_even_once_reverted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+    let action =
+        |origin: &str| json!({"flow_name": RUN_FLOW, "static_context": {"origin": origin}});
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Hook", "enabled": true,
+            "source_type": "webhook", "action": action("first"), "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert_eq!(created.1["enabled"], true);
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let key = created.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret = created.1["webhook_secret"].as_str().unwrap().to_string();
+    let url = format!("/workspace/api/triggers/{id}?project_path={project}");
+    let patch = |body: Value| request_json(app.clone(), "PATCH", &url, Some(body));
+
+    let renamed =
+        patch(json!({"expected_revision": created.1["revision"], "name": "Renamed"})).await;
+    assert_eq!(renamed.0, StatusCode::OK, "{}", renamed.1);
+    assert_eq!(renamed.1["enabled"], true);
+
+    let edited =
+        patch(json!({"expected_revision": renamed.1["revision"], "action": action("second")}))
+            .await;
+    assert_eq!(edited.0, StatusCode::OK, "{}", edited.1);
+    assert_eq!(edited.1["enabled"], false);
+    assert_eq!(
+        edited.1["state"]["activation_error"],
+        spark_storage::DEFINITION_CHANGED
+    );
+
+    let reverted =
+        patch(json!({"expected_revision": edited.1["revision"], "action": action("first")})).await;
+    assert_eq!(reverted.0, StatusCode::OK, "{}", reverted.1);
+    assert_eq!(reverted.1["enabled"], false);
+    assert!(!load_state(&settings, &project, &id).enabled);
+    let refused = fire_webhook(app.clone(), &key, &secret).await;
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.1["detail"], "Webhook trigger is disabled.");
+    assert!(load_state(&settings, &project, &id).last_fired_at.is_none());
+
+    let activated =
+        patch(json!({"expected_revision": reverted.1["revision"], "enabled": true})).await;
+    assert_eq!(activated.0, StatusCode::OK, "{}", activated.1);
+    assert_eq!(activated.1["enabled"], true);
+    assert_eq!(fire_webhook(app, &key, &secret).await.0, StatusCode::OK);
+}
+
+/// Trigger creation racing project removal never leaves an activation or
+/// credentials behind: each create either precedes the removal, which
+/// deletes its row, or fails. Re-registration finds the definitions left in
+/// the project inactive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trigger_creation_racing_project_removal_leaves_no_activation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = build_app(settings.clone()).expect("app");
+    let mut creates = (0..16)
+        .map(|index| {
+            let (app, project) = (app.clone(), project.clone());
+            tokio::spawn(async move {
+                request_json(
+                    app,
+                    "POST",
+                    "/workspace/api/triggers",
+                    Some(json!({
+                        "project_path": project, "name": format!("Hook {index}"),
+                        "enabled": true, "source_type": "webhook",
+                        "action": {"flow_name": RUN_FLOW}, "source": {}
+                    })),
+                )
+                .await
+            })
+        })
+        .collect::<Vec<_>>();
+    // The removal starts once one create has finished, while the rest run.
+    let first = creates.remove(0).await.unwrap();
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    let removal = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project)
+    );
+    let removed = request_json(app.clone(), "DELETE", &removal, None).await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    let mut keys = vec![first.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string()];
+    for create in creates {
+        let (status, body) = create.await.unwrap();
+        if status == StatusCode::OK {
+            keys.push(body["source"]["webhook_key"].as_str().unwrap().to_string());
+        } else {
+            assert!(status.is_client_error(), "{status} {body}");
+        }
+    }
+    let repositories = TriggerRepositories::from_settings(&settings);
+    let states = repositories.runtime_state(&project).unwrap();
+    let ids = repositories
+        .definitions(&project)
+        .unwrap()
+        .definition_names()
+        .unwrap();
+    for id in &ids {
+        assert_eq!(states.get(id).unwrap(), None, "{id}");
+    }
+    for key in &keys {
+        assert_eq!(repositories.find_webhook_key(key).unwrap(), None);
+    }
+
+    let registered = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/projects/register",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    let listed = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/triggers?project_path={project}"),
+        None,
+    )
+    .await;
+    assert_eq!(listed.1.as_array().unwrap().len(), ids.len());
+    for trigger in listed.1.as_array().unwrap() {
+        assert_eq!(trigger["enabled"], false, "{trigger}");
+        assert!(trigger["source"].get("webhook_key").is_none(), "{trigger}");
+    }
+}
+
+/// A definition broken after startup, and an invalid one added after it,
+/// are reported (by the issues route and by each background tick), cannot
+/// fire, and keep their activation until their removal is confirmed.
+#[tokio::test]
+async fn definitions_broken_after_startup_are_reported_and_cannot_fire() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(&temp.path().canonicalize().unwrap());
+    install_run_flow(&settings);
+    let project = project(&settings, "project");
+    let app = crate::store_app_default(settings.clone());
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project, "name": "Hook", "enabled": true,
+            "source_type": "webhook", "action": {"flow_name": RUN_FLOW}, "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.1["enabled"], true, "{}", created.1);
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let key = created.1["source"]["webhook_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let secret = created.1["webhook_secret"].as_str().unwrap().to_string();
+    let issues = || request_json(app.clone(), "GET", "/workspace/api/trigger-issues", None);
+    assert_eq!(issues().await, (StatusCode::OK, json!([])));
+
+    let dir = spark_common::project::definitions_dir(Path::new(&project)).join("triggers");
+    fs::write(dir.join(format!("{id}.toml")), "not = [toml").unwrap();
+    write_persisted_trigger_toml(&project, "trigger-added", "unknown", RUN_FLOW, "");
+    let reported = issues().await;
+    assert_eq!(reported.0, StatusCode::OK);
+    let reported_ids = reported
+        .1
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| {
+            assert_eq!(issue["project_path"], project.as_str());
+            assert!(!issue["error"].as_str().unwrap().is_empty());
+            issue["trigger_id"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>();
+    let mut expected = vec![id.clone(), "trigger-added".to_string()];
+    expected.sort();
+    assert_eq!(reported_ids, expected);
+    let triggers = spark_workspace::WorkspaceTriggerService::new(
+        settings.clone(),
+        crate::shared_store(&settings.data_dir),
+    );
+    let tick = triggers.process_due_trigger_sources().await.unwrap();
+    assert_eq!(tick.1.len(), 2, "{:?}", tick.1);
+    assert_eq!(
+        request_json(app.clone(), "GET", "/workspace/api/triggers", None)
+            .await
+            .1,
+        json!([])
+    );
+    assert_ne!(
+        fire_webhook(app.clone(), &key, &secret).await.0,
+        StatusCode::OK
+    );
+    let kept = load_state(&settings, &project, &id);
+    assert!(kept.enabled && kept.last_fired_at.is_none());
+
+    // Confirmed removal deletes the activation and clears the report.
+    fs::remove_file(dir.join(format!("{id}.toml"))).unwrap();
+    fs::remove_file(dir.join("trigger-added.toml")).unwrap();
+    assert!(triggers
+        .process_due_trigger_sources()
+        .await
+        .unwrap()
+        .1
+        .is_empty());
+    assert_eq!(
+        TriggerRepositories::from_settings(&settings)
+            .runtime_state(&project)
+            .unwrap()
+            .get(&id)
+            .unwrap(),
+        None
+    );
+    assert_eq!(issues().await, (StatusCode::OK, json!([])));
 }

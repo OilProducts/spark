@@ -1,8 +1,10 @@
-//! SQLite conversation store foundation: schema, configuration, revision
-//! allocation and revision-indexed reads.
+//! The Spark home's SQLite state database: schema, configuration, revision
+//! allocation and revision-indexed conversation reads.
 //!
 //! One database per Spark home holds every conversation entity as a current
-//! row plus tombstones. Each successful write transaction allocates exactly one
+//! row plus tombstones, beside the installation's private records (project
+//! registry, standing roles, missions, trigger activations and the workflow
+//! milestone log), which have their own short-lived connections. Each successful write transaction allocates exactly one
 //! home-global revision and stamps every row it changes, so `R < revision <= H`
 //! selects the replacement rows a client at cursor `R` needs to reach watermark
 //! `H`. [`super::ConversationStore`] owns the one connection per Spark home.
@@ -18,10 +20,10 @@ use serde_json::Value;
 
 use crate::error::{Result, StorageError};
 
-/// File name of the conversation database inside the Spark home.
-pub const CONVERSATION_DATABASE_FILE_NAME: &str = "conversations.sqlite3";
+/// File name of the state database inside the Spark home.
+pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const CONVERSATION_DATABASE_SCHEMA_VERSION: i64 = 3;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 5;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -179,6 +181,57 @@ CREATE TABLE IF NOT EXISTS inbox_runs (
     launched_at TEXT NOT NULL,
     status TEXT NOT NULL,
     PRIMARY KEY (conversation_id, run_id)
+) WITHOUT ROWID;
+
+-- Installation-private records. None of them carries a conversation
+-- revision; a project's rows go with its registry row on removal.
+CREATE TABLE projects (
+    project_id TEXT PRIMARY KEY CHECK (length(project_id) > 0),
+    project_path TEXT NOT NULL UNIQUE CHECK (length(project_path) > 0),
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_opened_at TEXT NOT NULL,
+    last_accessed_at TEXT,
+    is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1)),
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    active_conversation_id TEXT,
+    -- The whole model selection, as one JSON object, or NULL to inherit.
+    model_settings TEXT CHECK (model_settings IS NULL OR json_type(model_settings) = 'object'),
+    execution_profile_id TEXT,
+    -- Bumped by every change to model_settings or execution_profile_id.
+    settings_revision INTEGER NOT NULL DEFAULT 1 CHECK (settings_revision >= 1),
+    -- Fresh for each registration, so a revision read before a removal never
+    -- matches the re-registered project's settings.
+    registration TEXT NOT NULL DEFAULT (lower(hex(randomblob(8))))
+) WITHOUT ROWID;
+CREATE TABLE standing_roles (
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) > 0),
+    payload TEXT NOT NULL CHECK (json_type(payload) = 'object'),
+    PRIMARY KEY (project_id, name)
+) WITHOUT ROWID;
+CREATE TABLE missions (
+    project_id TEXT NOT NULL,
+    mission_id TEXT NOT NULL CHECK (length(mission_id) > 0),
+    payload TEXT NOT NULL CHECK (json_type(payload) = 'object'),
+    PRIMARY KEY (project_id, mission_id)
+) WITHOUT ROWID;
+-- A trigger is armed only by its row here; the definition stays project TOML.
+CREATE TABLE trigger_activations (
+    project_id TEXT NOT NULL,
+    trigger_id TEXT NOT NULL CHECK (length(trigger_id) > 0),
+    state TEXT NOT NULL,
+    PRIMARY KEY (project_id, trigger_id)
+) WITHOUT ROWID;
+-- Global workflow milestones; not owned by any project.
+CREATE TABLE workflow_milestones (
+    seq INTEGER PRIMARY KEY CHECK (seq >= 0),
+    milestone_id TEXT NOT NULL UNIQUE,
+    entry TEXT NOT NULL CHECK (json_type(entry) = 'object')
+);
+CREATE TABLE workflow_projection (
+    run_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (json_type(state) = 'object')
 ) WITHOUT ROWID;
 "#;
 
@@ -498,45 +551,15 @@ pub struct ReadTransaction<'a> {
 }
 
 impl ConversationDatabase {
-    /// Open or create `$SPARK_HOME/conversations.sqlite3`.
+    /// Open or create `$SPARK_HOME/state.sqlite3`.
     pub fn open(spark_home: impl AsRef<Path>) -> Result<Self> {
-        let spark_home = spark_home.as_ref();
-        std::fs::create_dir_all(spark_home)
-            .map_err(|source| StorageError::io("create directory", spark_home, source))?;
-        let path = spark_home.join(CONVERSATION_DATABASE_FILE_NAME);
-        let mut connection = Connection::open(&path)?;
-        configure(&connection, &path)?;
-
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let initialized: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_meta')",
+        let path = spark_home.as_ref().join(STATE_DATABASE_FILE_NAME);
+        let connection = open_state_database(spark_home.as_ref())?;
+        let generation = connection.query_row(
+            "SELECT generation FROM store_meta WHERE singleton = 1",
             [],
             |row| row.get(0),
         )?;
-        if !initialized {
-            tx.execute_batch(SCHEMA)?;
-            tx.execute(
-                "INSERT INTO store_meta (singleton, schema_version, generation, next_revision) \
-                 VALUES (1, ?1, ?2, 1)",
-                params![
-                    CONVERSATION_DATABASE_SCHEMA_VERSION,
-                    uuid::Uuid::new_v4().to_string()
-                ],
-            )?;
-        }
-        let (schema_version, generation): (i64, String) = tx.query_row(
-            "SELECT schema_version, generation FROM store_meta WHERE singleton = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if schema_version != CONVERSATION_DATABASE_SCHEMA_VERSION {
-            return Err(StorageError::UnsupportedConversationDatabase {
-                path,
-                found: schema_version,
-                expected: CONVERSATION_DATABASE_SCHEMA_VERSION,
-            });
-        }
-        tx.commit()?;
 
         Ok(Self {
             path,
@@ -793,6 +816,63 @@ impl ConversationDatabase {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// A configured connection to `$SPARK_HOME/state.sqlite3`, creating the
+/// database on first use and refusing any other schema version. Callers
+/// without the conversation store, including other processes, use their own
+/// short-lived connection; WAL lets them read beside the store's writer.
+pub fn open_state_database(spark_home: &Path) -> Result<Connection> {
+    std::fs::create_dir_all(spark_home)
+        .map_err(|source| StorageError::io("create directory", spark_home, source))?;
+    let path = spark_home.join(STATE_DATABASE_FILE_NAME);
+    let mut connection = Connection::open(&path)?;
+    configure(&connection, &path)?;
+    let version = |connection: &Connection| -> Result<Option<i64>> {
+        let initialized: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_meta')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !initialized {
+            return Ok(None);
+        }
+        Ok(Some(connection.query_row(
+            "SELECT schema_version FROM store_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?))
+    };
+    // Only a missing schema takes the write lock, so opening never waits on
+    // (or deadlocks against) a writer on the same thread.
+    let found = match version(&connection)? {
+        Some(found) => found,
+        None => {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if version(&tx)?.is_none() {
+                tx.execute_batch(SCHEMA)?;
+                tx.execute(
+                    "INSERT INTO store_meta (singleton, schema_version, generation, next_revision) \
+                     VALUES (1, ?1, ?2, 1)",
+                    params![
+                        STATE_DATABASE_SCHEMA_VERSION,
+                        uuid::Uuid::new_v4().to_string()
+                    ],
+                )?;
+            }
+            let found = version(&tx)?.unwrap_or_default();
+            tx.commit()?;
+            found
+        }
+    };
+    if found != STATE_DATABASE_SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedConversationDatabase {
+            path,
+            found,
+            expected: STATE_DATABASE_SCHEMA_VERSION,
+        });
+    }
+    Ok(connection)
 }
 
 /// Run a checkpoint and require it to be complete: not busy, with every WAL
@@ -1140,6 +1220,19 @@ impl WriteTransaction<'_> {
         for id in &ids {
             self.delete_conversation(id)?;
         }
+        // The project's private records go in the same commit; workflow
+        // milestones are global and stay.
+        for table in [
+            "projects",
+            "standing_roles",
+            "missions",
+            "trigger_activations",
+        ] {
+            self.tx.execute(
+                &format!("DELETE FROM {table} WHERE project_id = ?1"),
+                [&marker.project_id],
+            )?;
+        }
         self.tx.execute(
             "INSERT INTO project_deletions (project_path, project_id, phase, deletion_revision, \
              response) VALUES (?1, ?2, 'cleanup_pending', ?3, ?4) \
@@ -1307,7 +1400,7 @@ impl ReadTransaction<'_> {
         // tombstones and envelope fields, not just payloads.
         let bytes = serde_json::to_vec(&batch)
             .map_err(|source| StorageError::JsonWrite {
-                path: PathBuf::from(CONVERSATION_DATABASE_FILE_NAME),
+                path: PathBuf::from(STATE_DATABASE_FILE_NAME),
                 source,
             })?
             .len();
@@ -1697,7 +1790,7 @@ impl CheckpointedView<'_> {
 
 fn parse(payload: &str) -> Result<Value> {
     serde_json::from_str(payload).map_err(|source| StorageError::JsonRead {
-        path: PathBuf::from(CONVERSATION_DATABASE_FILE_NAME),
+        path: PathBuf::from(STATE_DATABASE_FILE_NAME),
         source,
     })
 }

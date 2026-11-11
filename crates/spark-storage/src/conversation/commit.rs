@@ -201,7 +201,9 @@ impl<'a> Op<'a> {
             }
             None if open == Open::Existing => return Err(missing(conversation_id)),
             None => {
-                store.registry().ensure_project_paths(project_path)?;
+                store
+                    .registry()
+                    .ensure_project_paths_in(connection, project_path)?;
                 let mut meta = ConversationMeta::new(conversation_id, project_path);
                 meta.created_at = now.clone();
                 meta.updated_at = now.clone();
@@ -957,14 +959,14 @@ fn parse<T: serde::de::DeserializeOwned>(
 
 pub(crate) fn parse_json(payload: &str) -> Result<Value> {
     serde_json::from_str(payload).map_err(|source| StorageError::JsonRead {
-        path: PathBuf::from(super::CONVERSATION_DATABASE_FILE_NAME),
+        path: PathBuf::from(super::STATE_DATABASE_FILE_NAME),
         source,
     })
 }
 
 pub(crate) fn to_object(value: &impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|source| StorageError::JsonWrite {
-        path: PathBuf::from(super::CONVERSATION_DATABASE_FILE_NAME),
+        path: PathBuf::from(super::STATE_DATABASE_FILE_NAME),
         source,
     })
 }

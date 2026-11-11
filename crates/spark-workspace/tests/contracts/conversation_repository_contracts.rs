@@ -231,10 +231,6 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
         .conversations_dir
         .join("conversation-settings")
         .exists());
-    assert!(!project
-        .flow_run_requests_dir
-        .join("conversation-settings.json")
-        .exists());
 
     let invalid = service
         .update_conversation_settings(

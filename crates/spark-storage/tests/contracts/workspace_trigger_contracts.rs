@@ -122,6 +122,8 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
     ] {
         definition.revision = repository.put(&definition, None).expect("write definition");
         definition.project_path = repository.project_path().to_string();
+        // Poll headers may be credentials: the shared file never holds them.
+        definition.source.remove("headers");
         assert_eq!(
             repository
                 .get(&definition.id)
@@ -316,9 +318,12 @@ fn a_failed_or_partial_write_leaves_the_original_definition_and_nothing_malforme
 }
 
 #[test]
-fn runtime_state_updates_serialize_under_a_lock_in_the_data_dir() {
+fn runtime_state_updates_serialize_in_database_transactions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
+    let paths = spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+        .ensure_project_paths(&project)
+        .unwrap();
     let states = repositories.runtime_state(&project).expect("states");
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -365,8 +370,8 @@ fn runtime_state_updates_serialize_under_a_lock_in_the_data_dir() {
         ),
         (false, Some("rotated"), Some("next"))
     );
-    // The lock lives beside the state, never among the definitions.
-    assert!(states.root_dir().join("trigger-a.json.lock").exists());
+    // Rows in the state database: no state file or lock anywhere.
+    assert!(!paths.root.join("triggers").exists());
     assert!(!org(&project).join("triggers").exists());
 }
 
@@ -455,7 +460,7 @@ fn the_same_id_in_two_projects_is_two_independent_triggers() {
     repositories
         .runtime_state(&first)
         .unwrap()
-        .update("trigger-a", |state| state.enabled = false)
+        .update("trigger-a", |state| state.enabled = true)
         .expect("state");
 
     let mut all = repositories
@@ -472,20 +477,20 @@ fn the_same_id_in_two_projects_is_two_independent_triggers() {
     expected.sort();
     assert_eq!(all, expected);
     assert!(
-        !repositories
+        repositories
             .runtime_state(&first)
             .unwrap()
             .load("trigger-a")
             .unwrap()
             .enabled
     );
-    assert!(
+    assert_eq!(
         repositories
             .runtime_state(&second)
             .unwrap()
-            .load("trigger-a")
-            .unwrap()
-            .enabled
+            .get("trigger-a")
+            .unwrap(),
+        None
     );
 }
 
@@ -605,20 +610,39 @@ fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (repositories, project) = fixture(temp.path());
     let repository = repositories.runtime_state(&project).expect("repository");
-    let project_root = spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+    let project_id = spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
         .project_paths(&project)
         .expect("project paths")
-        .root;
+        .project_id;
 
-    // Beside the project's role records, never among the definitions.
-    assert_eq!(repository.root_dir(), project_root.join("triggers"));
+    // A trigger without an activation row is inactive.
     assert_eq!(
-        repository.state_path("trigger-state").expect("state path"),
-        project_root.join("triggers/trigger-state.json")
+        repository.get("trigger-state").expect("missing state"),
+        None
     );
     let missing = repository.load("trigger-state").expect("missing state");
     assert_eq!(missing, TriggerState::default());
-    assert!(missing.enabled, "a trigger is enabled until switched off");
+    assert!(!missing.enabled, "a trigger is inactive until activated");
+    // Claims and outcomes never create a row.
+    assert_eq!(
+        repository
+            .update_existing("trigger-state", |state| state.enabled = true)
+            .expect("claim"),
+        None
+    );
+    assert_eq!(
+        repository.get("trigger-state").expect("still missing"),
+        None
+    );
+    // Only a registered project gets activation rows.
+    assert!(matches!(
+        repository.update("trigger-state", |state| state.enabled = true),
+        Err(spark_storage::StorageError::ProjectNotRegistered { .. })
+    ));
+    assert_eq!(repository.get("trigger-state").unwrap(), None);
+    spark_storage::ProjectRegistry::new(temp.path().join("spark-home"))
+        .ensure_project_paths(&project)
+        .unwrap();
 
     let saved = TriggerState {
         last_result: Some("queued".to_string()),
@@ -645,23 +669,44 @@ fn trigger_runtime_state_repository_defaults_saves_updates_and_validates_ids() {
         updated
     );
 
-    let partial_path = repository
-        .state_path("trigger-partial")
-        .expect("partial path");
-    std::fs::write(&partial_path, r#"{"last_result":"completed"}"#).expect("write partial");
+    let raw = rusqlite::Connection::open(
+        temp.path()
+            .join("spark-home")
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    let insert = |trigger_id: &str, state: &str| {
+        raw.execute(
+            "INSERT INTO trigger_activations (project_id, trigger_id, state) VALUES (?1, ?2, ?3)",
+            [project_id.as_str(), trigger_id, state],
+        )
+        .unwrap();
+    };
+    insert("trigger-partial", r#"{"last_result":"completed"}"#);
     let partial = repository.load("trigger-partial").expect("load partial");
     assert_eq!(partial.last_result.as_deref(), Some("completed"));
-    assert!(partial.enabled);
+    assert!(!partial.enabled);
     assert!(partial.recent_history.is_empty());
+    // Malformed private state is an error, never an inactive default.
+    insert("trigger-malformed", "not json");
+    for result in [
+        repository.load("trigger-malformed").map(drop),
+        repository.update("trigger-malformed", |_| {}).map(drop),
+    ] {
+        assert!(
+            matches!(result, Err(StorageError::JsonRead { .. })),
+            "{result:?}"
+        );
+    }
 
     assert!(matches!(
-        repository.state_path("bad/name"),
+        repository.get("bad/name"),
         Err(StorageError::InvalidRepositoryPath { .. })
     ));
     repository.delete("trigger-state").expect("delete state");
     assert_eq!(
-        repository.load("trigger-state").expect("deleted state"),
-        TriggerState::default()
+        repository.get("trigger-state").expect("deleted state"),
+        None
     );
 }
 

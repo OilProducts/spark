@@ -203,22 +203,19 @@ fn project_operational_writer_child() {
 }
 
 #[test]
-fn project_operational_updates_read_under_the_settings_document_lock() {
-    use fs2::FileExt;
+fn project_operational_updates_wait_for_a_concurrent_settings_transaction() {
     use std::time::{Duration, Instant};
     let root = tempfile::tempdir().unwrap();
     let registry = spark_storage::ProjectRegistry::new(root.path());
     registry.register_project("/projects/locked").unwrap();
-    let path = registry
-        .project_paths("/projects/locked")
-        .unwrap()
-        .project_file;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path.with_extension("toml.lock"))
+    let mut connection = rusqlite::Connection::open(
+        root.path()
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();
-    lock.lock_exclusive().unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "project_operational_writer_child", "--nocapture"])
         .env("SPARK_TEST_PROJECT_LOCK_HOME", root.path())
@@ -232,12 +229,15 @@ fn project_operational_updates_read_under_the_settings_document_lock() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(
         child.try_wait().unwrap().is_none(),
-        "writer bypassed document lock"
+        "writer bypassed the database write lock"
     );
-    let mut text = fs::read_to_string(&path).unwrap();
-    text.push_str("execution_profile_id = 'new-profile'\n[model_settings]\nprovider = 'openai'\n[extension]\nkeep = true\n");
-    spark_storage::write_text_atomic(&path, text).unwrap();
-    drop(lock);
+    tx.execute(
+        "UPDATE projects SET execution_profile_id = 'new-profile', \
+         model_settings = '{\"provider\":\"openai\"}'",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
     assert!(child.wait().unwrap().success());
     let record = registry
         .read_project_record("/projects/locked")
@@ -245,12 +245,13 @@ fn project_operational_updates_read_under_the_settings_document_lock() {
         .unwrap();
     assert!(record.is_favorite);
     assert_eq!(record.execution_profile_id.as_deref(), Some("new-profile"));
-    let document = read_settings_document(&path).unwrap();
     assert_eq!(
-        document.values["model_settings"]["provider"].as_str(),
-        Some("openai")
+        registry
+            .project_settings("/projects/locked")
+            .unwrap()
+            .model_settings,
+        Some(serde_json::json!({"provider": "openai"}))
     );
-    assert_eq!(document.values["extension"]["keep"].as_bool(), Some(true));
 }
 
 #[test]

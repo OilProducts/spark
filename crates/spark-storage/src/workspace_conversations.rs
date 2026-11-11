@@ -515,29 +515,6 @@ impl ConversationRepository {
         if let Err(error) = cleanup {
             eprintln!("Unable to remove deleted conversation {conversation_id}: {error}");
         }
-        for path in [
-            project_paths
-                .flow_run_requests_dir
-                .join(format!("{conversation_id}.json")),
-            project_paths
-                .flow_launches_dir
-                .join(format!("{conversation_id}.json")),
-            project_paths
-                .proposed_plans_dir
-                .join(format!("{conversation_id}.json")),
-        ] {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(source) => {
-                    return Err(StorageError::io(
-                        "delete conversation sidecar",
-                        path,
-                        source,
-                    ))
-                }
-            }
-        }
         Ok(())
     }
 

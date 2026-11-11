@@ -1,11 +1,13 @@
 use serde_json::{Map, Value};
 use spark_common::settings::SparkSettings;
+use spark_storage::workspace_records::RecordRepository;
 use spark_storage::{ConversationStore, TriggerRepositories};
 use spark_triggers::{
     SerializedTrigger, TriggerActivationOutcome, TriggerActivationRequest, TriggerActivationSink,
-    TriggerActivationSinkOutcome, TriggerCreateRequest, TriggerDeleteResponse, TriggerService,
-    TriggerSourceRuntime, TriggerUpdateRequest, WebhookDispatchOutcome, WebhookHandleRequest,
-    WebhookHandleResponse, TERMINAL_PIPELINE_STATUSES,
+    TriggerActivationSinkOutcome, TriggerCreateRequest, TriggerDefinition, TriggerDeleteResponse,
+    TriggerError, TriggerService, TriggerSourceRuntime, TriggerUpdateRequest,
+    WebhookDispatchOutcome, WebhookHandleRequest, WebhookHandleResponse,
+    TERMINAL_PIPELINE_STATUSES,
 };
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -58,10 +60,12 @@ impl WorkspaceTriggerService {
             .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".to_string()))
     }
 
-    /// Creates the trigger in a registered project's definitions.
+    /// Creates the trigger in a registered project's definitions. The
+    /// definition is saved first; `enabled` then activates it, and a failed
+    /// activation leaves it inactive with `state.activation_error`.
     pub fn create_trigger(
         &self,
-        request: TriggerCreateRequest,
+        mut request: TriggerCreateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
         if spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
             .read_project_record(&request.project_path)?
@@ -71,47 +75,57 @@ impl WorkspaceTriggerService {
                 "Triggers are created in a registered project.".into(),
             ));
         }
-        let action = spark_storage::normalize_trigger_action_payload(&request.action)?;
-        let project_path = request.project_path.clone();
-        self.with_validated_action(&project_path, &action, || {
-            TriggerService::new(self.settings.clone())
-                .create_trigger(request)
-                .map_err(Into::into)
-        })
+        let enabled = std::mem::replace(&mut request.enabled, false);
+        let created = TriggerService::new(self.settings.clone()).create_trigger(request)?;
+        if !enabled {
+            return Ok(created);
+        }
+        let mut trigger = self.activate_trigger(&created.project_path, &created.id)?;
+        trigger.webhook_secret = created.webhook_secret.or(trigger.webhook_secret);
+        Ok(trigger)
     }
 
+    /// `enabled: true` revalidates and activates the trigger as updated.
     pub fn update_trigger(
         &self,
         project_path: &str,
         trigger_id: &str,
-        request: TriggerUpdateRequest,
+        mut request: TriggerUpdateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
-        let existing = TriggerRepositories::from_settings(&self.settings)
-            .definitions(project_path)?
-            .get(trigger_id)?
-            .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".into()))?;
-        let mut action = serde_json::to_value(&existing.action)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .clone();
-        if let Some(update) = &request.action {
-            action.extend(update.clone());
+        let activate = request.enabled == Some(true);
+        if activate {
+            request.enabled = None;
         }
-        let action = spark_storage::normalize_trigger_action_payload(&action)?;
-        if action.mode == "static"
-            && request
-                .action
-                .as_ref()
-                .is_none_or(|a| !a.contains_key("flow_name"))
-        {
-            return TriggerService::new(self.settings.clone())
-                .update_trigger(project_path, trigger_id, request)
-                .map_err(Into::into);
+        let updated = TriggerService::new(self.settings.clone()).update_trigger(
+            project_path,
+            trigger_id,
+            request,
+        )?;
+        if !activate {
+            return Ok(updated);
         }
-        self.with_validated_action(project_path, &action, || {
+        let mut trigger = self.activate_trigger(&updated.project_path, trigger_id)?;
+        trigger.webhook_secret = updated.webhook_secret.or(trigger.webhook_secret);
+        Ok(trigger)
+    }
+
+    /// Explicitly activates a trigger after validating its effective
+    /// execution profile and its target in the trigger's project. Held under
+    /// the project's mission lock, so a mission closing meanwhile either
+    /// sees the activation or rejects it.
+    pub fn activate_trigger(
+        &self,
+        project_path: &str,
+        trigger_id: &str,
+    ) -> WorkspaceResult<SerializedTrigger> {
+        let project = spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
+            .project_paths(project_path)?;
+        RecordRepository::missions(&self.settings.data_dir, &project.project_id).locked(|_| {
             TriggerService::new(self.settings.clone())
-                .update_trigger(project_path, trigger_id, request)
+                .activate_trigger_with(&project.project_path, trigger_id, |definition| {
+                    self.validate_activation(definition)
+                        .map_err(|error| TriggerError::Validation(error.detail()))
+                })
                 .map_err(Into::into)
         })
     }
@@ -151,11 +165,18 @@ impl WorkspaceTriggerService {
             .map_err(Into::into)
     }
 
+    /// One background tick: the activations it ran and what its
+    /// reconciliation could not read.
     pub async fn process_due_trigger_sources(
         &self,
-    ) -> WorkspaceResult<Vec<TriggerActivationOutcome>> {
-        self.process_due_trigger_sources_at(OffsetDateTime::now_utc())
+    ) -> WorkspaceResult<(
+        Vec<TriggerActivationOutcome>,
+        Vec<spark_storage::TriggerIssue>,
+    )> {
+        self.source_runtime()
+            .process_due_sources_reporting(OffsetDateTime::now_utc())
             .await
+            .map_err(Into::into)
     }
 
     pub async fn process_due_trigger_sources_at(
@@ -220,39 +241,20 @@ impl WorkspaceTriggerService {
         ]))
     }
 
-    /// Validates the action's target in the trigger's project.
-    fn with_validated_action<T>(
-        &self,
-        project_path: &str,
-        action: &spark_storage::TriggerAction,
-        work: impl FnOnce() -> WorkspaceResult<T>,
-    ) -> WorkspaceResult<T> {
-        if action.mode == "mission" {
-            // Serialize target validation and persistence with mission closure.
-            let scope = spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
-                .ensure_project_paths(project_path)?;
-            spark_storage::workspace_records::RecordRepository::missions(&scope.root)
-                .locked::<_, WorkspaceError>(|_| {
-                    self.validate_action(project_path, action)?;
-                    work()
-                })
-        } else {
-            self.validate_action(project_path, action)?;
-            work()
-        }
-    }
-
-    fn validate_action(
-        &self,
-        project_path: &str,
-        action: &spark_storage::TriggerAction,
-    ) -> WorkspaceResult<()> {
+    /// The checks an activation runs: the action's target in the trigger's
+    /// project, and the execution profile a flow launch would use.
+    fn validate_activation(&self, definition: &TriggerDefinition) -> WorkspaceResult<()> {
+        let project_path = definition.project_path.as_str();
+        let action = &definition.action;
         if action.mode == "mission" {
             let mission = crate::missions::WorkspaceMissionService::new(
                 self.settings.clone(),
                 self.store.clone(),
             )
-            .get(project_path, action.mission_id.as_deref().unwrap())?;
+            .get(
+                project_path,
+                action.mission_id.as_deref().unwrap_or_default(),
+            )?;
             if mission.closed.is_some() {
                 return Err(WorkspaceError::Validation("Mission is closed".into()));
             }
@@ -260,13 +262,42 @@ impl WorkspaceTriggerService {
             crate::roles::role_file(
                 &self.settings,
                 project_path,
-                action.role.as_deref().unwrap(),
+                action.role.as_deref().unwrap_or_default(),
             )?;
-        } else if action.mode == "static" {
+        } else {
             WorkspaceFlowService::new(self.settings.clone())
                 .ensure_flow_exists(&action.flow_name, Some(project_path))?;
+            let project_default =
+                spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
+                    .project_settings(project_path)?
+                    .execution_profile_id;
+            attractor_execution::resolve_execution_profile_by_id(
+                &self.settings,
+                action.execution_profile_id.as_deref(),
+                project_default.as_deref(),
+                None,
+            )
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Reconciles every registered project's triggers with their activation
+    /// rows, returning what could not be read.
+    pub fn reconcile_triggers(&self) -> WorkspaceResult<Vec<spark_storage::TriggerIssue>> {
+        TriggerService::new(self.settings.clone())
+            .reconcile()
+            .map_err(Into::into)
+    }
+
+    /// The definitions that cannot run; reads only.
+    pub fn trigger_issues(
+        &self,
+        project_path: Option<&str>,
+    ) -> WorkspaceResult<Vec<spark_storage::TriggerIssue>> {
+        TriggerService::new(self.settings.clone())
+            .trigger_issues(project_path)
+            .map_err(Into::into)
     }
 
     fn source_runtime(&self) -> TriggerSourceRuntime {

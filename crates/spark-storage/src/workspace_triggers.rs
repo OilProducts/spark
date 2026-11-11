@@ -11,13 +11,17 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use toml::Value as TomlValue;
 
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+
+use crate::conversation::{open_state_database, STATE_DATABASE_FILE_NAME};
 use crate::error::{Result, StorageError};
-use crate::{write_json_atomic, JsonWriteOptions, ProjectRegistry};
+use crate::ProjectRegistry;
 
 const SOURCE_SCHEDULE: &str = "schedule";
 const SOURCE_POLL: &str = "poll";
 const SOURCE_WEBHOOK: &str = "webhook";
 const SOURCE_FLOW_EVENT: &str = "flow_event";
+const POLL_HEADERS: &str = "headers";
 const ACTION_MODE_STATIC: &str = "static";
 const WEEKDAY_ORDER: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const TERMINAL_PIPELINE_STATUSES: &[&str] = &[
@@ -74,11 +78,23 @@ pub struct TriggerDefinition {
     pub updated_at: String,
 }
 
-/// A trigger's runtime state, kept by Spark beside the project's records.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A trigger's private activation state, in the state database. A missing
+/// row means inactive; only an explicit activation arms a trigger, for the
+/// definition content its `fingerprint` names.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TriggerState {
-    #[serde(default = "default_enabled")]
+    #[serde(default)]
     pub enabled: bool,
+    /// [`definition_fingerprint`] of the definition the activation validated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// The mission a `mission` action delivers to: an installation-local
+    /// binding, never written to the shared definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_id: Option<String>,
+    /// Why the last activation attempt left the trigger inactive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_error: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default)]
@@ -94,30 +110,57 @@ pub struct TriggerState {
     pub webhook_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_hash: Option<String>,
+    /// A poll source's request headers, which may carry credentials, so
+    /// they bind here and never enter the shared definition.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub poll_headers: Map<String, Value>,
     /// `<run id>:<status>` keys of the flow events this trigger already fired
     /// for, newest last, so a re-published terminal run fires it only once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flow_event_deliveries: Vec<String>,
 }
 
-impl Default for TriggerState {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            last_error: None,
-            last_fired_at: None,
-            last_result: None,
-            next_run_at: None,
-            recent_history: Vec::new(),
-            webhook_key: None,
-            secret_hash: None,
-            flow_event_deliveries: Vec::new(),
+impl TriggerState {
+    /// Armed for exactly this definition's operational content.
+    pub fn is_active_for(&self, definition: &TriggerDefinition) -> bool {
+        self.enabled && self.fingerprint.as_deref() == Some(&definition_fingerprint(definition))
+    }
+
+    /// `definition` with this state's private bindings applied.
+    pub fn bind(&self, mut definition: TriggerDefinition) -> TriggerDefinition {
+        if definition.action.mode == "mission" {
+            definition.action.mission_id = self.mission_id.clone();
         }
+        if definition.source_type == SOURCE_POLL {
+            definition.source.insert(
+                POLL_HEADERS.into(),
+                Value::Object(self.poll_headers.clone()),
+            );
+        }
+        definition
     }
 }
 
-fn default_enabled() -> bool {
-    true
+/// Why an active trigger whose operational content changed was disarmed.
+pub const DEFINITION_CHANGED: &str =
+    "The definition's source or action changed; activate it again.";
+
+/// Identifies the operational content of a definition (its source and
+/// action, including the execution profile); descriptive fields and private
+/// bindings are excluded.
+pub fn definition_fingerprint(definition: &TriggerDefinition) -> String {
+    let action = TriggerAction {
+        mission_id: None,
+        ..definition.action.clone()
+    };
+    let mut source = definition.source.clone();
+    source.remove(POLL_HEADERS);
+    let content = serde_json::json!({
+        "source_type": definition.source_type,
+        "source": source,
+        "action": action,
+    });
+    format!("{:x}", Sha1::digest(content.to_string().as_bytes()))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,28 +196,52 @@ impl TriggerDefinitionRepository {
         Ok(self.root_dir().join(format!("{id}.toml")))
     }
 
+    /// The readable definitions; [`TriggerRepositories::reconcile_project`]
+    /// reports the others.
     pub fn list(&self) -> Result<Vec<TriggerDefinition>> {
-        let root = self.root_dir();
-        let mut paths = match fs::read_dir(&root) {
-            Ok(entries) => entries
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
-                .collect::<Vec<_>>(),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(source) => return Err(StorageError::io("list trigger definitions", &root, source)),
-        };
-        paths.sort();
         let mut definitions = Vec::new();
-        for path in paths {
-            let Some(trigger_id) = path.file_stem().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            match self.get(trigger_id) {
-                Ok(Some(definition)) => definitions.push(definition),
-                Ok(None) | Err(_) => {}
+        for trigger_id in self.definition_names()? {
+            if let Ok(Some(definition)) = self.get(&trigger_id) {
+                definitions.push(definition);
             }
         }
         Ok(definitions)
+    }
+
+    /// The stems of the `.toml` files among the definitions, sorted,
+    /// without parsing them. A missing directory holds none; any other
+    /// listing failure is an error, never an empty listing.
+    pub fn definition_names(&self) -> Result<Vec<String>> {
+        let root = self.root_dir();
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => return Err(StorageError::io("list trigger definitions", &root, source)),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let path = entry
+                .map_err(|source| StorageError::io("list trigger definitions", &root, source))?
+                .path();
+            if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+                names.push(stem.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// Whether the definition's file exists; an unreadable answer is an error.
+    pub fn definition_present(&self, trigger_id: &str) -> Result<bool> {
+        let path = self.definition_path(trigger_id)?;
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Ok(true),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(StorageError::io("read trigger definition", &path, source)),
+        }
     }
 
     pub fn get(&self, trigger_id: &str) -> Result<Option<TriggerDefinition>> {
@@ -202,11 +269,9 @@ impl TriggerDefinitionRepository {
     /// Writes the definition and returns its new revision. `_message`
     /// describes the change; nothing records it.
     pub fn put(&self, definition: &TriggerDefinition, _message: Option<&str>) -> Result<String> {
+        // Profile references are checked on activation and dispatch; a
+        // definition naming a missing profile is still saved, inactive.
         let _references = crate::settings::lock_profile_references(&self.config_dir)?;
-        crate::settings::validate_profile_references(
-            &self.config_dir,
-            &serde_json::json!(definition.action),
-        )?;
         let path = self.definition_path(&definition.id)?;
         let _lock = self.lock(&definition.id)?;
         let current = crate::settings::read_settings_document(&path)?;
@@ -221,7 +286,7 @@ impl TriggerDefinitionRepository {
         let payload: toml::Table = toml::from_str(&trigger_definition_toml(definition))
             .map_err(|_| invalid_trigger(&path, "Invalid trigger TOML."))?;
         // Written as normalized, which drops anything the file never holds,
-        // such as webhook credentials.
+        // such as webhook credentials and poll headers.
         let text =
             trigger_definition_toml(&parse_trigger_definition(&definition.id, &payload, &path)?);
         fs::create_dir_all(self.root_dir())
@@ -288,71 +353,145 @@ impl TriggerDefinitionRepository {
     }
 }
 
-/// One project's trigger runtime state, at
-/// `<data>/workspace/projects/<project id>/triggers/<id>.json`.
+/// One project's trigger activation rows.
 #[derive(Debug, Clone)]
 pub struct TriggerRuntimeStateRepository {
-    root: PathBuf,
+    home: PathBuf,
+    project_id: String,
 }
 
 impl TriggerRuntimeStateRepository {
-    pub fn root_dir(&self) -> &Path {
-        &self.root
+    fn connection(&self) -> Result<Connection> {
+        open_state_database(&self.home)
     }
 
-    pub fn state_path(&self, trigger_id: &str) -> Result<PathBuf> {
+    fn read_in(&self, connection: &Connection, trigger_id: &str) -> Result<Option<TriggerState>> {
         let id = validate_trigger_id(trigger_id)?;
-        Ok(self.root.join(format!("{id}.json")))
+        let text: Option<String> = connection
+            .query_row(
+                "SELECT state FROM trigger_activations WHERE project_id = ?1 AND trigger_id = ?2",
+                params![self.project_id, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        text.map(|text| self.parse(&text)).transpose()
     }
 
+    /// Malformed private state is an error, never an inactive default.
+    fn parse(&self, text: &str) -> Result<TriggerState> {
+        serde_json::from_str(text).map_err(|source| StorageError::JsonRead {
+            path: self.home.join(STATE_DATABASE_FILE_NAME),
+            source,
+        })
+    }
+
+    fn write_in(
+        &self,
+        connection: &Connection,
+        trigger_id: &str,
+        state: &TriggerState,
+    ) -> Result<()> {
+        let text = serde_json::to_string(state).map_err(|source| StorageError::JsonWrite {
+            path: self.home.join(STATE_DATABASE_FILE_NAME),
+            source,
+        })?;
+        connection.execute(
+            "INSERT INTO trigger_activations (project_id, trigger_id, state) VALUES (?1, ?2, ?3) \
+             ON CONFLICT DO UPDATE SET state = excluded.state",
+            params![self.project_id, trigger_id, text],
+        )?;
+        Ok(())
+    }
+
+    /// The stored state, or `None` when the trigger has no activation row.
+    pub fn get(&self, trigger_id: &str) -> Result<Option<TriggerState>> {
+        self.read_in(&self.connection()?, trigger_id)
+    }
+
+    /// The stored state; a trigger without a row is inactive.
     pub fn load(&self, trigger_id: &str) -> Result<TriggerState> {
-        let path = self.state_path(trigger_id)?;
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(TriggerState::default())
-            }
-            Err(source) => return Err(StorageError::io("read trigger state", &path, source)),
-        };
-        serde_json::from_str(&text).or_else(|_| Ok(TriggerState::default()))
+        Ok(self.get(trigger_id)?.unwrap_or_default())
     }
 
     /// Replaces the whole state. Writers that change part of it use
     /// [`Self::update`], so they never save a stale snapshot.
-    pub fn save(&self, trigger_id: &str, state: &TriggerState) -> Result<PathBuf> {
-        let path = self.state_path(trigger_id)?;
-        let _lock = crate::settings::lock_document(&path)?;
-        write_json_atomic(&path, state, JsonWriteOptions::default())?;
-        Ok(path)
+    pub fn save(&self, trigger_id: &str, state: &TriggerState) -> Result<()> {
+        self.update(trigger_id, |current| *current = state.clone())
+            .map(|_| ())
     }
 
-    /// Reads, changes and writes the state under its lock (beside the state
-    /// file, in Spark's data directory), so concurrent writers serialize.
+    /// Reads, changes and writes the state (creating the row) in one
+    /// immediate transaction, so concurrent writers serialize.
     pub fn update<F>(&self, trigger_id: &str, update: F) -> Result<TriggerState>
     where
         F: FnOnce(&mut TriggerState),
     {
-        let path = self.state_path(trigger_id)?;
-        let _lock = crate::settings::lock_document(&path)?;
-        let mut state = self.load(trigger_id)?;
-        update(&mut state);
-        write_json_atomic(&path, &state, JsonWriteOptions::default())?;
-        Ok(state)
+        self.transact(trigger_id, true, update)
+            .map(Option::unwrap_or_default)
     }
 
+    /// [`Self::update`] of an existing row only: claims and outcomes, which
+    /// must never recreate an activation removed meanwhile.
+    pub fn update_existing<F>(&self, trigger_id: &str, update: F) -> Result<Option<TriggerState>>
+    where
+        F: FnOnce(&mut TriggerState),
+    {
+        self.transact(trigger_id, false, update)
+    }
+
+    fn transact<F>(&self, trigger_id: &str, create: bool, update: F) -> Result<Option<TriggerState>>
+    where
+        F: FnOnce(&mut TriggerState),
+    {
+        let id = validate_trigger_id(trigger_id)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Project removal deletes existing rows in its own transaction, so
+        // only a new row needs the registration check.
+        let mut state = match self.read_in(&tx, id)? {
+            Some(state) => state,
+            None if create => {
+                crate::workspace_projects::require_registered(&tx, &self.project_id)?;
+                TriggerState::default()
+            }
+            None => return Ok(None),
+        };
+        update(&mut state);
+        self.write_in(&tx, id, &state)?;
+        tx.commit()?;
+        Ok(Some(state))
+    }
+
+    /// Deletes the activation, its credentials and its delivery claims.
     pub fn delete(&self, trigger_id: &str) -> Result<()> {
-        let path = self.state_path(trigger_id)?;
-        let _lock = crate::settings::lock_document(&path)?;
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(StorageError::io("delete trigger state", &path, source)),
-        }
+        let id = validate_trigger_id(trigger_id)?;
+        self.connection()?.execute(
+            "DELETE FROM trigger_activations WHERE project_id = ?1 AND trigger_id = ?2",
+            params![self.project_id, id],
+        )?;
+        Ok(())
     }
 }
 
-/// Triggers across projects: each project's definitions under .spark/definitions and
-/// their runtime state under Spark's data directory.
+/// A definition that cannot run, or a project whose definitions could not
+/// be listed. Neither is evidence that anything was removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TriggerIssue {
+    pub project_path: String,
+    pub trigger_id: Option<String>,
+    pub error: String,
+}
+
+/// One reconciliation pass: the readable definitions, and what could not
+/// be read.
+#[derive(Debug, Clone, Default)]
+pub struct TriggerReconciliation {
+    pub definitions: Vec<TriggerDefinition>,
+    pub issues: Vec<TriggerIssue>,
+}
+
+/// Triggers across projects: each project's definitions under
+/// `.spark/definitions` and their activation rows in the state database.
 #[derive(Debug, Clone)]
 pub struct TriggerRepositories {
     config_dir: PathBuf,
@@ -371,32 +510,194 @@ impl TriggerRepositories {
         Self::new(settings.config_dir.clone(), settings.data_dir.clone())
     }
 
-    fn state_root(&self, project_path: &str) -> Result<(String, PathBuf)> {
-        let paths = ProjectRegistry::new(self.data_dir.clone()).project_paths(project_path)?;
-        Ok((paths.project_path, paths.root.join("triggers")))
-    }
-
     pub fn definitions(&self, project_path: &str) -> Result<TriggerDefinitionRepository> {
-        let (project_path, lock_dir) = self.state_root(project_path)?;
+        let paths = ProjectRegistry::new(self.data_dir.clone()).project_paths(project_path)?;
         Ok(TriggerDefinitionRepository {
             config_dir: self.config_dir.clone(),
-            project_path,
-            lock_dir,
+            project_path: paths.project_path,
+            // Revision locks of the authored definitions. Kept outside the
+            // project root that removal deletes, so a definition write racing
+            // a removal neither blocks its cleanup nor recreates the root.
+            lock_dir: self.data_dir.join("locks/triggers").join(&paths.project_id),
         })
     }
 
     pub fn runtime_state(&self, project_path: &str) -> Result<TriggerRuntimeStateRepository> {
-        let (_, root) = self.state_root(project_path)?;
-        Ok(TriggerRuntimeStateRepository { root })
+        let paths = ProjectRegistry::new(self.data_dir.clone()).project_paths(project_path)?;
+        Ok(TriggerRuntimeStateRepository {
+            home: self.data_dir.clone(),
+            project_id: paths.project_id,
+        })
     }
 
-    /// Every registered project's trigger definitions.
+    /// Every registered project's readable trigger definitions.
     pub fn list_all(&self) -> Result<Vec<TriggerDefinition>> {
         let mut definitions = Vec::new();
         for project in ProjectRegistry::new(self.data_dir.clone()).list_project_records()? {
             definitions.extend(self.definitions(&project.project_path)?.list()?);
         }
         Ok(definitions)
+    }
+
+    /// The project and trigger whose webhook key is `webhook_key`.
+    pub fn find_webhook_key(&self, webhook_key: &str) -> Result<Option<(String, String)>> {
+        let connection = open_state_database(&self.data_dir)?;
+        Ok(connection
+            .query_row(
+                "SELECT p.project_path, t.trigger_id FROM trigger_activations t \
+                 JOIN projects p ON p.project_id = t.project_id \
+                 WHERE json_valid(t.state) AND json_extract(t.state, '$.webhook_key') = ?1",
+                [webhook_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Reconciles every registered project; see [`Self::reconcile_project`].
+    pub fn reconcile(&self) -> Result<TriggerReconciliation> {
+        let mut all = TriggerReconciliation::default();
+        for project in ProjectRegistry::new(self.data_dir.clone()).list_project_records()? {
+            let project = self.reconcile_project(&project.project_path)?;
+            all.definitions.extend(project.definitions);
+            all.issues.extend(project.issues);
+        }
+        Ok(all)
+    }
+
+    /// Compares a project's definition files with its activation rows. A
+    /// successful listing without a definition's file deletes its row
+    /// (activation, credentials and delivery claims); an active row whose
+    /// definition's operational content changed is deactivated. An
+    /// unavailable project or unlistable directory changes nothing, and an
+    /// unreadable or invalid definition is reported, keeping its row.
+    pub fn reconcile_project(&self, project_path: &str) -> Result<TriggerReconciliation> {
+        let repository = self.definitions(project_path)?;
+        let result = Self::scan(&repository);
+        if result.issues.iter().any(|issue| issue.trigger_id.is_none()) {
+            return Ok(result);
+        }
+        self.reconcile_rows(&repository, result)
+    }
+
+    /// The definitions that cannot run in `project_path`, or in every
+    /// registered project, and the projects whose definitions could not be
+    /// listed. Reads only.
+    pub fn issues(&self, project_path: Option<&str>) -> Result<Vec<TriggerIssue>> {
+        let projects = match project_path {
+            Some(path) => vec![path.to_string()],
+            None => ProjectRegistry::new(self.data_dir.clone())
+                .list_project_records()?
+                .into_iter()
+                .map(|project| project.project_path)
+                .collect(),
+        };
+        let mut issues = Vec::new();
+        for project in projects {
+            issues.extend(Self::scan(&self.definitions(&project)?).issues);
+        }
+        Ok(issues)
+    }
+
+    /// Reads a project's definitions, reporting what cannot be read.
+    fn scan(repository: &TriggerDefinitionRepository) -> TriggerReconciliation {
+        let project_path = repository.project_path.clone();
+        let issue = |trigger_id: Option<&str>, error: String| TriggerIssue {
+            project_path: project_path.clone(),
+            trigger_id: trigger_id.map(str::to_string),
+            error,
+        };
+        let mut result = TriggerReconciliation::default();
+        if !Path::new(&project_path).is_dir() {
+            result
+                .issues
+                .push(issue(None, "Project folder is unavailable.".into()));
+            return result;
+        }
+        let names = match repository.definition_names() {
+            Ok(names) => names,
+            Err(error) => {
+                result.issues.push(issue(None, error.to_string()));
+                return result;
+            }
+        };
+        for name in &names {
+            match repository.get(name) {
+                Ok(Some(definition)) => result.definitions.push(definition),
+                Ok(None) => {}
+                Err(error) => result.issues.push(issue(Some(name), error.to_string())),
+            }
+        }
+        result
+    }
+
+    /// Deletes the rows of definitions confirmed removed and deactivates
+    /// rows whose definition's operational content changed.
+    fn reconcile_rows(
+        &self,
+        repository: &TriggerDefinitionRepository,
+        mut result: TriggerReconciliation,
+    ) -> Result<TriggerReconciliation> {
+        let project_path = repository.project_path.clone();
+        let issue = |trigger_id: Option<&str>, error: String| TriggerIssue {
+            project_path: project_path.clone(),
+            trigger_id: trigger_id.map(str::to_string),
+            error,
+        };
+        let states = self.runtime_state(&project_path)?;
+        let mut connection = states.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = {
+            let mut statement =
+                tx.prepare("SELECT trigger_id FROM trigger_activations WHERE project_id = ?1")?;
+            let rows = statement
+                .query_map([&states.project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for trigger_id in rows {
+            // Rechecked under the write lock: a definition written after the
+            // listing, before its row, exists by now.
+            let present = match validate_trigger_id(&trigger_id) {
+                Ok(_) => repository.definition_present(&trigger_id),
+                Err(_) => Ok(false),
+            };
+            match present {
+                Ok(false) => {
+                    tx.execute(
+                        "DELETE FROM trigger_activations WHERE project_id = ?1 AND trigger_id = ?2",
+                        params![states.project_id, trigger_id],
+                    )?;
+                    continue;
+                }
+                Ok(true) => {}
+                Err(error) => {
+                    result
+                        .issues
+                        .push(issue(Some(&trigger_id), error.to_string()));
+                    continue;
+                }
+            }
+            let Ok(Some(definition)) = repository.get(&trigger_id) else {
+                continue;
+            };
+            // Malformed state is that trigger's error, never an inactive default.
+            let mut state = match states.read_in(&tx, &trigger_id) {
+                Ok(state) => state.unwrap_or_default(),
+                Err(error) => {
+                    result
+                        .issues
+                        .push(issue(Some(&trigger_id), error.to_string()));
+                    continue;
+                }
+            };
+            if state.enabled && !state.is_active_for(&definition) {
+                state.enabled = false;
+                state.activation_error = Some(DEFINITION_CHANGED.into());
+                states.write_in(&tx, &trigger_id, &state)?;
+            }
+        }
+        tx.commit()?;
+        Ok(result)
     }
 }
 
@@ -434,15 +735,20 @@ fn parse_trigger_definition(
                 "Trigger definition must include [action] and [source] sections.",
             )
         })?;
-    let action = normalize_trigger_action_payload_at(&parse_action_payload(action_payload), path)?;
+    let mut action =
+        normalize_trigger_action_payload_at(&parse_action_payload(action_payload), path)?;
+    // The shared file never binds a mission; the activation row does.
+    action.mission_id = None;
     let source_type = toml_scalar_to_string(payload.get("source_type"))
         .trim()
         .to_string();
-    let source = normalize_trigger_source_payload_at(
+    let mut source = normalize_trigger_source_payload_at(
         &source_type,
         &parse_source(source_payload, path)?,
         path,
     )?;
+    // Nor does it hold poll headers, which may be credentials.
+    source.remove(POLL_HEADERS);
     Ok(TriggerDefinition {
         revision: String::new(),
         project_path: String::new(),
@@ -523,9 +829,8 @@ fn normalize_trigger_action_payload_at(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
-    if mode == "mission" && mission_id.is_none() {
-        return Err(invalid_trigger(path, "Mission actions require mission_id."));
-    }
+    // A mission is a private activation binding: optional here, required
+    // to activate.
     let role = payload
         .get("role")
         .and_then(Value::as_str)
@@ -860,9 +1165,6 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
     ];
     if definition.action.mode != ACTION_MODE_STATIC {
         lines.push(format!("mode = {}", toml_string(&definition.action.mode)));
-    }
-    if let Some(id) = &definition.action.mission_id {
-        lines.push(format!("mission_id = {}", toml_string(id)));
     }
     if let Some(role) = &definition.action.role {
         lines.push(format!("role = {}", toml_string(role)));

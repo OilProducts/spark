@@ -41,13 +41,17 @@ enabled = false
         .expect("register");
     assert_eq!(record.execution_profile_id.as_deref(), Some("native-dev"));
 
-    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
-    let paths = registry.ensure_project_paths(&record.project_path).unwrap();
-    let text = fs::read_to_string(&paths.project_file).unwrap().replace(
-        &format!("last_opened_at = \"{}\"", record.last_opened_at),
-        "last_opened_at = \"2001-01-01T00:00:00Z\"",
-    );
-    fs::write(&paths.project_file, text).unwrap();
+    rusqlite::Connection::open(
+        settings
+            .data_dir
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap()
+    .execute(
+        "UPDATE projects SET last_opened_at = '2001-01-01T00:00:00Z' WHERE project_path = ?1",
+        [&record.project_path],
+    )
+    .unwrap();
     let updated = service
         .update_project_state(
             &crate::shared_store(&settings.data_dir),

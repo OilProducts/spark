@@ -128,8 +128,7 @@ fn service_crud_writes_definitions_and_keeps_enabled_in_state() {
         definition_path,
         org.join(format!("triggers/{}.toml", created.id))
     );
-    let state_path = states.state_path(&created.id).unwrap();
-    assert!(state_path.exists());
+    assert!(states.get(&created.id).unwrap().is_some());
     assert!(!created.enabled);
     assert!(!states.load(&created.id).unwrap().enabled);
 
@@ -178,8 +177,40 @@ fn service_crud_writes_definitions_and_keeps_enabled_in_state() {
         .delete_trigger(&project, &created.id, &renamed.revision, None)
         .expect("delete trigger");
     assert!(definitions.get(&created.id).unwrap().is_none());
-    assert!(!state_path.exists());
+    assert_eq!(states.get(&created.id).unwrap(), None);
     assert_eq!(std::fs::read_dir(org.join("triggers")).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_delete_whose_file_removal_fails_still_clears_the_activation() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project = project(&settings, "project");
+    let service = TriggerService::new(settings.clone());
+    let created = service
+        .create_trigger(webhook_create_request(&project))
+        .expect("create");
+    assert!(created.enabled);
+    let key = created.source["webhook_key"].as_str().unwrap().to_string();
+    let triggers = spark_common::project::definitions_dir(Path::new(&project)).join("triggers");
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let deleted = service.delete_trigger(&project, &created.id, &created.revision, None);
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(deleted.is_err());
+    // The definition left on disk is inactive, its credentials gone.
+    let left = service.get_trigger(&project, &created.id).unwrap().unwrap();
+    assert!(!left.enabled);
+    assert!(left.source.get("webhook_key").is_none());
+    assert!(matches!(
+        service.handle_webhook(webhook_request(
+            &key,
+            created.webhook_secret.as_deref().unwrap(),
+            json!({})
+        )),
+        Err(TriggerError::UnknownWebhookKey)
+    ));
 }
 
 #[test]
@@ -205,22 +236,6 @@ fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
         .is_err());
     let listed = service.list_triggers(Some(&project)).unwrap();
     assert_eq!(listed.len(), 1, "the failed create is not discoverable");
-    let states = TriggerRepositories::from_settings(&settings)
-        .runtime_state(&project)
-        .unwrap();
-    assert_eq!(
-        std::fs::read_dir(states.root_dir())
-            .unwrap()
-            .filter(|entry| entry
-                .as_ref()
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "json"))
-            .count(),
-        1,
-        "no state is left for the failed create"
-    );
 
     let edit = TriggerUpdateRequest {
         expected_revision: created.revision.clone(),
@@ -243,7 +258,7 @@ fn a_failed_definition_write_creates_nothing_and_keeps_edits_undone() {
 }
 
 #[test]
-fn a_refresh_overlapping_a_switch_off_and_rotation_cannot_undo_them() {
+fn a_read_overlapping_a_switch_off_and_rotation_cannot_undo_them() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project = project(&settings, "project");
@@ -282,15 +297,13 @@ fn a_refresh_overlapping_a_switch_off_and_rotation_cannot_undo_them() {
                 .unwrap();
         })
     };
-    assert!(
-        done_rx
-            .recv_timeout(std::time::Duration::from_millis(200))
-            .is_err(),
-        "the refresh waits for the writer"
-    );
+    // Reads write nothing, so they never wait for a writer or undo it.
+    let during = done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the read does not wait for the writer");
+    assert_eq!(during.enabled, created.enabled);
     release_tx.send(()).unwrap();
     writer.join().unwrap();
-    assert!(!done_rx.recv().unwrap().enabled);
     reader.join().unwrap();
     let stored = states.load(&created.id).unwrap();
     assert!(!stored.enabled);
@@ -345,9 +358,10 @@ fn the_same_id_in_two_projects_gives_two_independent_triggers() {
         (first_trigger.name.as_str(), first_trigger.enabled),
         ("First only", false)
     );
+    // A definition written outside the API starts inactive.
     assert_eq!(
         (second_trigger.name.as_str(), second_trigger.enabled),
-        ("Protected", true)
+        ("Protected", false)
     );
     let filtered = service.list_triggers(Some(&second)).expect("filtered");
     assert_eq!(filtered.len(), 1);
@@ -484,12 +498,19 @@ fn a_webhook_definition_without_state_credentials_has_no_key_until_regenerated()
         .expect("regenerate");
     assert_eq!(regenerated.revision, copied.revision, "state only");
     let key = regenerated.source["webhook_key"].as_str().expect("key");
+    let secret = regenerated.webhook_secret.as_deref().unwrap();
+    // A copied definition stays inactive until it is activated here.
+    assert_validation(
+        service.handle_webhook(webhook_request(key, secret, json!({}))),
+        "Webhook trigger is disabled.",
+    );
+    let activated = service
+        .activate_trigger(&project, "trigger-copied")
+        .expect("activate");
+    assert!(activated.enabled);
+    assert_eq!(activated.webhook_secret, None, "credentials are kept");
     let response = service
-        .handle_webhook(webhook_request(
-            key,
-            regenerated.webhook_secret.as_deref().unwrap(),
-            json!({}),
-        ))
+        .handle_webhook(webhook_request(key, secret, json!({})))
         .expect("webhook");
     assert_eq!(response.trigger_id, "trigger-copied");
 }
@@ -727,8 +748,9 @@ run_at = "2026-06-23T10:00:00Z""#,
 #[test]
 fn state_helpers_record_outcomes_and_bound_recent_history() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let repository = TriggerRepositories::from_settings(&settings(temp.path()))
-        .runtime_state("/spark-contract-fixture/project")
+    let settings = settings(temp.path());
+    let repository = TriggerRepositories::from_settings(&settings)
+        .runtime_state(&project(&settings, "project"))
         .unwrap();
     let mut trigger_state = repository
         .load("trigger-state-history")
@@ -801,14 +823,6 @@ fn state_helpers_record_outcomes_and_bound_recent_history() {
         persisted.recent_history[19].timestamp,
         "2026-06-23T10:06:00Z"
     );
-
-    let state_path = repository
-        .state_path("trigger-state-history")
-        .expect("state path");
-    let state_json = std::fs::read_to_string(state_path).expect("read history state json");
-    let payload: Value = serde_json::from_str(&state_json).expect("parse history state json");
-    assert_eq!(payload["recent_history"][0]["run_id"], Value::Null);
-    assert_eq!(payload["recent_history"][1]["run_id"], json!("run-24"));
 }
 
 fn webhook_request(key: &str, secret: &str, payload: Value) -> WebhookHandleRequest {

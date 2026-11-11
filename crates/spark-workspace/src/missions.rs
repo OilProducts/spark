@@ -7,7 +7,8 @@ use crate::{WorkspaceError, WorkspaceResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{workspace_records::RecordRepository, ConversationStore, ProjectRegistry};
+use spark_storage::workspace_records::{LoadedRecord, RecordRepository};
+use spark_storage::{ConversationStore, ProjectRegistry};
 use std::sync::Arc;
 
 const EDITABLE_FIELDS: &[&str] = &["title", "description", "archived", "budget", "playbook"];
@@ -191,9 +192,14 @@ impl WorkspaceMissionService {
         scope: &spark_storage::ProjectPaths,
         id: &str,
     ) -> WorkspaceResult<MissionRecord> {
-        let value = repo
-            .read(id)?
-            .ok_or_else(|| WorkspaceError::NotFound("Unknown project mission".into()))?;
+        Self::decode_in(scope, repo.read(id)?)
+    }
+    fn decode_in(
+        scope: &spark_storage::ProjectPaths,
+        value: Option<Value>,
+    ) -> WorkspaceResult<MissionRecord> {
+        let value =
+            value.ok_or_else(|| WorkspaceError::NotFound("Unknown project mission".into()))?;
         let mission: MissionRecord = decode(value)?;
         if mission.project_id != scope.project_id {
             return Err(invalid("Mission belongs to another project"));
@@ -267,7 +273,7 @@ impl WorkspaceMissionService {
         }
         mission
     }
-    /// The mission's project's enabled triggers that deliver to it.
+    /// The mission's project's active triggers bound to it.
     fn enabled_targeting_triggers(
         &self,
         mission: &MissionRecord,
@@ -276,9 +282,10 @@ impl WorkspaceMissionService {
         let states = repositories.runtime_state(&mission.project_path)?;
         let mut triggers = Vec::new();
         for trigger in repositories.definitions(&mission.project_path)?.list()? {
+            let state = states.load(&trigger.id)?;
             if trigger.action.mode == "mission"
-                && trigger.action.mission_id.as_deref() == Some(&mission.id)
-                && states.load(&trigger.id)?.enabled
+                && state.mission_id.as_deref() == Some(&mission.id)
+                && state.is_active_for(&trigger)
             {
                 triggers.push(trigger);
             }
@@ -292,16 +299,21 @@ impl WorkspaceMissionService {
     }
     pub fn get(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
         let scope = self.read_scope(project)?;
-        Self::load(&RecordRepository::missions(&scope.root), &scope, id)
-            .map(|m| self.with_status(m))
+        Self::load(
+            &RecordRepository::missions(&self.settings.data_dir, &scope.project_id),
+            &scope,
+            id,
+        )
+        .map(|m| self.with_status(m))
     }
     pub fn list(&self, project: &str) -> WorkspaceResult<Vec<MissionRecord>> {
         let scope = self.read_scope(project)?;
-        let mut missions: Vec<MissionRecord> = RecordRepository::missions(&scope.root)
-            .list()?
-            .into_iter()
-            .map(decode::<MissionRecord>)
-            .collect::<WorkspaceResult<_>>()?;
+        let mut missions: Vec<MissionRecord> =
+            RecordRepository::missions(&self.settings.data_dir, &scope.project_id)
+                .list()?
+                .into_iter()
+                .map(decode::<MissionRecord>)
+                .collect::<WorkspaceResult<_>>()?;
         if missions.iter().any(|m| m.project_id != scope.project_id) {
             return Err(invalid("Mission belongs to another project"));
         }
@@ -333,7 +345,7 @@ impl WorkspaceMissionService {
     ) -> Option<MissionRecord> {
         let scope = self.read_scope(project).ok()?;
         Self::load(
-            &RecordRepository::missions(&scope.root),
+            &RecordRepository::missions(&self.settings.data_dir, &scope.project_id),
             &scope,
             conversation_id,
         )
@@ -418,43 +430,51 @@ impl WorkspaceMissionService {
             return Err(invalid(format!("Mission field `{key}` is not editable")));
         }
         let mut updated = None;
-        let value = RecordRepository::missions(&scope.root).transact::<WorkspaceError>(id, |previous| {
-            let now = now();
-            let mut mission: MissionRecord = match previous {
-                Some(value) if !create => decode(value)?,
-                None if create => decode(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "conversation_id": id, "source_conversation_id": source_conversation_id}))?,
-                _ => return Err(WorkspaceError::NotFound("Unknown project mission".into())),
+        let repo = RecordRepository::missions(&self.settings.data_dir, &scope.project_id);
+        let value = repo.locked::<_, WorkspaceError>(|repo| {
+            let mut change = |previous: Option<Value>| -> WorkspaceResult<Value> {
+                let now = now();
+                let mut mission: MissionRecord = match previous {
+                    Some(value) if !create => decode(value)?,
+                    None if create => decode(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "conversation_id": id, "source_conversation_id": source_conversation_id}))?,
+                    _ => return Err(WorkspaceError::NotFound("Unknown project mission".into())),
+                };
+                if !create && mutation.revision != Some(mission.revision) { return Err(WorkspaceError::Conflict(format!("Mission changed; reload revision {} and reconcile your edits", mission.revision))); }
+                if mission.project_id != scope.project_id { return Err(invalid("Mission belongs to another project")); }
+                let before = serde_json::to_value(&mission.fields).unwrap();
+                let mut fields = before.clone();
+                for (key, value) in &mutation.fields { fields[key] = value.clone(); }
+                let mut fields: MissionFields = decode(fields)?;
+                if fields.title.trim().is_empty() { return Err(invalid("Mission title is required")); }
+                fields.playbook = fields.playbook.filter(|name| !name.trim().is_empty());
+                if fields.playbook != mission.fields.playbook {
+                    if mission.started_at.is_some() { return Err(invalid("A started mission keeps its playbook")); }
+                    if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, Some(&scope.project_path), name).map_err(|e| invalid(e.to_string()))?; }
+                }
+                // A running agent's pinned instructions do not follow later edits (Codex
+                // keeps a thread's first instructions), so the user's edits reach it as a turn.
+                if !create && mutation.actor == "human" && mission.started_at.is_some() && mission.closed.is_none() {
+                    let mut changes = Map::new();
+                    if fields.title != mission.fields.title { changes.insert("title".into(), json!(fields.title)); }
+                    if fields.description != mission.fields.description { changes.insert("objective".into(), json!(fields.description)); }
+                    if fields.budget != mission.fields.budget { changes.insert("budget".into(), json!(fields.budget)); }
+                    if !changes.is_empty() { updated = Some(Value::Object(changes)); }
+                }
+                mission.fields = fields;
+                mission.record_activity(&mutation.actor, &mutation.note, before);
+                Ok(stored(&mission))
             };
-            if !create && mutation.revision != Some(mission.revision) { return Err(WorkspaceError::Conflict(format!("Mission changed; reload revision {} and reconcile your edits", mission.revision))); }
-            if mission.project_id != scope.project_id { return Err(invalid("Mission belongs to another project")); }
-            let before = serde_json::to_value(&mission.fields).unwrap();
-            let mut fields = before.clone();
-            for (key, value) in &mutation.fields { fields[key] = value.clone(); }
-            let mut fields: MissionFields = decode(fields)?;
-            if fields.title.trim().is_empty() { return Err(invalid("Mission title is required")); }
-            fields.playbook = fields.playbook.filter(|name| !name.trim().is_empty());
-            if fields.playbook != mission.fields.playbook {
-                if mission.started_at.is_some() { return Err(invalid("A started mission keeps its playbook")); }
-                if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, Some(&scope.project_path), name).map_err(|e| invalid(e.to_string()))?; }
+            if !create {
+                return repo.update(id, change);
             }
-            // A running agent's pinned instructions do not follow later edits (Codex
-            // keeps a thread's first instructions), so the user's edits reach it as a turn.
-            if !create && mutation.actor == "human" && mission.started_at.is_some() && mission.closed.is_none() {
-                let mut changes = Map::new();
-                if fields.title != mission.fields.title { changes.insert("title".into(), json!(fields.title)); }
-                if fields.description != mission.fields.description { changes.insert("objective".into(), json!(fields.description)); }
-                if fields.budget != mission.fields.budget { changes.insert("budget".into(), json!(fields.budget)); }
-                if !changes.is_empty() { updated = Some(Value::Object(changes)); }
-            }
-            mission.fields = fields;
-            mission.record_activity(&mutation.actor, &mutation.note, before);
             // A draft is addressable from creation: its conversation and handle
             // exist before the record does. Nothing starts until Start.
-            if create {
-                spark_storage::ConversationRepository::new(self.store.clone())
-                    .touch_conversation(id, &scope.project_path)?;
-            }
-            Ok(stored(&mission))
+            let mut record = repo.load(id)?;
+            let next = change(record.stored().cloned())?;
+            spark_storage::ConversationRepository::new(self.store.clone())
+                .touch_conversation(id, &scope.project_path)?;
+            record.save(&next)?;
+            Ok(next)
         })?;
         let mission = self.with_status(decode(value)?);
         if let Some(payload) = updated {
@@ -473,30 +493,35 @@ impl WorkspaceMissionService {
     }
 
     /// Runs `work` on the mission under the project lock, delivers pending
-    /// inbox events when `deliver` is set, persists, and publishes.
+    /// inbox events when `deliver` is set, persists, and publishes. `work`
+    /// and delivery also write the conversation tables and start turns, so
+    /// they cannot run inside the record's write transaction; each save
+    /// instead fails if another writer changed the record, and a failed save
+    /// publishes nothing.
     fn locked(
         &self,
         project: &str,
         id: &str,
         deliver: bool,
-        work: impl FnOnce(&RecordRepository, &mut MissionRecord) -> WorkspaceResult<()>,
+        work: impl FnOnce(&mut LoadedRecord<'_>, &mut MissionRecord) -> WorkspaceResult<()>,
     ) -> WorkspaceResult<MissionRecord> {
         let scope = self.scope(project)?;
-        let mission =
-            RecordRepository::missions(&scope.root).locked::<_, WorkspaceError>(|repo| {
-                let mut mission = Self::load(repo, &scope, id)?;
-                mission.inbox = Inbox::read(&self.store, &mission.id)?;
-                let before = stored(&mission);
-                work(repo, &mut mission)?;
-                if deliver {
-                    self.deliver_pending(&mut mission, None)?;
-                }
-                let after = stored(&mission);
-                if before != after {
-                    repo.write(id, &after)?;
-                }
-                Ok(mission)
-            })?;
+        let mission = RecordRepository::missions(&self.settings.data_dir, &scope.project_id)
+            .locked::<_, WorkspaceError>(|repo| {
+            let mut record = repo.load(id)?;
+            let mut mission = Self::decode_in(&scope, record.stored().cloned())?;
+            mission.inbox = Inbox::read(&self.store, &mission.id)?;
+            let before = stored(&mission);
+            work(&mut record, &mut mission)?;
+            if deliver {
+                self.deliver_pending(&mut mission, None)?;
+            }
+            let after = stored(&mission);
+            if before != after {
+                record.save(&after)?;
+            }
+            Ok(mission)
+        })?;
         let mission = self.with_status(mission);
         self.publish(&mission);
         Ok(mission)
@@ -505,7 +530,7 @@ impl WorkspaceMissionService {
         &self,
         project: &str,
         id: &str,
-        work: impl FnOnce(&RecordRepository, &mut MissionRecord) -> WorkspaceResult<()>,
+        work: impl FnOnce(&mut LoadedRecord<'_>, &mut MissionRecord) -> WorkspaceResult<()>,
     ) -> WorkspaceResult<MissionRecord> {
         self.locked(project, id, true, work)
     }
@@ -582,7 +607,7 @@ impl WorkspaceMissionService {
     }
 
     pub fn start(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
-        self.locked(project, id, false, |repo, mission| {
+        self.locked(project, id, false, |record, mission| {
             if mission.started_at.is_some() {
                 return Err(WorkspaceError::Conflict("Mission already started".into()));
             }
@@ -599,7 +624,7 @@ impl WorkspaceMissionService {
             mission.started_at = Some(now());
             mission.note("human", "Started mission");
             // The first turn's frame is built from the stored record.
-            repo.write(&mission.id, &stored(mission))?;
+            record.save(&stored(mission))?;
             // The objective is pinned in the frame; the transcript only starts
             // the work, together with whatever the draft held.
             self.deliver_pending(mission, Some("Begin work on this mission."))
@@ -686,7 +711,7 @@ impl WorkspaceMissionService {
         let states = spark_storage::TriggerRepositories::from_settings(&self.settings)
             .runtime_state(&mission.project_path)?;
         for trigger in self.enabled_targeting_triggers(mission)? {
-            states.update(&trigger.id, |state| state.enabled = false)?;
+            states.update_existing(&trigger.id, |state| state.enabled = false)?;
             if let Some(runtime) = inbox::runtime(&self.settings) {
                 let saved = crate::triggers::WorkspaceTriggerService::new(
                     self.settings.clone(),

@@ -209,6 +209,25 @@ fn print_json(value: &Value) {
 mod settings_tests {
     use super::*;
 
+    /// A project's private model defaults, as its registry row stores them.
+    fn store_project_models(home: &std::path::Path, project: &str, models: &str) {
+        let registry = spark_storage::ProjectRegistry::new(home);
+        registry.register_project(project).unwrap();
+        // `key='value'` lines, as the workspace TOML cases spell them.
+        let value: serde_json::Map<String, Value> = models
+            .lines()
+            .map(|line| {
+                let (key, value) = line.split_once('=').unwrap();
+                (key.to_string(), json!(value.trim_matches('\'')))
+            })
+            .collect();
+        let value = Value::Object(value);
+        let revision = registry.project_settings(project).unwrap().revision;
+        registry
+            .update_project_model_settings(project, &revision, Some(&value))
+            .unwrap();
+    }
+
     #[test]
     fn file_edited_defaults_fail_at_agent_boundaries_before_execution() {
         for scope in ["workspace", "project"] {
@@ -222,20 +241,13 @@ mod settings_tests {
                 let home = tempfile::tempdir().unwrap();
                 let config = home.path().join("config");
                 let project = home.path().join("project");
-                let registry = spark_storage::ProjectRegistry::new(home.path());
-                let (path, section) = if scope == "workspace" {
-                    (config.join("spark.toml"), "models")
+                if scope == "workspace" {
+                    let path = config.join("spark.toml");
+                    std::fs::create_dir_all(&config).unwrap();
+                    std::fs::write(&path, format!("[models]\n{group}\n")).unwrap();
                 } else {
-                    (
-                        registry
-                            .project_paths(project.to_str().unwrap())
-                            .unwrap()
-                            .project_file,
-                        "model_settings",
-                    )
-                };
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, format!("[{section}]\n{group}\n")).unwrap();
+                    store_project_models(home.path(), project.to_str().unwrap(), group);
+                }
                 let payload =
                     json!({"project_path":project, "metadata":{"spark.config_dir":config}});
                 for result in [run_agent_turn(payload.clone()), run_codergen(payload)] {
@@ -279,16 +291,11 @@ mod settings_tests {
             next["metadata"]["spark.execution.settings"]["configuration"]["agents"]["max_turns"],
             9
         );
-        let project_file = spark_storage::ProjectRegistry::new(home.path())
-            .project_paths(home.path().to_str().unwrap())
-            .unwrap()
-            .project_file;
-        std::fs::create_dir_all(project_file.parent().unwrap()).unwrap();
-        std::fs::write(
-            &project_file,
-            "[model_settings]\nprovider='codex'\nmodel='project-model'\n",
-        )
-        .unwrap();
+        store_project_models(
+            home.path(),
+            home.path().to_str().unwrap(),
+            "provider='codex'\nmodel='project-model'",
+        );
         let mut inherited =
             json!({"project_path":home.path(), "metadata":{"spark.config_dir":config}});
         capture_configuration(&mut inherited).unwrap();

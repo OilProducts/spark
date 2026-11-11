@@ -211,7 +211,122 @@ fn listing_missions_leaves_an_obsolete_tasks_directory_untouched() {
         [mission.id.as_str()]
     );
     assert!(root.join("tasks/task-old.json").exists());
-    assert!(root.join(format!("missions/{}.json", mission.id)).exists());
+    assert!(!root.join("missions").exists());
+}
+
+#[test]
+fn concurrent_updates_from_one_revision_admit_exactly_one() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Contested"}));
+    let results = std::thread::scope(|scope| {
+        (1..=4)
+            .map(|total| {
+                let harness = &harness;
+                let id = mission.id.clone();
+                scope.spawn(move || {
+                    harness.missions.update(
+                        &harness.project,
+                        &id,
+                        mutation(
+                            json!({"revision": 1, "fields": {"budget": {"total_runs": total}}}),
+                        ),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|update| update.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let won = results
+        .iter()
+        .filter(|result| result.is_ok())
+        .collect::<Vec<_>>();
+    assert_eq!(won.len(), 1, "{results:?}");
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|error| matches!(error, WorkspaceError::Conflict(_))));
+    let stored = harness.get(&mission.id);
+    assert_eq!(stored.revision, 2);
+    assert_eq!(
+        stored.fields.budget.total_runs,
+        won[0].as_ref().unwrap().fields.budget.total_runs
+    );
+}
+
+/// An update reads, checks the revision and writes inside one immediate
+/// transaction: it waits for a writer holding the database (as another
+/// process would) and sees its change. An update whose write fails leaves
+/// the record unchanged and publishes nothing; a retry publishes once.
+#[test]
+fn mission_updates_serialize_with_other_writers_and_publish_only_commits() {
+    let h = Harness::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let published = events.clone();
+    install_runtime(
+        &h.settings,
+        InboxRuntime {
+            agent_turn_backend: h.agent.clone(),
+            publish: Arc::new(move |event| published.lock().unwrap().push(event)),
+        },
+    );
+    let mission = h.create(json!({"title": "Shared"}));
+    let database = rusqlite::Connection::open(
+        h.settings
+            .data_dir
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap();
+    database.execute_batch("BEGIN IMMEDIATE").unwrap();
+    database
+        .execute(
+            "UPDATE missions SET payload = json_set(payload, '$.revision', 2, \
+             '$.fields.title', 'Elsewhere') WHERE mission_id = ?1",
+            [&mission.id],
+        )
+        .unwrap();
+    let raced = std::thread::scope(|scope| {
+        let update = scope.spawn(|| {
+            h.missions.update(
+                &h.project,
+                &mission.id,
+                mutation(json!({"revision": 1, "fields": {"title": "Mine"}})),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!update.is_finished(), "the update waits for the writer");
+        database.execute_batch("COMMIT").unwrap();
+        update.join().unwrap()
+    });
+    assert!(
+        matches!(raced, Err(WorkspaceError::Conflict(_))),
+        "{raced:?}"
+    );
+    assert_eq!(h.get(&mission.id).fields.title, "Elsewhere");
+
+    events.lock().unwrap().clear();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_mission_write BEFORE UPDATE ON missions \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .unwrap();
+    let edit = || {
+        h.missions.update(
+            &h.project,
+            &mission.id,
+            mutation(json!({"revision": 2, "fields": {"title": "Kept"}})),
+        )
+    };
+    assert!(edit().is_err());
+    assert_eq!(h.get(&mission.id).fields.title, "Elsewhere");
+    assert!(events.lock().unwrap().is_empty());
+    database
+        .execute_batch("DROP TRIGGER fail_mission_write")
+        .unwrap();
+    assert_eq!(edit().unwrap().fields.title, "Kept");
+    assert_eq!(events.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1519,31 +1634,42 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
             })
             .unwrap()
     };
-    let other = h.settings.project_root.join("other");
-    for (project, bad) in [
-        (h.project.clone(), json!({"mode":"mission"})),
-        (
-            h.project.clone(),
-            json!({"mode":"mission", "mission_id":"missing"}),
-        ),
-        // The mission is looked up in the trigger's own project.
-        (
-            other.to_string_lossy().into_owned(),
-            json!({"mode":"mission", "mission_id":id}),
-        ),
+    // An invalid binding saves the definition but leaves it inactive, with
+    // the reason reported.
+    for bad in [
+        json!({"mode":"mission"}),
+        json!({"mode":"mission", "mission_id":"missing"}),
     ] {
-        assert!(triggers
+        let created = triggers
             .create_trigger(TriggerCreateRequest {
-                project_path: project,
+                project_path: h.project.clone(),
                 message: None,
                 name: "invalid".into(),
                 enabled: true,
                 source_type: "webhook".into(),
                 action: bad.as_object().unwrap().clone(),
-                source: Default::default()
+                source: Default::default(),
             })
-            .is_err());
+            .unwrap();
+        assert!(!created.enabled, "{bad}");
+        assert!(created.state.activation_error.is_some(), "{bad}");
+        triggers
+            .delete_trigger(&h.project, &created.id, &created.revision, None)
+            .unwrap();
     }
+    // The mission is looked up in the trigger's own, registered project.
+    let other = h.settings.project_root.join("other");
+    assert!(triggers
+        .create_trigger(TriggerCreateRequest {
+            project_path: other.to_string_lossy().into_owned(),
+            message: None,
+            name: "invalid".into(),
+            enabled: true,
+            source_type: "webhook".into(),
+            action: action.as_object().unwrap().clone(),
+            source: Default::default()
+        })
+        .is_err());
     let webhook = create("webhook", json!({}));
     assert!(serde_json::to_value(&webhook.action)
         .unwrap()
@@ -1710,7 +1836,9 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         .message
         .contains("skipped"));
     assert!(noop.message.contains("closed"));
-    assert!(triggers
+    // A closed mission cannot be a new trigger's target: the definition is
+    // saved but stays inactive, and so does any re-activation.
+    let closed_target = triggers
         .create_trigger(TriggerCreateRequest {
             project_path: h.project.clone(),
             message: None,
@@ -1718,19 +1846,24 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
             enabled: true,
             source_type: "webhook".into(),
             action: action.as_object().unwrap().clone(),
-            source: Default::default()
+            source: Default::default(),
         })
-        .is_err());
-    assert!(triggers
+        .unwrap();
+    assert!(!closed_target.enabled);
+    assert!(closed_target.state.activation_error.is_some());
+    let reactivated = triggers
         .update_trigger(
             &h.project,
             &webhook.id,
             TriggerUpdateRequest {
                 expected_revision: repo.get(&webhook.id).unwrap().unwrap().revision,
+                enabled: Some(true),
                 ..Default::default()
-            }
+            },
         )
-        .is_err());
+        .unwrap();
+    assert!(!reactivated.enabled);
+    assert!(reactivated.state.activation_error.is_some());
 }
 
 #[test]

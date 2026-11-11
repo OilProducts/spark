@@ -224,19 +224,13 @@ fn selected_profile_contents_and_default_model_are_captured_and_secret_values_ar
 }
 
 #[test]
-fn project_operational_updates_preserve_model_group_and_extensions() {
+fn project_operational_updates_preserve_model_group() {
     let (_temp, settings) = fixture();
     let registry = ProjectRegistry::new(&settings.data_dir);
-    let paths = registry
+    registry
         .ensure_project_paths("/projects/inheritance")
         .unwrap();
     save_project(&settings, group("codex", Some("project")));
-    let text = fs::read_to_string(&paths.project_file).unwrap();
-    fs::write(
-        &paths.project_file,
-        format!("{text}\n[extension]\ncustom = true\n"),
-    )
-    .unwrap();
     registry
         .update_project_record(
             "/projects/inheritance",
@@ -247,12 +241,8 @@ fn project_operational_updates_preserve_model_group_and_extensions() {
         )
         .unwrap();
     registry.register_project("/projects/inheritance").unwrap();
-    let doc = read_settings_document(&paths.project_file).unwrap();
-    assert_eq!(
-        doc.values["model_settings"]["model"].as_str(),
-        Some("project")
-    );
-    assert_eq!(doc.values["extension"]["custom"].as_bool(), Some(true));
+    let stored = registry.project_settings("/projects/inheritance").unwrap();
+    assert_eq!(stored.model_settings.unwrap()["model"], "project");
 }
 
 #[test]

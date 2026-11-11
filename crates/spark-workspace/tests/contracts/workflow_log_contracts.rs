@@ -186,21 +186,33 @@ fn child_runs_are_excluded_and_continuations_are_labeled() {
 }
 
 #[test]
-fn tail_read_dedupes_crash_window_duplicates_and_applies_limit() {
+fn a_retry_without_progress_logs_each_milestone_once_and_tail_applies_limit() {
     let (_temp, root) = canonical_tempdir();
     let settings = settings(&root);
     seed_run(&settings, "run-tail", |_| {});
     let entries = project_run_milestones(&settings, "run-tail", &[]).expect("started");
     assert_eq!(entries.len(), 1);
 
-    // Simulate a crash between the log append and the state write: the same
-    // entry line appears twice in the jsonl file.
-    let log_path = settings.workspace_dir.join("event-log.jsonl");
-    let existing = std::fs::read_to_string(&log_path).expect("log text");
-    std::fs::write(&log_path, format!("{existing}{existing}")).expect("duplicate lines");
+    // A retry that lost the run's progress re-derives the same milestone;
+    // its id is already logged, so it is not appended again.
+    rusqlite::Connection::open(
+        settings
+            .data_dir
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
+    )
+    .unwrap()
+    .execute(
+        "DELETE FROM workflow_projection WHERE run_id = 'run-tail'",
+        [],
+    )
+    .unwrap();
+    assert!(project_run_milestones(&settings, "run-tail", &[])
+        .expect("retry")
+        .is_empty());
+    assert!(!settings.workspace_dir.join("event-log.jsonl").exists());
 
     let tail = read_workflow_log_tail(&settings, 100).expect("tail");
-    assert_eq!(tail.len(), 1, "duplicates share an id and dedupe on read");
+    assert_eq!(tail.len(), 1, "a retry never duplicates a milestone");
 
     set_run_status(&settings, "run-tail", "completed");
     project_run_milestones(&settings, "run-tail", &[]).expect("completed");

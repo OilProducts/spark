@@ -253,13 +253,6 @@ fn accepting_a_message_creates_the_conversation_and_returns_only_changed_rows() 
     ] {
         assert!(!root.join(legacy).exists(), "unexpected {legacy}");
     }
-    let project = ProjectRegistry::new(_temp.path().join("spark-home"))
-        .ensure_project_paths(project_path)
-        .expect("project paths");
-    assert!(!project
-        .flow_run_requests_dir
-        .join("conversation-a.json")
-        .exists());
 }
 
 #[test]
@@ -1913,7 +1906,7 @@ fn a_corrupt_attachment_row_fails_the_prune_and_deletes_nothing() {
     let home = temp.path().join("spark-home");
     let attachments = conversation_dir(&temp, project_path, conversation).join("attachments");
     let raw = rusqlite::Connection::open(
-        home.join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+        home.join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
     )
     .unwrap();
     assert_eq!(
@@ -1990,7 +1983,7 @@ fn a_conversation_with_an_unsupported_settings_schema_version_does_not_load() {
         drop(repo);
         let home = temp.path().join("spark-home");
         let raw = rusqlite::Connection::open(
-            home.join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+            home.join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
         )
         .unwrap();
         let updated = if version == "NULL" {
@@ -2391,7 +2384,7 @@ fn a_failed_inbox_admission_leaves_no_turn_and_its_events_pending() {
     let raw = rusqlite::Connection::open(
         temp.path()
             .join("spark-home")
-            .join(spark_storage::conversation::CONVERSATION_DATABASE_FILE_NAME),
+            .join(spark_storage::conversation::STATE_DATABASE_FILE_NAME),
     )
     .unwrap();
     raw.execute_batch(

@@ -1,13 +1,8 @@
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-
 use attractor_runtime::RunStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::{
-    append_jsonl_record, read_jsonl, write_json_atomic, JsonLinesOptions, JsonWriteOptions,
-};
+use spark_storage::workspace_records::WorkflowMilestones;
 use time::OffsetDateTime;
 
 use crate::live::{LiveCursor, LiveEnvelope, LiveResource};
@@ -15,8 +10,6 @@ use crate::{WorkspaceError, WorkspaceResult};
 
 pub const WORKFLOW_LOG_TAIL_LIMIT: usize = 100;
 
-const WORKFLOW_LOG_FILE: &str = "event-log.jsonl";
-const WORKFLOW_LOG_STATE_FILE: &str = "event-log-state.json";
 const FAILURE_REASON_MAX_CHARS: usize = 200;
 
 /// One milestone in the global, project-agnostic workflow event log.
@@ -45,30 +38,6 @@ struct WorkflowLogRunState {
     status: String,
     #[serde(default)]
     logged_gate_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct WorkflowLogState {
-    #[serde(default)]
-    next_seq: u64,
-    #[serde(default)]
-    runs: BTreeMap<String, WorkflowLogRunState>,
-}
-
-fn workflow_log_path(settings: &SparkSettings) -> PathBuf {
-    settings.workspace_dir.join(WORKFLOW_LOG_FILE)
-}
-
-fn workflow_log_state_path(settings: &SparkSettings) -> PathBuf {
-    settings.workspace_dir.join(WORKFLOW_LOG_STATE_FILE)
-}
-
-fn read_workflow_log_state(settings: &SparkSettings) -> WorkflowLogState {
-    let path = workflow_log_state_path(settings);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
 }
 
 fn iso_now() -> String {
@@ -107,9 +76,9 @@ fn terminal_milestone_kind(status: &str) -> Option<&'static str> {
 ///
 /// Reads the run record, diffs its status against the projection state, and
 /// scans the just-published live envelopes for pending human gates. Appends
-/// any new milestones to the log (entries before state, so a crash can only
-/// produce a duplicate line — deduplicated on read — never a lost one) and
-/// returns them for publishing. Idempotent: the same transition observed twice
+/// any new milestones to the log in the transaction that advances the run's
+/// projection progress, so a crash or retry can neither duplicate a milestone
+/// nor advance progress without it, and returns them for publishing. Idempotent: the same transition observed twice
 /// diffs to nothing. Child runs are skipped entirely — the parent's lifecycle
 /// covers them.
 pub fn project_run_milestones(
@@ -136,8 +105,6 @@ pub fn project_run_milestones(
         return Ok(Vec::new());
     }
 
-    let mut state = read_workflow_log_state(settings);
-    let run_state = state.runs.entry(run_id.to_string()).or_default();
     let flow_name = if record.flow_name.is_empty() {
         run_id.to_string()
     } else {
@@ -149,8 +116,55 @@ pub fn project_run_milestones(
         record.project_path.clone()
     };
     let timestamp = iso_now();
-    let mut pending: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let recorded = WorkflowMilestones::new(&settings.data_dir).record::<WorkspaceError>(
+        run_id,
+        |progress| {
+            let mut run_state: WorkflowLogRunState = progress
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+                .unwrap_or_default();
+            let pending =
+                pending_milestones(&mut run_state, &record, run_id, &flow_name, new_envelopes);
+            let milestones = pending
+                .into_iter()
+                .map(|(kind, id, message, node_id)| {
+                    let entry = WorkflowLogEntry {
+                        id: id.clone(),
+                        seq: 0,
+                        timestamp: timestamp.clone(),
+                        kind,
+                        message,
+                        project_path: project_path.clone(),
+                        run_id: run_id.to_string(),
+                        flow_name: flow_name.clone(),
+                        node_id,
+                    };
+                    (id, json!(entry))
+                })
+                .collect();
+            Ok((milestones, json!(run_state)))
+        },
+    )?;
+    recorded
+        .into_iter()
+        .map(|entry| {
+            serde_json::from_value(entry)
+                .map_err(|error| WorkspaceError::Internal(error.to_string()))
+        })
+        .collect()
+}
 
+/// The milestones a run's record and new envelopes add to `run_state`:
+/// `(kind, id, message, node id)`.
+fn pending_milestones(
+    run_state: &mut WorkflowLogRunState,
+    record: &attractor_core::RunRecord,
+    run_id: &str,
+    flow_name: &str,
+    new_envelopes: &[LiveEnvelope],
+) -> Vec<(String, String, String, Option<String>)> {
+    let mut pending: Vec<(String, String, String, Option<String>)> = Vec::new();
     if run_state.status.is_empty() {
         let (kind, message) = if let Some(source_run) = record
             .continued_from_run_id
@@ -248,68 +262,22 @@ pub fn project_run_milestones(
         ));
     }
 
-    if pending.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let log_path = workflow_log_path(settings);
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            WorkspaceError::Internal(format!("create workflow log directory: {error}"))
-        })?;
-    }
-
-    let mut entries = Vec::with_capacity(pending.len());
-    for (kind, id, message, node_id) in pending {
-        let entry = WorkflowLogEntry {
-            id,
-            seq: state.next_seq,
-            timestamp: timestamp.clone(),
-            kind,
-            message,
-            project_path: project_path.clone(),
-            run_id: run_id.to_string(),
-            flow_name: flow_name.clone(),
-            node_id,
-        };
-        state.next_seq += 1;
-        append_jsonl_record(&log_path, &entry)
-            .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
-        entries.push(entry);
-    }
-
-    write_json_atomic(
-        workflow_log_state_path(settings),
-        &state,
-        JsonWriteOptions::default(),
-    )
-    .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
-
-    Ok(entries)
+    pending
 }
 
-/// Reads the newest `limit` entries, oldest first, deduplicated by entry id
-/// (crash-window double-appends keep the first occurrence).
+/// Reads the newest `limit` entries, oldest first.
 pub fn read_workflow_log_tail(
     settings: &SparkSettings,
     limit: usize,
 ) -> WorkspaceResult<Vec<WorkflowLogEntry>> {
-    let path = workflow_log_path(settings);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let entries: Vec<WorkflowLogEntry> =
-        read_jsonl(&path, JsonLinesOptions::allow_blank_lines())
-            .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
-    let mut seen = std::collections::BTreeSet::new();
-    let mut deduped: Vec<WorkflowLogEntry> = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if seen.insert(entry.id.clone()) {
-            deduped.push(entry);
-        }
-    }
-    let start = deduped.len().saturating_sub(limit);
-    Ok(deduped.split_off(start))
+    WorkflowMilestones::new(&settings.data_dir)
+        .tail(limit)?
+        .into_iter()
+        .map(|entry| {
+            serde_json::from_value(entry)
+                .map_err(|error| WorkspaceError::Internal(error.to_string()))
+        })
+        .collect()
 }
 
 pub fn workflow_log_envelope(entry: &WorkflowLogEntry) -> LiveEnvelope {

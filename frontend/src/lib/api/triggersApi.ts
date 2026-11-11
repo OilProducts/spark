@@ -21,6 +21,8 @@ export interface TriggerStateResponse {
     last_fired_at?: string | null
     last_result?: string | null
     last_error?: string | null
+    /** Why the last activation failed; the trigger stays inactive until activated again. */
+    activation_error?: string | null
     next_run_at?: string | null
     recent_history: Array<{
         timestamp: string
@@ -65,6 +67,7 @@ function parseTriggerStateResponse(value: unknown, endpoint: string): TriggerSta
         last_fired_at: asOptionalNullableString(record.last_fired_at),
         last_result: asOptionalNullableString(record.last_result),
         last_error: asOptionalNullableString(record.last_error),
+        activation_error: asOptionalNullableString(record.activation_error),
         next_run_at: asOptionalNullableString(record.next_run_at),
         recent_history: recentHistory,
     }
@@ -127,6 +130,32 @@ const triggerPath = (projectPath: string, triggerId: string) =>
 export async function fetchTriggerListValidated(projectPath?: string): Promise<TriggerResponse[]> {
     const query = projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''
     return fetchWorkspaceJsonValidated(`/triggers${query}`, undefined, '/workspace/api/triggers', parseTriggerListResponse)
+}
+
+/** A definition that cannot run, or a project whose definitions could not be listed. */
+export interface TriggerIssueResponse {
+    project_path: string
+    trigger_id: string | null
+    error: string
+}
+
+export function parseTriggerIssuesResponse(payload: unknown, endpoint = '/workspace/api/trigger-issues'): TriggerIssueResponse[] {
+    if (!Array.isArray(payload)) {
+        throw new ApiSchemaError(endpoint, 'Expected an array of trigger issues.')
+    }
+    return payload.map((entry) => {
+        const record = expectObjectRecord(entry, endpoint)
+        return {
+            project_path: expectString(record.project_path, endpoint, 'project_path'),
+            trigger_id: asOptionalNullableString(record.trigger_id) ?? null,
+            error: expectString(record.error, endpoint, 'error'),
+        }
+    })
+}
+
+/** The definitions the trigger list cannot show, because they cannot run. */
+export async function fetchTriggerIssuesValidated(): Promise<TriggerIssueResponse[]> {
+    return fetchWorkspaceJsonValidated('/trigger-issues', undefined, '/workspace/api/trigger-issues', parseTriggerIssuesResponse)
 }
 
 export async function fetchTriggerValidated(projectPath: string, triggerId: string): Promise<TriggerResponse> {

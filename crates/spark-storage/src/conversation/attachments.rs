@@ -106,7 +106,9 @@ impl ConversationRepository {
                     }
                     Some(_) => false,
                     None => {
-                        store.registry().ensure_project_paths(&project_path)?;
+                        store
+                            .registry()
+                            .ensure_project_paths_in(connection, &project_path)?;
                         let mut meta = ConversationMeta::new(conversation_id, &project_path);
                         let now = iso_now();
                         meta.created_at = now.clone();

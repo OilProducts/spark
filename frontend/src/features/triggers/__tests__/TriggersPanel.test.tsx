@@ -112,6 +112,23 @@ describe('TriggersPanel', () => {
     await waitFor(() => expect(screen.getByTestId('trigger-row-first')).toHaveAttribute('aria-current', 'true'))
   })
 
+  it('shows why an inactive trigger failed to activate', async () => {
+    const failed = makeTrigger({ id: 'failed', enabled: false })
+    vi.mocked(fetch).mockResolvedValue(jsonResponse([{ ...failed, state: { ...failed.state, activation_error: 'Unknown flow: missing' } }]))
+    renderTriggersPanel()
+    expect(await screen.findByText('Not activated: Unknown flow: missing')).toBeInTheDocument()
+  })
+
+  it('lists definitions that cannot run beside the triggers', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => resolveRequestUrl(input).includes('/trigger-issues')
+      ? jsonResponse([{ project_path: '/project', trigger_id: 'broken', error: 'Invalid trigger definition' }])
+      : jsonResponse([makeTrigger({ id: 'fine' })]))
+    renderTriggersPanel()
+    const issues = await screen.findByTestId('trigger-issues')
+    expect(issues).toHaveTextContent('Definitions that cannot run')
+    expect(issues).toHaveTextContent('broken in /project: Invalid trigger definition')
+  })
+
   it('creates a mission action from the project open mission picker', async () => {
     useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
     let saved: Record<string, unknown> | null = null

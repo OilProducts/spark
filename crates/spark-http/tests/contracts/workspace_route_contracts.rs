@@ -336,11 +336,11 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
     // The registered project plus the default Home project.
     assert_eq!(list.1.as_array().expect("projects").len(), 2);
 
-    let project_file = settings
+    // The registry is a database row: no project file is written.
+    let project_root = settings
         .projects_dir
-        .join(register.1["project_id"].as_str().expect("project id"))
-        .join("project.toml");
-    assert!(project_file.exists());
+        .join(register.1["project_id"].as_str().expect("project id"));
+    assert!(!project_root.join("project.toml").exists());
 
     let missing = request_json(app, "GET", "/workspace/api/missing", None).await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
@@ -2001,11 +2001,8 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     );
     let read = request_json(app.clone(), "GET", uri, None).await.1;
     let revision = read["execution"]["revision"].clone();
-    let file = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .project_paths(&project)
-        .unwrap()
-        .project_file;
-    let original = fs::read(&file).unwrap();
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let original = registry.project_settings(&project).unwrap();
     for value in [json!("dev"), Value::Null] {
         let rejected = request_json(
             app.clone(),
@@ -2015,7 +2012,7 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
         )
         .await;
         assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{rejected:?}");
-        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(registry.project_settings(&project).unwrap(), original);
     }
     let payload =
         json!({"project_path":project, "execution_profile_id":"dev", "expected_revision":revision});
@@ -2027,7 +2024,7 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     )
     .await;
     assert_eq!(saved.0, StatusCode::OK, "{saved:?}");
-    let committed = fs::read(&file).unwrap();
+    let committed = registry.project_settings(&project).unwrap();
     let conflict = request_json(
         app.clone(),
         "PATCH",
@@ -2036,7 +2033,7 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     )
     .await;
     assert_eq!(conflict.0, StatusCode::CONFLICT);
-    assert_eq!(fs::read(&file).unwrap(), committed);
+    assert_eq!(registry.project_settings(&project).unwrap(), committed);
     let read = request_json(app.clone(), "GET", uri, None).await.1;
     assert_eq!(read["execution"]["stored"], "dev");
     let reopen = request_json(
@@ -2047,18 +2044,111 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     )
     .await;
     assert_eq!(reopen.0, StatusCode::BAD_REQUEST);
-    assert_eq!(fs::read(&file).unwrap(), committed);
+    assert_eq!(registry.project_settings(&project).unwrap(), committed);
     let unchanged = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":project}}))).await;
     assert_eq!(unchanged.0, StatusCode::OK);
     assert_eq!(
         unchanged.1["execution"]["revision"],
         read["execution"]["revision"]
     );
-    assert_eq!(fs::read(&file).unwrap(), committed);
+    assert_eq!(registry.project_settings(&project).unwrap(), committed);
     let cleared = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"project_execution", "expected_revision":read["execution"]["revision"], "value":{"project_path":project, "execution_profile_id":null}}))).await;
     assert_eq!(cleared.0, StatusCode::OK, "{cleared:?}");
     assert!(cleared.1["execution"]["stored"].is_null());
     assert_eq!(cleared.1["execution"]["source"], "workspace");
+}
+
+/// A settings draft read before a project's removal conflicts after its
+/// re-registration, for model and execution defaults alike, instead of
+/// overwriting the new registration's defaults.
+#[tokio::test]
+async fn project_settings_drafts_from_a_removed_registration_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("execution-profiles.toml"),
+        "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+    )
+    .unwrap();
+    let project_dir = temp.path().join("again");
+    fs::create_dir_all(&project_dir).unwrap();
+    let app = build_app(settings.clone()).expect("app");
+    let register = || {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/projects/register",
+            Some(json!({"project_path": project_dir})),
+        )
+    };
+    let registered = register().await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    let project = registered.1["project_path"].as_str().unwrap().to_string();
+    let uri = format!(
+        "/workspace/api/settings?project_path={}",
+        crate::encode_query(&project)
+    );
+    let stale = request_json(app.clone(), "GET", &uri, None).await.1;
+    let removal = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&project)
+    );
+    let removed = request_json(app.clone(), "DELETE", &removal, None).await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    assert_eq!(register().await.0, StatusCode::OK);
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let fresh = registry.project_settings(&project).unwrap();
+
+    let models = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_models", "expected_revision": stale["models"]["revision"],
+            "value": {"project_path": project, "model_settings": {"provider": "claude-code"}}
+        })),
+    )
+    .await;
+    assert_eq!(models.0, StatusCode::CONFLICT, "{models:?}");
+    let execution = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_execution", "expected_revision": stale["execution"]["revision"],
+            "value": {"project_path": project, "execution_profile_id": "dev"}
+        })),
+    )
+    .await;
+    assert_eq!(execution.0, StatusCode::CONFLICT, "{execution:?}");
+    let state = request_json(
+        app.clone(),
+        "PATCH",
+        "/workspace/api/projects/state",
+        Some(json!({
+            "project_path": project, "execution_profile_id": "dev",
+            "expected_revision": stale["execution"]["revision"]
+        })),
+    )
+    .await;
+    assert_eq!(state.0, StatusCode::CONFLICT, "{state:?}");
+    assert_eq!(registry.project_settings(&project).unwrap(), fresh);
+
+    // The new registration's own revision is accepted.
+    let current = request_json(app.clone(), "GET", &uri, None).await.1;
+    let saved = request_json(
+        app,
+        "PATCH",
+        "/workspace/api/settings",
+        Some(json!({
+            "section": "project_execution", "expected_revision": current["execution"]["revision"],
+            "value": {"project_path": project, "execution_profile_id": "dev"}
+        })),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{saved:?}");
+    assert_eq!(saved.1["execution"]["stored"], "dev");
 }
 
 #[tokio::test]
@@ -2272,16 +2362,12 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     .await;
     assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{rejected:?}");
     assert!(
-        rejected
-            .1
-            .to_string()
-            .contains("project.toml.execution_profile_id"),
+        rejected.1.to_string().contains(&format!(
+            "project defaults of {}.execution_profile_id",
+            registered.1["project_path"].as_str().unwrap()
+        )),
         "{rejected:?}"
     );
-    assert!(rejected
-        .1
-        .to_string()
-        .contains(registered.1["project_id"].as_str().unwrap()));
     assert!(!path.exists());
     let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
         "run_id":"native-after-rejected-save", "working_directory":project, "wait":true,
@@ -2318,20 +2404,31 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
             registry
                 .register_project(project.to_str().unwrap())
                 .unwrap();
-            let (path, section) = if scope == "workspace" {
-                (settings.config_dir.join("spark.toml"), "models")
+            if scope == "workspace" {
+                let path = settings.config_dir.join("spark.toml");
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, format!("[models]\n{group}\n")).unwrap();
             } else {
-                (
-                    registry
-                        .project_paths(project.to_str().unwrap())
-                        .unwrap()
-                        .project_file,
-                    "model_settings",
-                )
-            };
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let original = fs::read_to_string(&path).unwrap_or_default();
-            fs::write(&path, format!("{original}\n[{section}]\n{group}\n")).unwrap();
+                // Stored project defaults that no longer validate.
+                let models = group
+                    .lines()
+                    .map(|line| {
+                        let (key, value) = line.split_once('=').unwrap();
+                        (key.to_string(), json!(value.trim_matches('\'')))
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                let revision = registry
+                    .project_settings(project.to_str().unwrap())
+                    .unwrap()
+                    .revision;
+                registry
+                    .update_project_model_settings(
+                        project.to_str().unwrap(),
+                        &revision,
+                        Some(&json!(models)),
+                    )
+                    .unwrap();
+            }
             let app = build_app(settings.clone()).expect("app");
             let uri = if scope == "workspace" {
                 "/workspace/api/settings".to_owned()
