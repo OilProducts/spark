@@ -13,7 +13,6 @@ export interface ExecutionPlacementState {
     effectiveProfileId: string
     effectiveProfile: ExecutionPlacementProfile | null
     enabledProfiles: ExecutionPlacementProfile[]
-    projectDefaultProfileId: string | null
     validationMessage: string | null
     statusMessage: string | null
 }
@@ -77,7 +76,6 @@ export function useExecutionPlacement(enabled: boolean, projectPath: string | nu
         effectiveProfileId,
         effectiveProfile,
         enabledProfiles,
-        projectDefaultProfileId,
         validationMessage,
         statusMessage,
     }

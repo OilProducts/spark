@@ -613,12 +613,11 @@ async fn startup_registers_home_without_writing_definitions_or_config() {
     settings.config_dir = spark_home.join("config");
     fs::create_dir_all(&settings.config_dir).unwrap();
     let config_files = [
-        ("spark.toml", "[server]\n"),
-        ("settings.toml", "# global settings\n"),
         (
-            "execution-profiles.toml",
-            "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+            "spark.toml",
+            "[server]\n[execution_profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
         ),
+        ("settings.toml", "# global settings\n"),
         ("client-settings.json", "{}\n"),
     ];
     for (name, text) in config_files {
@@ -1979,8 +1978,8 @@ async fn project_execution_settings_require_revisions_and_null_restores_inherita
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).unwrap();
     fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
-        "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+        settings.config_dir.join("spark.toml"),
+        "[execution_profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
     )
     .unwrap();
     let project = temp.path().join("revision");
@@ -2067,8 +2066,8 @@ async fn project_settings_drafts_from_a_removed_registration_conflict() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).unwrap();
     fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
-        "[profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
+        settings.config_dir.join("spark.toml"),
+        "[execution_profiles.dev]\nlabel = 'Development'\nmode = 'native'\n",
     )
     .unwrap();
     let project_dir = temp.path().join("again");
@@ -2346,7 +2345,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     )
     .await;
     assert_eq!(registered.0, StatusCode::OK, "{registered:?}");
-    let path = settings.config_dir.join("execution-profiles.toml");
+    let path = settings.config_dir.join("spark.toml");
     assert!(!path.exists());
     let rejected = request_json(
         app.clone(),

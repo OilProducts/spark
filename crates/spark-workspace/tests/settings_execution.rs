@@ -196,12 +196,12 @@ fn conversation_settings_reject_stale_or_missing_revisions_and_invalid_profiles(
 fn selected_profile_contents_and_default_model_are_captured_and_secret_values_are_absent() {
     let (_temp, settings) = fixture();
     fs::create_dir_all(&settings.config_dir).unwrap();
-    let path = settings.config_dir.join("llm-profiles.toml");
-    fs::write(&path, "[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9999/v1'\nmodels=['first','second']\ndefault_model='first'\napi_key_env='SPARK_TEST_PROFILE_SECRET'\n").unwrap();
+    let path = settings.config_dir.join("spark.toml");
+    fs::write(&path, "[llm_profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9999/v1'\nmodels=['first','second']\ndefault_model='first'\napi_key_env='SPARK_TEST_PROFILE_SECRET'\n").unwrap();
     save_workspace(&settings, json!({"llm_profile": "team"}));
     let service = conversations(settings.clone());
     let first = start(&service, "first");
-    fs::write(&path, "[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9998/v1'\nmodels=['second']\ndefault_model='second'\n").unwrap();
+    fs::write(&path, "[models]\nllm_profile='team'\n[llm_profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:9998/v1'\nmodels=['second']\ndefault_model='second'\n").unwrap();
     let second = start(&service, "second");
     assert_eq!(first.model.as_deref(), Some("first"));
     assert_eq!(second.model.as_deref(), Some("second"));
@@ -265,13 +265,9 @@ fn active_turn_uses_captured_connection(profile: bool) {
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     fs::create_dir_all(&settings.config_dir).unwrap();
-    let path = settings.config_dir.join(if profile {
-        "llm-profiles.toml"
-    } else {
-        "spark.toml"
-    });
+    let path = settings.config_dir.join("spark.toml");
     if profile {
-        fs::write(&path, format!("[profiles.captured]\nprovider='openai_compatible'\nbase_url='http://{address}/v1'\nmodels=['captured-model']\ndefault_model='captured-model'\n")).unwrap();
+        fs::write(&path, format!("[llm_profiles.captured]\nprovider='openai_compatible'\nbase_url='http://{address}/v1'\nmodels=['captured-model']\ndefault_model='captured-model'\n")).unwrap();
         save_workspace(&settings, json!({"llm_profile": "captured"}));
     } else {
         fs::write(&path, format!("[models]\nprovider='openai_compatible'\nmodel='captured-model'\n[providers.openai_compatible]\nbase_url='http://{address}/v1'\n")).unwrap();

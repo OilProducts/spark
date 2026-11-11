@@ -10,14 +10,14 @@ fn malformed_profiles_return_actionable_errors_without_source_secrets() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).unwrap();
     std::fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
-        "[profiles.local]\napi_key_env = pasted-secret-credential\n",
+        settings.config_dir.join("spark.toml"),
+        "[llm_profiles.local]\napi_key_env = pasted-secret-credential\n",
     )
     .unwrap();
     let response = AttractorApiService::new(settings).list_llm_profiles();
     assert_eq!(response.status_code, 400);
     let body = response.body.to_string();
-    assert!(body.contains("llm-profiles.toml"));
+    assert!(body.contains("spark.toml"));
     assert!(body.contains("near byte"));
     assert!(!body.contains("pasted-secret-credential"));
 }
@@ -40,16 +40,16 @@ fn llm_profiles_route_exposes_public_profile_metadata() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["local-small", "local-large"]
 label = "Local"
 default_model = "local-large"
 
-[profiles.needs_key]
+[llm_profiles.needs_key]
 provider = "openai_compatible"
 base_url = "http://localhost:5000/v1"
 models = ["keyed"]
@@ -97,8 +97,8 @@ fn llm_profiles_route_maps_config_errors_to_json_400() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
-        r#"[profiles.bad]
+        settings.config_dir.join("spark.toml"),
+        r#"[llm_profiles.bad]
 provider = "anthropic"
 base_url = "http://localhost"
 models = ["claude"]

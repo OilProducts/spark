@@ -57,7 +57,7 @@ it('retains invalid metadata through live changes and failed discard, with navig
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
     vi.mocked(profileSettingsRequest).mockResolvedValue({ ...execution, revision: 'two' })
     act(() => window.dispatchEvent(new Event('spark:settings-live-event')))
-    await screen.findByText(/Profiles changed elsewhere/)
+    await screen.findByText(/Settings changed elsewhere/)
     expect(metadata).toHaveValue('broken')
     expect(screen.getByRole('button', { name: 'Delete execution profile native' })).toBeDisabled()
     expect(screen.getByText(/Fix invalid metadata JSON/)).toBeVisible()

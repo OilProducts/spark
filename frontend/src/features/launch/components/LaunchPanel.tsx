@@ -163,7 +163,6 @@ export function LaunchPanel({
                     reasoningEffort: selectedReasoningEffort,
                     launchContext,
                     executionProfileId: placement.selectedProfileId || null,
-                    projectDefaultExecutionProfileId: placement.projectDefaultProfileId,
                 },
                 { onGitPolicyWarning: setGitPolicyWarning },
             )

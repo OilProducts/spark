@@ -1,10 +1,11 @@
-//! Dedicated profile documents, edited through the shared revision/lock boundary.
+//! Profile sections of the installation settings document, edited through
+//! its shared revision/lock boundary.
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::settings::{read_settings_document, update_settings_sections};
+use spark_storage::settings::{read_settings_document, update_settings_sections, SettingsDocument};
 use unified_llm_adapter::profiles::{parse_llm_profiles, LlmProfile, ProcessLlmProfileEnvironment};
 
 use crate::{WorkspaceError, WorkspaceResult};
@@ -16,66 +17,45 @@ pub struct ExecutionProfilesUpdate {
     pub default_execution_profile_id: Option<String>,
 }
 
-pub fn llm_profiles_view(settings: &SparkSettings) -> WorkspaceResult<Value> {
-    let path = settings.config_dir.join("llm-profiles.toml");
-    let document = read_settings_document(&path)?;
+pub fn llm_profiles_view(document: &SettingsDocument) -> Value {
     let profiles = match parse_llm_profiles(&document.values) {
         Ok(profiles) => profiles,
         Err(error) => {
-            let stored = profile_stored_values(&document.values);
-            return Ok(
-                json!({"scope":"workspace", "revision":document.revision, "stored":stored,
-                "effective":null, "repair_defaults":[], "credential_status":{}, "restart_fields":[], "validation_errors":[error.to_string()]}),
-            );
+            let stored = profile_stored_values(&document.values, "llm_profiles");
+            return json!({"scope":"workspace", "revision":document.revision, "stored":stored,
+                "effective":null, "repair_defaults":[], "credential_status":{}, "restart_fields":[], "validation_errors":[error.to_string()]});
         }
     };
-    Ok(json!({"scope": "workspace", "revision": document.revision,
+    json!({"scope": "workspace", "revision": document.revision,
         "stored": profiles.values().collect::<Vec<_>>(),
         "credential_status": profiles.iter().map(|(id, profile)|
             (id.clone(), if profile.configured(&ProcessLlmProfileEnvironment) { "configured" } else { "missing" }))
             .collect::<std::collections::BTreeMap<_, _>>(),
-        "restart_fields": [], "validation_errors": []}))
+        "restart_fields": [], "validation_errors": []})
 }
 
-pub fn execution_profiles_view(settings: &SparkSettings) -> WorkspaceResult<Value> {
-    let path = settings.config_dir.join("execution-profiles.toml");
-    let document = read_settings_document(&path)?;
-    let parsed = if document.revision == "absent" {
-        Ok(attractor_execution::ExecutionProfileGraph {
-            profiles: std::collections::BTreeMap::from([(
-                "native".into(),
-                attractor_execution::ExecutionProfile::implementation_native(),
-            )]),
-            synthesized_native_default: true,
-            ..Default::default()
-        })
-    } else {
-        attractor_execution::profile::parse_execution_profiles(&document.values).and_then(|graph| {
-            graph.validate_default()?;
-            Ok(graph)
-        })
-    };
-    let graph = match parsed {
+pub fn execution_profiles_view(document: &SettingsDocument) -> Value {
+    let graph = match attractor_execution::profile::stored_execution_profiles(&document.values) {
         Ok(graph) => graph,
         Err(error) => {
-            return Ok(json!({"scope": "workspace", "revision": document.revision,
-            "stored": {"profiles":profile_stored_values(&document.values), "default_execution_profile_id":document.values.get("defaults").and_then(|value| value.get("execution_profile_id"))}, "effective":null, "repair_defaults":{"profiles":[], "default_execution_profile_id":null}, "restart_fields": [], "validation_errors": [error.to_string()]}))
+            return json!({"scope": "workspace", "revision": document.revision,
+            "stored": {"profiles":profile_stored_values(&document.values, "execution_profiles"), "default_execution_profile_id":document.values.get("execution_defaults").and_then(|value| value.get("execution_profile_id"))}, "effective":null, "repair_defaults":{"profiles":[], "default_execution_profile_id":null}, "restart_fields": [], "validation_errors": [error.to_string()]})
         }
     };
-    Ok(json!({"scope": "workspace", "revision": document.revision,
+    json!({"scope": "workspace", "revision": document.revision,
         "stored": {"profiles": graph.profiles.values().collect::<Vec<_>>(),
             "default_execution_profile_id": graph.default_execution_profile_id},
-        "restart_fields": [], "validation_errors": []}))
+        "restart_fields": [], "validation_errors": []})
 }
 
-fn profile_stored_values(values: &toml::Table) -> Value {
-    if let Some(profiles) = values.get("profiles") {
+fn profile_stored_values(values: &toml::Table, section: &str) -> Value {
+    if let Some(profiles) = values.get(section) {
         if !profiles.is_table() {
             return json!(profiles);
         }
     }
     json!(values
-        .get("profiles")
+        .get(section)
         .and_then(toml::Value::as_table)
         .into_iter()
         .flat_map(|profiles| profiles.iter())
@@ -115,9 +95,10 @@ fn profiles_table<'a, T: Serialize + 'a>(
     Ok(table)
 }
 
+/// The `spark.toml` sections an LLM profile update replaces.
 pub fn llm_candidate(profiles: &[LlmProfile]) -> WorkspaceResult<toml::Table> {
     let values = toml::Table::from_iter([(
-        "profiles".into(),
+        "llm_profiles".into(),
         toml::Value::Table(profiles_table(
             profiles
                 .iter()
@@ -128,15 +109,16 @@ pub fn llm_candidate(profiles: &[LlmProfile]) -> WorkspaceResult<toml::Table> {
     Ok(values)
 }
 
+/// The `spark.toml` sections an execution profile update replaces.
 pub fn execution_candidate(value: &ExecutionProfilesUpdate) -> WorkspaceResult<toml::Table> {
     let mut defaults = toml::Table::new();
     if let Some(id) = &value.default_execution_profile_id {
         defaults.insert("execution_profile_id".into(), id.clone().into());
     }
     let values = toml::Table::from_iter([
-        ("defaults".into(), toml::Value::Table(defaults)),
+        ("execution_defaults".into(), toml::Value::Table(defaults)),
         (
-            "profiles".into(),
+            "execution_profiles".into(),
             toml::Value::Table(profiles_table(
                 value
                     .profiles
@@ -151,6 +133,18 @@ pub fn execution_candidate(value: &ExecutionProfilesUpdate) -> WorkspaceResult<t
     Ok(values)
 }
 
+/// Check `candidate` sections as they would land in the current document,
+/// without writing.
+pub fn validate_profile_sections(
+    settings: &SparkSettings,
+    candidate: toml::Table,
+    execution: bool,
+) -> WorkspaceResult<()> {
+    let mut values = read_settings_document(&settings.config_dir.join("spark.toml"))?.values;
+    values.extend(candidate);
+    validate_profile_candidate(settings, &values, execution)
+}
+
 pub fn update_profiles(
     settings: &SparkSettings,
     revision: &str,
@@ -158,13 +152,8 @@ pub fn update_profiles(
     execution: bool,
 ) -> WorkspaceResult<Value> {
     let _references = spark_storage::settings::lock_profile_references(&settings.config_dir)?;
-    let filename = if execution {
-        "execution-profiles.toml"
-    } else {
-        "llm-profiles.toml"
-    };
-    let path = settings.config_dir.join(filename);
-    update_settings_sections(
+    let path = settings.config_dir.join("spark.toml");
+    let document = update_settings_sections(
         &path,
         revision,
         candidate
@@ -179,17 +168,11 @@ pub fn update_profiles(
             })
         },
     )?;
-    let section = if execution {
-        "execution_profiles"
+    Ok(if execution {
+        json!({"execution_profiles": execution_profiles_view(&document)})
     } else {
-        "llm_profiles"
-    };
-    let view = if execution {
-        execution_profiles_view(settings)?
-    } else {
-        llm_profiles_view(settings)?
-    };
-    Ok(json!({section: view}))
+        json!({"llm_profiles": llm_profiles_view(&document)})
+    })
 }
 
 pub fn validate_profile_candidate(
@@ -244,10 +227,10 @@ pub fn validate_profile_candidate(
             &mut references,
         )
     };
-    let core = settings.config_dir.join("spark.toml");
+    // The candidate document holds the installation defaults that reference profiles.
     inspect(
-        json!(read_settings_document(&core)?.values),
-        core.display().to_string(),
+        json!(candidate),
+        settings.config_dir.join("spark.toml").display().to_string(),
     );
     // Inspect authored metadata only, including unregistered project directories.
     // Turns, checkpoints, runtime sessions and historical snapshots are not references.

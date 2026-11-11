@@ -11,25 +11,12 @@ pub fn public_execution_placement_settings(settings: &impl ExecutionProfileSetti
         .as_ref()
         .ok()
         .map(|document| document.revision.clone());
+    let configured = document.as_ref().is_ok_and(|document| {
+        spark_storage::settings::execution_profiles_configured(&document.values)
+    });
     let graph = document
         .map_err(|error| ExecutionProfileConfigError::new(error.to_string()))
-        .and_then(|document| {
-            if document.revision == "absent" {
-                Ok(crate::profile::ExecutionProfileGraph {
-                    profiles: std::collections::BTreeMap::from([(
-                        "native".into(),
-                        ExecutionProfile::implementation_native(),
-                    )]),
-                    synthesized_native_default: true,
-                    ..Default::default()
-                })
-            } else {
-                crate::profile::parse_execution_profiles(&document.values).and_then(|graph| {
-                    graph.validate_default()?;
-                    Ok(graph)
-                })
-            }
-        });
+        .and_then(|document| crate::profile::stored_execution_profiles(&document.values));
     let (loaded, profiles, default_execution_profile_id, synthesized_native_default, errors) =
         match graph {
             Ok(graph) => {
@@ -64,7 +51,7 @@ pub fn public_execution_placement_settings(settings: &impl ExecutionProfileSetti
         "config": {
             "filename": EXECUTION_PROFILES_FILENAME,
             "path": config_path.to_string_lossy(),
-            "exists": config_path.exists(),
+            "exists": configured,
             "loaded": loaded,
             "synthesized_native_default": synthesized_native_default,
         },

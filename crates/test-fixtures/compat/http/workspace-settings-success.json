@@ -46,9 +46,9 @@
         "execution_placement": {
           "config": {
             "exists": false,
-            "filename": "execution-profiles.toml",
+            "filename": "spark.toml",
             "loaded": true,
-            "path": "__SPARK_HOME__/config/execution-profiles.toml",
+            "path": "__SPARK_HOME__/config/spark.toml",
             "synthesized_native_default": true
           },
           "default_execution_profile_id": null,

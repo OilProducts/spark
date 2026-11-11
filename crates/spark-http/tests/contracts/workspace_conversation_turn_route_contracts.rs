@@ -365,7 +365,7 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).unwrap();
-    std::fs::write(settings.config_dir.join("llm-profiles.toml"), "[profiles.frontier]\nprovider = 'openai_compatible'\nbase_url = 'http://localhost:9999/v1'\nmodels = ['gpt-route-agent', 'profile-default']\ndefault_model = 'profile-default'\n").unwrap();
+    std::fs::write(settings.config_dir.join("spark.toml"), "[llm_profiles.frontier]\nprovider = 'openai_compatible'\nbase_url = 'http://localhost:9999/v1'\nmodels = ['gpt-route-agent', 'profile-default']\ndefault_model = 'profile-default'\n").unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",

@@ -653,9 +653,9 @@ fn request_by_id<'a>(snapshot: &'a Value, request_id: &str) -> &'a Value {
 pub(super) fn write_native_execution_profile(settings: &SparkSettings) {
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.native]
+[execution_profiles.native]
 label = "Native"
 mode = "native"
 "#,

@@ -274,8 +274,8 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
         }
     }
     result["utility_models"] = utility;
-    result["llm_profiles"] = crate::profile_settings::llm_profiles_view(settings)?;
-    result["execution_profiles"] = crate::profile_settings::execution_profiles_view(settings)?;
+    result["llm_profiles"] = crate::profile_settings::llm_profiles_view(&document);
+    result["execution_profiles"] = crate::profile_settings::execution_profiles_view(&document);
     Ok(result)
 }
 
@@ -325,16 +325,16 @@ pub fn validate_workspace_settings_update(
             .validate()
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
         WorkspaceSettingsSection::LlmProfiles(value) => {
-            crate::profile_settings::validate_profile_candidate(
+            crate::profile_settings::validate_profile_sections(
                 settings,
-                &crate::profile_settings::llm_candidate(value)?,
+                crate::profile_settings::llm_candidate(value)?,
                 false,
             )
         }
         WorkspaceSettingsSection::ExecutionProfiles(value) => {
-            crate::profile_settings::validate_profile_candidate(
+            crate::profile_settings::validate_profile_sections(
                 settings,
-                &crate::profile_settings::execution_candidate(value)?,
+                crate::profile_settings::execution_candidate(value)?,
                 true,
             )
         }

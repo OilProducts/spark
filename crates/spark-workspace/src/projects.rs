@@ -382,7 +382,7 @@ impl WorkspaceProjectService {
             .unwrap_or(false)
         {
             return Err(WorkspaceError::Validation(
-                "Execution profile settings are invalid; fix execution-profiles.toml before selecting a project default."
+                "Execution profile settings are invalid; fix [execution_profiles] in spark.toml before selecting a project default."
                     .to_string(),
             ));
         }

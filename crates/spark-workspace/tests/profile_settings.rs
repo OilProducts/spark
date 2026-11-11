@@ -17,6 +17,12 @@ fn fixture() -> (tempfile::TempDir, SparkSettings) {
     std::fs::create_dir_all(&settings.bundled_dir().join("flows")).unwrap();
     (temp, settings)
 }
+/// The shared revision of the installation settings document.
+fn revision(settings: &SparkSettings) -> String {
+    spark_storage::settings::read_settings_document(&settings.config_dir.join("spark.toml"))
+        .unwrap()
+        .revision
+}
 fn llm(id: &str) -> Value {
     json!({"id": id, "provider": "openai_compatible", "base_url": "http://localhost:9999/v1", "models": ["model"], "default_model": "model", "api_key_env": "SPARK_PROFILE_TEST_MISSING"})
 }
@@ -48,17 +54,21 @@ fn llm_crud_is_revision_checked_preserves_extensions_and_blocks_referenced_delet
         save(&settings, "llm_profiles", "absent", json!([])),
         Err(spark_workspace::WorkspaceError::Conflict(_))
     ));
-    let path = settings.config_dir.join("llm-profiles.toml");
+    let path = settings.config_dir.join("spark.toml");
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("id ="));
+    save(&settings, "models", rev, json!({"llm_profile": "team"})).unwrap();
+    // The profile section shares the document revision the models save advanced.
+    assert!(matches!(
+        save(
+            &settings,
+            "llm_profiles",
+            rev,
+            json!([llm("team"), llm("other")])
+        ),
+        Err(spark_workspace::WorkspaceError::Conflict(_))
+    ));
     let source = std::fs::read_to_string(&path).unwrap();
-    assert!(!source.contains("id ="));
-    save(
-        &settings,
-        "models",
-        "absent",
-        json!({"llm_profile": "team"}),
-    )
-    .unwrap();
-    let error = save(&settings, "llm_profiles", rev, json!([])).unwrap_err();
+    let error = save(&settings, "llm_profiles", &revision(&settings), json!([])).unwrap_err();
     assert!(
         error.to_string().contains("spark.toml.models.llm_profile"),
         "{error}"
@@ -75,14 +85,12 @@ fn llm_crud_is_revision_checked_preserves_extensions_and_blocks_referenced_delet
         json!({"provider":"codex"}),
     )
     .unwrap();
+    let source = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, format!("{source}\n[extension]\nretained = true\n")).unwrap();
-    let revision = spark_storage::settings::read_settings_document(&path)
-        .unwrap()
-        .revision;
     save(
         &settings,
         "llm_profiles",
-        &revision,
+        &revision(&settings),
         json!([llm("replacement")]),
     )
     .unwrap();
@@ -90,6 +98,10 @@ fn llm_crud_is_revision_checked_preserves_extensions_and_blocks_referenced_delet
     assert_eq!(
         document.values["extension"]["retained"].as_bool(),
         Some(true)
+    );
+    assert_eq!(
+        document.values["models"]["provider"].as_str(),
+        Some("codex")
     );
     save(&settings, "llm_profiles", &document.revision, json!([])).unwrap();
 }
@@ -105,7 +117,7 @@ fn execution_profiles_validate_mounts_metadata_defaults_and_preserve_the_documen
     )
     .unwrap();
     let rev = first["execution_profiles"]["revision"].as_str().unwrap();
-    let path = settings.config_dir.join("execution-profiles.toml");
+    let path = settings.config_dir.join("spark.toml");
     let source = std::fs::read(&path).unwrap();
     for mounts in [
         json!("bad"),
@@ -161,7 +173,7 @@ fn credential_values_in_endpoint_and_reference_fields_are_rejected_without_refle
         profile[field] = json!(value);
         let error = save(&settings, "llm_profiles", "absent", json!([profile])).unwrap_err();
         assert!(!error.to_string().contains("SECRET_VALUE"));
-        assert!(!settings.config_dir.join("llm-profiles.toml").exists());
+        assert!(!settings.config_dir.join("spark.toml").exists());
     }
 }
 #[test]
@@ -222,6 +234,121 @@ fn simultaneous_profile_writers_cannot_overwrite_each_other() {
             .filter(|result| matches!(result, Err(spark_workspace::WorkspaceError::Conflict(_))))
             .count(),
         1
+    );
+}
+
+#[test]
+fn different_section_writers_serialize_on_one_document_revision() {
+    let native = json!({"id":"native", "label":"Native", "mode":"native", "enabled":true, "capabilities":[], "metadata":{}});
+    let barrier = std::sync::Barrier::new(2);
+    let writes = [
+        ("llm_profiles", json!([llm("team")])),
+        (
+            "execution_profiles",
+            json!({"profiles":[native], "default_execution_profile_id":"native"}),
+        ),
+        ("connections", json!({"server_port":9123})),
+    ];
+    for pair in [[0, 1], [1, 2], [2, 0]] {
+        let (_temp, settings) = fixture();
+        let start = revision(&settings);
+        let results = std::thread::scope(|scope| {
+            let writers: Vec<_> = pair
+                .map(|index| {
+                    let (settings, barrier, start) = (&settings, &barrier, &start);
+                    let (section, value) = writes[index].clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        (index, save(settings, section, start, value))
+                    })
+                })
+                .into_iter()
+                .collect();
+            writers
+                .into_iter()
+                .map(|writer| writer.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        // Exactly one writer wins; the stale one retries on the new revision.
+        let lost: Vec<_> = results
+            .iter()
+            .filter(|(_, result)| {
+                matches!(result, Err(spark_workspace::WorkspaceError::Conflict(_)))
+            })
+            .map(|(index, _)| *index)
+            .collect();
+        assert_eq!(lost.len(), 1, "{results:?}");
+        let (section, value) = writes[lost[0]].clone();
+        save(&settings, section, &revision(&settings), value).unwrap();
+        let view = workspace_settings(&settings).unwrap();
+        for index in pair {
+            match writes[index].0 {
+                "llm_profiles" => assert_eq!(view["llm_profiles"]["stored"][0]["id"], "team"),
+                "execution_profiles" => assert_eq!(
+                    view["execution_profiles"]["stored"]["default_execution_profile_id"],
+                    "native"
+                ),
+                _ => assert_eq!(view["connections"]["stored"]["server_port"], 9123),
+            }
+        }
+        assert_eq!(
+            view["llm_profiles"]["revision"],
+            view["connections"]["revision"]
+        );
+    }
+}
+
+#[test]
+fn profile_sections_follow_external_installation_edits_and_ignore_former_files() {
+    let (_temp, settings) = fixture();
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    std::fs::write(
+        settings.config_dir.join("llm-profiles.toml"),
+        "[profiles.old]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['m']\n",
+    )
+    .unwrap();
+    std::fs::write(
+        settings.config_dir.join("execution-profiles.toml"),
+        "[profiles.old]\nlabel='Old'\nmode='native'\n",
+    )
+    .unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert_eq!(view["llm_profiles"]["stored"], json!([]));
+    assert_eq!(
+        view["execution_profiles"]["stored"]["profiles"][0]["id"],
+        "native"
+    );
+    assert_eq!(
+        view["execution_profiles"]["stored"]["profiles"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let saved = save(&settings, "llm_profiles", "absent", json!([llm("team")])).unwrap();
+    let stale = saved["llm_profiles"]["revision"].as_str().unwrap();
+    let path = settings.config_dir.join("spark.toml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{source}\n[execution_profiles.edited]\nlabel='Edited'\nmode='native'\n"),
+    )
+    .unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert_eq!(
+        view["execution_profiles"]["stored"]["profiles"][0]["id"],
+        "edited"
+    );
+    assert_eq!(view["llm_profiles"]["stored"][0]["id"], "team");
+    assert_ne!(view["llm_profiles"]["revision"], stale);
+    assert!(matches!(
+        save(&settings, "llm_profiles", stale, json!([])),
+        Err(spark_workspace::WorkspaceError::Conflict(_))
+    ));
+    assert!(
+        std::fs::read_to_string(settings.config_dir.join("llm-profiles.toml"))
+            .unwrap()
+            .contains("[profiles.old]")
     );
 }
 
@@ -312,8 +439,20 @@ fn reference_creation_after_deletion_is_rejected() {
         json!([]),
     )
     .unwrap();
-    assert!(save(&settings, "models", "absent", json!({"llm_profile":"team"})).is_err());
-    assert!(!settings.config_dir.join("spark.toml").exists());
+    let path = settings.config_dir.join("spark.toml");
+    let before = std::fs::read(&path).unwrap();
+    let error = save(
+        &settings,
+        "models",
+        &revision(&settings),
+        json!({"llm_profile":"team"}),
+    )
+    .unwrap_err();
+    assert!(
+        !matches!(error, spark_workspace::WorkspaceError::Conflict(_)),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 #[test]
@@ -347,15 +486,15 @@ fn candidate_profile_contents_are_checked_by_validate_and_save_without_writes() 
     use spark_workspace::settings::validate_workspace_settings_update;
     let (_temp, settings) = fixture();
     let first = save(&settings, "llm_profiles", "absent", json!([llm("team")])).unwrap();
-    let revision = first["llm_profiles"]["revision"].as_str().unwrap();
-    save(
+    let saved = save(
         &settings,
         "models",
-        "absent",
+        first["llm_profiles"]["revision"].as_str().unwrap(),
         json!({"llm_profile":"team", "model":"model"}),
     )
     .unwrap();
-    let path = settings.config_dir.join("llm-profiles.toml");
+    let revision = saved["llm_profiles"]["revision"].as_str().unwrap();
+    let path = settings.config_dir.join("spark.toml");
     let before = std::fs::read(&path).unwrap();
     let mut changed = llm("team");
     changed["models"] = json!(["other"]);
@@ -446,7 +585,7 @@ fn disabling_referenced_execution_profile_fails_validate_and_save() {
     let mut disabled = profile;
     disabled["enabled"] = json!(false);
     let request = serde_json::from_value(json!({"section":"execution_profiles", "expected_revision":first["execution_profiles"]["revision"], "value":{"profiles":[disabled], "default_execution_profile_id":null}})).unwrap();
-    let path = settings.config_dir.join("execution-profiles.toml");
+    let path = settings.config_dir.join("spark.toml");
     let before = std::fs::read(&path).unwrap();
     assert!(
         spark_workspace::settings::validate_workspace_settings_update(&settings, &request).is_err()
@@ -532,7 +671,7 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
         }
     });
     write_flow(&source);
-    let path = settings.config_dir.join("llm-profiles.toml");
+    let path = settings.config_dir.join("spark.toml");
     let before = std::fs::read(&path).unwrap();
     let mut candidate = json!([team, other]);
     candidate[0]["models"] = json!(["m1"]);

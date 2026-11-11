@@ -151,8 +151,8 @@ const buildWorkspaceSettingsPayload = (overrides: Record<string, unknown> = {}) 
   execution_placement: {
     execution_modes: ['native', 'local_container'],
     config: {
-      filename: 'execution-profiles.toml',
-      path: '/tmp/spark/execution-profiles.toml',
+      filename: 'spark.toml',
+      path: '/tmp/spark/spark.toml',
       exists: true,
       loaded: true,
       synthesized_native_default: false,

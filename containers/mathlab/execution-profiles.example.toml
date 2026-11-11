@@ -1,16 +1,17 @@
-# Example SPARK_HOME/config/execution-profiles.toml registering the math
+# Example SPARK_HOME/config/spark.toml sections registering the math
 # lab container. The writable runtime mount owns a dedicated Codex login;
 # nothing secret is baked into the image. See README.md for initial sign-in.
-default_execution_profile_id = "native"
+[execution_defaults]
+execution_profile_id = "native"
 
-[profiles.native]
+[execution_profiles.native]
 id = "native"
 label = "Native"
 mode = "native"
 enabled = true
 capabilities = []
 
-[profiles.math-lab]
+[execution_profiles.math-lab]
 id = "math-lab"
 label = "Math Lab (Lean, Mathlib, SAT/SMT, CAS)"
 mode = "local_container"
@@ -18,6 +19,6 @@ image = "spark-mathlab:latest"
 enabled = true
 capabilities = []
 
-[profiles.math-lab.metadata]
+[execution_profiles.math-lab.metadata]
 # The destination must match the worker's effective codex_runtime_root.
 "container.mounts" = ["/home/YOU/.spark-mathlab-codex:/home/YOU/.spark/runtime/codex"]

@@ -4200,9 +4200,9 @@ fn a_profiles_vision_applies_only_to_models_the_catalog_does_not_know() {
         let (base_url, bodies) = one_shot_compatible_server();
         let config = tempfile::tempdir().unwrap();
         fs::write(
-            config.path().join("llm-profiles.toml"),
+            config.path().join("spark.toml"),
             format!(
-                "[profiles.seeing]\nprovider = 'openai_compatible'\nbase_url = '{base_url}'\n\
+                "[llm_profiles.seeing]\nprovider = 'openai_compatible'\nbase_url = '{base_url}'\n\
                  models = ['local-vl', 'team-text']\nvision = true\n"
             ),
         )

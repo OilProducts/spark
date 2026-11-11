@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +11,9 @@ use crate::errors::{
 };
 use crate::modes::{normalize_execution_mode, ExecutionMode};
 
-pub const EXECUTION_PROFILES_FILENAME: &str = "execution-profiles.toml";
+/// The installation settings document; profiles are its `[execution_profiles.<id>]`
+/// tables and the installation default is `[execution_defaults]`.
+pub const EXECUTION_PROFILES_FILENAME: &str = "spark.toml";
 pub const IMPLEMENTATION_NATIVE_PROFILE_ID: &str = "native";
 
 pub trait ExecutionProfileSettings {
@@ -117,46 +118,65 @@ pub fn load_execution_profile_config(
     project_default_profile_id: Option<&str>,
     spark_default_profile_id: Option<&str>,
 ) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
+    let document = spark_storage::settings::read_settings_document(
+        &settings.config_dir().join(EXECUTION_PROFILES_FILENAME),
+    )
+    .map_err(|error| ExecutionProfileConfigError::new(error.to_string()))?;
+    execution_profile_config(
+        &document.values,
+        explicit_profile_id,
+        project_default_profile_id,
+        spark_default_profile_id,
+    )
+}
+
+/// The profiles an installation settings document declares, validated as an
+/// edit would be; without execution sections, only the synthesized native profile.
+pub fn stored_execution_profiles(
+    values: &Table,
+) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
+    if !spark_storage::settings::execution_profiles_configured(values) {
+        return Ok(synthesized_native_graph());
+    }
+    let graph = parse_execution_profiles(values)?;
+    graph.validate_default()?;
+    Ok(graph)
+}
+
+fn synthesized_native_graph() -> ExecutionProfileGraph {
+    ExecutionProfileGraph {
+        profiles: BTreeMap::from([(
+            IMPLEMENTATION_NATIVE_PROFILE_ID.to_string(),
+            ExecutionProfile::implementation_native(),
+        )]),
+        default_execution_profile_id: None,
+        synthesized_native_default: true,
+    }
+}
+
+fn execution_profile_config(
+    values: &Table,
+    explicit_profile_id: Option<&str>,
+    project_default_profile_id: Option<&str>,
+    spark_default_profile_id: Option<&str>,
+) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
     let selected_profile_id = first_profile_id([
         explicit_profile_id,
         project_default_profile_id,
         spark_default_profile_id,
     ]);
-    let config_path = settings.config_dir().join(EXECUTION_PROFILES_FILENAME);
-    if !config_path.exists() {
-        if let Some(selected_profile_id) = selected_profile_id {
+    if !spark_storage::settings::execution_profiles_configured(values) {
+        // The synthesized native profile is the one selectable without a config.
+        if let Some(selected_profile_id) = selected_profile_id
+            .filter(|selected| selected.as_str() != IMPLEMENTATION_NATIVE_PROFILE_ID)
+        {
             return Err(ExecutionProfileConfigError::new(format!(
-                "execution profile '{selected_profile_id}' was selected, but {EXECUTION_PROFILES_FILENAME} does not exist"
+                "execution profile '{selected_profile_id}' was selected, but {EXECUTION_PROFILES_FILENAME} has no [execution_profiles]"
             )));
         }
-        return Ok(ExecutionProfileGraph {
-            profiles: BTreeMap::from([(
-                IMPLEMENTATION_NATIVE_PROFILE_ID.to_string(),
-                ExecutionProfile::implementation_native(),
-            )]),
-            default_execution_profile_id: None,
-            synthesized_native_default: true,
-        });
+        return Ok(synthesized_native_graph());
     }
-
-    let raw_text = fs::read_to_string(&config_path).map_err(|source| {
-        ExecutionProfileConfigError::with_source(
-            format!("cannot read {EXECUTION_PROFILES_FILENAME}: {source}"),
-            source,
-        )
-    })?;
-    let raw = raw_text.parse::<toml::Value>().map_err(|source| {
-        // Do not retain the parser error: its Display and Debug include source values.
-        let position = source
-            .span()
-            .map(|span| format!(" near byte {}", span.start))
-            .unwrap_or_default();
-        ExecutionProfileConfigError::new(format!(
-            "invalid {EXECUTION_PROFILES_FILENAME}: malformed TOML{position}; check document syntax"
-        ))
-    })?;
-    let table = raw.as_table().cloned().unwrap_or_default();
-    let graph = parse_execution_profiles(&table)?;
+    let graph = parse_execution_profiles(values)?;
     let selected_profile_id = first_profile_id([
         explicit_profile_id,
         project_default_profile_id,
@@ -176,8 +196,28 @@ pub fn resolve_execution_profile_by_id(
     project_default_profile_id: Option<&str>,
     spark_default_profile_id: Option<&str>,
 ) -> Result<ExecutionProfileSelection, ExecutionProfileSelectionError> {
-    let graph = load_execution_profile_config(
-        settings,
+    let document = spark_storage::settings::read_settings_document(
+        &settings.config_dir().join(EXECUTION_PROFILES_FILENAME),
+    )
+    .map_err(|error| ExecutionProfileSelectionError::new(error.to_string()))?;
+    resolve_execution_profile(
+        &document.values,
+        explicit_profile_id,
+        project_default_profile_id,
+        spark_default_profile_id,
+    )
+}
+
+/// Select from an already-read settings document, so a launch resolves every
+/// installation setting from one snapshot.
+pub fn resolve_execution_profile(
+    values: &Table,
+    explicit_profile_id: Option<&str>,
+    project_default_profile_id: Option<&str>,
+    spark_default_profile_id: Option<&str>,
+) -> Result<ExecutionProfileSelection, ExecutionProfileSelectionError> {
+    let graph = execution_profile_config(
+        values,
         explicit_profile_id,
         project_default_profile_id,
         spark_default_profile_id,
@@ -223,8 +263,8 @@ pub fn parse_execution_profiles(
     raw: &Table,
 ) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
     let mut field_errors = Vec::new();
-    let defaults = table_field(raw, "defaults", &mut field_errors);
-    let profiles = table_field(raw, "profiles", &mut field_errors);
+    let defaults = table_field(raw, "execution_defaults", &mut field_errors);
+    let profiles = table_field(raw, "execution_profiles", &mut field_errors);
     let default_execution_profile_id =
         load_default_execution_profile_id(defaults.as_ref(), &mut field_errors);
     let profiles = load_profiles(profiles.as_ref(), &mut field_errors);
@@ -241,7 +281,10 @@ pub fn parse_execution_profiles(
             ExecutionProfileConfigError::with_field_errors(vec![
                 ExecutionProfileFieldError::for_profile(
                     profile.id.clone(),
-                    format!("profiles.{}.metadata.container.mounts", profile.id),
+                    format!(
+                        "execution_profiles.{}.metadata.container.mounts",
+                        profile.id
+                    ),
                     "Mounts must be an array of nonempty host:container[:options] strings.",
                 ),
             ])
@@ -281,7 +324,7 @@ fn load_default_execution_profile_id(
         return Some(value);
     }
     field_errors.push(ExecutionProfileFieldError::new(
-        "defaults.execution_profile_id",
+        "execution_defaults.execution_profile_id",
         "execution_profile_id must be a non-empty string",
     ));
     None
@@ -299,7 +342,7 @@ fn load_profiles(
         let normalized_id = normalize_text(profile_id);
         if normalized_id.is_empty() {
             field_errors.push(ExecutionProfileFieldError::new(
-                "profiles.<id>",
+                "execution_profiles.<id>",
                 "profile id must be non-empty",
             ));
             continue;
@@ -307,7 +350,7 @@ fn load_profiles(
         let Some(raw_profile) = raw_profile.as_table() else {
             field_errors.push(ExecutionProfileFieldError::for_profile(
                 normalized_id.clone(),
-                format!("profiles.{normalized_id}"),
+                format!("execution_profiles.{normalized_id}"),
                 "profile must be a table",
             ));
             continue;
@@ -465,7 +508,7 @@ fn optional_capabilities(
         let Some(value) = optional_string(item) else {
             field_errors.push(ExecutionProfileFieldError::for_profile(
                 profile_id.to_string(),
-                format!("profiles.{profile_id}.capabilities[{index}]"),
+                format!("execution_profiles.{profile_id}.capabilities[{index}]"),
                 "capability must be a non-empty string",
             ));
             return None;
@@ -556,7 +599,7 @@ fn profile_error(
 ) {
     field_errors.push(ExecutionProfileFieldError::for_profile(
         profile_id.to_string(),
-        format!("profiles.{profile_id}.{field_name}"),
+        format!("execution_profiles.{profile_id}.{field_name}"),
         message,
     ));
 }

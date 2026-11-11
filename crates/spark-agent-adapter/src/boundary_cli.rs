@@ -111,19 +111,33 @@ fn capture_configuration(payload: &mut Value) -> Result<(), Value> {
     if let Some(path) = explicit_config_dir {
         settings.config_dir = path;
     }
-    let mut configuration = spark_storage::settings::read_execution_configuration(
+    // One read of the installation document keeps the snapshot coherent.
+    let core =
+        spark_storage::settings::read_settings_document(&settings.config_dir.join("spark.toml"))
+            .map_err(|_| invalid())?;
+    let mut configuration = spark_storage::settings::execution_configuration(
         &settings.config_dir,
+        &core,
         &spark_common::paths::ProcessEnvironment,
     )
     .map_err(|_| invalid())?;
     crate::config::capture_native_binaries(&mut configuration.agents);
-    let profiles = unified_llm_adapter::load_llm_profiles(&settings.config_dir)
+    let profiles = unified_llm_adapter::profiles::parse_llm_profiles(&core.values)
         .map_err(|_| error_payload("invalid_configuration", "Invalid LLM profiles.", false))?;
     let omitted = |value: &Value| {
         value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty())
     };
     let project_path = payload["project_path"].as_str().unwrap_or(".");
-    let (models, _) = crate::config::read_project_model_defaults(&settings, project_path)
+    let (models, _) = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .project_settings(project_path)
+        .and_then(|project| {
+            spark_storage::settings::project_model_defaults(&settings, &core, &project)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|defaults| {
+            crate::config::validate_model_settings_with_profiles(&profiles, &defaults.0)
+                .map(|_| defaults)
+        })
         .map_err(|error| error_payload("invalid_configuration", error, false))?;
     let inherits = omitted(&payload["provider"]) && omitted(&payload["llm_profile"]);
     if inherits {
