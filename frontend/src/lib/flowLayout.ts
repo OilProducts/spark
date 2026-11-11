@@ -58,7 +58,14 @@ function getNodeCenter(rect: NodeRect): { x: number; y: number } {
     }
 }
 
+const OPPOSITE_SIDE: Record<RouteSide, RouteSide> = { top: 'bottom', right: 'left', bottom: 'top', left: 'right' }
+
+// Flows lay out top-down, so an edge to a node wholly below its source leaves from the bottom
+// and enters at the top; turning sideways would cut through that node's neighbours.
 function chooseDefaultSourceSide(sourceRect: NodeRect, targetRect: NodeRect): RouteSide {
+    if (targetRect.y >= sourceRect.y + sourceRect.height) {
+        return 'bottom'
+    }
     const sourceCenter = getNodeCenter(sourceRect)
     const targetCenter = getNodeCenter(targetRect)
     const dx = targetCenter.x - sourceCenter.x
@@ -71,15 +78,7 @@ function chooseDefaultSourceSide(sourceRect: NodeRect, targetRect: NodeRect): Ro
 }
 
 function chooseDefaultTargetSide(sourceRect: NodeRect, targetRect: NodeRect): RouteSide {
-    const sourceCenter = getNodeCenter(sourceRect)
-    const targetCenter = getNodeCenter(targetRect)
-    const dx = targetCenter.x - sourceCenter.x
-    const dy = targetCenter.y - sourceCenter.y
-
-    if (Math.abs(dx) >= Math.abs(dy)) {
-        return dx >= 0 ? 'left' : 'right'
-    }
-    return dy >= 0 ? 'top' : 'bottom'
+    return OPPOSITE_SIDE[chooseDefaultSourceSide(sourceRect, targetRect)]
 }
 
 function getProjectionForSide(_referenceRect: NodeRect, otherRect: NodeRect, side: RouteSide): number {

@@ -4333,11 +4333,11 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await waitFor(() => {
       expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
-        'Interview completed for review_gate (accepted answer: Approve)',
+        'Answer for Review Gate: Approve',
       )
     })
     expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
-      'Interview completed for release_gate (skipped)',
+      'Question at Release Gate skipped',
     )
   })
 
@@ -4473,11 +4473,11 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await waitFor(() => {
       expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
-        'Interview completed for review_gate (accepted answer: Approve)',
+        'Answer for Review Gate: Approve',
       )
     })
     expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
-      'Interview completed for approval_gate (skipped)',
+      'Question at Approval Gate skipped',
     )
   })
 

@@ -145,7 +145,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     </p>
                 ) : (
                     <p className="text-xs text-muted-foreground">
-                        Keys must use the `context.*` namespace.
+                        Keys must use the <code>context.*</code> namespace.
                     </p>
                 )}
             </div>

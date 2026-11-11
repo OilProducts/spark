@@ -103,7 +103,7 @@ const asString = (value: unknown): string | null => (
     typeof value === 'string' && value.trim().length > 0 ? value : null
 )
 
-const humanizeNodeId = (nodeId: string): string => (
+export const humanizeNodeId = (nodeId: string): string => (
     nodeId.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 )
 

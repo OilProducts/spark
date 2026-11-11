@@ -7,6 +7,7 @@ import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
 import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
+import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
 
@@ -75,6 +76,8 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
         setOpen(false)
         openAttentionItem(item)
     }
+    // eslint-disable-next-line react-hooks/purity -- render-time clock for when each item asked; the list re-renders as it opens
+    const now = Date.now()
 
     return (
         <div ref={containerRef} className="relative max-sm:flex max-sm:min-w-8 max-sm:flex-1">
@@ -120,13 +123,15 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                             onClick={() => openItem(item)}
                             className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
                         >
-                            <span className="text-xs font-semibold text-warning">
-                                {ATTENTION_KIND_LABELS[item.kind]}
+                            <span className="flex w-full items-baseline justify-between gap-2 text-xs">
+                                <span className="font-semibold text-warning">{ATTENTION_KIND_LABELS[item.kind]}</span>
+                                <span data-testid="attention-bell-item-time" className="shrink-0 text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
                             </span>
                             <span className="w-full truncate text-sm">
                                 {attentionTitle(item, runs)}
                             </span>
                             <span className="w-full truncate text-xs text-muted-foreground">
+                                {item.question ? `${item.question} · ` : ''}
                                 {projectLabel(registry, item.project_path)}
                                 {item.conversation_handle ? ` · ${item.conversation_handle}` : ''}
                             </span>

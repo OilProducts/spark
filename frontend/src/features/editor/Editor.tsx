@@ -10,7 +10,6 @@ import {
     useEdgesState,
     applyNodeChanges,
     applyEdgeChanges,
-    useReactFlow,
 } from '@xyflow/react';
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -67,6 +66,7 @@ import {
     layoutWithElk,
     nodeTypes,
     nowMs,
+    useReadableFraming,
 } from '@/features/workflow-canvas';
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { isAbortError } from '@/lib/abortError';
@@ -84,8 +84,11 @@ const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
 const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
 const MINIMAP_NODE_THRESHOLD = 10;
-// A small flow opens at its natural size rather than magnified.
-const FIT_VIEW_OPTIONS = { maxZoom: 1 };
+// The zoom controls sit at the bottom left; keep content to their right, and above the
+// minimap a big graph shows at the bottom right.
+const FRAME_PADDING = { top: 24, right: 24, bottom: 24, left: 56 } as const;
+const MINIMAP_SIZE = { width: 160, height: 108 };
+const MINIMAP_FRAME_PADDING = { ...FRAME_PADDING, bottom: MINIMAP_SIZE.height + 32 } as const;
 const LIVE_ROUTE_THROTTLE_MS = 80;
 const EDITOR_LAYOUT_CANVAS_KIND: FlowCanvasKind = 'editor-parent-only';
 
@@ -281,16 +284,19 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     ];
     const optimizationLabel = activeOptimizations.length ? activeOptimizations.join(', ') : 'none';
     const flowName = activeFlow;
-    const { fitView } = useReactFlow();
+    const canvasPaneRef = useRef<HTMLDivElement>(null);
+    const frame = useReadableFraming(canvasPaneRef);
     // A newly opened flow, or a switch between its parent and expanded views, opens framed;
     // edits and reloads of the same graph keep the viewport where the user left it.
     const framedGraphRef = useRef<string | null>(null);
-    const frameNewGraph = useCallback(() => {
+    const frameNewGraph = useCallback((graphNodes: Node[]) => {
         const graphKey = `${flowName}:${expandChildFlowsRef.current}`;
         if (framedGraphRef.current === graphKey) return;
         framedGraphRef.current = graphKey;
-        void fitView(FIT_VIEW_OPTIONS);
-    }, [fitView, flowName]);
+        frame(graphNodes, {
+            padding: graphNodes.length > MINIMAP_NODE_THRESHOLD && !expandChildFlowsRef.current ? MINIMAP_FRAME_PADDING : FRAME_PADDING,
+        });
+    }, [frame, flowName]);
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
@@ -819,7 +825,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
                 setNodes(hydrated.nodes);
                 setEdges(hydrated.edges);
-                frameNewGraph();
+                frameNewGraph(hydrated.nodes);
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
                 }
@@ -1336,7 +1342,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey
                 setNodes(hydrated.nodes)
                 setEdges(hydrated.edges)
-                frameNewGraph()
+                frameNewGraph(hydrated.nodes)
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false)
                 }
@@ -1393,7 +1399,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             )}
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             {/* ponytail: phones get the file view alone in Files mode; its list selects files. */}
-            <div className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
+            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
                 {
                     flowName ? (
                         <ReactFlow
@@ -1422,8 +1428,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                 },
                             }}
                             elevateEdgesOnSelect
-                            fitView
-                            fitViewOptions={FIT_VIEW_OPTIONS}
                             colorMode="light"
                             onlyRenderVisibleElements={onlyRenderVisibleElements}
                             minZoom={0.1}
@@ -1434,6 +1438,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                 expanded preview's nodes never reach the minimap, so it would show an empty box. */}
                             {nodeCount > MINIMAP_NODE_THRESHOLD && !isExpandedReadOnlyPreview ? (
                                 <MiniMap
+                                    style={MINIMAP_SIZE}
                                     nodeColor="hsl(var(--muted))"
                                     maskColor="hsl(var(--background)/0.5)"
                                 />

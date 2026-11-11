@@ -24,18 +24,24 @@ export function Sheet({ className, ...props }: ComponentProps<'div'>) {
     )
 }
 
-/** A view's side panel (on the ground) beside its sheet; on a narrow viewport they stack. */
+/**
+ * A view's side panel (on the ground) beside its sheet; on a narrow viewport they stack, the
+ * panel in a 40vh scroller, or at full length in the view's one scroll with `panelInFlow`
+ * (the view then scrolls its sheet into view when something is picked).
+ */
 export function ViewLayout({
     view,
     title,
     actions,
     panel,
+    panelInFlow = false,
     children,
 }: {
     view: string
     title: string
     actions?: ReactNode
     panel: ReactNode
+    panelInFlow?: boolean
     children: ReactNode
 }) {
     const isNarrowViewport = useNarrowViewport()
@@ -48,7 +54,7 @@ export function ViewLayout({
             <aside
                 data-testid="side-panel"
                 aria-label={`${title} panel`}
-                className={`flex shrink-0 flex-col ${isNarrowViewport ? 'max-h-[40vh]' : 'w-70'}`}
+                className={cn('flex shrink-0 flex-col', isNarrowViewport ? !panelInFlow && 'max-h-[40vh]' : 'w-70')}
             >
                 <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-3.5">
                     <h2 data-testid="side-panel-title" className="text-base font-semibold text-foreground">{title}</h2>

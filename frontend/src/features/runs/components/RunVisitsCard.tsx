@@ -18,10 +18,12 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
+import { journalEntrySummary } from '../model/timelineModel'
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
     formatVisitErrorKind,
+    humanizeNodeId,
     parallelBranchResults,
     visitContextWrites,
     visitKey,
@@ -340,7 +342,7 @@ export function RunVisitsCard({
             </Well>
             <div className={cn('min-w-0 flex-1', isNarrowViewport ? undefined : 'min-h-0 overflow-y-auto')}>
                 {showJournal ? (
-                    <RunJournal journal={journal} timelineError={timelineError} />
+                    <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
                 ) : selected === 'status' ? (
                     renderStatus(select)
                 ) : selected === 'context' ? (
@@ -404,6 +406,8 @@ function RunVisitView({
     const branchResults = parallelBranchResults(visit)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
+    // A tool's notes are its stdout, which shows once, under its command.
+    const reason = visit.kind === 'tool' && visit.reason === visitToolResult(visit).output ? null : visit.reason
     const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
         .filter((part): part is string => part !== null)
         .join(' · ')
@@ -495,8 +499,8 @@ function RunVisitView({
                             </span>
                         ) : null}
                     </div>
-                    {visit.reason ? (
-                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{visit.reason}</p>
+                    {reason ? (
+                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{reason}</p>
                     ) : null}
                     {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
                     {writes.length > 0 ? (
@@ -771,7 +775,15 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
 const JOURNAL_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 const JOURNAL_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
 
-function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[]; timelineError: string | null }) {
+function RunJournal({ journal, flowNodes, timelineError }: {
+    journal: TimelineEventEntry[]
+    flowNodes: Record<string, VisitFlowNode>
+    timelineError: string | null
+}) {
+    // Steps read as the Steps list names them; a child flow's nodes are not in this flow.
+    const nodeLabel = (nodeId: string, scope: TimelineEventEntry['sourceScope']) => (
+        (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
+    )
     let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
@@ -798,7 +810,7 @@ function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[];
                                     event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,
                                 )}
                                 >
-                                    {event.summary}
+                                    {journalEntrySummary(event, nodeLabel)}
                                 </span>
                             </li>
                         </Fragment>

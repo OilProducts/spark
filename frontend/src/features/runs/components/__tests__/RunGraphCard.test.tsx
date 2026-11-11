@@ -64,7 +64,7 @@ describe('RunGraphCard', () => {
             })
         })
 
-        render(<RunGraphCard run={run} />)
+        render(<RunGraphCard run={run} nodeStatusesById={{}} selectedNodeId={null} onSelectNode={() => {}} />)
 
         await waitFor(() => {
             expect(screen.getByTestId('run-graph-loading')).toBeVisible()
@@ -119,7 +119,7 @@ describe('RunGraphCard', () => {
             })
         })
 
-        render(<RunGraphCard run={run} />)
+        render(<RunGraphCard run={run} nodeStatusesById={{}} selectedNodeId={null} onSelectNode={() => {}} />)
 
         await screen.findByTestId('run-graph-panel')
         await act(async () => {

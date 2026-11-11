@@ -17,7 +17,7 @@ import {
     usageByFlow, usageSummary, type DefinitionItem, type DefinitionList, type LiveRole, type RoleFileDetail,
 } from './rolesModel'
 
-/** Only what differs from bundled only: customized or a project copy. */
+/** Only what differs from bundled only: the project's own, or customized from bundled. */
 export function DefinitionBadges({ item }: { item: Pick<DefinitionItem, 'layer'> }) {
     return <>{definitionBadges(item).map((badge) => <Badge key={badge} data-testid="definition-badge" variant="default">{badge}</Badge>)}</>
 }

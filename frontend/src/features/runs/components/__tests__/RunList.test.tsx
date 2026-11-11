@@ -115,12 +115,12 @@ describe('RunList', () => {
         )
         const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
         expect(titles()).toEqual(['Tighten the review loop', 'changes/CR-1/request.md'])
-        // Finished runs sit under a day group, so the row drops the date; the project leads
-        // the meta line while the list spans every project.
+        // Finished runs sit under a day group, so the row keeps only the time of day; the
+        // project leads the meta line while the list spans every project.
         expect(screen.getByTestId('run-list-day-group')).toHaveTextContent(/^Mar 2\d/)
-        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change · \d{1,2}:\d{2}\D*$/)
         // An untitled run leads with its input and the flow moves to the meta line.
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · Failed$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · \d{1,2}:\d{2}\D* · Failed$/)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
         // The dot carries the status; a word appears only for exceptions.
         const rows = screen.getAllByTestId('run-history-row')
@@ -132,9 +132,9 @@ describe('RunList', () => {
         fireEvent.click(toggle)
         expect(titles()).toEqual(['Tighten the review loop', 'Implement Task', 'changes/CR-1/request.md'])
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Running', ' · Failed'])
-        // A child row drops the date its day group states and the project its parent names,
-        // and reads duration · status (its flow is the title).
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^\d+h \d+m · Running$/)
+        // A child row drops the day its day group states and the project its parent names,
+        // and reads time · duration · status (its flow is the title).
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^\d{1,2}:\d{2}\D* · \d+h \d+m · Running$/)
 
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'merge' } })
         expect(titles()).toEqual(['changes/CR-1/request.md'])
@@ -167,7 +167,7 @@ describe('RunList', () => {
         // Running is the exception and keeps it.
         expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^Selected · .+ · \d+h \d+m$/)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Queued'])
-        expect(screen.getAllByTestId('run-history-row-meta')[3]).toHaveTextContent('Selected · 4m')
+        expect(screen.getAllByTestId('run-history-row-meta')[3]).toHaveTextContent(/^Selected · \d{1,2}:\d{2}\D* · 4m 00s$/)
         expect(screen.getByTestId('run-list-search-input')).toHaveAttribute('placeholder', 'Search 4 runs')
         const [waiting, active] = screen.getAllByTestId('run-history-row')
         expect(waiting).not.toHaveAttribute('aria-current')

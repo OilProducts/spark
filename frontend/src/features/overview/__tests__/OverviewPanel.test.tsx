@@ -46,6 +46,16 @@ describe('Overview needs you', () => {
         await poll([gate('run-a', 'gate-2'), gate('run-b', 'gate-1')], ['run-a', 'run-b'])
         await poll([gate('run-b', 'gate-1')], ['run-b'])
     })
+
+    it('says what each gate asks and when, in place of the kind', async () => {
+        pending = [{ ...gate('run-a', 'gate-1'), question: 'Ship v1.2.0?' }, gate('run-b', 'gate-1')]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(rows()).toEqual(['run-a', 'run-b']))
+        const [asked, plain] = screen.getAllByTestId('overview-needs-you-item')
+        expect(asked).toHaveTextContent('Ship v1.2.0? · app')
+        expect(plain).toHaveTextContent('Run waiting for input · app')
+        expect(screen.getAllByTestId('overview-needs-you-time')[0]).toHaveTextContent(/^Oct 2/)
+    })
 })
 
 describe('Overview needs you seen', () => {

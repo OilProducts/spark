@@ -495,8 +495,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     .toContain(`run_id=${run.run_id}`)
 
   // Older pages load on their own: visits need the whole journal.
-  await expect(journalPanel).toContainText('Stage build completed')
-  await expect(journalPanel).toContainText('Stage build started')
+  await expect(journalPanel).toContainText('Build completed')
+  await expect(journalPanel).toContainText('Build started')
   expect(journalRequestUrls.some((url) => url.includes('before_sequence=4'))).toBe(true)
 
   await page.evaluate(({ runId }) => {
@@ -537,8 +537,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
   }, { runId: run.run_id })
 
-  await expect(journalPanel).toContainText('Stage deploy completed (decision done)')
-  await expect(journalPanel).toContainText('deploy → approve_release on done (visit 2)')
+  await expect(journalPanel).toContainText('Deploy completed')
+  await expect(journalPanel).toContainText('Deploy → Approve Release on done (visit 2)')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 
   // The question is answered in place on the status item: the choice reads as its label

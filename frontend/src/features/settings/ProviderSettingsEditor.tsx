@@ -32,8 +32,8 @@ export function ProviderSettingsEditor() {
                 })}
             </fieldset></details>)}
             <div className="flex flex-wrap gap-2">
-            <Button variant="outline" aria-label="Save provider connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-            <Button variant="ghost" aria-label="Discard provider connections changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+            <Button size="sm" aria-label="Save provider connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+            <Button size="sm" variant="ghost" aria-label="Discard provider connections changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
@@ -207,9 +208,10 @@ export function RunContextItem({
                 </section>
             ))}
             {systemKeys.length > 0 ? (
-                <details data-testid="run-context-runtime-group" open={Boolean(query)}>
-                    <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
-                        + {systemKeys.length} system {systemKeys.length === 1 ? 'key' : 'keys'}
+                <details data-testid="run-context-runtime-group" open={Boolean(query)} className="group">
+                    <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-semibold text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                        <ChevronRight aria-hidden="true" className="size-3.5 transition-transform group-open:rotate-90" />
+                        {systemKeys.length} system {systemKeys.length === 1 ? 'key' : 'keys'}
                     </summary>
                     <ul className="mt-1 divide-y divide-border text-xs">
                         {systemKeys.map((key) => {

@@ -136,7 +136,7 @@ export function RunQuestionsPanel({
                                                     {gate.options.map((option) => {
                                                         const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
                                                         const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
-                                                            && Boolean(option.description)
+                                                            && Boolean(option.key || option.description)
                                                         return (
                                                             <div key={option.value} className="flex min-w-0 max-w-[min(20rem,100%)] flex-col gap-1">
                                                                 <Button
@@ -157,8 +157,8 @@ export function RunQuestionsPanel({
                                                                         data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
                                                                         className="text-xs text-muted-foreground"
                                                                     >
-                                                                        {showMultipleChoiceMetadata && option.key ? <span className="mr-1">[{option.key}]</span> : null}
-                                                                        {showMultipleChoiceMetadata ? <span>{option.description}</span> : null}
+                                                                        {showMultipleChoiceMetadata && option.key ? <span className="mr-1 font-mono">[{option.key}]</span> : null}
+                                                                        {showMultipleChoiceMetadata && option.description ? <span>{option.description}</span> : null}
                                                                         {semanticHint ? <span>{semanticHint}</span> : null}
                                                                     </div>
                                                                 ) : null}

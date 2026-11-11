@@ -190,8 +190,10 @@ export function OverviewPanel() {
                                         <StatusDot tone="warning" />
                                         <span className="flex min-w-0 flex-1 flex-col gap-px">
                                             <span className="truncate text-sm font-medium">{attentionTitle(item, runs)}</span>
-                                            <span className="truncate text-xs text-muted-foreground">{ATTENTION_KIND_LABELS[item.kind]} · {projectLabel(registry, item.project_path)}</span>
+                                            {/* A gate's question says what this run waits on, where the kind alone reads the same for every run of a flow. */}
+                                            <span className="truncate text-xs text-muted-foreground">{item.question || ATTENTION_KIND_LABELS[item.kind]} · {projectLabel(registry, item.project_path)}</span>
                                         </span>
+                                        <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
                                     </button>
                                 </li>
                             ))}

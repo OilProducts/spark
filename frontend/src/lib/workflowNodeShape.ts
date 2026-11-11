@@ -39,7 +39,9 @@ export const WORKFLOW_NODE_SHAPE_OPTIONS: Array<{ value: WorkflowNodeShape; labe
     { value: 'Msquare', label: 'End Node' },
 ]
 
-const BOX_DIMENSIONS: WorkflowNodeDimensions = { width: 220, height: 110 }
+// Frames fit a caption line and a two-line label with little spare air, so a fitted graph
+// keeps its labels as large as possible.
+const BOX_DIMENSIONS: WorkflowNodeDimensions = { width: 200, height: 84 }
 
 const SHAPE_NODE_TYPE: Record<WorkflowNodeShape, WorkflowNodeType> = {
     Mdiamond: 'startNode',
@@ -54,15 +56,15 @@ const SHAPE_NODE_TYPE: Record<WorkflowNodeShape, WorkflowNodeType> = {
 }
 
 const SHAPE_DIMENSIONS: Record<WorkflowNodeShape, WorkflowNodeDimensions> = {
-    Mdiamond: { width: 168, height: 96 },
-    Msquare: { width: 168, height: 96 },
+    Mdiamond: { width: 168, height: 92 },
+    Msquare: { width: 152, height: 76 },
     box: BOX_DIMENSIONS,
-    hexagon: { width: 228, height: 116 },
-    diamond: { width: 176, height: 104 },
-    component: { width: 236, height: 116 },
-    tripleoctagon: { width: 236, height: 116 },
-    parallelogram: { width: 228, height: 116 },
-    house: { width: 236, height: 124 },
+    hexagon: { width: 228, height: 92 },
+    diamond: { width: 176, height: 100 },
+    component: { width: 212, height: 92 },
+    tripleoctagon: { width: 220, height: 100 },
+    parallelogram: { width: 212, height: 84 },
+    house: { width: 212, height: 104 },
 }
 
 export function isWorkflowNodeShape(value?: string | null): value is WorkflowNodeShape {

@@ -198,50 +198,50 @@ export function LaunchPanel({
                 }
             }}
         >
-            <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                    <h3 className="text-lg font-semibold text-foreground">Launch flow</h3>
-                    <p
-                        data-testid="launch-panel-target-copy"
-                        className="text-xs leading-5 text-muted-foreground"
-                    >
-                        {projectPath
-                            ? `Runs in ${projectPath}.`
-                            : 'Choose a project to enable launching.'}
-                    </p>
-                    {target.flowName ? (
-                        <span
-                            data-testid="launch-panel-flow-name"
-                            className="block max-w-[20rem] truncate font-mono text-xs text-muted-foreground"
-                            title={target.flowName}
+            <div className="space-y-1">
+                <div className="flex items-center justify-between gap-3">
+                    <h3 className="min-w-0 text-lg font-semibold text-foreground">Launch flow</h3>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                            type="button"
+                            data-testid="launch-panel-start-button"
+                            onClick={() => {
+                                void requestStart()
+                            }}
+                            disabled={!canRun}
+                            title={canRun ? undefined : executeDisabledReason}
                         >
-                            {target.flowName}
-                        </span>
-                    ) : null}
+                            {executeLabel}
+                        </Button>
+                        <Button
+                            type="button"
+                            data-testid="launch-panel-close-button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label="Close launch panel"
+                            onClick={onClose}
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </Button>
+                    </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                        type="button"
-                        data-testid="launch-panel-start-button"
-                        onClick={() => {
-                            void requestStart()
-                        }}
-                        disabled={!canRun}
-                        title={canRun ? undefined : executeDisabledReason}
+                {target.flowName ? (
+                    <span
+                        data-testid="launch-panel-flow-name"
+                        className="block truncate font-mono text-xs text-muted-foreground"
+                        title={target.flowName}
                     >
-                        {executeLabel}
-                    </Button>
-                    <Button
-                        type="button"
-                        data-testid="launch-panel-close-button"
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label="Close launch panel"
-                        onClick={onClose}
-                    >
-                        <X className="h-3.5 w-3.5" />
-                    </Button>
-                </div>
+                        {target.flowName}
+                    </span>
+                ) : null}
+                <p
+                    data-testid="launch-panel-target-copy"
+                    className="break-all text-xs leading-5 text-muted-foreground"
+                >
+                    {projectPath
+                        ? `Runs in ${projectPath}.`
+                        : 'Choose a project to enable launching.'}
+                </p>
             </div>
 
             {infoNotice ? (
@@ -337,7 +337,7 @@ export function LaunchPanel({
                 </Well>
             ) : null}
 
-            <Well>
+            {parsedLaunchInputs.entries.length > 0 || parsedLaunchInputs.error ? <Well>
                 <LaunchInputsForm
                     isNarrowViewport={isNarrowViewport}
                     flowName={target.flowName}
@@ -352,7 +352,7 @@ export function LaunchPanel({
                         }))
                     }}
                 />
-            </Well>
+            </Well> : null}
         </div>
     )
 }

@@ -14,7 +14,7 @@ import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration, runRecordTone } from '../model/shared'
-import { flowTitle, formatRunDate, runDayLabel, runTitle } from '../model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -121,9 +121,9 @@ export function RunList({
         dayGroups.set(label, [...(dayGroups.get(label) ?? []), run])
     }
 
-    // The row drops what its group label already states: the date under a day group
-    // (`underDay`) and the status word under a state group (`stated`). Child rows also
-    // drop the project their parent names.
+    // The row drops what its group label already states: the day under a day group
+    // (`underDay`, which keeps the time) and the status word under a state group (`stated`).
+    // Child rows also drop the project their parent names.
     const renderRunRow = (
         run: RunRecord,
         { depth = 0, underDay = false, stated }: { depth?: number; underDay?: boolean; stated?: string } = {},
@@ -133,7 +133,7 @@ export function RunList({
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const metaParts = [
             title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
-            underDay ? null : formatRunDate(run.started_at, now),
+            underDay ? formatRunTime(run.started_at) : formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
         ].filter((value): value is string => Boolean(value) && value !== '—')
         // Short enough for the trailing slot, which never truncates (the meta line does).

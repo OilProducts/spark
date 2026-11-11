@@ -491,11 +491,11 @@ it('creates with a picked playbook and shows it in the rail with its text expand
     expect(text).not.toBeVisible()
 })
 
-it('preserves a new draft on Cancel', async () => {
+it('preserves a new draft on Close', async () => {
     render(<MissionsPanel active />)
     await newMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Draft title' } })
-    fireEvent.click(editor().getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(editor().getByRole('button', { name: 'Close' }))
     await newMission()
     expect(screen.getByLabelText('Title')).toHaveValue('Draft title')
 })

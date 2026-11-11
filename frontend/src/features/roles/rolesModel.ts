@@ -88,9 +88,9 @@ export function frontmatterFields(text: string): { fields: [string, string][]; b
     return { fields, body }
 }
 
-/** An item's origin when it is not bundled only: the project's own, or a project copy of a bundled one. */
+/** An item's origin when it is not bundled only: the project's own, or a project copy that overrides a bundled one. */
 export function definitionBadges(item: Pick<DefinitionItem, 'layer'>): string[] {
-    return item.layer === 'project' ? ['customized'] : item.layer === 'project_copy' ? ['project copy'] : []
+    return item.layer === 'project' ? ['project'] : item.layer === 'project_copy' ? ['customized'] : []
 }
 
 /** A role's flow nodes, grouped by flow in first-seen order. */

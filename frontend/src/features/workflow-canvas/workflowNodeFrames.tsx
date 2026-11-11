@@ -80,22 +80,24 @@ export function getWorkflowNodeContainerStyle(shape: WorkflowNodeShape): CSSProp
 export function getWorkflowNodeContentClassName(shape: WorkflowNodeShape): string {
     switch (shape) {
         case 'Mdiamond':
+            return 'px-8 py-5';
         case 'Msquare':
-            return 'px-7 py-5';
+            return 'px-5 py-4';
         case 'diamond':
-            return 'px-9 py-6';
+            return 'px-9 py-5';
         case 'hexagon':
+            return 'px-9 py-4';
         case 'parallelogram':
-            return 'px-8 py-6';
+            return 'px-8 py-3';
         case 'component':
-            return 'pl-12 pr-6 py-6';
+            return 'pl-9 pr-4 py-4';
         case 'tripleoctagon':
-            return 'px-8 py-6';
+            return 'px-7 py-5';
         case 'house':
-            return 'px-8 pt-8 pb-5';
+            return 'px-7 pt-8 pb-3';
         case 'box':
         default:
-            return 'px-4 py-4';
+            return 'px-4 py-3';
     }
 }
 

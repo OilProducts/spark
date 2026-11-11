@@ -93,13 +93,10 @@ function FlowTreeNodeRow({
                 }`}
                 style={{ paddingLeft: `${indent}px` }}
             >
-                <span className="flex min-w-0 items-start gap-2">
-                    <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {/* The indicator sits below the name so the name keeps the row's width. */}
-                    <span className="flex min-w-0 flex-col items-start gap-1">
-                        <span className="min-w-0 max-w-full truncate">{node.name}</span>
-                        {renderFlowIndicator?.(node.path)}
-                    </span>
+                <span className="flex w-full min-w-0 items-center gap-2">
+                    <FileText className="h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 truncate">{node.name}</span>
+                    {renderFlowIndicator?.(node.path)}
                 </span>
             </Button>
             {onDeleteFlow ? (

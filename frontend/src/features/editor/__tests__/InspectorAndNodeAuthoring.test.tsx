@@ -416,7 +416,7 @@ describe('Accessible node inspector fields', () => {
     expect(reads).toHaveValue('bad')
     expect(reads).toHaveAccessibleDescription(/expects to consume.*Invalid context key/)
     expect(reads).toHaveAttribute('aria-invalid', 'true')
-    expect(writes).toHaveAccessibleDescription(/expected to produce.*One `context.\*` key per line/)
+    expect(writes).toHaveAccessibleDescription(/expected to produce.*One context\.\* key per line/)
     expect(writes).not.toHaveAttribute('aria-invalid')
     fireEvent.change(reads, { target: { value: 'context.read' } })
     fireEvent.change(writes, { target: { value: 'context.write' } })
@@ -425,7 +425,7 @@ describe('Accessible node inspector fields', () => {
     const oldErrorId = screen.getByTestId('node-reads-context-editor-error').id
     rerender(<NodeInspectorPanel {...props} readsContextDraft="context.read" writesContextError="Write error" />)
     expect(reads).not.toHaveAttribute('aria-invalid')
-    expect(reads).toHaveAccessibleDescription(/One `context.\*` key per line/)
+    expect(reads).toHaveAccessibleDescription(/One context\.\* key per line/)
     expect(reads.getAttribute('aria-describedby')).not.toContain(oldErrorId)
     expect(document.getElementById(oldErrorId)).toBeNull()
     expect(writes).toHaveAccessibleDescription(/Write error/)

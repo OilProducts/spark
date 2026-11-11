@@ -194,7 +194,7 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
                 renderFlowIndicator={(flow) => catalog.flowDefinitions[flow] && definitionBadges(catalog.flowDefinitions[flow]).length > 0
-                    && <span className="flex flex-wrap gap-1"><DefinitionBadges item={catalog.flowDefinitions[flow]} /></span>}
+                    && <span className="flex shrink-0 gap-1"><DefinitionBadges item={catalog.flowDefinitions[flow]} /></span>}
             />
         </div>
     )

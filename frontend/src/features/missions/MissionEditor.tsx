@@ -47,7 +47,7 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
             {unsaved && <p className="mt-1 text-xs text-muted-foreground">Unsaved changes</p>}
         </header>
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={e => { e.preventDefault(); void save() }}>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5"><div className="max-w-2xl space-y-4 text-sm">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5"><div className="max-w-3xl space-y-4 text-sm">
             {error && <InlineError>{error}</InlineError>}
             {conflict && !changed && <p role="status">This mission changed. Refresh to see the latest version; your draft is kept.</p>}
             {changed && <Well role="status" className="space-y-3">
@@ -73,8 +73,9 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
         </div></div>
         <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border px-6 py-4">
             <Button type="submit" size="sm" aria-label={editing && !busy ? 'Save mission' : undefined} disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create mission'}</Button>
-            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={close}>{editing ? 'Close' : 'Cancel'}</Button>
-            <Button aria-label="Discard mission changes" type="button" size="sm" variant="ghost" disabled={busy} onClick={discard}>Discard</Button>
+            {/* Close keeps the draft for later; Discard throws it away. */}
+            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={close}>Close</Button>
+            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={discard}>{editing ? 'Discard changes' : 'Discard draft'}</Button>
         </footer>
         </form>
     </section>

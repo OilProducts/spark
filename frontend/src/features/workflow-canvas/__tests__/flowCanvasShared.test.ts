@@ -273,25 +273,25 @@ describe('flowCanvasShared', () => {
             {
                 id: 'start',
                 type: 'startNode',
-                style: { width: 168, height: 96 },
+                style: { width: 168, height: 92 },
                 data: { shape: 'Mdiamond' },
             },
             {
                 id: 'human',
                 type: 'humanGateNode',
-                style: { width: 228, height: 116 },
+                style: { width: 228, height: 92 },
                 data: { shape: 'hexagon' },
             },
             {
                 id: 'manager',
                 type: 'managerNode',
-                style: { width: 236, height: 124 },
+                style: { width: 212, height: 104 },
                 data: { shape: 'house' },
             },
             {
                 id: 'custom',
                 type: 'taskNode',
-                style: { width: 220, height: 110 },
+                style: { width: 200, height: 84 },
                 data: { shape: 'box' },
             },
         ])

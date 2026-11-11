@@ -3131,7 +3131,7 @@ describe('RunsPanel', () => {
       expect(screen.getAllByTestId('run-journal-row')).toHaveLength(3)
     })
     expect(screen.getAllByTestId('run-journal-row')[1]).toHaveTextContent(
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
+      'Child flow implement-milestone.dot via Run Milestone: Plan Current started',
     )
 
     const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
@@ -3201,13 +3201,13 @@ describe('RunsPanel', () => {
     ).toEqual([4, 3, 2, 1])
 
     const timelineSummaries = screen.getAllByTestId('run-journal-row').map((node) => node.lastElementChild?.textContent ?? '')
-    expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
-    expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current completed'))).toHaveLength(1)
+    expect(timelineSummaries.filter((summary) => summary.includes('Plan Current started'))).toHaveLength(1)
+    expect(timelineSummaries.filter((summary) => summary.includes('Plan Current completed'))).toHaveLength(1)
     expect(timelineSummaries).toEqual([
-      'Stage prepare completed',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
-      'Stage done completed (decision done)',
+      'Prepare completed',
+      'Child flow implement-milestone.dot via Run Milestone: Plan Current started',
+      'Child flow implement-milestone.dot via Run Milestone: Plan Current completed',
+      'Done completed',
     ])
   })
 

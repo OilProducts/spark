@@ -452,7 +452,7 @@ describe('TriggersPanel', () => {
     await user.type(selectedTriggerScope.getByLabelText('Name'), 'Protected planning route updated')
     await user.clear(selectedTriggerScope.getByLabelText('Target flow'))
     await user.type(selectedTriggerScope.getByLabelText('Target flow'), 'dispatch.dot')
-    await user.click(selectedTriggerScope.getByRole('checkbox'))
+    await user.click(selectedTriggerScope.getByRole('switch', { name: 'Enabled' }))
     await user.click(selectedTriggerScope.getByTestId('trigger-save-button'))
 
     await waitFor(() => {

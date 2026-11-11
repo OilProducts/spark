@@ -4,11 +4,11 @@ import { orderProjects, projectLabel } from '@/features/projects/model/projectCh
 import { useStore } from '@/store'
 
 import { Well } from '@/components/app/well'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
     SHARED_WEBHOOK_ENDPOINT,
@@ -301,10 +301,10 @@ export function TriggerEditor({
             </TriggerField>}
 
             <div className="flex items-center gap-2 sm:col-span-2">
-                <Checkbox
+                <Switch
                     id={fieldId('enabled')}
                     checked={form.enabled}
-                    onCheckedChange={(checked) => onChange({ ...form, enabled: checked === true })}
+                    onCheckedChange={(checked) => onChange({ ...form, enabled: checked })}
                 />
                 <Label htmlFor={fieldId('enabled')}>Enabled</Label>
             </div>

@@ -49,6 +49,9 @@ const OBSTACLE_PADDING = 18
 const EDGE_CORNER_RADIUS = 12
 const BEND_PENALTY = 18
 const PREVIOUS_ROUTE_PENALTY = 1
+const SEGMENT_SEPARATION = 5
+// Well inside OBSTACLE_PADDING, so a spread segment never reaches a node.
+const MAX_SEGMENT_SHIFT = 10
 const EPSILON = 0.001
 
 type ExpandedRect = NodeRect
@@ -254,90 +257,34 @@ function getPortLeadPoint(anchor: EdgeRoutePoint, side: RouteSide): EdgeRoutePoi
     return { x: anchor.x - PORT_LEAD_DISTANCE, y: anchor.y }
 }
 
+// The lead steps out of the port, but never into another node's padding: in a gap narrower
+// than the lead it stops halfway across the free lane, so it can never jump across a neighbour.
+// Nodes too close for any lane leave the lead inside the neighbour, and the search falls back.
 function getPortEscapePoint(
     anchor: EdgeRoutePoint,
     side: RouteSide,
     obstacles: ExpandedRect[],
 ): EdgeRoutePoint {
-    const baseLeadPoint = getPortLeadPoint(anchor, side)
-
-    if (side === 'right') {
-        let x = baseLeadPoint.x
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.y > obstacle.y + EPSILON
-                    && anchor.y < obstacle.y + obstacle.height - EPSILON
-                    && x > obstacle.x + EPSILON
-                    && x < obstacle.x + obstacle.width - EPSILON
-                ) {
-                    x = obstacle.x + obstacle.width
-                    advanced = true
-                }
-            })
+    const horizontal = side === 'left' || side === 'right'
+    const direction = side === 'right' || side === 'bottom' ? 1 : -1
+    const along = horizontal ? anchor.x : anchor.y
+    const across = horizontal ? anchor.y : anchor.x
+    let reach = PORT_LEAD_DISTANCE
+    obstacles.forEach((obstacle) => {
+        const acrossMin = horizontal ? obstacle.y : obstacle.x
+        const acrossMax = acrossMin + (horizontal ? obstacle.height : obstacle.width)
+        if (across <= acrossMin + EPSILON || across >= acrossMax - EPSILON) {
+            return
         }
-        return { x, y: anchor.y }
-    }
-
-    if (side === 'left') {
-        let x = baseLeadPoint.x
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.y > obstacle.y + EPSILON
-                    && anchor.y < obstacle.y + obstacle.height - EPSILON
-                    && x > obstacle.x + EPSILON
-                    && x < obstacle.x + obstacle.width - EPSILON
-                ) {
-                    x = obstacle.x
-                    advanced = true
-                }
-            })
+        const nearMin = horizontal ? obstacle.x : obstacle.y
+        const near = direction > 0 ? nearMin : nearMin + (horizontal ? obstacle.width : obstacle.height)
+        const gap = (near - along) * direction
+        if (gap > EPSILON && gap < reach) {
+            reach = Math.max(OBSTACLE_PADDING, (OBSTACLE_PADDING + gap) / 2)
         }
-        return { x, y: anchor.y }
-    }
-
-    if (side === 'bottom') {
-        let y = baseLeadPoint.y
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.x > obstacle.x + EPSILON
-                    && anchor.x < obstacle.x + obstacle.width - EPSILON
-                    && y > obstacle.y + EPSILON
-                    && y < obstacle.y + obstacle.height - EPSILON
-                ) {
-                    y = obstacle.y + obstacle.height
-                    advanced = true
-                }
-            })
-        }
-        return { x: anchor.x, y }
-    }
-
-    let y = baseLeadPoint.y
-    let advanced = true
-    while (advanced) {
-        advanced = false
-        obstacles.forEach((obstacle) => {
-            if (
-                anchor.x > obstacle.x + EPSILON
-                && anchor.x < obstacle.x + obstacle.width - EPSILON
-                && y > obstacle.y + EPSILON
-                && y < obstacle.y + obstacle.height - EPSILON
-            ) {
-                y = obstacle.y
-                advanced = true
-            }
-        })
-    }
-    return { x: anchor.x, y }
+    })
+    const offset = reach * direction
+    return horizontal ? { x: anchor.x + offset, y: anchor.y } : { x: anchor.x, y: anchor.y + offset }
 }
 
 function expandRect(rect: NodeRect, padding: number): ExpandedRect {
@@ -815,6 +762,62 @@ function routeSingleEdge(
     ])
 }
 
+type RouteSegment = { edgeId: string; index: number; axis: Axis; min: number; max: number }
+
+// Edges are routed one at a time, so several can run along the same corridor line and read as
+// one. Spread each run of collinear, overlapping segments a few pixels apart, around the line,
+// so every edge stays traceable. Only segments between two bends move; the spread stays well
+// inside the obstacle padding, so no edge is pushed into a node.
+export function separateOverlappingSegments(routes: Record<string, EdgeRoute>): Record<string, EdgeRoute> {
+    const separated = Object.fromEntries(
+        Object.entries(routes).map(([edgeId, route]) => [edgeId, route.map((point) => ({ ...point }))]),
+    )
+    const lines = new Map<string, RouteSegment[]>()
+    Object.entries(separated).forEach(([edgeId, route]) => {
+        for (let index = 1; index < route.length - 2; index += 1) {
+            const from = route[index]
+            const to = route[index + 1]
+            const axis: Axis | null = from.y === to.y && from.x !== to.x ? 'horizontal' : from.x === to.x && from.y !== to.y ? 'vertical' : null
+            if (!axis) {
+                continue
+            }
+            const [min, max] = axis === 'horizontal' ? [Math.min(from.x, to.x), Math.max(from.x, to.x)] : [Math.min(from.y, to.y), Math.max(from.y, to.y)]
+            const key = `${axis}:${axis === 'horizontal' ? from.y : from.x}`
+            lines.set(key, [...(lines.get(key) ?? []), { edgeId, index, axis, min, max }])
+        }
+    })
+
+    const spread = (run: RouteSegment[]) => {
+        if (new Set(run.map((segment) => segment.edgeId)).size < 2) {
+            return
+        }
+        const gap = Math.min(SEGMENT_SEPARATION, (2 * MAX_SEGMENT_SHIFT) / (run.length - 1))
+        run.forEach((segment, position) => {
+            const shift = (position - (run.length - 1) / 2) * gap
+            const route = separated[segment.edgeId]
+            const coordinate = segment.axis === 'horizontal' ? 'y' : 'x'
+            route[segment.index][coordinate] += shift
+            route[segment.index + 1][coordinate] += shift
+        })
+    }
+    lines.forEach((segments) => {
+        let run: RouteSegment[] = []
+        let runEnd = Number.NEGATIVE_INFINITY
+        ;[...segments]
+            .sort((left, right) => left.min - right.min || left.edgeId.localeCompare(right.edgeId))
+            .forEach((segment) => {
+                if (segment.min >= runEnd - EPSILON) {
+                    spread(run)
+                    run = []
+                }
+                run.push(segment)
+                runEnd = run.length === 1 ? segment.max : Math.max(runEnd, segment.max)
+            })
+        spread(run)
+    })
+    return separated
+}
+
 export function routeFixedNodeGraph(request: FixedNodeRouterRequest): FixedNodeRouterResult {
     const nodeMap = new Map(
         request.nodes.map((node) => [node.id, node.rect]),
@@ -826,5 +829,5 @@ export function routeFixedNodeGraph(request: FixedNodeRouterRequest): FixedNodeR
             routeSingleEdge(edge, nodeMap, expandedObstacles),
         ]),
     )
-    return { routes }
+    return { routes: separateOverlappingSegments(routes) }
 }

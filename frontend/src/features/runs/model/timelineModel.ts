@@ -175,6 +175,10 @@ const interviewOutcomeProvenanceFromPayload = (
     return null
 }
 
+// The journal names steps the way the Steps list does: `nodeLabel` resolves a node id to its
+// flow label (ids in a child flow resolve against that flow, so the caller gets the scope).
+type NodeLabel = (nodeId: string, scope: TimelineSourceScope) => string
+
 const timelineSummaryFromEvent = (
     type: string,
     payload: Record<string, unknown>,
@@ -182,64 +186,65 @@ const timelineSummaryFromEvent = (
     sourceScope: TimelineSourceScope,
     sourceParentNodeId: string | null,
     sourceFlowName: string | null,
-): string => {
-    const sourcePrefix = timelineSourcePrefix(sourceScope, sourceParentNodeId, sourceFlowName)
+    nodeLabel: NodeLabel = (id) => id,
+): string | null => {
+    const sourcePrefix = timelineSourcePrefix(
+        sourceScope,
+        sourceParentNodeId && nodeLabel(sourceParentNodeId, 'root'),
+        sourceFlowName,
+    )
+    const step = (id: string | null, fallback: string) => (id ? nodeLabel(id, sourceScope) : fallback)
+    const node = step(nodeId, 'unknown')
+    if (type === 'run_meta') {
+        return `${sourcePrefix}Run details recorded`
+    }
     if (type === 'PipelineStarted') {
-        return `${sourcePrefix}Pipeline started at ${nodeId || 'start'}`
+        return `${sourcePrefix}Run started`
     }
     if (type === 'PipelineCompleted') {
         const outcome = asTrimmedString(payload.outcome)
-        const reasonCode = asTrimmedString(payload.outcome_reason_code)
-        const reasonMessage = asTrimmedString(payload.outcome_reason_message)
+        const reason = asTrimmedString(payload.outcome_reason_message) ?? asTrimmedString(payload.outcome_reason_code)
+        const base = `${sourcePrefix}Run completed at ${step(nodeId, 'exit')}`
         if (outcome === 'failure') {
-            if (reasonMessage) {
-                return `${sourcePrefix}Pipeline completed at ${nodeId || 'exit'} (failure: ${reasonMessage})`
-            }
-            if (reasonCode) {
-                return `${sourcePrefix}Pipeline completed at ${nodeId || 'exit'} (failure: ${reasonCode})`
-            }
-            return `${sourcePrefix}Pipeline completed at ${nodeId || 'exit'} (failure)`
+            return reason ? `${base} (failure: ${reason})` : `${base} (failure)`
         }
-        return outcome
-            ? `${sourcePrefix}Pipeline completed at ${nodeId || 'exit'} (${outcome})`
-            : `${sourcePrefix}Pipeline completed at ${nodeId || 'exit'}`
+        return outcome ? `${base} (${outcome})` : base
     }
     if (type === 'PipelineFailed') {
-        const error = typeof payload.error === 'string' && payload.error.trim().length > 0
-            ? payload.error.trim()
-            : null
-        return error ? `${sourcePrefix}Pipeline failed: ${error}` : `${sourcePrefix}Pipeline failed`
+        const error = asTrimmedString(payload.error)
+        return error ? `${sourcePrefix}Run failed: ${error}` : `${sourcePrefix}Run failed`
+    }
+    if (type === 'PipelinePaused') {
+        return `${sourcePrefix}Run paused at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'checkpoint')}`
+    }
+    if (type === 'PipelineRetryStarted') {
+        return `${sourcePrefix}Retry started from ${step(asTrimmedString(payload.current_node) ?? nodeId, 'checkpoint')}`
     }
     if (type === 'StageStarted') {
-        return `${sourcePrefix}Stage ${nodeId || 'unknown'} started`
+        return `${sourcePrefix}${node} started`
     }
+    // "completed" is what the line already says; only another outcome is news.
     if (type === 'StageCompleted') {
-        const decision = asTrimmedString(payload.decision)
-        const notes = asTrimmedString(payload.notes)
-        const base = decision
-            ? `${sourcePrefix}Stage ${nodeId || 'unknown'} completed (decision ${decision})`
-            : `${sourcePrefix}Stage ${nodeId || 'unknown'} completed`
-        return notes ? `${base} — ${notes}` : base
+        const outcome = asTrimmedString(payload.outcome)
+        return outcome && outcome !== 'completed'
+            ? `${sourcePrefix}${node} completed (${outcome})`
+            : `${sourcePrefix}${node} completed`
     }
     if (type === 'StageTransition') {
         const decision = asTrimmedString(payload.decision) ?? 'unknown'
-        const target = asTrimmedString(payload.target) ?? 'unknown'
+        const target = step(asTrimmedString(payload.target), 'unknown')
         const visit = asFiniteNumber(payload.visit)
-        return `${sourcePrefix}${nodeId || 'unknown'} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
+        return `${sourcePrefix}${node} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
     }
     if (type === 'StageFailed') {
-        const error = typeof payload.error === 'string' && payload.error.trim().length > 0
-            ? payload.error.trim()
-            : null
-        return error
-            ? `${sourcePrefix}Stage ${nodeId || 'unknown'} failed: ${error}`
-            : `${sourcePrefix}Stage ${nodeId || 'unknown'} failed`
+        const error = asTrimmedString(payload.error)
+        return error ? `${sourcePrefix}${node} failed: ${error}` : `${sourcePrefix}${node} failed`
     }
     if (type === 'StageRetrying') {
         const attempt = asFiniteNumber(payload.attempt)
         return attempt !== null
-            ? `${sourcePrefix}Stage ${nodeId || 'unknown'} retrying (attempt ${attempt})`
-            : `${sourcePrefix}Stage ${nodeId || 'unknown'} retrying`
+            ? `${sourcePrefix}${node} retrying (attempt ${attempt})`
+            : `${sourcePrefix}${node} retrying`
     }
     if (type === 'ParallelStarted') {
         const branchCount = asFiniteNumber(payload.branch_count)
@@ -248,15 +253,10 @@ const timelineSummaryFromEvent = (
             : `${sourcePrefix}Parallel fan-out started`
     }
     if (type === 'ParallelBranchStarted') {
-        const branchName = typeof payload.branch === 'string' && payload.branch.trim().length > 0
-            ? payload.branch.trim()
-            : nodeId || 'unknown'
-        return `${sourcePrefix}Parallel branch ${branchName} started`
+        return `${sourcePrefix}Parallel branch ${step(asTrimmedString(payload.branch) ?? nodeId, 'unknown')} started`
     }
     if (type === 'ParallelBranchCompleted') {
-        const branchName = typeof payload.branch === 'string' && payload.branch.trim().length > 0
-            ? payload.branch.trim()
-            : nodeId || 'unknown'
+        const branchName = step(asTrimmedString(payload.branch) ?? nodeId, 'unknown')
         const success = payload.success === true ? 'success' : payload.success === false ? 'failed' : null
         return success
             ? `${sourcePrefix}Parallel branch ${branchName} completed (${success})`
@@ -270,45 +270,45 @@ const timelineSummaryFromEvent = (
         }
         return `${sourcePrefix}Parallel fan-out completed`
     }
+    const gate = step(nodeId, 'human gate')
     if (type === 'InterviewStarted') {
-        return `${sourcePrefix}Interview started for ${nodeId || 'human gate'}`
+        return `${sourcePrefix}${gate} asked a question`
     }
     if (type === 'InterviewInform') {
         const message = asTrimmedString(payload.message)
             ?? asTrimmedString(payload.prompt)
             ?? asTrimmedString(payload.question)
-        return message
-            ? `${sourcePrefix}Interview info for ${nodeId || 'human gate'}: ${message}`
-            : `${sourcePrefix}Interview info for ${nodeId || 'human gate'}`
+        return message ? `${sourcePrefix}Note from ${gate}: ${message}` : `${sourcePrefix}Note from ${gate}`
     }
     if (type === 'InterviewCompleted') {
         const answer = asTrimmedString(payload.answer)
-        const provenance = interviewOutcomeProvenanceFromPayload(type, payload)
-        if (provenance === 'skipped') {
-            return `${sourcePrefix}Interview completed for ${nodeId || 'human gate'} (skipped)`
+        if (interviewOutcomeProvenanceFromPayload(type, payload) === 'skipped') {
+            return `${sourcePrefix}Question at ${gate} skipped`
         }
-        if (provenance === 'accepted') {
-            return answer
-                ? `${sourcePrefix}Interview completed for ${nodeId || 'human gate'} (accepted answer: ${answer})`
-                : `${sourcePrefix}Interview completed for ${nodeId || 'human gate'} (accepted answer)`
-        }
-        return answer
-            ? `${sourcePrefix}Interview completed for ${nodeId || 'human gate'} (${answer})`
-            : `${sourcePrefix}Interview completed for ${nodeId || 'human gate'}`
+        return answer ? `${sourcePrefix}Answer for ${gate}: ${answer}` : `${sourcePrefix}Question at ${gate} answered`
     }
     if (type === 'human_gate') {
-        const prompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0
-            ? payload.prompt.trim()
-            : null
-        return prompt
-            ? `${sourcePrefix}Human gate pending: ${prompt}`
-            : `${sourcePrefix}Human gate pending for ${nodeId || 'unknown'}`
+        const prompt = asTrimmedString(payload.prompt)
+        return prompt ? `${sourcePrefix}Waiting for an answer: ${prompt}` : `${sourcePrefix}Waiting for an answer at ${node}`
     }
     if (type === 'CheckpointSaved') {
-        return `${sourcePrefix}Checkpoint saved at ${nodeId || 'current node'}`
+        return `${sourcePrefix}Checkpoint saved at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'current node')}`
     }
-    return `${sourcePrefix}${type}`
+    return null
 }
+
+/** A journal entry's line, with steps named by `nodeLabel`; kinds the UI does not word keep the runtime's summary. */
+const journalEntrySummary = (event: TimelineEventEntry, nodeLabel: NodeLabel): string => (
+    timelineSummaryFromEvent(
+        event.type,
+        event.payload,
+        event.nodeId,
+        event.sourceScope,
+        event.sourceParentNodeId,
+        event.sourceFlowName,
+        nodeLabel,
+    ) ?? event.summary
+)
 
 const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
     const payload = asRecord(value)
@@ -366,7 +366,8 @@ const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
         severity: timelineSeverityFromEvent(type, payload),
         nodeId,
         stageIndex,
-        summary: timelineSummaryFromEvent(type, payload, nodeId, sourceScope, sourceParentNodeId, sourceFlowName),
+        summary: timelineSummaryFromEvent(type, payload, nodeId, sourceScope, sourceParentNodeId, sourceFlowName)
+            ?? `${timelineSourcePrefix(sourceScope, sourceParentNodeId, sourceFlowName)}${type}`,
         receivedAt: emittedAt,
         sourceScope,
         sourceParentNodeId,
@@ -793,6 +794,7 @@ export {
     buildRetryCorrelationEntityKeys,
     buildTimelineTypeOptions,
     filterAnsweredPendingInterviewGates,
+    journalEntrySummary,
     mergePendingInterviewGatesWithSnapshots,
     PENDING_GATE_FALLBACK_RECEIVED_AT,
     asFiniteNumber,

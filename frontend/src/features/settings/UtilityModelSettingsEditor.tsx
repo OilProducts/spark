@@ -33,7 +33,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
                 {editor.draft && <ModelChooser inherited={codexDefault} disabled={!editor.saved || editor.pending} value={editor.draft} onChange={next => editor.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={projectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />}
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button variant="outline" aria-label="Save utility model" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
+                <Button aria-label="Save utility model" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
                 <Button aria-label="Discard utility model changes" size="sm" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}

@@ -545,7 +545,7 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         await page.route(`**${conversationPath}/settings`, async route => { await resetGate; await route.continue() })
         await page.getByRole('button', { name: /^Use default ·/ }).click()
         try {
-            await expect(provider).toHaveText('Default: model-one · Low⌄')
+            await expect(provider).toHaveText('Default: model-one · Low')
             expect((await conversation()).settings.models.stored.provider).toBe('anthropic')
             await openPicker(page)
             await expect(page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true })).toBeDisabled()

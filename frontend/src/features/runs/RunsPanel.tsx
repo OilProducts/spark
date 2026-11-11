@@ -376,16 +376,26 @@ export function RunsPanel() {
         }
     }, [continuationDraft, selectedRun])
 
+    // Stacked under the whole run list, a picked run's detail scrolls to the top.
+    const runDetailRef = useRef<HTMLElement | null>(null)
+    useEffect(() => {
+        if (isNarrowViewport && isRunsView && selectedRunId) {
+            runDetailRef.current?.scrollIntoView({ block: 'start' })
+        }
+    }, [isNarrowViewport, isRunsView, selectedRunId])
+
     return (
         <ViewLayout
             view="runs"
             title="Runs"
             actions={<RunsProjectFilter />}
+            panelInFlow
             // ponytail: the run list mounts only while Runs shows, so live updates behind
             // other views don't regroup it; its search and expansion state resets on leaving.
             panel={isRunsView ? <RunsSidebar selectedRunId={selectedRunId} /> : null}
         >
         <section
+            ref={runDetailRef}
             data-testid="runs-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`h-full flex-1 ${isNarrowViewport ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}
@@ -473,11 +483,12 @@ export function RunsPanel() {
                         ? 'space-y-6'
                         : 'flex min-h-0 flex-1 gap-6'}
                     >
-                        {/* A continuation picks its restart node on the graph. */}
+                        {/* A continuation picks its restart node on the graph. Beside the details it
+                            sits last, so toggling it never moves the Steps rail. */}
                         {showGraph || activeContinuationDraft ? (
                         <div className={isNarrowViewport
                             ? undefined
-                            : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
+                            : 'order-last flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
                         >
                             <RunGraphCard
                                 key={`graph-${selectedRun.run_id}`}

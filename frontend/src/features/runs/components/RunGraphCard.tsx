@@ -8,7 +8,6 @@ import {
     MiniMap,
     ReactFlow,
     ReactFlowProvider,
-    useReactFlow,
     type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -23,6 +22,7 @@ import {
     layoutWithElk,
     nodeTypes,
     nowMs,
+    useReadableFraming,
 } from '@/features/workflow-canvas'
 import { InlineError } from '@/components/app/inline-error'
 import { Well } from '@/components/app/well'
@@ -44,12 +44,16 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
-// React Flow's own zoom floor: below it a fitted graph's labels are too small to read.
-const MIN_FIT_ZOOM = 0.5
-const FIT_PADDING = 24
-// The zoom controls sit at the bottom left; keep content to their right.
-const CONTROLS_GUTTER = 52
-const FIT_VIEW_PADDING = { top: `${FIT_PADDING}px`, right: `${FIT_PADDING}px`, bottom: `${FIT_PADDING}px`, left: `${CONTROLS_GUTTER}px` } as const
+// The zoom controls sit at the bottom left; keep content to their right, and above the
+// minimap a big graph shows at the bottom right.
+const FRAME_PADDING = { top: 16, right: 16, bottom: 16, left: 44 } as const
+const MINIMAP_NODE_THRESHOLD = 10
+const MINIMAP_SIZE = { width: 120, height: 84 }
+const MINIMAP_FRAME_PADDING = { ...FRAME_PADDING, bottom: MINIMAP_SIZE.height + 24 } as const
+
+const showsMinimap = (nodeCount: number, paneHeight: number | 'fill') => (
+    nodeCount > MINIMAP_NODE_THRESHOLD && (paneHeight === 'fill' || paneHeight >= 480)
+)
 
 const EMPTY_DIAGNOSTICS: import('@/store').DiagnosticEntry[] = []
 const EMPTY_GRAPH_NODES: Node[] = []
@@ -75,7 +79,9 @@ function RunGraphCanvasInner({
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
     const paneRef = useRef<HTMLDivElement>(null)
-    const { fitView, getNodesBounds, getViewport, setViewport } = useReactFlow()
+    const frame = useReadableFraming(paneRef)
+    // Open on the step that needs attention: the selected one, else the one waiting or running.
+    const focusNodeIdRef = useRef<string | null>(null)
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
     const edges = matchingVariant ? runDetailSession?.graphEdges ?? [] : []
@@ -98,28 +104,21 @@ function RunGraphCanvasInner({
         })
     ), [nodes, nodeStatusesById, selectedNodeId])
 
-    // Fit each loaded graph whole. Only a graph too big to read whole opens at its top-left
-    // (the start of the flow), and the Fit view control still shows all of it.
     useEffect(() => {
-        if (nodes.length === 0) {
-            return
-        }
-        void fitView({ padding: FIT_VIEW_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }).then(() => {
-            const pane = paneRef.current
-            if (!pane) {
-                return
-            }
-            const bounds = getNodesBounds(nodes)
-            const { x, y, zoom } = getViewport()
-            const overflowsX = bounds.width * zoom > pane.clientWidth - CONTROLS_GUTTER - FIT_PADDING
-            const overflowsY = bounds.height * zoom > pane.clientHeight - 2 * FIT_PADDING
-            void setViewport({
-                x: overflowsX ? CONTROLS_GUTTER - bounds.x * zoom : x,
-                y: overflowsY ? FIT_PADDING - bounds.y * zoom : y,
-                zoom,
-            })
+        const statusIds = Object.keys(nodeStatusesById)
+        focusNodeIdRef.current = selectedNodeId
+            ?? statusIds.find((id) => nodeStatusesById[id] === 'waiting')
+            ?? statusIds.find((id) => nodeStatusesById[id] === 'running')
+            ?? null
+    })
+
+    // Each loaded graph opens whole when it stays readable, else readable around its focus.
+    useEffect(() => {
+        frame(nodes, {
+            padding: showsMinimap(nodes.length, paneHeight) ? MINIMAP_FRAME_PADDING : FRAME_PADDING,
+            focusNodeId: focusNodeIdRef.current,
         })
-    }, [nodes, fitView, getNodesBounds, getViewport, setViewport])
+    }, [nodes, frame, paneHeight])
 
     useEffect(() => {
         const loadId = activeLoadRef.current + 1
@@ -245,8 +244,8 @@ function RunGraphCanvasInner({
                 multiSelectionKeyCode={null}
                 proOptions={{ hideAttribution: true }}
             >
-                {decoratedNodes.length > 10 && (paneHeight === 'fill' || paneHeight >= 480) ? (
-                    <MiniMap pannable zoomable position="top-right" />
+                {showsMinimap(decoratedNodes.length, paneHeight) ? (
+                    <MiniMap pannable zoomable position="bottom-right" style={MINIMAP_SIZE} />
                 ) : null}
                 <Controls showInteractive={false} style={{ bottom: 12, left: 12 }} />
                 <Background gap={24} size={1} />

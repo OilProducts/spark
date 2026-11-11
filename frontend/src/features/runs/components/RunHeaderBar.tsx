@@ -49,8 +49,8 @@ export function RunHeaderBar({
 }: RunHeaderBarProps) {
     const inactive = canContinueRun(run.status)
     const showCancel = canCancelRun(run.status) || CANCELING_STATUSES.has(run.status)
-    // An active run's duration already says how long it has been going.
-    const when = inactive ? formatRunDate(run.started_at, now) : ''
+    // Every run reads the same: when it started, then how long it ran or has been going.
+    const when = formatRunDate(run.started_at, now)
     const tokens = run.token_usage_breakdown?.total_tokens ?? run.token_usage
     const commit = run.git_commit?.trim()
     const facts = [

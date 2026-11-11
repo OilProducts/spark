@@ -665,6 +665,16 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
   })
 
+  it("shows a tool's stdout once, under its command", () => {
+    const returned = openOnly([visit('check', 1, 'completed', {
+      kind: 'tool', decision: 'done', reason: '42 passed',
+      status: { status: 'completed', decision: 'done', notes: '42 passed', context_updates: { 'context.tool.output': '42 passed', 'context.tool.exit_code': 0 } },
+    })])
+    expect(within(returned).queryByTestId('run-visit-reason')).toBeNull()
+    expect(screen.getByTestId('run-visit-tool')).toHaveTextContent('42 passed')
+    expect(screen.getAllByText('42 passed')).toHaveLength(1)
+  })
+
   it('lists each fan-out branch with failed, terminal-result and canceled evidence', () => {
     const results = [
       { id: 'lint', index: 0, status: 'completed', started: true, context: {}, route_trace: [], decisions: [], notes: '' },

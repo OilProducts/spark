@@ -72,7 +72,7 @@ it('groups roles by their file\'s standing flag, started or not, with badges and
     expect(row('keeper')).toHaveTextContent('Last wake run_completed')
     expect(row('watcher')).toHaveTextContent('Watches.')
     expect(row('reviewer')).toHaveTextContent('used in 3 steps across 2 flows')
-    expect([badges('reviewer'), badges('helper'), badges('author')]).toEqual([[], ['customized'], ['project copy']])
+    expect([badges('reviewer'), badges('helper'), badges('author')]).toEqual([[], ['project'], ['customized']])
     // Open for a conversation, Start for a standing role without one, nothing for the rest.
     expect(screen.getByRole('button', { name: 'Open conversation with Keeper' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start Lapsed' })).toBeInTheDocument()
@@ -195,7 +195,7 @@ it('builds actions, badges, usage summaries and frontmatter fields', () => {
     expect(roleAction({ standing: false, live: null })).toBe(null)
     expect(renderableMarkdown('---\ntype: Role\n---\nPersona.')).toBe('```yaml\ntype: Role\n```\n\nPersona.')
     expect(renderableMarkdown('No frontmatter')).toBe('No frontmatter')
-    expect(definitionBadges({ layer: 'project_copy' })).toEqual(['project copy'])
+    expect(definitionBadges({ layer: 'project_copy' })).toEqual(['customized'])
     expect(definitionBadges({ layer: 'bundled' })).toEqual([])
     expect(usageSummary([{ flow: 'a', node: 'x' }])).toBe('used in 1 step across 1 flow')
     expect(frontmatterFields('---\ntype: Role\nbudget:\n  concurrent_runs: 3\n---\nBody')).toEqual({ fields: [['type', 'Role'], ['budget', 'concurrent_runs: 3']], body: 'Body' })

@@ -45,6 +45,8 @@ it('labels human gate choices with their display text and answers with the decis
     onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
   />)
   expect(screen.queryByRole('button', { name: 'approve' })).toBeNull()
+  expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('[A]')
+  expect(screen.getByTestId('run-pending-human-gate-option-metadata-revise')).toHaveTextContent('[S]')
   fireEvent.click(screen.getByRole('button', { name: 'Send back for changes' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
   fireEvent.click(screen.getByRole('button', { name: 'Approve and ship' }))

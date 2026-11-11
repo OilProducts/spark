@@ -187,6 +187,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const nodeKind = WORKFLOW_NODE_KINDS[renderedShape]
+    const showKind = derivedPreviewMeta?.kind !== 'child-cluster'
+    const kindCaption = showKind && nodeKind.caption.toLowerCase() !== displayLabel.toLowerCase() ? nodeKind.caption : null
     const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
@@ -408,13 +410,22 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 )}
             >
                 <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1">
-                    {derivedPreviewMeta?.kind === 'child-cluster' ? null : (
-                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                            <nodeKind.Icon className="size-3.5 shrink-0" aria-hidden />
-                            {/* A start node labelled Start needs no second Start. */}
-                            {nodeKind.caption.toLowerCase() === displayLabel.toLowerCase() ? null : nodeKind.caption}
+                    {/* One caption line: the kind (a start node labelled Start needs no second Start),
+                        then the run status, so status costs the frame no extra height. */}
+                    {showKind || displayStatus !== 'idle' ? (
+                        <span className="inline-flex max-w-full items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
+                            {showKind ? <nodeKind.Icon className="size-3.5 shrink-0" aria-hidden /> : null}
+                            {kindCaption}
+                            {displayStatus !== 'idle' ? (
+                                <>
+                                    {kindCaption ? <span aria-hidden>·</span> : null}
+                                    <span className={cn('font-medium', statusToneClassName(displayStatus))}>
+                                        {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
+                                    </span>
+                                </>
+                            ) : null}
                         </span>
-                    )}
+                    ) : null}
                     {isEditingLabel ? (
                         <input
                             ref={inputRef}
@@ -432,11 +443,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         )}
                         >
                             {displayLabel}
-                        </span>
-                    )}
-                    {displayStatus !== 'idle' && (
-                        <span className={cn('text-xs font-medium', statusToneClassName(displayStatus))}>
-                            {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
                         </span>
                     )}
                     {isReadOnlyPreviewNode && (

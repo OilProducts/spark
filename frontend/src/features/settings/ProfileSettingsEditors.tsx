@@ -56,8 +56,8 @@ export function LlmProfilesEditor() {
             <Button variant="outline" onClick={() => editor.setDraft([...profiles, { id: '', provider: 'openai_compatible', base_url: '', models: [] }])}>Add LLM profile</Button>
         </fieldset>
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
-        <div className="flex flex-wrap gap-2"><Button variant="outline" aria-label="Save LLM profiles" disabled={!editor.dirty || editor.pending || !!invalid || profiles.some((p) => p.models.some((m) => !m.trim()))} onClick={() => void editor.save()}>Save</Button>
-            <Button aria-label="Discard LLM profiles changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button></div>
+        <div className="flex flex-wrap gap-2"><Button size="sm" aria-label="Save LLM profiles" disabled={!editor.dirty || editor.pending || !!invalid || profiles.some((p) => p.models.some((m) => !m.trim()))} onClick={() => void editor.save()}>Save</Button>
+            <Button size="sm" aria-label="Discard LLM profiles changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button></div>
         {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
@@ -125,8 +125,8 @@ export function ExecutionProfilesEditor() {
         </fieldset>
         {Object.values(invalidMetadata).some(Boolean) && <p id="execution-delete-help" role="alert">Fix invalid metadata JSON before deleting any execution profile.</p>}
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
-        <div className="flex flex-wrap gap-2"><Button variant="outline" aria-label="Save execution profiles" disabled={!editor.dirty || editor.pending || invalid} onClick={() => void editor.save()}>Save</Button>
-            <Button aria-label="Discard execution profiles changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => { void editor.discard().then((discarded) => { if (discarded) { setGeneration((value) => value + 1); setInvalidMetadata({}) } }) }}>Discard</Button></div>
+        <div className="flex flex-wrap gap-2"><Button size="sm" aria-label="Save execution profiles" disabled={!editor.dirty || editor.pending || invalid} onClick={() => void editor.save()}>Save</Button>
+            <Button size="sm" aria-label="Discard execution profiles changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => { void editor.discard().then((discarded) => { if (discarded) { setGeneration((value) => value + 1); setInvalidMetadata({}) } }) }}>Discard</Button></div>
         {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />

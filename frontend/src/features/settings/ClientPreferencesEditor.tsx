@@ -9,6 +9,9 @@ import type { Appearance } from '@/lib/theme'
 import type { EditorMode } from '@/state/store-types'
 import { SaveStatus } from './SaveStatus'
 
+// A rule and space above each group heading set it apart from the field labels under it.
+const groupHeading = 'mt-3 border-t border-border pt-4 text-sm font-semibold first:mt-0 first:border-t-0 first:pt-0'
+
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
     return <Card>
@@ -16,15 +19,15 @@ export function ClientPreferencesEditor() {
         <CardContent className="space-y-3">
             {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
-                <h4 className="text-sm font-semibold">Appearance</h4>
+                <h4 className={groupHeading}>Appearance</h4>
                 <Field><FieldLabel htmlFor="preference-appearance">Theme</FieldLabel>
                     <NativeSelect id="preference-appearance" value={editor.draft?.appearance ?? 'system'}
                         onChange={(event) => { const appearance = event.target.value as Appearance; editor.setDraft((draft) => draft && ({ ...draft, appearance })) }}>
                         <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
                     </NativeSelect>
                 </Field>
-                <h4 className="text-sm font-semibold">Editor</h4>
-                <p className="text-sm text-muted-foreground">Defaults for newly opened flows.</p>
+                <h4 className={groupHeading}>Editor</h4>
+                <p className="-mt-1.5 text-sm text-muted-foreground">Defaults for newly opened flows.</p>
                 <Field><FieldLabel htmlFor="preference-editor-mode">Editor mode</FieldLabel>
                     <NativeSelect id="preference-editor-mode" value={editor.draft?.editor_mode ?? ''}
                         onChange={(event) => { const mode = event.target.value as EditorMode | ''; editor.setDraft((draft) => draft && ({ ...draft, editor_mode: mode || null })) }}>
@@ -42,14 +45,14 @@ export function ClientPreferencesEditor() {
                         <option value="">Default (off)</option><option value="true">On</option><option value="false">Off</option>
                     </NativeSelect>
                 </Field>)}
-                <h4 className="text-sm font-semibold">Transcripts</h4>
+                <h4 className={groupHeading}>Transcripts</h4>
                 <Field><FieldLabel htmlFor="preference-show_thinking">Show thinking</FieldLabel>
                     <NativeSelect id="preference-show_thinking" value={editor.draft?.show_thinking == null ? '' : String(editor.draft.show_thinking)}
                         onChange={(event) => { const value = event.target.value; editor.setDraft((draft) => draft && ({ ...draft, show_thinking: value === '' ? null : value === 'true' })) }}>
                         <option value="">Default (on)</option><option value="true">On</option><option value="false">Off</option>
                     </NativeSelect>
                 </Field>
-                <h4 className="text-sm font-semibold">Layout</h4>
+                <h4 className={groupHeading}>Layout</h4>
                 <Field><FieldLabel htmlFor="preference-sidebar-width">Editor sidebar width (pixels)</FieldLabel>
                     <Input id="preference-sidebar-width" className="w-40" type="number" min={256} max={560} step={1}
                         aria-invalid={editor.invalidWidth} aria-describedby="preference-sidebar-help preference-sidebar-error"
@@ -66,7 +69,7 @@ export function ClientPreferencesEditor() {
                     <p id="preference-home-split-help" className="text-xs text-muted-foreground">Share of sidebar height for the top pane. Leave blank for automatic sizing.</p>
                     {editor.invalidSplit && <p id="preference-split-error" role="alert">Choose a number from 0 to 1.</p>}
                 </Field>
-                <h4 className="text-sm font-semibold">Runs</h4>
+                <h4 className={groupHeading}>Runs</h4>
                 {(Object.keys(runPresentationChoices) as (keyof typeof runPresentationChoices)[]).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`run-preference-${key}`}>{{ sort: 'Run sort order' }[key]}</FieldLabel>
                     <NativeSelect id={`run-preference-${key}`} value={editor.draft?.run_presentation?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, [key]: event.target.value || null } as RunPresentation }))}>
@@ -79,8 +82,8 @@ export function ClientPreferencesEditor() {
                 </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button variant="outline" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
-                <Button variant="ghost" aria-label="Discard client preferences changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+                <Button size="sm" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
+                <Button size="sm" variant="ghost" aria-label="Discard client preferences changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>
