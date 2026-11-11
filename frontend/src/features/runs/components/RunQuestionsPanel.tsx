@@ -17,6 +17,8 @@ interface RunQuestionsPanelProps {
     submittingGateIds: Record<string, boolean>
 }
 
+// Each question is a card: the prompt, its details, an optional note, then the answers as
+// full-size buttons. The flow lists its expected answer first, so that one is filled.
 export function RunQuestionsPanel({
     confirmedQuestionIds,
     className,
@@ -32,6 +34,7 @@ export function RunQuestionsPanel({
     if (groupedPendingInterviewGates.length === 0) {
         return null
     }
+    const showGroupHeadings = groupedPendingInterviewGates.length > 1
 
     return (
         <div
@@ -39,124 +42,140 @@ export function RunQuestionsPanel({
             className={className}
         >
             {pendingGateActionError && (
-                <InlineError data-testid="run-pending-human-gate-answer-error" className="mt-2" dense>{pendingGateActionError}</InlineError>
+                <InlineError data-testid="run-pending-human-gate-answer-error" className="mb-3" dense>{pendingGateActionError}</InlineError>
             )}
-            <div className="mt-2 space-y-4">
+            <div className="space-y-5">
                 {groupedPendingInterviewGates.map((group) => (
                     <div
                         key={group.key}
                         data-testid="run-pending-human-gate-group"
                     >
-                        <div
-                            data-testid="run-pending-human-gate-group-heading"
-                            className="text-xs font-semibold text-muted-foreground"
-                        >
-                            {group.heading}
-                        </div>
-                        <ul className="mt-1 space-y-2">
+                        {showGroupHeadings ? (
+                            <div
+                                data-testid="run-pending-human-gate-group-heading"
+                                className="mb-2 text-xs font-semibold text-muted-foreground"
+                            >
+                                {group.heading}
+                            </div>
+                        ) : null}
+                        <ul className="space-y-3">
                             {group.gates.map((gate, gateIndex) => {
-                                const freeformAnswer = gate.questionId
-                                    ? freeformAnswersByGateId[gate.questionId] ?? ''
+                                const questionId = gate.questionId
+                                const freeformAnswer = questionId
+                                    ? freeformAnswersByGateId[questionId] ?? ''
                                     : ''
-                                const gateNote = gate.questionId
-                                    ? gateNotesByGateId[gate.questionId] ?? ''
+                                const gateNote = questionId
+                                    ? gateNotesByGateId[questionId] ?? ''
                                     : ''
+                                const disabled = !questionId || !confirmedQuestionIds.includes(questionId) || submittingGateIds[questionId] === true
+                                const isFreeform = gate.questionType === 'FREEFORM'
+                                const showOptions = Boolean(questionId) && (!isFreeform || gate.origin === 'agent_clarification') && gate.options.length > 0
+                                const noteId = questionId ? `run-gate-note-${questionId}` : undefined
                                 return (
-                                    <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-sm text-foreground">
-                                        <div className="max-w-[72ch]">{gate.prompt}</div>
+                                    <li
+                                        key={gate.eventId}
+                                        data-testid="run-pending-human-gate-item"
+                                        className="flex max-w-[72ch] flex-col gap-3 rounded-xl border border-border bg-background p-4 text-sm text-foreground"
+                                    >
+                                        <p className="text-base font-medium leading-snug">{gate.prompt}</p>
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
-                                                className="mt-1 max-h-72 max-w-[72ch] overflow-y-auto rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
+                                                className="max-h-72 overflow-y-auto rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
                                             >
                                                 <ProjectConversationMarkdown content={gate.details} />
                                             </div>
                                         )}
-                                        <div
-                                            data-testid="run-pending-human-gate-item-audit"
-                                            className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
-                                        >
-                                            <span className="font-mono">Order #{gateIndex + 1}</span>
-                                            <span>Question ID: {gate.questionId ?? '—'}</span>
-                                            <span>Received: {formatTimestamp(gate.receivedAt)}</span>
-                                        </div>
-                                        {gate.questionId && gate.questionType === 'FREEFORM' && (
-                                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                                        {questionId && isFreeform && (
+                                            <div className="flex flex-wrap items-center gap-2">
                                                 <Input
                                                     type="text"
-                                                    data-testid={`run-pending-human-gate-freeform-input-${gate.questionId}`}
+                                                    data-testid={`run-pending-human-gate-freeform-input-${questionId}`}
                                                     value={freeformAnswer}
-                                                    onChange={(event) => onFreeformAnswerChange(gate.questionId!, event.target.value)}
-                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
+                                                    onChange={(event) => onFreeformAnswerChange(questionId, event.target.value)}
+                                                    disabled={disabled}
                                                     aria-label="Answer"
-                                                    placeholder="Type answer..."
-                                                    className="h-7 min-w-[18rem] bg-background px-2 text-sm text-foreground"
+                                                    placeholder="Type your answer…"
+                                                    className="h-9 min-w-[18rem] flex-1 bg-background"
                                                 />
                                                 <Button
                                                     type="button"
-                                                    data-testid={`run-pending-human-gate-freeform-submit-${gate.questionId}`}
+                                                    data-testid={`run-pending-human-gate-freeform-submit-${questionId}`}
                                                     onClick={() => {
                                                         onSubmitPendingGateAnswer(gate, freeformAnswer)
                                                     }}
-                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
-                                                    variant="outline"
-                                                    size="xs"
-                                                    className="h-7 text-xs font-medium"
+                                                    disabled={disabled || freeformAnswer.trim().length === 0}
+                                                    size="sm"
+                                                    className="h-9"
                                                 >
                                                     Submit
                                                 </Button>
                                             </div>
                                         )}
-                                        {gate.questionId && (gate.questionType !== 'FREEFORM' || gate.origin === 'agent_clarification') && gate.options.length > 0 && (
-                                            <div className="mt-1">
-                                                {gate.origin !== 'agent_clarification' && <Input
-                                                    type="text"
-                                                    data-testid={`run-pending-human-gate-note-input-${gate.questionId}`}
-                                                    value={gateNote}
-                                                    onChange={(event) => onGateNoteChange(gate.questionId!, event.target.value)}
-                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
-                                                    placeholder="Optional note for the next step..."
-                                                    className="h-7 w-full bg-background px-2 text-sm text-foreground"
-                                                />}
-                                            <div className="mt-1 flex flex-wrap gap-1.5">
-                                                {gate.options.map((option) => (
-                                                    <div key={option.value} className="space-y-1">
-                                                        <Button
-                                                            type="button"
-                                                            data-testid={`run-pending-human-gate-answer-${option.value}`}
-                                                            onClick={() => {
-                                                                onSubmitPendingGateAnswer(gate, option.value, gateNote)
-                                                            }}
-                                                            disabled={!confirmedQuestionIds.includes(gate.questionId!) || submittingGateIds[gate.questionId!] === true}
-                                                            variant="outline"
-                                                            size="xs"
-                                                            className="h-6 text-xs font-medium"
-                                                        >
-                                                            {option.label}
-                                                        </Button>
-                                                        {(() => {
-                                                            const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
-                                                            const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
-                                                                && (option.key || option.description)
-                                                            if (!showMultipleChoiceMetadata && !semanticHint) {
-                                                                return null
-                                                            }
-                                                            return (
-                                                                <div
-                                                                    data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
-                                                                    className="flex items-center gap-1 text-xs text-muted-foreground"
-                                                                >
-                                                                    {showMultipleChoiceMetadata && option.key && <span className="font-mono">[{option.key}]</span>}
-                                                                    {showMultipleChoiceMetadata && option.description && <span>{option.description}</span>}
-                                                                    {semanticHint && <span>{semanticHint}</span>}
-                                                                </div>
-                                                            )
-                                                        })()}
+                                        {showOptions && questionId && (
+                                            <>
+                                                {gate.origin !== 'agent_clarification' && (
+                                                    <div className="flex flex-col gap-1.5">
+                                                        <label htmlFor={noteId} className="text-xs font-medium text-muted-foreground">
+                                                            Note for the next step (optional)
+                                                        </label>
+                                                        <Input
+                                                            id={noteId}
+                                                            type="text"
+                                                            data-testid={`run-pending-human-gate-note-input-${questionId}`}
+                                                            value={gateNote}
+                                                            onChange={(event) => onGateNoteChange(questionId, event.target.value)}
+                                                            disabled={disabled}
+                                                            placeholder="Add context the next step should see…"
+                                                            className="h-9 w-full bg-background"
+                                                        />
                                                     </div>
-                                                ))}
-                                            </div>
-                                            </div>
+                                                )}
+                                                <div className="flex flex-wrap items-start gap-2">
+                                                    {gate.options.map((option, optionIndex) => {
+                                                        const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
+                                                        const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
+                                                            && Boolean(option.description)
+                                                        return (
+                                                            <div key={option.value} className="flex max-w-xs flex-col gap-1">
+                                                                <Button
+                                                                    type="button"
+                                                                    data-testid={`run-pending-human-gate-answer-${option.value}`}
+                                                                    onClick={() => {
+                                                                        onSubmitPendingGateAnswer(gate, option.value, gateNote)
+                                                                    }}
+                                                                    disabled={disabled}
+                                                                    variant={optionIndex === 0 && !isFreeform ? 'default' : 'outline'}
+                                                                    size="sm"
+                                                                    className="self-start"
+                                                                >
+                                                                    {option.label}
+                                                                </Button>
+                                                                {showMultipleChoiceMetadata || semanticHint ? (
+                                                                    <div
+                                                                        data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
+                                                                        className="text-xs text-muted-foreground"
+                                                                    >
+                                                                        {showMultipleChoiceMetadata && option.key ? <span className="mr-1">[{option.key}]</span> : null}
+                                                                        {showMultipleChoiceMetadata ? <span>{option.description}</span> : null}
+                                                                        {semanticHint ? <span>{semanticHint}</span> : null}
+                                                                    </div>
+                                                                ) : null}
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </>
                                         )}
+                                        <div
+                                            data-testid="run-pending-human-gate-item-audit"
+                                            className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground"
+                                        >
+                                            {group.gates.length > 1 ? <><span>Order #{gateIndex + 1}</span><span aria-hidden="true">·</span></> : null}
+                                            <span>Received: {formatTimestamp(gate.receivedAt)}</span>
+                                            <span aria-hidden="true">·</span>
+                                            <span>Question ID: {questionId ?? '—'}</span>
+                                        </div>
                                     </li>
                                 )
                             })}

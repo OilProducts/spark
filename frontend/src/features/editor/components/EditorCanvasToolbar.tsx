@@ -1,4 +1,4 @@
-import { LayoutDashboard, RotateCcw } from 'lucide-react'
+import { Box, Boxes, FileCode, LayoutDashboard, RotateCcw, Workflow, type LucideIcon } from 'lucide-react'
 
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,18 @@ type EditorCanvasToolbarProps = {
     onRun: (projectPath: string) => void
 }
 
+// Below 36rem of toolbar the view toggles show only icons (named by aria-label), so the row fits the 480px minimum canvas.
+const segmentLabel = (Icon: LucideIcon, text: string) => ({
+    'aria-label': text,
+    title: text,
+    label: (
+        <>
+            <Icon aria-hidden="true" className="size-4 @xl:hidden" />
+            <span className="hidden @xl:inline">{text}</span>
+        </>
+    ),
+})
+
 export function EditorCanvasToolbar({
     mode,
     modeDisabled,
@@ -41,19 +53,19 @@ export function EditorCanvasToolbar({
     const canEditLayout = isStructured && !childFlowsExpanded
 
     return (
-        // ponytail: one nowrap row fits the default sidebar and the stacked layout; scrolls sideways only if the sidebar is dragged very wide.
+        // ponytail: one nowrap row; scrolls sideways only below the 480px minimum canvas width.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="flex h-11 shrink-0 items-center gap-2 overflow-x-auto border-b bg-background px-3"
+            className="@container flex h-11 shrink-0 items-center gap-2 overflow-x-auto border-b bg-background px-3"
         >
             <SegmentedControl
                 data-testid="editor-mode-toggle"
                 aria-label="View"
                 className="shrink-0"
                 options={[
-                    { key: 'structured', label: 'Structured', pressed: isStructured, onPress: onSelectStructured, disabled: modeDisabled },
-                    { key: 'files', label: 'Files', pressed: !isStructured, onPress: onSelectFiles, disabled: modeDisabled },
+                    { key: 'structured', ...segmentLabel(Workflow, 'Structured'), pressed: isStructured, onPress: onSelectStructured, disabled: modeDisabled },
+                    { key: 'files', ...segmentLabel(FileCode, 'Files'), pressed: !isStructured, onPress: onSelectFiles, disabled: modeDisabled },
                 ]}
             />
 
@@ -65,8 +77,8 @@ export function EditorCanvasToolbar({
                         aria-label="Child flows"
                         className="shrink-0"
                         options={[
-                            { key: 'parent', label: 'Parent', pressed: !childFlowsExpanded, onPress: () => onSetChildFlowsExpanded(false) },
-                            { key: 'expanded', label: 'Expanded', pressed: childFlowsExpanded, onPress: () => onSetChildFlowsExpanded(true) },
+                            { key: 'parent', ...segmentLabel(Box, 'Parent'), pressed: !childFlowsExpanded, onPress: () => onSetChildFlowsExpanded(false) },
+                            { key: 'expanded', ...segmentLabel(Boxes, 'Expanded'), pressed: childFlowsExpanded, onPress: () => onSetChildFlowsExpanded(true) },
                         ]}
                     />
                 </>

@@ -59,9 +59,26 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
         ['foreground', 'ground'], ['muted-foreground', 'ground'],
         ['primary', 'background'], ['accent-foreground', 'accent'], ['destructive', 'background'],
         ['success', 'background'], ['warning', 'background'], ['popover-foreground', 'popover'],
+        ['success', 'ground'], ['warning', 'ground'], ['destructive', 'ground'], ['primary', 'ground'],
     ]
     const failures = pairs
         .map(([text, surface]) => [text, surface, contrast(theme[text], theme[surface]).toFixed(2)] as const)
         .filter(([, , ratio]) => Number(ratio) < 4.5)
     expect(failures).toEqual([])
+    // StatusPill: tone text on a 10% tint of itself over the sheet.
+    const rgb = (hsl: number[]) => [0, 8, 4].map((n) => {
+        const [h, s, l] = hsl
+        const k = (n + h / 30) % 12
+        return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))
+    })
+    const lum = (c: number[]) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+    const pillFailures = ['success', 'warning', 'destructive', 'info'].flatMap((tone) => {
+        const text = rgb(theme[tone])
+        const tint = text.map((c, i) => c * 0.1 + rgb(theme.background)[i] * 0.9)
+        const [hi, lo] = [lum(text), lum(tint)].sort((x, y) => y - x)
+        const ratio = (hi + 0.05) / (lo + 0.05)
+        return ratio < 4.5 ? [`${tone} pill ${ratio.toFixed(2)}`] : []
+    })
+    expect(pillFailures).toEqual([])
 })

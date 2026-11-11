@@ -63,7 +63,7 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-header-title')).toHaveTextContent('Tighten the review loop')
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
         expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'success')
-        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^\S.* · 5m · 1\.2k tokens · abcdef0$/)
+        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^\S.* · 5m 00s · 1\.2k tokens · abcdef0$/)
         expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
     })
 

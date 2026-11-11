@@ -1303,11 +1303,11 @@ describe('Frontend contract behavior', () => {
     renderGraphSettings([], [])
 
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
-    expect(screen.getByLabelText('Working Directory')).toBeVisible()
+    expect(screen.getByLabelText('Working directory')).toBeVisible()
     expect(screen.getByLabelText('Title')).toBeVisible()
     expect(screen.getByLabelText('Description')).toBeVisible()
     expect(screen.getByLabelText('Goal')).toBeVisible()
-    expect(screen.getByLabelText('Default Max Retries')).toBeVisible()
+    expect(screen.getByLabelText('Default max retries')).toBeVisible()
 
     const advancedToggle = screen.getByTestId('graph-advanced-toggle')
     expect(advancedToggle.className).toContain('focus-visible')
@@ -1318,8 +1318,8 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('graph-extension-attr-new-key')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply To Nodes' }).className).toContain('focus-visible')
-    expect(screen.getByRole('button', { name: 'Reset From Global' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Apply to nodes' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Reset from global' }).className).toContain('focus-visible')
 
     cleanup()
     render(<SettingsPanel />)
@@ -1385,10 +1385,10 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
     const nodeEditor = screen.getByTestId('node-extension-attrs-editor')
     expect(within(nodeEditor).getByLabelText('Key')).toBeVisible()
     expect(within(nodeEditor).getByLabelText('Value').className).toContain('focus-visible')
-    expect(within(nodeEditor).getByLabelText('New Key').className).toContain('focus-visible')
-    expect(within(nodeEditor).getByLabelText('New Value').className).toContain('focus-visible')
+    expect(within(nodeEditor).getByLabelText('New key').className).toContain('focus-visible')
+    expect(within(nodeEditor).getByLabelText('New value').className).toContain('focus-visible')
     expect(within(nodeEditor).getByRole('button', { name: 'Remove' }).className).toContain('focus-visible')
-    expect(within(nodeEditor).getByRole('button', { name: 'Add Attribute' }).className).toContain('focus-visible')
+    expect(within(nodeEditor).getByRole('button', { name: 'Add attribute' }).className).toContain('focus-visible')
   })
 
   it('[CID:13.2.01] applies narrow-viewport responsive layouts for inspector, diagnostics, and run timeline surfaces', async () => {
@@ -2294,7 +2294,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(edgeForm).toBeVisible()
     expect(within(edgeForm).getByRole('textbox', { name: 'Decision ID' })).toHaveValue('begin')
     expect(within(edgeForm).getByRole('textbox', { name: 'Description' })).toHaveValue('Start the task.')
-    expect(within(edgeForm).getByRole('textbox', { name: 'Display Label' })).toHaveValue('Begin')
+    expect(within(edgeForm).getByRole('textbox', { name: 'Display label' })).toHaveValue('Begin')
     for (const legacy of ['Condition', 'Weight', 'Loop Restart']) {
       expect(within(edgeForm).queryByText(legacy)).not.toBeInTheDocument()
     }
@@ -2364,8 +2364,8 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     renderSidebar(nodes, [])
 
-    await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
-    expect(screen.getByText('Max Retries')).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Show advanced' }))
+    expect(screen.getByText('Max retries')).toBeVisible()
     expect(screen.getByText('Session')).toBeVisible()
     expect(screen.getByText('Class')).toBeVisible()
     expect(screen.getByText('Timeout')).toBeVisible()
@@ -2386,19 +2386,19 @@ useStore.getState().setRunsSelectedRunId(runId);
 
   it('[CID:6.2.01] renders manager-loop authoring controls in sidebar inspector', async () => {
     renderManagerSidebarInspector()
-    expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
+    expect(await screen.findByText('Manager poll interval')).toBeVisible()
     expect(screen.getByRole('option', { name: 'Subflow' })).toBeInTheDocument()
     expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeNull()
   })
 
   it('[CID:6.7.02] renders manager-loop control fields in sidebar inspector', async () => {
     renderManagerSidebarInspector()
-    expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
-    expect(screen.getByText('Manager Max Cycles')).toBeVisible()
-    expect(screen.getByText('Manager Stop Condition')).toBeVisible()
-    expect(screen.getByText('Manager Actions')).toBeVisible()
-    expect(screen.getByText('Manager Steer Cooldown')).toBeVisible()
-    expect(screen.getByText('Start Child Automatically')).toBeVisible()
+    expect(await screen.findByText('Manager poll interval')).toBeVisible()
+    expect(screen.getByText('Manager max cycles')).toBeVisible()
+    expect(screen.getByText('Manager stop condition')).toBeVisible()
+    expect(screen.getByText('Manager actions')).toBeVisible()
+    expect(screen.getByText('Manager steer cooldown')).toBeVisible()
+    expect(screen.getByText('Start child automatically')).toBeVisible()
     expect(screen.getByTestId('node-attr-input-manager.steer_cooldown')).toHaveValue('2s')
     expect(screen.getByTestId('node-attr-checkbox-stack.child_autostart')).toHaveAttribute('aria-checked', 'false')
   })
@@ -2407,7 +2407,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderManagerSidebarInspector()
 
     const childLinkage = screen.getByTestId('manager-child-linkage')
-    expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
+    expect(await screen.findByText('Manager poll interval')).toBeVisible()
     expect(childLinkage).toHaveTextContent('Child flow linkage')
     expect(childLinkage).toHaveTextContent('flow_ref')
     expect(childLinkage).toHaveTextContent('child/flow.yaml')
@@ -2474,7 +2474,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       },
     ], [])
 
-    await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
+    await user.click(await screen.findByRole('button', { name: 'Show advanced' }))
     expect(screen.getByTestId('node-attr-input-tool.hooks.pre')).toBeVisible()
     expect(screen.getByTestId('node-attr-input-tool.hooks.post')).toBeVisible()
     expect(screen.getByTestId('node-attr-input-tool.artifacts.paths')).toBeVisible()
@@ -2494,7 +2494,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
 
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-    fireEvent.click(screen.getByText('Show Advanced', { selector: 'button' }))
+    fireEvent.click(screen.getByText('Show advanced', { selector: 'button' }))
 
     expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
     expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
@@ -2534,7 +2534,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       },
     ], [])
 
-    await user.click(await screen.findByRole('button', { name: 'Show Advanced' }))
+    await user.click(await screen.findByRole('button', { name: 'Show advanced' }))
     expect(screen.getByTestId('node-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
     expect(screen.getByTestId('node-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
 
@@ -2551,7 +2551,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
 
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-    fireEvent.click(screen.getByText('Show Advanced', { selector: 'button' }))
+    fireEvent.click(screen.getByText('Show advanced', { selector: 'button' }))
 
     expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
     expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
@@ -2584,12 +2584,12 @@ useStore.getState().setRunsSelectedRunId(runId);
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
     expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
     expect(document.querySelector('#node-handler-type-options-manager option[value="stack.manager_loop"]')).toBeNull()
-    expect(screen.getByText('Manager Poll Interval')).toBeVisible()
-    expect(screen.getByText('Manager Max Cycles')).toBeVisible()
-    expect(screen.getByText('Manager Stop Condition')).toBeVisible()
-    expect(screen.getByText('Manager Actions')).toBeVisible()
-    expect(screen.getByText('Manager Steer Cooldown')).toBeVisible()
-    expect(screen.getByText('Start Child Automatically')).toBeVisible()
+    expect(screen.getByText('Manager poll interval')).toBeVisible()
+    expect(screen.getByText('Manager max cycles')).toBeVisible()
+    expect(screen.getByText('Manager stop condition')).toBeVisible()
+    expect(screen.getByText('Manager actions')).toBeVisible()
+    expect(screen.getByText('Manager steer cooldown')).toBeVisible()
+    expect(screen.getByText('Start child automatically')).toBeVisible()
     expect(screen.getByTestId('node-toolbar-attr-input-manager.steer_cooldown')).toHaveValue('2s')
     expect(screen.getByTestId('node-toolbar-attr-checkbox-stack.child_autostart')).not.toBeChecked()
   })
@@ -4798,7 +4798,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(within(nodeEditor).getByTestId('node-extension-attr-value-0')).toBeVisible()
     expect(within(nodeEditor).getByTestId('node-extension-attr-new-key')).toBeVisible()
     expect(within(nodeEditor).getByTestId('node-extension-attr-new-value')).toBeVisible()
-    expect(within(nodeEditor).getByRole('button', { name: 'Add Attribute' })).toBeVisible()
+    expect(within(nodeEditor).getByRole('button', { name: 'Add attribute' })).toBeVisible()
 
     act(() => {
       useStore.getState().setSelectedNodeId(null)

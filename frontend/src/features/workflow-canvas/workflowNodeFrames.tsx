@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
+import { Bot, Flag, GitFork, Merge, Play, Split, UserRound, Workflow, Wrench, type LucideIcon } from 'lucide-react';
 
 import {
     getShapeNodeDimensions,
@@ -53,10 +54,23 @@ export function getWorkflowNodeFramePalette({
     if (status === 'success') return statusPalette('success');
     return {
         fillColor: NODE_FILL,
-        strokeColor: 'hsl(var(--muted-foreground) / 0.35)',
-        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.2)',
+        strokeColor: 'hsl(var(--muted-foreground) / 0.5)',
+        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.25)',
     };
 }
+
+// What each shape stands for, shown as a small icon and caption above the node label.
+export const WORKFLOW_NODE_KINDS: Record<WorkflowNodeShape, { Icon: LucideIcon; caption: string }> = {
+    Mdiamond: { Icon: Play, caption: 'Start' },
+    Msquare: { Icon: Flag, caption: 'Exit' },
+    box: { Icon: Bot, caption: 'Agent' },
+    hexagon: { Icon: UserRound, caption: 'Human gate' },
+    diamond: { Icon: Split, caption: 'Switch' },
+    component: { Icon: GitFork, caption: 'Parallel' },
+    tripleoctagon: { Icon: Merge, caption: 'Fan in' },
+    parallelogram: { Icon: Wrench, caption: 'Tool' },
+    house: { Icon: Workflow, caption: 'Subflow' },
+};
 
 export function getWorkflowNodeContainerStyle(shape: WorkflowNodeShape): CSSProperties {
     const { width, height } = getShapeNodeDimensions(shape);
@@ -82,18 +96,6 @@ export function getWorkflowNodeContentClassName(shape: WorkflowNodeShape): strin
         case 'box':
         default:
             return 'px-4 py-4';
-    }
-}
-
-export function getWorkflowNodeOverlayOffsetClassName(shape: WorkflowNodeShape): string {
-    switch (shape) {
-        case 'Mdiamond':
-        case 'diamond':
-            return 'top-3';
-        case 'house':
-            return 'top-3';
-        default:
-            return 'top-2';
     }
 }
 

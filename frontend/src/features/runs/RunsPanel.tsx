@@ -28,10 +28,10 @@ import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
-import { ViewLayout } from '@/components/app/view-layout'
+import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
+import { Play } from 'lucide-react'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import { openRun } from '@/features/missions/MissionTranscript'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -83,7 +83,7 @@ function RunsProjectFilter() {
             aria-label="Show runs from project"
             value={projectFilter ?? ''}
             onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="h-7 max-w-36 truncate rounded-lg bg-background py-0 pl-2.5 pr-8 text-xs data-[size=sm]:h-7 data-[size=sm]:py-0"
+            className="max-w-36 truncate bg-background pl-2.5 pr-8"
         >
             <NativeSelectOption value="">All projects</NativeSelectOption>
             {orderProjects(registry).map((project) => (
@@ -434,11 +434,9 @@ export function RunsPanel() {
                     </Alert>
                 ) : null}
                 {showRunSelectionEmptyState && (
-                    <Empty data-testid="run-selection-empty-state">
-                        <EmptyHeader>
-                            <EmptyDescription>Select a run from the sidebar to inspect its details.</EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
+                    <SheetEmpty data-testid="run-selection-empty-state" icon={Play} title="No run selected" className="flex-1">
+                        Select a run from the sidebar to inspect its details.
+                    </SheetEmpty>
                 )}
                 {showRunDetailsRestoringState && (
                     <p data-testid="run-selection-restoring-state" className="text-sm text-muted-foreground" aria-live="polite">Restoring the selected run session…</p>
@@ -466,11 +464,9 @@ export function RunsPanel() {
                     </div>
                 )}
                 {!selectedRun && !hasRuns && (
-                    <Empty>
-                        <EmptyHeader>
-                            <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
+                    <SheetEmpty icon={Play} title="No runs yet" className="flex-1">
+                        No runs have been recorded yet. Start one from Flows or Overview.
+                    </SheetEmpty>
                 )}
                 {selectedRun && (
                     <div className={isNarrowViewport

@@ -33,7 +33,7 @@ export function ProjectExecutionSettings({ projectPath }: { projectPath: string 
 
     return (
         <Card data-testid="project-settings-dialog" className="gap-4 py-4">
-            <CardHeader className="px-4"><h3 className="text-lg font-light">Execution profile</h3></CardHeader>
+            <CardHeader className="px-4"><h3 className="text-base font-semibold">Execution profile</h3></CardHeader>
             <CardContent className="space-y-4 px-4">
                 <div className="space-y-2">
                     <Label htmlFor="project-default-execution-profile">Default execution profile</Label>

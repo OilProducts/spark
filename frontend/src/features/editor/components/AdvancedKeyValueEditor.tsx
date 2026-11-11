@@ -1,4 +1,5 @@
 import { useId, useMemo, useState } from 'react'
+import { X } from 'lucide-react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import { Button } from '@/components/ui/button'
@@ -23,7 +24,7 @@ export function AdvancedKeyValueEditor({
     onRemove,
     onAdd,
     reservedKeys,
-    title = 'Extension Attributes',
+    title = 'Extension attributes',
     description,
 }: AdvancedKeyValueEditorProps) {
     const id = useId()
@@ -102,21 +103,22 @@ export function AdvancedKeyValueEditor({
                                 type="button"
                                 data-testid={`${testIdPrefix}-extension-attr-remove-${index}`}
                                 onClick={() => onRemove(entry.key)}
-                                variant="outline"
-                                size="xs"
-                                className="h-8 text-xs"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="Remove"
+                                title="Remove"
                             >
-                                Remove
+                                <X aria-hidden="true" />
                             </Button>
                         </div>
                     ))}
                 </div>
             )}
 
-            <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+            <div className="grid grid-cols-2 items-end gap-2">
                 <Field className="gap-1">
                     <FieldLabel htmlFor={`${id}-extension-attr-new-key-input`}>
-                        New Key
+                        New key
                     </FieldLabel>
                     <Input
                         id={`${id}-extension-attr-new-key-input`}
@@ -130,7 +132,7 @@ export function AdvancedKeyValueEditor({
                 </Field>
                 <Field className="gap-1">
                     <FieldLabel htmlFor={`${id}-extension-attr-new-value-input`}>
-                        New Value
+                        New value
                     </FieldLabel>
                     <Input
                         id={`${id}-extension-attr-new-value-input`}
@@ -146,10 +148,10 @@ export function AdvancedKeyValueEditor({
                     onClick={handleAdd}
                     disabled={!canAdd}
                     variant="outline"
-                    size="xs"
-                    className="h-8 text-xs"
+                    size="sm"
+                    className="col-span-2 justify-self-start"
                 >
-                    Add Attribute
+                    Add attribute
                 </Button>
             </div>
             {hasDuplicateKey ? (

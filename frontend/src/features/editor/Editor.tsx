@@ -18,7 +18,8 @@ import { useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store'
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
-import { Well } from '@/components/app/well';
+import { SheetEmpty } from '@/components/app/view-layout';
+import { GitBranch } from 'lucide-react';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
     buildCanonicalFlowModelFromEditorState,
@@ -81,6 +82,7 @@ import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './component
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
 const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
+const MINIMAP_NODE_THRESHOLD = 10;
 const LIVE_ROUTE_THROTTLE_MS = 80;
 const EDITOR_LAYOUT_CANVAS_KIND: FlowCanvasKind = 'editor-parent-only';
 
@@ -1410,24 +1412,19 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             maxZoom={1.5}
                         >
                             <Controls />
-                            <MiniMap
-                                nodeColor="hsl(var(--muted))"
-                                maskColor="hsl(var(--background)/0.5)"
-                            />
+                            {/* ponytail: a small graph fits on screen, where a minimap only covers nodes. */}
+                            {nodeCount > MINIMAP_NODE_THRESHOLD ? (
+                                <MiniMap
+                                    nodeColor="hsl(var(--muted))"
+                                    maskColor="hsl(var(--background)/0.5)"
+                                />
+                            ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>
                     ) : (
-                        <div
-                            data-testid="editor-no-flow-state"
-                            className="flex h-full items-center justify-center p-6"
-                        >
-                            <Well className="max-w-md px-6 py-5 text-center">
-                                <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Choose one from the Flows panel.
-                                </p>
-                            </Well>
-                        </div>
+                        <SheetEmpty data-testid="editor-no-flow-state" icon={GitBranch} title="No flow open">
+                            Select a flow to begin authoring.
+                        </SheetEmpty>
                     )
                 }
 

@@ -566,7 +566,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
     await page.getByTestId("graph-advanced-toggle").click()
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
     await page.getByTestId("graph-extension-attr-new-value").fill(token)
-    await page.getByRole("button", { name: "Add Attribute", exact: true }).click()
+    await page.getByRole("button", { name: "Add attribute", exact: true }).click()
     await expect(page.getByTestId("graph-extension-attr-value-0")).toHaveValue(token)
     await expect(page.getByText(diagnosticMessage)).toBeVisible()
   } finally {
@@ -586,7 +586,7 @@ test("flow metadata round trips through the file view without legacy stylesheet 
     await expect(page.getByTestId("graph-model-stylesheet-editor")).toHaveCount(0)
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
     await page.getByTestId("graph-extension-attr-new-value").fill("roundtrip-value")
-    await page.getByRole("button", { name: "Add Attribute", exact: true }).click()
+    await page.getByRole("button", { name: "Add attribute", exact: true }).click()
 
     // The structured edit lands in flow.md's frontmatter.
     await page.getByRole("button", { name: "Files", exact: true }).click()
@@ -652,7 +652,7 @@ test("files mode keeps structured controls read-only so file saves cannot erase 
     const fileEditor = page.getByTestId("flow-file-editor")
     await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
     await expect(page.getByTestId("inspector-files-mode-notice")).toBeVisible()
-    await expect(page.getByLabel("Prompt Instruction")).toBeDisabled()
+    await expect(page.getByLabel("Prompt instruction")).toBeDisabled()
     await expect(node.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0)
     await node.dblclick()
     await expect(node.locator("input")).toHaveCount(0)
@@ -670,7 +670,7 @@ test("files mode keeps structured controls read-only so file saves cannot erase 
     // Back in Structured mode the inspector edits again.
     await page.getByRole("button", { name: "Structured", exact: true }).click()
     await node.click()
-    await expect(page.getByLabel("Prompt Instruction")).toBeEnabled()
+    await expect(page.getByLabel("Prompt instruction")).toBeEnabled()
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
   }

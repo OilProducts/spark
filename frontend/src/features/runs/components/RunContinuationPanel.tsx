@@ -150,7 +150,7 @@ export function RunContinuationPanel({
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                    <h3 className="text-lg font-semibold text-foreground">Continue run</h3>
+                    <h2 className="text-base font-semibold text-foreground">Continue run</h2>
                     <p className="text-xs leading-5 text-muted-foreground">
                         From run <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span>
                     </p>

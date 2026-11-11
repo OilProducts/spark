@@ -158,7 +158,7 @@ describe('Sidebar node shape authoring', () => {
         )
 
         expect(screen.queryByTestId('node-shape-type-warning')).not.toBeInTheDocument()
-        expect(screen.getByText('Node Kind')).toBeInTheDocument()
+        expect(screen.getByText('Node kind')).toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 
@@ -189,20 +189,49 @@ describe('Sidebar node shape authoring', () => {
             'Context keys must use the context.* namespace: draft.invalid',
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Show Advanced' }))
-        expect(screen.getByRole('button', { name: 'Hide Advanced' })).toBeVisible()
-        expect(screen.getByText('Max Retries')).toBeVisible()
+        fireEvent.click(screen.getByRole('button', { name: 'Show advanced' }))
+        expect(screen.getByRole('button', { name: 'Hide advanced' })).toBeVisible()
+        expect(screen.getByText('Max retries')).toBeVisible()
 
         firstRender.unmount()
         renderWithFlowProvider(<SidebarShapeHarness nodes={initialNodes} />)
 
         await waitFor(() => {
-            expect(screen.getByRole('button', { name: 'Hide Advanced' })).toBeVisible()
+            expect(screen.getByRole('button', { name: 'Hide advanced' })).toBeVisible()
         })
         expect(screen.getByTestId('node-reads-context-editor-textarea')).toHaveValue('draft.invalid')
         expect(screen.getByTestId('node-reads-context-editor-error')).toHaveTextContent(
             'Context keys must use the context.* namespace: draft.invalid',
         )
-        expect(screen.getByText('Max Retries')).toBeVisible()
+        expect(screen.getByText('Max retries')).toBeVisible()
+    })
+
+    it('keeps the stored context keys when the first inspector edit is the advanced toggle', () => {
+        useStore.setState({ preferredAdvancedControls: false })
+        renderWithFlowProvider(
+            <SidebarShapeHarness
+                nodes={[
+                    {
+                        id: 'task',
+                        type: 'taskNode',
+                        position: { x: 0, y: 0 },
+                        selected: true,
+                        style: { width: 220, height: 110 },
+                        data: {
+                            label: 'Task',
+                            kind: 'agent_task',
+                            shape: 'box',
+                            'spark.reads_context': '["context.request.summary"]',
+                            'spark.writes_context': '["context.plan"]',
+                        },
+                    },
+                ]}
+            />,
+        )
+
+        expect(screen.getByTestId('node-reads-context-editor-textarea')).toHaveValue('context.request.summary')
+        fireEvent.click(screen.getByRole('button', { name: 'Show advanced' }))
+        expect(screen.getByTestId('node-reads-context-editor-textarea')).toHaveValue('context.request.summary')
+        expect(screen.getByTestId('node-writes-context-editor-textarea')).toHaveValue('context.plan')
     })
 })

@@ -11,8 +11,8 @@ it('gives each state one short line, and a closed mission never its reason', () 
     // The Drafts group and the header pill say "Draft"; the line itself does not repeat it.
     expect(shortLine({ ...base, status: 'draft' }, now)).toBe('created Sep 27')
     expect(shortLine({ ...base, status: 'running' }, now)).toBe('Agent is working')
-    expect(shortLine({ ...base, status: 'running', runs: [roster('r0', 'completed'), roster('r1', 'running', 'Build the index')] }, now)).toBe('Build the index · 12m')
-    expect(shortLine({ ...base, status: 'running', runs: [roster('r1', 'running')] }, now)).toBe('Build It · 12m')
+    expect(shortLine({ ...base, status: 'running', runs: [roster('r0', 'completed'), roster('r1', 'running', 'Build the index')] }, now)).toBe('Build the index · 12m 00s')
+    expect(shortLine({ ...base, status: 'running', runs: [roster('r1', 'running')] }, now)).toBe('Build It · 12m 00s')
     expect(shortLine({ ...base, status: 'running', waiting: true, wait_reason: 'Review pending' }, now)).toBe('Waiting: Review pending')
     expect(shortLine({ ...base, status: 'needs_you' }, now)).toBe('Waiting for your reply')
     expect(shortLine({ ...base, status: 'needs_you', question: { prompt: 'Ship it?', options: [{ label: 'Ship it' }] } }, now)).toBe('Ship it?')
@@ -28,7 +28,7 @@ it('reads stored timestamps whose hour has one digit', () => {
     expect(missionTime('2026-09-28 12:18:19.5 +00:00:00')).toBe('2026-09-28T12:18:19.5Z')
     const closed = shortLine({ ...base, status: 'closed', closed: { status: 'done', reason: '', at: '2026-09-28 2:18:19.591335 +00:00:00' } }, now)
     expect(closed).toMatch(/^Done · \S/)
-    expect(shortLine({ ...base, status: 'running', runs: [{ ...roster('r1', 'running', 'Early'), launched_at: '2026-09-28 9:30:00.0 +00:00:00' }] }, now)).toBe('Early · 3h 0m')
+    expect(shortLine({ ...base, status: 'running', runs: [{ ...roster('r1', 'running', 'Early'), launched_at: '2026-09-28 9:30:00.0 +00:00:00' }] }, now)).toBe('Early · 3h 00m')
 })
 
 it('reads the start, run results, run questions and replies from user turns', () => {
@@ -96,9 +96,9 @@ it('joins the roster with run facts by run id', () => {
         now,
     )
     expect(runs).toEqual([
-        { runId: 'r1', title: 'Build the search index', flowTitle: 'Build It', status: 'completed', kind: 'completed', duration: '4m', tokens: 1200 },
-        { runId: 'r2', title: 'Review', flowTitle: 'Build It', status: 'waiting', kind: 'waiting', duration: '30m', tokens: 800 },
-        { runId: 'r3', title: 'Unknown to the list', flowTitle: 'Build It', status: 'running', kind: 'running', duration: '12m', tokens: null },
+        { runId: 'r1', title: 'Build the search index', flowTitle: 'Build It', status: 'completed', kind: 'completed', duration: '4m 30s', tokens: 1200 },
+        { runId: 'r2', title: 'Review', flowTitle: 'Build It', status: 'waiting', kind: 'waiting', duration: '30m 00s', tokens: 800 },
+        { runId: 'r3', title: 'Unknown to the list', flowTitle: 'Build It', status: 'running', kind: 'running', duration: '12m 00s', tokens: null },
     ])
     expect(totalTokens(runs)).toBe(2000)
     expect(totalTokens(runs.slice(2))).toBeNull()

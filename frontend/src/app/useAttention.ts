@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
+import { runTitle } from '@/features/runs/model/runOverviewModel'
+import type { RunRecord } from '@/features/runs/model/shared'
 
 const ATTENTION_POLL_MS = 30_000
 
@@ -11,6 +13,18 @@ export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
     mission: 'Mission needs you',
+}
+
+/**
+ * What an item is called: a run waiting at a gate is titled by its flow's name, so it
+ * takes the title the Runs list gives that run.
+ */
+export function attentionTitle(item: AttentionItem, runs: Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>[]): string {
+    const run = item.kind === 'run_gate' ? runs.find((candidate) => candidate.run_id === item.run_id) : undefined
+    if (run && item.title === run.flow_name) {
+        return runTitle(run)
+    }
+    return item.title || item.run_id || item.id
 }
 
 /** Pending attention, polled; null until the first fetch resolves. */

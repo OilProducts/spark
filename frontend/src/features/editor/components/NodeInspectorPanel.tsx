@@ -68,11 +68,11 @@ const isDefaultEnabledBoolean = (value: unknown) => value !== false && value !==
 const NODE_KIND_OPTIONS = [
     { value: 'start', label: 'Start' },
     { value: 'exit', label: 'Exit' },
-    { value: 'agent_task', label: 'Agent Task' },
-    { value: 'human_gate', label: 'Human Gate' },
+    { value: 'agent_task', label: 'Agent task' },
+    { value: 'human_gate', label: 'Human gate' },
     { value: 'switch', label: 'Switch' },
     { value: 'parallel', label: 'Parallel' },
-    { value: 'fan_in', label: 'Fan In' },
+    { value: 'fan_in', label: 'Fan in' },
     { value: 'tool', label: 'Tool' },
     { value: 'subflow', label: 'Subflow' },
 ]
@@ -112,10 +112,10 @@ export function NodeInspectorPanel({
         : DEFAULT_EXIT_RESULT) as { name?: string; outcome?: string }
     const toolAdapter = typeof config.decision_field === 'string' ? 'decision_field' : 'exit_codes'
     return (
-        <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
+        <div className="flex-1 overflow-y-auto p-4">
             <InspectorScaffold
                 scopeLabel="Node"
-                title="Configuration"
+                title="Node settings"
                 entityLabel="Node ID"
                 entityValue={selectedNodeId || undefined}
             >
@@ -133,7 +133,7 @@ export function NodeInspectorPanel({
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label htmlFor={`${id}-node-kind`}>Node Kind</Label>
+                            <Label htmlFor={`${id}-node-kind`}>Node kind</Label>
                             <NativeSelect
                                 id={`${id}-node-kind`}
                                 value={(selectedNode?.data?.kind as string) || 'agent_task'}
@@ -149,7 +149,7 @@ export function NodeInspectorPanel({
 
                         {visibility.showPrompt ? (
                             <div className="flex h-48 flex-col space-y-1.5">
-                                <Label htmlFor={`${id}-prompt-instruction`}>Prompt Instruction</Label>
+                                <Label htmlFor={`${id}-prompt-instruction`}>Prompt instruction</Label>
                                 <Textarea
                                     id={`${id}-prompt-instruction`}
                                     aria-describedby={nodeFieldDiagnostics.prompt?.length ? `${id}-prompt-diagnostics` : undefined}
@@ -171,7 +171,7 @@ export function NodeInspectorPanel({
                             <div className="space-y-3">
                                 <ContextKeyListEditor
                                     testId="node-reads-context-editor"
-                                    title="Reads Context"
+                                    title="Reads context"
                                     description="Declare the `context.*` keys this node expects to consume from launch state or earlier stages."
                                     value={readsContextDraft}
                                     error={readsContextError}
@@ -179,7 +179,7 @@ export function NodeInspectorPanel({
                                 />
                                 <ContextKeyListEditor
                                     testId="node-writes-context-editor"
-                                    title="Writes Context"
+                                    title="Writes context"
                                     description="Declare the `context.*` keys this node is expected to produce for later stages."
                                     value={writesContextDraft}
                                     error={writesContextError}
@@ -190,7 +190,7 @@ export function NodeInspectorPanel({
 
                         {visibility.showToolCommand ? (
                             <div className="space-y-1.5">
-                                <Label htmlFor={`${id}-tool-command`}>Tool Command</Label>
+                                <Label htmlFor={`${id}-tool-command`}>Tool command</Label>
                                 <Input
                                     id={`${id}-tool-command`}
                                     value={(selectedNode?.data?.['tool.command'] as string) || ''}
@@ -216,11 +216,11 @@ export function NodeInspectorPanel({
                                         onCheckedChange={(checked) => onPropertyChange('config.tolerate_branch_execution_errors', checked === true)}
                                     />
                                     <Label htmlFor={`${id}-tolerate-branch-errors`} className="text-sm font-medium">
-                                        Tolerate Branch Execution Errors
+                                        Tolerate branch execution errors
                                     </Label>
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-max-parallel`}>Max Parallel</Label>
+                                    <Label htmlFor={`${id}-max-parallel`}>Max parallel</Label>
                                     <Input
                                         id={`${id}-max-parallel`}
                                         value={(selectedNode?.data?.max_parallel as number | string | undefined) ?? 4}
@@ -233,7 +233,7 @@ export function NodeInspectorPanel({
                         {kind === 'switch' ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-switch-on`}>Switch On</Label>
+                                    <Label htmlFor={`${id}-switch-on`}>Switch on</Label>
                                     <Input
                                         id={`${id}-switch-on`}
                                         value={typeof config.on === 'string' ? config.on : ''}
@@ -250,7 +250,7 @@ export function NodeInspectorPanel({
                                     onChange={(map) => onPropertyChange('config.cases', map)}
                                 />
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-switch-otherwise`}>Otherwise Decision</Label>
+                                    <Label htmlFor={`${id}-switch-otherwise`}>Otherwise decision</Label>
                                     <Input
                                         id={`${id}-switch-otherwise`}
                                         value={typeof config.otherwise === 'string' ? config.otherwise : ''}
@@ -264,7 +264,7 @@ export function NodeInspectorPanel({
                         {kind === 'exit' ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-exit-result-name`}>Result Name</Label>
+                                    <Label htmlFor={`${id}-exit-result-name`}>Result name</Label>
                                     <Input
                                         id={`${id}-exit-result-name`}
                                         value={exitResult.name ?? ''}
@@ -273,7 +273,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-exit-result-outcome`}>Run Outcome</Label>
+                                    <Label htmlFor={`${id}-exit-result-outcome`}>Run outcome</Label>
                                     <NativeSelect
                                         id={`${id}-exit-result-outcome`}
                                         value={exitResult.outcome === 'failure' ? 'failure' : 'success'}
@@ -289,7 +289,7 @@ export function NodeInspectorPanel({
                         {kind === 'tool' ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-tool-adapter`}>Decision Adapter</Label>
+                                    <Label htmlFor={`${id}-tool-adapter`}>Decision adapter</Label>
                                     <NativeSelect
                                         id={`${id}-tool-adapter`}
                                         value={toolAdapter}
@@ -308,7 +308,7 @@ export function NodeInspectorPanel({
                                 </div>
                                 {toolAdapter === 'decision_field' ? (
                                     <div className="space-y-1.5">
-                                        <Label htmlFor={`${id}-tool-decision-field`}>Decision Field</Label>
+                                        <Label htmlFor={`${id}-tool-decision-field`}>Decision field</Label>
                                         <Input
                                             id={`${id}-tool-decision-field`}
                                             value={config.decision_field as string}
@@ -319,7 +319,7 @@ export function NodeInspectorPanel({
                                 ) : (
                                     <DecisionMapEditor
                                         key={`${selectedNodeId}-exit-codes`}
-                                        label="Exit Codes"
+                                        label="Exit codes"
                                         help="One `exit code = decision` per line."
                                         value={config.exit_codes}
                                         onChange={(map) => onPropertyChange('config.exit_codes', map)}
@@ -335,7 +335,7 @@ export function NodeInspectorPanel({
                         {visibility.showManagerOptions ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-child-flow-reference`}>Child Flow Reference</Label>
+                                    <Label htmlFor={`${id}-child-flow-reference`}>Child flow reference</Label>
                                     <Input
                                         id={`${id}-child-flow-reference`}
                                         aria-describedby={`${id}-child-flow-help`}
@@ -345,7 +345,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-manager-poll-interval`}>Manager Poll Interval</Label>
+                                    <Label htmlFor={`${id}-manager-poll-interval`}>Manager poll interval</Label>
                                     <Input
                                         id={`${id}-manager-poll-interval`}
                                         value={(selectedNode?.data?.['manager.poll_interval'] as string) || ''}
@@ -354,7 +354,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-manager-max-cycles`}>Manager Max Cycles</Label>
+                                    <Label htmlFor={`${id}-manager-max-cycles`}>Manager max cycles</Label>
                                     <Input
                                         id={`${id}-manager-max-cycles`}
                                         value={(selectedNode?.data?.['manager.max_cycles'] as number | string | undefined) ?? ''}
@@ -363,7 +363,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-manager-stop-condition`}>Manager Stop Condition</Label>
+                                    <Label htmlFor={`${id}-manager-stop-condition`}>Manager stop condition</Label>
                                     <Input
                                         id={`${id}-manager-stop-condition`}
                                         value={(selectedNode?.data?.['manager.stop_condition'] as string) || ''}
@@ -372,7 +372,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-manager-actions`}>Manager Actions</Label>
+                                    <Label htmlFor={`${id}-manager-actions`}>Manager actions</Label>
                                     <Input
                                         id={`${id}-manager-actions`}
                                         value={(selectedNode?.data?.['manager.actions'] as string) || ''}
@@ -381,7 +381,7 @@ export function NodeInspectorPanel({
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-manager-steer-cooldown`}>Manager Steer Cooldown</Label>
+                                    <Label htmlFor={`${id}-manager-steer-cooldown`}>Manager steer cooldown</Label>
                                     <Input
                                         id={`${id}-manager-steer-cooldown`}
                                         data-testid="node-attr-input-manager.steer_cooldown"
@@ -398,7 +398,7 @@ export function NodeInspectorPanel({
                                         onCheckedChange={(checked) => onPropertyChange('stack.child_autostart', checked === true)}
                                     />
                                     <Label htmlFor={`${id}-stack-child-autostart`} className="text-sm font-medium">
-                                        Start Child Automatically
+                                        Start child automatically
                                     </Label>
                                 </div>
                                 <Well data-testid="manager-child-linkage" className="space-y-2 px-3 py-3">
@@ -417,10 +417,10 @@ export function NodeInspectorPanel({
                                         type="button"
                                         data-testid="manager-open-child-settings"
                                         variant="outline"
-                                        size="xs"
+                                        size="sm"
                                         onClick={onOpenGraphChildSettings}
                                     >
-                                        Open Flow Settings
+                                        Open flow settings
                                     </Button>
                                 </Well>
                             </>
@@ -429,7 +429,7 @@ export function NodeInspectorPanel({
                         {kind === 'subflow' ? (
                             <DecisionMapEditor
                                 key={`${selectedNodeId}-results`}
-                                label="Child Results"
+                                label="Child results"
                                 help="One `child result name = decision` per line."
                                 value={config.results}
                                 onChange={(map) => onPropertyChange('config.results', map)}
@@ -444,7 +444,7 @@ export function NodeInspectorPanel({
                                 className="w-full text-xs"
                                 onClick={() => onSetShowAdvanced((current) => !current)}
                             >
-                                {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
+                                {showAdvanced ? 'Hide advanced' : 'Show advanced'}
                             </Button>
                         ) : null}
 
@@ -454,7 +454,7 @@ export function NodeInspectorPanel({
                                     <>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1.5">
-                                                <Label htmlFor={`${id}-max-retries`}>Max Retries</Label>
+                                                <Label htmlFor={`${id}-max-retries`}>Max retries</Label>
                                                 <Input
                                                     id={`${id}-max-retries`}
                                                     value={(selectedNode?.data?.max_retries as number | string | undefined) ?? ''}
@@ -474,7 +474,7 @@ export function NodeInspectorPanel({
                                         {visibility.showToolCommand ? (
                                             <>
                                                 <div className="space-y-1.5">
-                                                    <Label htmlFor={`${id}-pre-hook-override`}>Pre Hook Override</Label>
+                                                    <Label htmlFor={`${id}-pre-hook-override`}>Pre-hook override</Label>
                                                     <Input
                                                         id={`${id}-pre-hook-override`}
                                                         aria-describedby={selectedNodeToolHookPreWarning ? `${id}-pre-hook-warning` : undefined}
@@ -491,7 +491,7 @@ export function NodeInspectorPanel({
                                                     ) : null}
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label htmlFor={`${id}-post-hook-override`}>Post Hook Override</Label>
+                                                    <Label htmlFor={`${id}-post-hook-override`}>Post-hook override</Label>
                                                     <Input
                                                         id={`${id}-post-hook-override`}
                                                         aria-describedby={selectedNodeToolHookPostWarning ? `${id}-post-hook-warning` : undefined}
@@ -508,7 +508,7 @@ export function NodeInspectorPanel({
                                                     ) : null}
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label htmlFor={`${id}-artifact-paths`}>Artifact Paths</Label>
+                                                    <Label htmlFor={`${id}-artifact-paths`}>Artifact paths</Label>
                                                     <Input
                                                         id={`${id}-artifact-paths`}
                                                         data-testid="node-attr-input-tool.artifacts.paths"
@@ -519,7 +519,7 @@ export function NodeInspectorPanel({
                                                     />
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label htmlFor={`${id}-stdout-artifact`}>Stdout Artifact</Label>
+                                                    <Label htmlFor={`${id}-stdout-artifact`}>Stdout artifact</Label>
                                                     <Input
                                                         id={`${id}-stdout-artifact`}
                                                         data-testid="node-attr-input-tool.artifacts.stdout"
@@ -530,7 +530,7 @@ export function NodeInspectorPanel({
                                                     />
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label htmlFor={`${id}-stderr-artifact`}>Stderr Artifact</Label>
+                                                    <Label htmlFor={`${id}-stderr-artifact`}>Stderr artifact</Label>
                                                     <Input
                                                         id={`${id}-stderr-artifact`}
                                                         data-testid="node-attr-input-tool.artifacts.stderr"

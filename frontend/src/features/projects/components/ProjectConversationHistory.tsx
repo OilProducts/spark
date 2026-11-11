@@ -19,6 +19,8 @@ import {
     getProposedPlanStatusPresentation,
 } from '../model/presentation'
 import { Transcript, type TranscriptExpansionState } from '@/components/app/transcript/Transcript'
+import { SheetEmpty } from '@/components/app/view-layout'
+import { MessageSquare } from 'lucide-react'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -439,6 +441,14 @@ export function ProjectConversationHistory({
         }
     }
 
+    if (!activeConversationId && !isConversationUnavailable && !isConversationHistoryLoading && activeConversationHistory.length === 0) {
+        return (
+            <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-1 flex-col">
+                <SheetEmpty icon={MessageSquare} title="No chat open">Create or select a thread to begin chatting.</SheetEmpty>
+            </div>
+        )
+    }
+
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
             <OlderMessagesControl
@@ -456,7 +466,7 @@ export function ProjectConversationHistory({
                 loading={isConversationHistoryLoading}
                 empty={isConversationUnavailable
                     ? 'This chat is no longer available.'
-                    : activeConversationId ? undefined : 'Create or select a thread to begin chatting.'}
+                    : undefined}
                 conversation={conversation}
                 expansion={expansion}
                 attachmentUrl={attachmentUrl}

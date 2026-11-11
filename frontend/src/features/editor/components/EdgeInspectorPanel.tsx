@@ -44,10 +44,10 @@ export function EdgeInspectorPanel({
 }: EdgeInspectorPanelProps) {
     const id = useId()
     return (
-        <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
+        <div className="flex-1 overflow-y-auto p-4">
             <InspectorScaffold
                 scopeLabel="Edge"
-                title="Properties"
+                title="Edge settings"
                 entityLabel="Edge"
                 entityValue={selectedEdge ? `${selectedEdge.source} -> ${selectedEdge.target}` : undefined}
             >
@@ -57,7 +57,7 @@ export function EdgeInspectorPanel({
                     <div data-testid="edge-structured-form" className="space-y-4">
                         {isForkEdge ? (
                             <div className="space-y-1.5">
-                                <Label htmlFor={`${id}-fork-connection`}>Fork Connection</Label>
+                                <Label htmlFor={`${id}-fork-connection`}>Fork connection</Label>
                                 <NativeSelect
                                     id={`${id}-fork-connection`}
                                     value={selectedEdge.data?.kind === 'join' ? 'join' : 'branch'}
@@ -91,7 +91,7 @@ export function EdgeInspectorPanel({
                                     {renderFieldDiagnostics('edge', 'description', edgeFieldDiagnostics, 'edge-field-diagnostics-description')}
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-label`}>Display Label</Label>
+                                    <Label htmlFor={`${id}-label`}>Display label</Label>
                                     <Input
                                         id={`${id}-label`}
                                         value={(selectedEdge.data?.label as string) || ''}

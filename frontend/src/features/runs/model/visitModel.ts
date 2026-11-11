@@ -4,7 +4,7 @@ import type {
     RunExecutionPrompt,
     RunTranscriptSegment,
 } from '@/lib/api/attractorApi'
-import type { TimelineEventEntry } from './shared'
+import { formatElapsed, type TimelineEventEntry } from './shared'
 import { segmentTimelineEntry } from '@/features/projects/model/conversationTimeline'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { timestampMs } from './transcriptModel'
@@ -481,18 +481,7 @@ export function visitDurationMs(visit: Pick<RunVisit, 'startedAt' | 'endedAt'>, 
 }
 
 export function formatVisitDuration(durationMs: number | null): string {
-    if (durationMs === null) {
-        return ''
-    }
-    const seconds = Math.round(durationMs / 1000)
-    if (seconds < 60) {
-        return `${seconds}s`
-    }
-    const minutes = Math.floor(seconds / 60)
-    if (minutes < 60) {
-        return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
-    }
-    return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
+    return durationMs === null ? '' : formatElapsed(durationMs)
 }
 
 /** An error's kind and whether the flow tolerates it, such as "runtime error, tolerable". */

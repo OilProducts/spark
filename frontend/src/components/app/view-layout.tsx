@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from 'react'
+import type { ComponentProps, ComponentType, ReactNode } from 'react'
 
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
@@ -59,6 +59,36 @@ export function ViewLayout({
             <Sheet data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
                 {children}
             </Sheet>
+        </div>
+    )
+}
+
+/**
+ * What a view's sheet shows when nothing is selected or there is nothing yet: the view's
+ * icon, a short title, one line of guidance and an optional action, centred in the sheet.
+ */
+export function SheetEmpty({
+    icon: Icon,
+    title,
+    action,
+    className,
+    children,
+    ...props
+}: Omit<ComponentProps<'div'>, 'title'> & { icon?: ComponentType<{ className?: string }>; title: ReactNode; action?: ReactNode }) {
+    return (
+        <div data-slot="sheet-empty" className={cn('flex h-full min-h-64 items-center justify-center p-8', className)} {...props}>
+            <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+                {Icon ? (
+                    <span aria-hidden="true" className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                        <Icon className="size-5" />
+                    </span>
+                ) : null}
+                <div className="space-y-1">
+                    <p className="text-sm font-semibold text-foreground">{title}</p>
+                    {children ? <div className="text-sm text-muted-foreground">{children}</div> : null}
+                </div>
+                {action}
+            </div>
         </div>
     )
 }

@@ -5,7 +5,7 @@ import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
-import { ATTENTION_KIND_LABELS, openAttentionItem, useAttentionItems } from './useAttention'
+import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
@@ -28,8 +28,9 @@ const RUNNING_RUN_STATUSES = new Set(['running', 'queued', 'pause_requested', 'a
 type ActivityDot = 'waiting' | 'running' | 'unread' | null
 const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked' }
 
-// An icon with its name under it; on a phone-width top row there is only room for the icon.
-const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:size-11'
+// An icon with its name under it; on a phone-width top row there is only room for the icon,
+// and the icons share the row's width so all of them stay on screen.
+const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:h-11 max-sm:w-auto max-sm:min-w-8 max-sm:flex-1 max-sm:shrink'
 const LABEL_CLASS = 'text-xs leading-none max-sm:hidden'
 
 /** Which views have something waiting on you or running, for the dots on their icons. */
@@ -53,6 +54,7 @@ export function activityDots(
 
 function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: boolean }) {
     const registry = useStore((state) => state.projectRegistry)
+    const runs = useStore((state) => state.runsListSession.runs)
     const [open, setOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -75,7 +77,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
     }
 
     return (
-        <div ref={containerRef} className="relative">
+        <div ref={containerRef} className="relative max-sm:flex max-sm:min-w-8 max-sm:flex-1">
             <button
                 type="button"
                 data-testid="attention-bell"
@@ -122,7 +124,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                                 {ATTENTION_KIND_LABELS[item.kind]}
                             </span>
                             <span className="w-full truncate text-sm">
-                                {item.title || item.run_id || item.id}
+                                {attentionTitle(item, runs)}
                             </span>
                             <span className="w-full truncate text-xs text-muted-foreground">
                                 {projectLabel(registry, item.project_path)}
@@ -205,12 +207,12 @@ export function ActivityBar() {
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
             className={cn(
                 'z-50 flex shrink-0 items-center gap-1 bg-ground',
-                isNarrowViewport ? 'sticky top-0 w-full flex-row px-2 py-1' : 'w-16 flex-col py-3',
+                isNarrowViewport ? 'sticky top-0 w-full flex-row px-2 py-1 max-sm:gap-0.5' : 'w-16 flex-col py-3',
             )}
         >
             <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
-            <span className="flex-1" />
+            <span className="flex-1 max-sm:hidden" />
             <AttentionBell items={attention} narrow={isNarrowViewport} />
             {renderItem({ mode: 'settings', label: 'Settings', icon: Settings, testId: 'activity-settings' })}
         </nav>

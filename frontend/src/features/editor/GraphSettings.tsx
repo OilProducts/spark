@@ -229,7 +229,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const inspectorContent = (
         <InspectorScaffold
             scopeLabel="Graph"
-            title="Settings"
+            title="Flow settings"
             entityLabel="Flow"
             entityValue={activeFlow || undefined}
         >
@@ -304,7 +304,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 size="sm"
                 className="bg-background"
             >
-                Graph Settings
+                Graph settings
             </Button>
             {isOpen && (
                 <div className="mt-2 w-80 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-md border border-border bg-card p-4 shadow-lg">

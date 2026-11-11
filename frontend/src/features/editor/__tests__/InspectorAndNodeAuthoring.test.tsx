@@ -111,39 +111,39 @@ describe('Inspector and node authoring behavior', () => {
     for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
       expect(screen.queryByText(legacy)).not.toBeInTheDocument()
     }
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Tolerate Branch Execution Errors' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tolerate branch execution errors' }))
     expect(props.onPropertyChange).toHaveBeenCalledWith('config.tolerate_branch_execution_errors', true)
   })
 
   it('edits switch, exit, tool and subflow config through typed config fields', () => {
     const switchProps = panelProps('switch', { config: { kind: 'switch', on: 'context.count', cases: { '0': 'zero', '"0"': 'text_zero' }, otherwise: 'other' } })
     const view = render(<NodeInspectorPanel {...switchProps} />)
-    expect(screen.getByRole('textbox', { name: 'Switch On' })).toHaveValue('context.count')
+    expect(screen.getByRole('textbox', { name: 'Switch on' })).toHaveValue('context.count')
     const cases = screen.getByRole('textbox', { name: 'Cases' })
     expect(cases).toHaveValue('0 = zero\n"0" = text_zero')
     fireEvent.change(cases, { target: { value: '0 = zero\n"0" = text_zero\ntrue = zero' } })
     expect(switchProps.onPropertyChange).toHaveBeenLastCalledWith('config.cases', { '0': 'zero', '"0"': 'text_zero', 'true': 'zero' })
-    fireEvent.change(screen.getByRole('textbox', { name: 'Otherwise Decision' }), { target: { value: 'fallback' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Otherwise decision' }), { target: { value: 'fallback' } })
     expect(switchProps.onPropertyChange).toHaveBeenLastCalledWith('config.otherwise', 'fallback')
     expectLabelsAndReferences()
 
     const exitProps = panelProps('exit', { config: { kind: 'exit', result: { name: 'blocked', outcome: 'failure' } } })
     view.rerender(<NodeInspectorPanel {...exitProps} />)
-    expect(screen.getByRole('textbox', { name: 'Result Name' })).toHaveValue('blocked')
-    expect(screen.getByRole('combobox', { name: 'Run Outcome' })).toHaveValue('failure')
-    fireEvent.change(screen.getByRole('combobox', { name: 'Run Outcome' }), { target: { value: 'success' } })
+    expect(screen.getByRole('textbox', { name: 'Result name' })).toHaveValue('blocked')
+    expect(screen.getByRole('combobox', { name: 'Run outcome' })).toHaveValue('failure')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Run outcome' }), { target: { value: 'success' } })
     expect(exitProps.onPropertyChange).toHaveBeenLastCalledWith('config.result', { name: 'blocked', outcome: 'success' })
 
     const toolProps = panelProps('tool', { config: { kind: 'tool', command: 'make', exit_codes: { '0': 'passed', '1': 'rejected' } } })
     view.rerender(<NodeInspectorPanel {...toolProps} />)
-    expect(screen.getByRole('textbox', { name: 'Exit Codes' })).toHaveValue('0 = passed\n1 = rejected')
-    fireEvent.change(screen.getByRole('combobox', { name: 'Decision Adapter' }), { target: { value: 'decision_field' } })
+    expect(screen.getByRole('textbox', { name: 'Exit codes' })).toHaveValue('0 = passed\n1 = rejected')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Decision adapter' }), { target: { value: 'decision_field' } })
     expect(toolProps.onPropertyChange).toHaveBeenCalledWith('config.exit_codes', '')
     expect(toolProps.onPropertyChange).toHaveBeenCalledWith('config.decision_field', 'decision')
 
     const subflowProps = panelProps('subflow', { config: { kind: 'subflow', flow_ref: 'child', results: { completed: 'child_completed' } } })
     view.rerender(<NodeInspectorPanel {...subflowProps} />)
-    fireEvent.change(screen.getByRole('textbox', { name: 'Child Results' }), { target: { value: 'completed = child_completed\nblocked = child_blocked' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Child results' }), { target: { value: 'completed = child_completed\nblocked = child_blocked' } })
     expect(subflowProps.onPropertyChange).toHaveBeenLastCalledWith('config.results', { completed: 'child_completed', blocked: 'child_blocked' })
     expectLabelsAndReferences()
   })
@@ -153,15 +153,15 @@ describe('Inspector and node authoring behavior', () => {
       // Each reduced map would itself pass backend validation.
       ['switch', { kind: 'switch', on: 'context.count', cases: { '0': 'clean' }, otherwise: 'conflicts' }, 'Cases', '0 = clean\n0 = conflicts'],
       ['switch', { kind: 'switch', on: 'context.count', cases: { '0': 'clean' }, otherwise: 'conflicts' }, 'Cases', '0 = clean\n"ready" ='],
-      ['tool', { kind: 'tool', command: 'make', exit_codes: { '0': 'passed', '1': 'rejected' } }, 'Exit Codes', '0 = passed\n0 = rejected'],
-      ['subflow', { kind: 'subflow', flow_ref: 'child', results: { completed: 'done' } }, 'Child Results', 'completed = done\nblocked'],
+      ['tool', { kind: 'tool', command: 'make', exit_codes: { '0': 'passed', '1': 'rejected' } }, 'Exit codes', '0 = passed\n0 = rejected'],
+      ['subflow', { kind: 'subflow', flow_ref: 'child', results: { completed: 'done' } }, 'Child results', 'completed = done\nblocked'],
     ] as const
     for (const [kind, config, label, text] of cases) {
       const props = panelProps(kind, { config })
       render(<NodeInspectorPanel {...props} />)
       const field = screen.getByRole('textbox', { name: label })
       fireEvent.change(field, { target: { value: text } })
-      expect(props.onPropertyChange).not.toHaveBeenCalledWith(`config.${label === 'Cases' ? 'cases' : label === 'Exit Codes' ? 'exit_codes' : 'results'}`, expect.anything())
+      expect(props.onPropertyChange).not.toHaveBeenCalledWith(`config.${label === 'Cases' ? 'cases' : label === 'Exit codes' ? 'exit_codes' : 'results'}`, expect.anything())
       expect(field).toHaveAttribute('aria-invalid', 'true')
       const alert = screen.getByRole('alert')
       expect(field.getAttribute('aria-describedby')).toContain(alert.id)
@@ -273,7 +273,7 @@ describe('Inspector and node authoring behavior', () => {
       />,
     )
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Manager Steer Cooldown' }), { target: { value: '5s' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Manager steer cooldown' }), { target: { value: '5s' } })
     expect(onPropertyChange).toHaveBeenCalledWith('manager.steer_cooldown', '5s')
 
     fireEvent.click(screen.getByTestId('node-attr-checkbox-stack.child_autostart'))
@@ -316,16 +316,16 @@ function expectLabelsAndReferences() {
 
 describe('Accessible node inspector fields', () => {
   it.each([
-    ['agent_task', [['Prompt Instruction', 'prompt'], ['Max Retries', 'max_retries'], ['Timeout', 'timeout'],
+    ['agent_task', [['Prompt instruction', 'prompt'], ['Max retries', 'max_retries'], ['Timeout', 'timeout'],
       ['Session', 'session'],
       ['Class', 'class']]],
-    ['tool', [['Tool Command', 'tool.command'], ['Pre Hook Override', 'tool.hooks.pre'],
-      ['Post Hook Override', 'tool.hooks.post'], ['Artifact Paths', 'tool.artifacts.paths'],
-      ['Stdout Artifact', 'tool.artifacts.stdout'], ['Stderr Artifact', 'tool.artifacts.stderr']]],
-    ['parallel', [['Max Parallel', 'max_parallel']]],
-    ['subflow', [['Child Flow Reference', 'flow_ref'], ['Manager Poll Interval', 'manager.poll_interval'],
-      ['Manager Max Cycles', 'manager.max_cycles'], ['Manager Stop Condition', 'manager.stop_condition'],
-      ['Manager Actions', 'manager.actions'], ['Manager Steer Cooldown', 'manager.steer_cooldown']]],
+    ['tool', [['Tool command', 'tool.command'], ['Pre-hook override', 'tool.hooks.pre'],
+      ['Post-hook override', 'tool.hooks.post'], ['Artifact paths', 'tool.artifacts.paths'],
+      ['Stdout artifact', 'tool.artifacts.stdout'], ['Stderr artifact', 'tool.artifacts.stderr']]],
+    ['parallel', [['Max parallel', 'max_parallel']]],
+    ['subflow', [['Child flow reference', 'flow_ref'], ['Manager poll interval', 'manager.poll_interval'],
+      ['Manager max cycles', 'manager.max_cycles'], ['Manager stop condition', 'manager.stop_condition'],
+      ['Manager actions', 'manager.actions'], ['Manager steer cooldown', 'manager.steer_cooldown']]],
   ])('edits named %s fields, including advanced settings', (kind, fields) => {
     const props = panelProps(kind)
     const view = render(<NodeInspectorPanel {...props} />)
@@ -333,7 +333,7 @@ describe('Accessible node inspector fields', () => {
       fireEvent.change(screen.getByRole('textbox', { name, exact: true }), { target: { value: 'edited' } })
       expect(props.onPropertyChange).toHaveBeenCalledWith(key, 'edited')
     }
-    fireEvent.change(screen.getByRole('combobox', { name: 'Node Kind' }), { target: { value: 'tool' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Node kind' }), { target: { value: 'tool' } })
     expect(props.onPropertyChange).toHaveBeenCalledWith('kind', 'tool')
     if (kind === 'agent_task') {
       fireEvent.click(screen.getByRole('button', { name: /^Model:/ }))
@@ -365,7 +365,7 @@ describe('Accessible node inspector fields', () => {
     const props = panelProps()
     const { rerender } = render(<NodeInspectorPanel {...props} showAdvanced={false} />)
     expect(screen.queryByRole('textbox', { name: 'Timeout' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Show Advanced' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show advanced' }))
     expect(props.onSetShowAdvanced).toHaveBeenCalledWith(expect.any(Function))
     rerender(<><NodeInspectorPanel {...props} /><NodeInspectorPanel {...props} /></>)
     expect(screen.getAllByRole('textbox', { name: 'Timeout' })).toHaveLength(2)
@@ -378,7 +378,7 @@ describe('Accessible node inspector fields', () => {
     const warning = { rule_id: 'test', severity: 'warning' as const, message: 'Prompt is recommended.' }
     props.nodeFieldDiagnostics = { prompt: [warning], config: [error] }
     const { rerender } = render(<NodeInspectorPanel {...props} />)
-    const prompt = screen.getByRole('textbox', { name: 'Prompt Instruction' })
+    const prompt = screen.getByRole('textbox', { name: 'Prompt instruction' })
     expect(prompt).toHaveAccessibleDescription(warning.message)
     expect(prompt).not.toHaveAttribute('aria-invalid')
     expect(screen.getByTestId('node-field-diagnostics-config')).toHaveTextContent(error.message)
@@ -388,8 +388,8 @@ describe('Accessible node inspector fields', () => {
     expect(prompt).not.toHaveAttribute('aria-describedby')
     expect(screen.queryByText(error.message)).not.toBeInTheDocument()
     rerender(<NodeInspectorPanel {...panelProps('subflow')} selectedNodeId="implement" />)
-    expect(screen.queryByRole('textbox', { name: 'Prompt Instruction' })).not.toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Child Flow Reference' })).toHaveAccessibleDescription(/Subflow nodes use/)
+    expect(screen.queryByRole('textbox', { name: 'Prompt instruction' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Child flow reference' })).toHaveAccessibleDescription(/Subflow nodes use/)
     expectLabelsAndReferences()
   })
 
@@ -397,13 +397,13 @@ describe('Accessible node inspector fields', () => {
     const props = panelProps('tool')
     const { rerender } = render(<NodeInspectorPanel {...props} selectedNodeToolHookPreWarning="Pre hook warning" selectedNodeToolHookPostWarning="Post hook warning" />)
     for (const name of ['Pre', 'Post']) {
-      const input = screen.getByRole('textbox', { name: `${name} Hook Override` })
+      const input = screen.getByRole('textbox', { name: `${name}-hook override` })
       expect(input).toHaveAccessibleDescription(`${name} hook warning`)
       expect(input).not.toHaveAttribute('aria-invalid')
     }
     rerender(<NodeInspectorPanel {...props} />)
     for (const name of ['Pre', 'Post']) {
-      expect(screen.getByRole('textbox', { name: `${name} Hook Override` })).not.toHaveAttribute('aria-describedby')
+      expect(screen.getByRole('textbox', { name: `${name}-hook override` })).not.toHaveAttribute('aria-describedby')
     }
     expectLabelsAndReferences()
   })
@@ -411,8 +411,8 @@ describe('Accessible node inspector fields', () => {
   it('keeps context names and callbacks distinct, describes drafts and clears errors', () => {
     const props = panelProps('subflow')
     const { rerender } = render(<NodeInspectorPanel {...props} readsContextError="Invalid context key" readsContextDraft="bad" />)
-    const reads = screen.getByRole('textbox', { name: 'Reads Context' })
-    const writes = screen.getByRole('textbox', { name: 'Writes Context' })
+    const reads = screen.getByRole('textbox', { name: 'Reads context' })
+    const writes = screen.getByRole('textbox', { name: 'Writes context' })
     expect(reads).toHaveValue('bad')
     expect(reads).toHaveAccessibleDescription(/expects to consume.*Invalid context key/)
     expect(reads).toHaveAttribute('aria-invalid', 'true')
@@ -434,12 +434,12 @@ describe('Accessible node inspector fields', () => {
   })
 
   it('uses unique stable IDs for repeated context editors with the same test ID', () => {
-    const props = { title: 'Reads Context', description: 'Read keys', value: '', error: null, testId: 'keys', onChange: vi.fn() }
+    const props = { title: 'Reads context', description: 'Read keys', value: '', error: null, testId: 'keys', onChange: vi.fn() }
     const { rerender } = render(<><ContextKeyListEditor {...props} /><ContextKeyListEditor {...props} /></>)
-    const ids = screen.getAllByRole('textbox', { name: 'Reads Context' }).map(input => input.id)
+    const ids = screen.getAllByRole('textbox', { name: 'Reads context' }).map(input => input.id)
     expectLabelsAndReferences()
     rerender(<><ContextKeyListEditor {...props} value="context.a" /><ContextKeyListEditor {...props} /></>)
-    expect(screen.getAllByRole('textbox', { name: 'Reads Context' }).map(input => input.id)).toEqual(ids)
+    expect(screen.getAllByRole('textbox', { name: 'Reads context' }).map(input => input.id)).toEqual(ids)
   })
 
   it('supports keyboard navigation and label-click focus on Implement subflow fields', async () => {
@@ -448,14 +448,14 @@ describe('Accessible node inspector fields', () => {
     await user.tab()
     expect(screen.getByRole('textbox', { name: 'Label', exact: true })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('combobox', { name: 'Node Kind' })).toHaveFocus()
+    expect(screen.getByRole('combobox', { name: 'Node kind' })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('textbox', { name: 'Reads Context' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Reads context' })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('textbox', { name: 'Writes Context' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Writes context' })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('textbox', { name: 'Child Flow Reference' })).toHaveFocus()
-    for (const name of ['Label', 'Reads Context', 'Writes Context', 'Child Flow Reference', 'Manager Poll Interval', 'Manager Max Cycles', 'Manager Stop Condition', 'Manager Actions', 'Manager Steer Cooldown']) {
+    expect(screen.getByRole('textbox', { name: 'Child flow reference' })).toHaveFocus()
+    for (const name of ['Label', 'Reads context', 'Writes context', 'Child flow reference', 'Manager poll interval', 'Manager max cycles', 'Manager stop condition', 'Manager actions', 'Manager steer cooldown']) {
       await user.click(screen.getByText(name, { selector: 'label', exact: true }))
       expect(screen.getByRole('textbox', { name, exact: true })).toHaveFocus()
     }
@@ -467,7 +467,7 @@ describe('Accessible node inspector fields', () => {
     render(<NodeInspectorPanel {...props} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'Value', exact: true }), { target: { value: 'new' } })
     expect(props.onNodeExtensionValueChange).toHaveBeenCalledWith('custom', 'new')
-    const key = screen.getByRole('textbox', { name: 'New Key' })
+    const key = screen.getByRole('textbox', { name: 'New key' })
     fireEvent.change(key, { target: { value: 'custom' } })
     expect(key).toHaveAccessibleDescription('Key already exists.')
     expect(key).not.toHaveAttribute('aria-invalid')
@@ -475,8 +475,8 @@ describe('Accessible node inspector fields', () => {
     expect(key).toHaveAccessibleDescription('Core attributes belong in dedicated controls.')
     fireEvent.change(key, { target: { value: 'another' } })
     expect(key).not.toHaveAttribute('aria-describedby')
-    fireEvent.change(screen.getByRole('textbox', { name: 'New Value' }), { target: { value: 'added' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Add Attribute' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'New value' }), { target: { value: 'added' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add attribute' }))
     expect(props.onNodeExtensionAdd).toHaveBeenCalledWith('another', 'added')
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(props.onNodeExtensionRemove).toHaveBeenCalledWith('custom')
