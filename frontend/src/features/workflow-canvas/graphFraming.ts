@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
-import { useReactFlow, type Node, type Viewport } from '@xyflow/react'
+import { useReactFlow, useStoreApi, type Node, type Viewport } from '@xyflow/react'
 
 import { readNodeRect } from '@/lib/flowLayout'
 
-/** Below this zoom node labels (14px) render under ~11px; a bigger graph opens here and pans. */
-export const READABLE_ZOOM = 0.8
+/**
+ * Down to this zoom canvas text grows as the view shrinks (see --canvas-zoom in index.css), so node
+ * labels stay at 11px or more on screen; a graph that only fits smaller opens here and pans.
+ */
+export const READABLE_ZOOM = 0.6
 const MAX_FRAME_ZOOM = 1
 
 export type FramePadding = { top: number; right: number; bottom: number; left: number }
@@ -63,7 +66,22 @@ type FrameRequest = { padding: FramePadding; focusNodeId?: string | null }
  */
 export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
     const { getViewport, setViewport } = useReactFlow()
+    const storeApi = useStoreApi()
     const framedRef = useRef<{ nodes: Node[]; request: FrameRequest; viewport: Viewport | null } | null>(null)
+
+    // The canvas's zoom, for the text sizes that grow as it zooms out; set on the element, not
+    // through React state, so zooming re-renders nothing.
+    useEffect(() => {
+        let applied: number | null = null
+        const apply = ({ transform, domNode }: ReturnType<typeof storeApi.getState>) => {
+            if (domNode && transform[2] !== applied) {
+                applied = transform[2]
+                domNode.style.setProperty('--canvas-zoom', String(applied))
+            }
+        }
+        apply(storeApi.getState())
+        return storeApi.subscribe(apply)
+    }, [storeApi])
 
     const frame = useCallback((nodes: Node[], request: FrameRequest) => {
         const visibleNodes = nodes.filter((node) => !node.hidden)

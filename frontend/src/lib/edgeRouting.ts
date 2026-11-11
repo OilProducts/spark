@@ -787,7 +787,22 @@ function routeSingleEdge(
     ])
 }
 
-type RouteSegment = { edgeId: string; index: number; axis: Axis; min: number; max: number }
+// minTurn and maxTurn: which way the route turns at the segment's low and high end, -1 toward
+// smaller coordinates across the line, 1 toward larger.
+type RouteSegment = { edgeId: string; index: number; axis: Axis; min: number; max: number; minTurn: number; maxTurn: number }
+
+// Which of two overlapping segments on one line goes nearer the smaller coordinates: where one
+// segment ends inside the other's span, it turns off the line, so it must lie on the side it turns
+// to, or it crosses the other. Negative puts `a` first.
+function compareSharedLineSegments(a: RouteSegment, b: RouteSegment): number {
+    if (a.min !== b.min) {
+        return a.min > b.min ? a.minTurn : -b.minTurn
+    }
+    if (a.max !== b.max) {
+        return a.max < b.max ? a.maxTurn : -b.maxTurn
+    }
+    return a.edgeId.localeCompare(b.edgeId)
+}
 
 // Edges are routed one at a time, so several can run along the same corridor line and read as
 // one. Spread each run of collinear, overlapping segments a few pixels apart, around the line,
@@ -806,9 +821,14 @@ export function separateOverlappingSegments(routes: Record<string, EdgeRoute>): 
             if (!axis) {
                 continue
             }
-            const [min, max] = axis === 'horizontal' ? [Math.min(from.x, to.x), Math.max(from.x, to.x)] : [Math.min(from.y, to.y), Math.max(from.y, to.y)]
-            const key = `${axis}:${axis === 'horizontal' ? from.y : from.x}`
-            lines.set(key, [...(lines.get(key) ?? []), { edgeId, index, axis, min, max }])
+            const [along, across] = axis === 'horizontal' ? ['x', 'y'] as const : ['y', 'x'] as const
+            const [min, max] = [Math.min(from[along], to[along]), Math.max(from[along], to[along])]
+            // The neighbours before `from` and after `to` say which way the route turns at each end.
+            const fromTurn = Math.sign(route[index - 1][across] - from[across])
+            const toTurn = Math.sign(route[index + 2][across] - to[across])
+            const [minTurn, maxTurn] = from[along] < to[along] ? [fromTurn, toTurn] : [toTurn, fromTurn]
+            const key = `${axis}:${from[across]}`
+            lines.set(key, [...(lines.get(key) ?? []), { edgeId, index, axis, min, max, minTurn, maxTurn }])
         }
     })
 
@@ -817,7 +837,7 @@ export function separateOverlappingSegments(routes: Record<string, EdgeRoute>): 
             return
         }
         const gap = Math.min(SEGMENT_SEPARATION, (2 * MAX_SEGMENT_SHIFT) / (run.length - 1))
-        run.forEach((segment, position) => {
+        ;[...run].sort(compareSharedLineSegments).forEach((segment, position) => {
             const shift = (position - (run.length - 1) / 2) * gap
             const route = separated[segment.edgeId]
             const coordinate = segment.axis === 'horizontal' ? 'y' : 'x'

@@ -107,16 +107,28 @@ describe('edgeRouting', () => {
         expect(separated.c[1].y).toBe(50)
     })
 
-    it('places a label where it meets the fewest other routes and labels, preferring the middle of a run', () => {
+    it('orders edges sharing a line by where they turn off it, so spreading them adds no crossing', () => {
+        // Both drop from one node's bottom and turn right; `stop` starts left of `approve` but ends
+        // inside its span, so it must run below it.
+        const separated = separateOverlappingSegments({
+            approve: [{ x: 440, y: 376 }, { x: 440, y: 400 }, { x: 570, y: 400 }, { x: 570, y: 500 }],
+            stop: [{ x: 390, y: 376 }, { x: 390, y: 400 }, { x: 450, y: 400 }, { x: 450, y: 500 }],
+        })
+
+        expect(separated.stop[1].y).toBeGreaterThan(separated.approve[1].y)
+    })
+
+    it('centres a label on the clear run nearest its source, kept clear of other routes and labels', () => {
         const route = [{ x: 0, y: 0 }, { x: 0, y: 40 }, { x: 300, y: 40 }]
-        const crossing = [{ x: 100, y: 0 }, { x: 100, y: 100 }]
-        // Separated from the route by a few pixels, it would still run under the label.
+        const crossing = [{ x: -30, y: 20 }, { x: 30, y: 20 }]
+        // A few pixels from the route, it would still crowd the label.
         const alongside = [{ x: 120, y: 0 }, { x: 120, y: 44 }, { x: 320, y: 44 }]
 
-        expect(routeLabelAnchor(route)).toEqual({ x: 150, y: 40 })
+        expect(routeLabelAnchor(route)).toEqual({ x: 0, y: 20 })
         expect(routeLabelAnchor(route, [crossing])).toEqual({ x: 150, y: 40 })
-        expect(routeLabelAnchor(route, [crossing, alongside])).toEqual({ x: 72, y: 40 })
-        // With the clear stretch taken by a placed label, it goes beside a vertical run instead.
-        expect(routeLabelAnchor(route, [crossing, alongside], [{ left: 40, right: 110, top: 30, bottom: 50 }])).toEqual({ x: -30, y: 20 })
+        expect(routeLabelAnchor(route, [crossing, alongside])).toEqual({ x: 88, y: 40 })
+        // With that stretch taken by a placed label, crossing one route beats covering a label.
+        const taken = { left: 30, right: 115, top: 30, bottom: 50 }
+        expect(routeLabelAnchor(route, [crossing, alongside], [taken])).toEqual({ x: 0, y: 20 })
     })
 })

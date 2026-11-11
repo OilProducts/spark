@@ -275,7 +275,6 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Read-only preview. Switch to Parent to edit.')
-    expect(screen.getAllByText('Read-only preview').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
 

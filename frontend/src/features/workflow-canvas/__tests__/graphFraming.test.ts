@@ -18,13 +18,13 @@ describe('readableViewport', () => {
 
     it('opens a graph too big to read whole at the top, at a readable zoom', () => {
         const viewport = readableViewport({ x: 0, y: 0, width: 400, height: 2000 }, { width: 420, height: 740 }, padding, null)
-        expect(viewport).toEqual({ x: 50, y: 10, zoom: READABLE_ZOOM })
+        expect(viewport).toEqual({ x: (420 - 400 * READABLE_ZOOM) / 2, y: 10, zoom: READABLE_ZOOM })
     })
 
     it('centres on the focus without showing canvas past the graph edge', () => {
         const bounds = { x: 0, y: 0, width: 400, height: 2000 }
-        expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1000 }).y).toBe(370 - 800)
+        expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1000 }).y).toBeCloseTo(370 - 1000 * READABLE_ZOOM)
         // A focus near the bottom stops with the graph's last row at the bottom padding.
-        expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1990 }).y).toBe(730 - 1600)
+        expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1990 }).y).toBeCloseTo(730 - 2000 * READABLE_ZOOM)
     })
 })

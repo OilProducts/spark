@@ -80,27 +80,29 @@ export function getWorkflowNodeContainerStyle(shape: WorkflowNodeShape): CSSProp
     return { width, height };
 }
 
+// Content is centred; the padding leaves room for a caption and a two-line label at the larger
+// text a zoomed-out view gives them (see .canvas-node-label).
 export function getWorkflowNodeContentClassName(shape: WorkflowNodeShape): string {
     switch (shape) {
         case 'Mdiamond':
             return 'px-8 py-5';
         case 'Msquare':
-            return 'px-5 py-4';
+            return 'px-5 py-3';
         case 'diamond':
-            return 'px-9 py-5';
+            return 'px-9 py-3';
         case 'hexagon':
-            return 'px-9 py-4';
+            return 'px-9 py-2';
         case 'parallelogram':
-            return 'px-8 py-3';
+            return 'px-8 py-1.5';
         case 'component':
-            return 'pl-9 pr-4 py-4';
+            return 'pl-9 pr-4 py-2';
         case 'tripleoctagon':
-            return 'px-7 py-5';
+            return 'px-7 py-3';
         case 'house':
-            return 'px-7 pt-8 pb-3';
+            return 'px-7 pt-7 pb-1.5';
         case 'box':
         default:
-            return 'px-4 py-3';
+            return 'px-4 py-1.5';
     }
 }
 

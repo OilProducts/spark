@@ -83,13 +83,14 @@ vi.mock('@/lib/flowPersistence', async () => {
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react')
   const stableReactFlowInstance = { fitView: async () => true }
+  const stableStoreApi = { setState: () => {}, getState: () => ({ transform: [0, 0, 1], domNode: null }), subscribe: () => () => {} }
 
   return {
     ...actual,
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     useReactFlow: () => stableReactFlowInstance,
     useStore: (selector: (state: Record<string, boolean>) => unknown) => selector({ nodesDraggable: true, nodesConnectable: true, elementsSelectable: true }),
-    useStoreApi: () => ({ setState: () => {} }),
+    useStoreApi: () => stableStoreApi,
     ReactFlow: (props: {
       nodes: Node[]
       edges: Edge[]

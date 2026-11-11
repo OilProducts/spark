@@ -413,8 +413,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     {/* One caption line: the kind (a start node labelled Start needs no second Start),
                         then the run status, so status costs the frame no extra height. */}
                     {showKind || displayStatus !== 'idle' ? (
-                        <span className="inline-flex max-w-full items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
-                            {showKind ? <nodeKind.Icon className="size-3.5 shrink-0" aria-hidden /> : null}
+                        <span className="canvas-node-caption inline-flex max-w-full items-center gap-1 whitespace-nowrap text-muted-foreground">
+                            {showKind ? <nodeKind.Icon className="size-[1.15em] shrink-0" aria-hidden /> : null}
                             {kindCaption}
                             {displayStatus !== 'idle' ? (
                                 <>
@@ -438,15 +438,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         />
                     ) : (
                         <span className={cn(
-                            'line-clamp-2 text-base font-semibold leading-5',
+                            'canvas-node-label line-clamp-2 font-semibold',
                             isReadOnlyPreviewNode ? 'text-muted-foreground' : 'text-foreground',
                         )}
                         >
                             {displayLabel}
                         </span>
-                    )}
-                    {isReadOnlyPreviewNode && (
-                        <span className="text-xs text-muted-foreground">Read-only preview</span>
                     )}
                 </div>
             </div>

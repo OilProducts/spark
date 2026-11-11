@@ -192,6 +192,22 @@
     background: hsl(var(--primary)) !important;
   }
 
+  /* Canvas text grows as the view zooms out, keeping about 11px (labels) and 10px (captions, route
+     labels) on screen down to a 0.6 zoom, and shrinks with the view past its cap. */
+  .canvas-node-label {
+    font-size: clamp(16px, calc(11px / var(--canvas-zoom, 1)), 19px);
+    line-height: 1.25;
+  }
+
+  .canvas-node-caption,
+  .canvas-route-label {
+    font-size: clamp(12px, calc(10px / var(--canvas-zoom, 1)), 17px);
+  }
+
+  .canvas-node-caption {
+    line-height: 1.35;
+  }
+
   /* React Flow paints edge paths and arrowheads from this variable; ValidationEdge sets the width. */
   .react-flow {
     --xy-edge-stroke: hsl(var(--muted-foreground) / 0.8);

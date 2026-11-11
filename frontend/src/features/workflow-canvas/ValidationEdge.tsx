@@ -9,7 +9,7 @@ import {
     type EdgeRoute,
     type EdgeRoutePoint,
 } from '@/lib/edgeRouting'
-import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
+import { EDGE_RENDER_ROUTE_KEY, readNodeRect } from '@/lib/flowLayout'
 import { useStore as useAppStore } from '@/store'
 
 import { useCanvasSessionMode, useCanvasRunId } from './canvasSessionContext'
@@ -41,18 +41,30 @@ function readRenderRoute(value: unknown): EdgeRoute | null {
     return route.length >= 2 ? route : null
 }
 
-// A label's box at text-xs, estimated so labels can be placed before they render; max-w-44 wraps.
-const LABEL_HEIGHT = 20
-const labelWidth = (text: string) => Math.min(176, text.length * 6.6 + 14)
+// A label's box (leading-snug, px-1.5, py-px and a 1px border), estimated so labels can be laid out
+// and placed before they render: 12px text, wrapped past 13.5em to two lines at most, at `scale`.
+export function routeLabelSize(text: string, scale = 1): LabelSize {
+    const textWidth = text.length * 6.6
+    const lines = textWidth > 162 ? 2 : 1
+    return { width: Math.min(textWidth, 162) * scale + 14, height: lines * 16.5 * scale + 4 }
+}
 
+// How much .canvas-route-label grows at `zoom`, rounded up to a tenth so labels are placed again
+// only when it changes by that much.
+export const routeLabelScale = (zoom: number) => Math.ceil(Math.min(17, Math.max(12, 10 / zoom)) / 1.2) / 10
+export const MAX_ROUTE_LABEL_SCALE = routeLabelScale(0)
+// Clear space kept between a label and other routes, labels and nodes, so it reads as its own route's.
+const LABEL_CLEARANCE = 6
+
+type LabelSize = { width: number; height: number }
 type LabelAnchor = { x: number; y: number }
 type LabelBox = { left: number; right: number; top: number; bottom: number }
 
-const labelBox = (anchor: LabelAnchor, width: number): LabelBox => ({
-    left: anchor.x - width / 2,
-    right: anchor.x + width / 2,
-    top: anchor.y - LABEL_HEIGHT / 2,
-    bottom: anchor.y + LABEL_HEIGHT / 2,
+const labelBox = (anchor: LabelAnchor, size: LabelSize, margin = 0): LabelBox => ({
+    left: anchor.x - size.width / 2 - margin,
+    right: anchor.x + size.width / 2 + margin,
+    top: anchor.y - size.height / 2 - margin,
+    bottom: anchor.y + size.height / 2 + margin,
 })
 
 const segmentEntersBox = (from: EdgeRoutePoint, to: EdgeRoutePoint, box: LabelBox) => (
@@ -61,84 +73,79 @@ const segmentEntersBox = (from: EdgeRoutePoint, to: EdgeRoutePoint, box: LabelBo
 )
 
 /**
- * Where a route's label sits: on one of its horizontal runs, in the lane between node rows, or
- * else beside one of its vertical runs, wherever the label's box meets the fewest other routes
- * and placed labels; a run's middle and longer runs win ties.
+ * Where a route's label sits: centred on one of its runs, wherever the label and the space round
+ * it meet the fewest other routes, placed labels and nodes. Of the clear spots, the one nearest
+ * the route's source wins, in the middle of its run, so a gate's answer reads beside the gate.
  */
 export function routeLabelAnchor(
     route: EdgeRoute,
     otherRoutes: EdgeRoute[] = [],
     placedLabels: LabelBox[] = [],
-    width = 48,
+    size: LabelSize = { width: 48, height: 20 },
 ): LabelAnchor {
     const best: { anchor: LabelAnchor | null; cost: number } = { anchor: null, cost: Infinity }
     const consider = (anchor: LabelAnchor, onSegment: number, preference: number) => {
-        const box = labelBox(anchor, width)
-        const routeHits = otherRoutes.reduce((hits, other) => hits + (other.slice(1).some((to, at) => segmentEntersBox(other[at], to, box)) ? 1 : 0), 0)
+        const box = labelBox(anchor, size)
+        const clearance = labelBox(anchor, size, LABEL_CLEARANCE)
+        const routeHits = otherRoutes.reduce((hits, other) => hits + (other.slice(1).some((to, at) => segmentEntersBox(other[at], to, clearance)) ? 1 : 0), 0)
         const ownHits = route.slice(1).filter((to, at) => at !== onSegment && segmentEntersBox(route[at], to, box)).length
-        // Placed labels and nodes: a label over either hides it.
-        const labelHits = placedLabels.filter((other) => other.left < box.right && other.right > box.left && other.top < box.bottom && other.bottom > box.top).length
+        const labelHits = placedLabels.filter((other) => other.left < clearance.right && other.right > clearance.left && other.top < clearance.bottom && other.bottom > clearance.top).length
         // A hit outweighs any preference, so a clear spot always wins.
         const cost = (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
         if (cost < best.cost) Object.assign(best, { anchor, cost })
     }
+    let travelled = 0
     route.slice(1).forEach((to, at) => {
         const from = route[at]
-        const length = Math.hypot(to.x - from.x, to.y - from.y)
-        if (Math.abs(to.y - from.y) < 1) {
-            const left = Math.min(from.x, to.x)
-            const right = Math.max(from.x, to.x)
-            const middle = (left + right) / 2
-            // ponytail: samples every 8px; labels are few, so this stays cheap on the largest flows.
-            const first = Math.min(middle, left + width / 2)
-            const last = Math.max(middle, right - width / 2)
-            for (let x = first; x <= last + 0.5; x += 8) {
-                consider({ x, y: from.y }, at, Math.abs(x - middle) - length)
-            }
-            consider({ x: middle, y: from.y }, at, -length)
-        } else if (length >= 16) {
-            const y = (from.y + to.y) / 2
-            // Beside a vertical run ranks after every run between rows.
-            consider({ x: from.x - 6 - width / 2, y }, at, 1e5 - length)
-            consider({ x: from.x + 6 + width / 2, y }, at, 1e5 - length)
+        const horizontal = Math.abs(to.y - from.y) < 1
+        const [start, end] = horizontal ? [from.x, to.x] : [from.y, to.y]
+        const length = Math.abs(end - start)
+        const half = (horizontal ? size.width : size.height) / 2
+        const middle = (start + end) / 2
+        const pointAt = (position: number): LabelAnchor => (horizontal ? { x: position, y: from.y } : { x: from.x, y: position })
+        // ponytail: samples every 8px; labels are few, so this stays cheap on the largest flows.
+        for (let position = Math.min(start, end) + half; position <= Math.max(start, end) - half + 0.5; position += 8) {
+            consider(pointAt(position), at, travelled + Math.abs(position - middle))
         }
+        consider(pointAt(middle), at, travelled)
+        travelled += length
     })
     return best.anchor ?? getRouteMidpoint(route)
 }
 
 /** Every labelled route's label anchor, placed in edge order so each label keeps clear of the nodes and the labels before it. */
-function placeRouteLabels(edges: Edge[], nodes: Node[]): Map<string, LabelAnchor> {
+function placeRouteLabels(edges: Edge[], nodes: Node[], scale: number): Map<string, LabelAnchor> {
     const routes = edges.flatMap((edge) => {
         const route = edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
         return route ? [{ id: edge.id, route, label: edgeRouteLabel(edge.data) }] : []
     })
+    // The laid-out size: a run graph's nodes are never measured into its store.
     const placed: LabelBox[] = nodes.flatMap((node) => {
-        const width = node.measured?.width ?? node.width
-        const height = node.measured?.height ?? node.height
-        return node.hidden || !width || !height
-            ? []
-            : [{ left: node.position.x, right: node.position.x + width, top: node.position.y, bottom: node.position.y + height }]
+        const rect = readNodeRect(node)
+        return node.hidden ? [] : [{ left: rect.x, right: rect.x + rect.width, top: rect.y, bottom: rect.y + rect.height }]
     })
     const anchors = new Map<string, LabelAnchor>()
     for (const { id, route, label } of routes) {
         if (!label) continue
-        const width = labelWidth(label)
-        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, width)
+        const size = routeLabelSize(label, scale)
+        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, size)
         anchors.set(id, anchor)
-        placed.push(labelBox(anchor, width))
+        placed.push(labelBox(anchor, size))
     }
     return anchors
 }
 
-// One placement per graph, shared by every labelled edge that renders from it.
-const placedLabelsByGraph = new WeakMap<Edge[], WeakMap<Node[], Map<string, LabelAnchor>>>()
-function routeLabelAnchors(edges: Edge[], nodes: Node[]): Map<string, LabelAnchor> {
-    const byNodes = placedLabelsByGraph.get(edges) ?? new WeakMap<Node[], Map<string, LabelAnchor>>()
+// One placement per graph and label scale, shared by every labelled edge that renders from it.
+const placedLabelsByGraph = new WeakMap<Edge[], WeakMap<Node[], Map<number, Map<string, LabelAnchor>>>>()
+function routeLabelAnchors(edges: Edge[], nodes: Node[], scale: number): Map<string, LabelAnchor> {
+    const byNodes = placedLabelsByGraph.get(edges) ?? new WeakMap<Node[], Map<number, Map<string, LabelAnchor>>>()
     placedLabelsByGraph.set(edges, byNodes)
-    let anchors = byNodes.get(nodes)
+    const byScale = byNodes.get(nodes) ?? new Map<number, Map<string, LabelAnchor>>()
+    byNodes.set(nodes, byScale)
+    let anchors = byScale.get(scale)
     if (!anchors) {
-        anchors = placeRouteLabels(edges, nodes)
-        byNodes.set(nodes, anchors)
+        anchors = placeRouteLabels(edges, nodes, scale)
+        byScale.set(scale, anchors)
     }
     return anchors
 }
@@ -192,8 +199,9 @@ export function ValidationEdge({
     // Only a labelled edge reads the other routes, to keep its label off them and their labels.
     const flowEdges = useFlowStore((state) => (routeLabel ? state.edges : null))
     const flowNodes = useFlowStore((state) => (routeLabel ? state.nodes : null))
-    const labelAnchor = (routeLabel && flowEdges && flowNodes ? routeLabelAnchors(flowEdges, flowNodes).get(id) : null)
-        ?? (routeLabel ? routeLabelAnchor(renderRoute, [], [], labelWidth(routeLabel)) : labelPoint)
+    const labelScale = useFlowStore((state) => (routeLabel ? routeLabelScale(state.transform[2]) : 1))
+    const labelAnchor = (routeLabel && flowEdges && flowNodes ? routeLabelAnchors(flowEdges, flowNodes, labelScale).get(id) : null)
+        ?? (routeLabel ? routeLabelAnchor(renderRoute, [], [], routeLabelSize(routeLabel, labelScale)) : labelPoint)
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isDerivedChildEdge = derivedPreviewMeta?.kind === 'child-edge'
     const isDerivedLinkEdge = derivedPreviewMeta?.kind === 'child-link'
@@ -280,7 +288,7 @@ export function ValidationEdge({
                             <span
                                 data-testid="edge-route-label"
                                 title={routeLabel}
-                                className="line-clamp-2 max-w-44 break-words rounded-md border border-border bg-background px-1.5 py-px text-center text-xs font-medium leading-snug text-muted-foreground"
+                                className="canvas-route-label line-clamp-2 max-w-[calc(13.5em+14px)] break-words rounded-md border border-border bg-background px-1.5 py-px text-center font-medium leading-snug text-muted-foreground"
                             >
                                 {routeLabel}
                             </span>

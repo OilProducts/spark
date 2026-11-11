@@ -21,4 +21,31 @@ describe('flowLayout', () => {
         )
         expect(assignments['a->b#0']).toMatchObject({ sourceSide: 'right', targetSide: 'left' })
     })
+
+    it('orders a side\'s ports by how their routes leave it, so no route\'s turn crosses another\'s', () => {
+        const nodes = [node('a', 0, 0), node('left', -100, 300), node('right', 150, 300)]
+        const edges = [{ id: 'l', source: 'a', target: 'left' }, { id: 'r', source: 'a', target: 'right' }]
+        const byTargets = buildEdgeLayoutAssignments(nodes, edges).assignments
+        expect([byTargets['a->left#0'].sourceSlot, byTargets['a->right#0'].sourceSlot]).toEqual([0, 1])
+
+        // The route to `right` swings round something to the left of `a`; the one to `left` heads right.
+        const byRoutes = buildEdgeLayoutAssignments(nodes, edges, null, undefined, {
+            'a->left#0': [{ x: 66, y: 84 }, { x: 66, y: 108 }, { x: 260, y: 108 }, { x: 260, y: 300 }],
+            'a->right#0': [{ x: 133, y: 84 }, { x: 133, y: 108 }, { x: -40, y: 108 }, { x: -40, y: 300 }],
+        }).assignments
+        expect([byRoutes['a->left#0'].sourceSlot, byRoutes['a->right#0'].sourceSlot]).toEqual([1, 0])
+
+        // Both turn right: the one that runs on further before turning takes the left port, so the
+        // other's early turn does not cut across it.
+        const bothRight = buildEdgeLayoutAssignments(nodes, edges, null, undefined, {
+            'a->left#0': [{ x: 66, y: 84 }, { x: 66, y: 400 }, { x: 300, y: 400 }, { x: 300, y: 420 }],
+            'a->right#0': [{ x: 133, y: 84 }, { x: 133, y: 108 }, { x: 250, y: 108 }, { x: 250, y: 300 }],
+        }).assignments
+        expect([bothRight['a->left#0'].sourceSlot, bothRight['a->right#0'].sourceSlot]).toEqual([0, 1])
+        const swapped = buildEdgeLayoutAssignments(nodes, edges, null, undefined, {
+            'a->left#0': [{ x: 133, y: 84 }, { x: 133, y: 400 }, { x: 300, y: 400 }, { x: 300, y: 420 }],
+            'a->right#0': [{ x: 66, y: 84 }, { x: 66, y: 108 }, { x: 250, y: 108 }, { x: 250, y: 300 }],
+        }).assignments
+        expect([swapped['a->left#0'].sourceSlot, swapped['a->right#0'].sourceSlot]).toEqual([0, 1])
+    })
 })

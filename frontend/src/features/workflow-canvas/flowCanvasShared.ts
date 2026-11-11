@@ -31,7 +31,7 @@ import {
     TaskNode,
     ToolNode,
 } from './TaskNode'
-import { ValidationEdge } from './ValidationEdge'
+import { MAX_ROUTE_LABEL_SCALE, routeLabelSize, ValidationEdge } from './ValidationEdge'
 import type { WorkflowCanvasPreviewResponse } from './model/types'
 
 export const nodeTypes = {
@@ -65,6 +65,9 @@ const ELK_OPTIONS = {
     // or ports escape straight through the next node.
     'elk.layered.spacing.nodeNodeBetweenLayers': '48',
     'elk.spacing.nodeNode': '40',
+    // A route ELK plans between two nodes of a row gets a lane wider than the router's padding on
+    // both sides; at ELK's default it is too narrow, and the route detours round the whole row.
+    'elk.spacing.edgeNode': '24',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
     // Measured on the bundled flows, these four together cut edge crossings by ~40% and narrow the
     // large flows: layers follow the order steps are written in, and nodes line up along their edges.
@@ -465,11 +468,16 @@ function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
             width: node.width ?? getNodeStyleDimension(node.style?.width) ?? DEFAULT_NODE_WIDTH,
             height: node.height ?? getNodeStyleDimension(node.style?.height) ?? DEFAULT_NODE_HEIGHT,
         })),
-        edges: edges.map((edge) => ({
-            id: edge.id,
-            sources: [edge.source],
-            targets: [edge.target],
-        })),
+        edges: edges.map((edge) => {
+            // A labelled route gets room between the rows it joins for its label, at its largest.
+            const label = typeof edge.data?.label === 'string' ? edge.data.label.trim() : ''
+            return {
+                id: edge.id,
+                sources: [edge.source],
+                targets: [edge.target],
+                labels: label && !edge.hidden ? [{ text: label, ...routeLabelSize(label, MAX_ROUTE_LABEL_SCALE) }] : undefined,
+            }
+        }),
     }
 }
 
