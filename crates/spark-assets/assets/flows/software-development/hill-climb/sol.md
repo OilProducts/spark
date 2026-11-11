@@ -1,20 +1,16 @@
 ---
 type: agent_task
-title: Council Sol
+title: Judge Sol
 role: adversarial-reviewer
+runtime:
+  workdir_from: context.workspace.sol_path
 contracts:
   reads_context:
-  - context.climb.objective
-  - context.climb.rubric
-  - context.climb.references
+  - context.request.objective
   - context.climb.evidence_dir
-  - context.climb.baseline_evidence_dir
-  - context.workspace.path
-  - context.workspace.base_commit
   writes_context:
-  - context.council.scores
-  - context.council.reference_scores
-  - context.council.findings
+  - context.judge.score
+  - context.judge.findings
   response: decision_envelope
 execution:
   llm_provider: codex
@@ -23,16 +19,16 @@ execution:
 routes:
   blocked:
     to: failed
-    description: You cannot observe the evidence needed to score, such as images you cannot open; record what is missing in notes.
+    description: You cannot observe the work well enough to score it; record what is missing in notes.
   scored:
-    to: council_join
-    description: Every subject is scored in every rubric category, each score backed by evidence you observed.
+    to: judges_join
+    description: The work is scored, the score backed by what you observed.
 ---
 
-Score the work against context.climb.objective, giving each category in context.climb.rubric a score from 1 to 10, where 10 means its users would gain nothing from further change in that category. The work is HEAD of the git worktree at context.workspace.path. context.climb.evidence_dir holds this round's evidence of it; when that directory is empty, inspect the worktree and run what you need instead.
+Judge the work in this directory, a checkout of its latest commit, against context.request.objective. Observe it yourself in whatever way the objective calls for, such as running it, taking screenshots or reading its output, and base your score only on what you observed, not on commit messages, comments or other descriptions of the work. When the objective names other work to compare against, observe that too and judge the work against it.
 
-Score two other kinds of subject in the same categories, so a score means the same thing whichever subject receives it: the work as it stood at context.workspace.base_commit, whose evidence is in context.climb.baseline_evidence_dir, as `baseline`; and each item in context.climb.references, keyed by the item as written.
+Score the work from 1 to 10, where 10 means its users would gain nothing from further change toward the objective. Record what holds the score down and where you saw it, most damaging first.
 
-Base every score on what you observed yourself, such as images you opened or output you read, not on commit messages, comments or other descriptions of the work. For each category where the work scores below 10, record what holds it down and where you saw it. Judge only what the objective asks for. Do not edit files, stage or commit.
+This checkout is yours alone, so build and run here as you need; do not commit or push. Save the screenshots or other output your score rests on in the `sol` folder of context.climb.evidence_dir, so people can follow the work's progress round by round. Keep everything else you create, such as scripts and seed data, in this checkout, never in shared places such as /tmp, so the work's author cannot see how you judge it.
 
-Choose `scored` with context_updates setting context.council.scores to an object mapping each rubric category, exactly as written, to the work's score; context.council.reference_scores to an object mapping `baseline` and each reference to its own object of category scores; and context.council.findings to your findings, most damaging first. Respond with ONLY a JSON decision envelope.
+Choose `scored` with context_updates setting context.judge.score to your score and context.judge.findings to your findings. Respond with ONLY a JSON decision envelope.

@@ -3,6 +3,6 @@ type: start
 title: Start
 routes:
   next:
-    to: normalize
+    to: prepare
     description: Enter the first workflow step.
 ---

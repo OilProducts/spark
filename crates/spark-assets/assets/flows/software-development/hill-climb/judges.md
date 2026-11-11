@@ -1,11 +1,11 @@
 ---
 type: parallel
-title: Council
+title: Judges
 config:
   branches:
   - opus
   - sol
-  join: council_join
+  join: judges_join
   max_parallel: 2
   tolerate_branch_execution_errors: true
 runtime:
