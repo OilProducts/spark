@@ -234,12 +234,13 @@ export function LaunchPanel({
                         {target.flowName}
                     </span>
                 ) : null}
+                {/* Paths wrap after a slash, not mid-word. */}
                 <p
                     data-testid="launch-panel-target-copy"
-                    className="break-all text-xs leading-5 text-muted-foreground"
+                    className="break-words text-xs leading-5 text-muted-foreground"
                 >
                     {projectPath
-                        ? `Runs in ${projectPath}.`
+                        ? <>Runs in {projectPath.split('/').map((part, index) => <span key={index}>{index > 0 ? <>/<wbr /></> : null}{part}</span>)}.</>
                         : 'Choose a project to enable launching.'}
                 </p>
             </div>

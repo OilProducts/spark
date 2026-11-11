@@ -170,7 +170,7 @@ export function SettingsPanel() {
 
                 <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">
-                        <h3 className="text-base font-semibold">Model defaults (workspace)</h3>
+                        <h2 className="text-base font-semibold">Model defaults (workspace)</h2>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
                         <p className="text-sm text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
@@ -198,7 +198,7 @@ export function SettingsPanel() {
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
                 <Card className="gap-4 py-4">
-                    <CardHeader className="px-4"><h3 className="text-base font-semibold">Scoped configuration</h3></CardHeader>
+                    <CardHeader className="px-4"><h2 className="text-base font-semibold">Scoped configuration</h2></CardHeader>
                     <CardContent className="space-y-3 px-4">
                         <p className="text-sm text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
                         <div className="flex flex-wrap gap-2">
@@ -211,7 +211,7 @@ export function SettingsPanel() {
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
                 {getTauriInvoke() ? (
                     <Card className="gap-4 py-4">
-                        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Desktop server</h3></CardHeader>
+                        <CardHeader className="gap-1 px-4"><h2 className="text-base font-semibold">Desktop server</h2></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
                             {desktopSettings ? <>
                             <Well className="flex items-center justify-between gap-4 px-3 py-2">

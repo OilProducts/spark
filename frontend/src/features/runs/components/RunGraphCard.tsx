@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import {
     Background,
-    Controls,
     MarkerType,
     MiniMap,
     ReactFlow,
@@ -17,6 +16,7 @@ import { useStore, type NodeStatus } from '@/store'
 import {
     buildHydratedFlowGraph,
     CanvasSessionModeProvider,
+    CanvasViewControls,
     ChildFlowExpansionToggle,
     edgeTypes,
     layoutWithElk,
@@ -44,16 +44,11 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
-// The zoom controls sit at the bottom left; keep content to their right, and above the
-// minimap a big graph shows at the bottom right.
-const FRAME_PADDING = { top: 16, right: 16, bottom: 16, left: 44 } as const
-const MINIMAP_NODE_THRESHOLD = 10
+// The view controls sit in the card header and the minimap shows only when asked for,
+// so nothing covers the graph when it opens.
+// The sides leave room for self-loops, which reach past their node's box.
+const FRAME_PADDING = { top: 16, right: 40, bottom: 16, left: 40 } as const
 const MINIMAP_SIZE = { width: 120, height: 84 }
-const MINIMAP_FRAME_PADDING = { ...FRAME_PADDING, bottom: MINIMAP_SIZE.height + 24 } as const
-
-const showsMinimap = (nodeCount: number, paneHeight: number | 'fill') => (
-    nodeCount > MINIMAP_NODE_THRESHOLD && (paneHeight === 'fill' || paneHeight >= 480)
-)
 
 const EMPTY_DIAGNOSTICS: import('@/store').DiagnosticEntry[] = []
 const EMPTY_GRAPH_NODES: Node[] = []
@@ -65,6 +60,7 @@ type RunGraphCanvasInnerProps = {
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
     paneHeight: number | 'fill'
+    showMinimap: boolean
 }
 
 function RunGraphCanvasInner({
@@ -74,6 +70,7 @@ function RunGraphCanvasInner({
     selectedNodeId,
     onSelectNode,
     paneHeight,
+    showMinimap,
 }: RunGraphCanvasInnerProps) {
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
@@ -114,11 +111,8 @@ function RunGraphCanvasInner({
 
     // Each loaded graph opens whole when it stays readable, else readable around its focus.
     useEffect(() => {
-        frame(nodes, {
-            padding: showsMinimap(nodes.length, paneHeight) ? MINIMAP_FRAME_PADDING : FRAME_PADDING,
-            focusNodeId: focusNodeIdRef.current,
-        })
-    }, [nodes, frame, paneHeight])
+        frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
+    }, [nodes, frame])
 
     useEffect(() => {
         const loadId = activeLoadRef.current + 1
@@ -244,10 +238,9 @@ function RunGraphCanvasInner({
                 multiSelectionKeyCode={null}
                 proOptions={{ hideAttribution: true }}
             >
-                {showsMinimap(decoratedNodes.length, paneHeight) ? (
+                {showMinimap ? (
                     <MiniMap pannable zoomable position="bottom-right" style={MINIMAP_SIZE} />
                 ) : null}
-                <Controls showInteractive={false} style={{ bottom: 12, left: 12 }} />
                 <Background gap={24} size={1} />
             </ReactFlow>
         </div>
@@ -279,6 +272,7 @@ export function RunGraphCard({
         return session?.graphExpanded === session?.expandChildFlows ? session?.diagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS
     })
     const [refreshToken, setRefreshToken] = useState(0)
+    const [showMinimap, setShowMinimap] = useState(false)
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const graphStatus = runDetailSession?.graphStatus ?? 'idle'
@@ -293,16 +287,36 @@ export function RunGraphCard({
     }
 
     return (
+        <ReactFlowProvider>
         <Card
             data-testid="run-graph-panel"
             className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 border-0 py-0' : 'gap-2 border-0 py-0'}
         >
-            <CardHeader className="gap-1 px-0">
-                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <CardHeader className="px-0">
+                {/* One row when there is room: which graph, then how it is viewed. */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground">
                         Run graph
                     </h2>
-                    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                    <ChildFlowExpansionToggle
+                        expanded={expandChildFlows}
+                        onChange={(nextExpanded) => updateRunDetailSession(run.run_id, { expandChildFlows: nextExpanded })}
+                        testId="run-child-flow-toggle"
+                    />
+                    <div className="ml-auto flex items-center gap-2">
+                        <div className="flex items-center gap-0.5">
+                            <CanvasViewControls minimap={{ shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }} />
+                            <Button
+                                onClick={() => setRefreshToken((current) => current + 1)}
+                                data-testid="run-graph-refresh-button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="Refresh graph"
+                                title="Refresh graph"
+                            >
+                                <RefreshCw aria-hidden="true" className={graphStatus === 'loading' ? 'animate-spin' : undefined} />
+                            </Button>
+                        </div>
                         {onOpenInEditor ? (
                             <Button
                                 onClick={onOpenInEditor}
@@ -315,21 +329,6 @@ export function RunGraphCard({
                                 Open in editor
                             </Button>
                         ) : null}
-                        <Button
-                            onClick={() => setRefreshToken((current) => current + 1)}
-                            data-testid="run-graph-refresh-button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label="Refresh graph"
-                            title="Refresh graph"
-                        >
-                            <RefreshCw aria-hidden="true" className={graphStatus === 'loading' ? 'animate-spin' : undefined} />
-                        </Button>
-                        <ChildFlowExpansionToggle
-                            expanded={expandChildFlows}
-                            onChange={(nextExpanded) => updateRunDetailSession(run.run_id, { expandChildFlows: nextExpanded })}
-                            testId="run-child-flow-toggle"
-                        />
                     </div>
                 </div>
             </CardHeader>
@@ -372,7 +371,6 @@ export function RunGraphCard({
                 ) : null}
                 <div className={!hasRenderableGraph && (graphError || graphStatus === 'ready') ? 'hidden' : 'contents'}>
                     <CanvasSessionModeProvider mode="runs" runId={run.run_id}>
-                        <ReactFlowProvider>
                             <RunGraphCanvasInner
                                 run={run}
                                 refreshToken={refreshToken}
@@ -380,8 +378,8 @@ export function RunGraphCard({
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={onSelectNode}
                                 paneHeight={fillHeight ? 'fill' : paneHeight}
+                                showMinimap={showMinimap}
                             />
-                        </ReactFlowProvider>
                     </CanvasSessionModeProvider>
                 </div>
                 {fillHeight ? null : (
@@ -426,5 +424,6 @@ export function RunGraphCard({
                 )}
             </CardContent>
         </Card>
+        </ReactFlowProvider>
     )
 }

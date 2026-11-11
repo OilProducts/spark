@@ -50,8 +50,9 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     first.focus()
     await user.keyboard('{ArrowDown}')
     expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveFocus()
-    expect(screen.getByRole('heading', { name: 'Client preferences', level: 3 })).toBeVisible()
-    for (const name of ['Editor', 'Layout', 'Runs']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()
+    // Under the category's h1, each preference group is a section heading.
+    expect(screen.getByRole('heading', { name: 'Preferences', level: 1 })).toBeVisible()
+    for (const name of ['Appearance', 'Editor', 'Layout', 'Runs']) expect(screen.getByRole('heading', { name, level: 2 })).toBeVisible()
     expect(screen.getByLabelText(/^Model:/)).not.toBeVisible()
     await user.keyboard('{End}')
     expect(screen.getByRole('tab', { name: 'System' })).toHaveFocus()

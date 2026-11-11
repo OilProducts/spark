@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
-export const NARROW_VIEWPORT_MAX_WIDTH = 1024
+// Below Tailwind's `lg` (1024px): a 1024px laptop or landscape tablet gets the desktop layout.
+export const NARROW_VIEWPORT_MAX_WIDTH = 1023
 
 const computeIsNarrowViewport = () => {
   if (typeof window === 'undefined') {

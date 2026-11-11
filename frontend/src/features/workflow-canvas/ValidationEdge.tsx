@@ -40,6 +40,29 @@ function readRenderRoute(value: unknown): EdgeRoute | null {
     return route.length >= 2 ? route : null
 }
 
+/**
+ * Where a route's label sits: on its longest horizontal run, which lies in the lane between
+ * node rows; on a route that only runs vertically, beside its longest run, clear of the line.
+ */
+export function routeLabelAnchor(route: EdgeRoute): { x: number; y: number; beside: boolean } {
+    let horizontal: { x: number; y: number; length: number } | null = null
+    let vertical: { x: number; y: number; length: number } | null = null
+    for (let index = 1; index < route.length; index += 1) {
+        const from = route[index - 1]
+        const to = route[index]
+        const length = Math.hypot(to.x - from.x, to.y - from.y)
+        const point = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, length }
+        if (Math.abs(to.y - from.y) < 1) {
+            if (length >= 48 && length > (horizontal?.length ?? 0)) horizontal = point
+        } else if (length > (vertical?.length ?? 0)) {
+            vertical = point
+        }
+    }
+    if (horizontal) return { x: horizontal.x, y: horizontal.y, beside: false }
+    if (vertical) return { x: vertical.x, y: vertical.y, beside: true }
+    return { ...getRouteMidpoint(route), beside: false }
+}
+
 function buildFallbackRoute(sourceX: number, sourceY: number, targetX: number, targetY: number): EdgeRoute {
     return normalizeRoute([
         { x: sourceX, y: sourceY },
@@ -79,6 +102,10 @@ export function ValidationEdge({
         ?? buildFallbackRoute(sourceX, sourceY, targetX, targetY)
     const edgePath = buildRoundedPolylinePath(renderRoute)
     const labelPoint = getRouteMidpoint(renderRoute)
+    // A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
+    const rawLabel = (data as Record<string, unknown> | undefined)?.label
+    const routeLabel = typeof rawLabel === 'string' ? rawLabel.trim() : ''
+    const labelAnchor = routeLabel ? routeLabelAnchor(renderRoute) : { ...labelPoint, beside: false }
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isDerivedChildEdge = derivedPreviewMeta?.kind === 'child-edge'
     const isDerivedLinkEdge = derivedPreviewMeta?.kind === 'child-link'
@@ -116,14 +143,14 @@ export function ValidationEdge({
         edgeStyle.strokeWidth = selected ? 2.5 : 1.5
         edgeStyle.opacity = 0.95
     } else if (isDerivedLinkEdge) {
-        edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.6)'
+        // Dashed sets the parent-to-child link apart; it stays as legible as any edge (3:1 or better).
+        edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.75)'
         edgeStyle.strokeDasharray = '6 6'
         edgeStyle.strokeWidth = 1.5
-        edgeStyle.opacity = 0.8
     } else if (isDerivedChildEdge) {
-        edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.45)'
+        // The child flow's nodes say they are a read-only preview; its edges must still be easy to follow.
+        edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.75)'
         edgeStyle.strokeWidth = 1.5
-        edgeStyle.opacity = 0.62
     } else if (selected) {
         edgeStyle.stroke = 'hsl(var(--primary))'
         edgeStyle.strokeWidth = 2
@@ -155,25 +182,38 @@ export function ValidationEdge({
                     interactionWidth={16}
                 />
             </g>
-            {diagnosticsForEdge.length > 0 && (
+            {routeLabel || diagnosticsForEdge.length > 0 ? (
                 <EdgeLabelRenderer>
                     <div
-                        className="nodrag nopan"
+                        className={`nodrag nopan absolute flex flex-col gap-1 ${labelAnchor.beside ? 'items-end' : 'items-center'}`}
                         style={{
-                            transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)`,
+                            transform: labelAnchor.beside
+                                ? `translate(-100%, -50%) translate(${labelAnchor.x - 6}px, ${labelAnchor.y}px)`
+                                : `translate(-50%, -50%) translate(${labelAnchor.x}px, ${labelAnchor.y}px)`,
                         }}
                     >
-                        <div
-                            data-testid="edge-diagnostic-badge"
-                            onClick={handleSelect}
-                            className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-medium ${badgeClass}`}
-                            title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
-                        >
-                            {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}
-                        </div>
+                        {routeLabel ? (
+                            <span
+                                data-testid="edge-route-label"
+                                title={routeLabel}
+                                className="max-w-36 truncate rounded-md border border-border bg-background px-1.5 py-px text-xs font-medium text-muted-foreground"
+                            >
+                                {routeLabel}
+                            </span>
+                        ) : null}
+                        {diagnosticsForEdge.length > 0 ? (
+                            <div
+                                data-testid="edge-diagnostic-badge"
+                                onClick={handleSelect}
+                                className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-medium ${badgeClass}`}
+                                title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
+                            >
+                                {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}
+                            </div>
+                        ) : null}
                     </div>
                 </EdgeLabelRenderer>
-            )}
+            ) : null}
         </>
     )
 }

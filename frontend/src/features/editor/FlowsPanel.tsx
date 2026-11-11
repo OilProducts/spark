@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 
 import { useStore } from '@/store'
@@ -185,11 +185,16 @@ export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useF
 }
 
 export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
+    const projectFlows = useMemo(
+        () => new Set(Object.values(catalog.flowDefinitions).filter((item) => item.layer !== 'bundled').map((item) => item.name)),
+        [catalog.flowDefinitions],
+    )
     return (
         <div data-testid="flow-browser-panel">
             <FlowTree
                 dataTestId="editor-flow-tree"
                 flows={catalog.flows}
+                projectFlows={projectFlows}
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}

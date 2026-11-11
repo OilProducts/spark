@@ -35,7 +35,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const isNarrowViewport = useNarrowViewport()
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
-    const hasActiveFlow = useStore((state) => Boolean(state.activeFlow))
+    const activeFlow = useStore((state) => state.activeFlow)
+    const hasActiveFlow = Boolean(activeFlow)
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
@@ -172,6 +173,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 title="Flows"
                 actions={<FlowsPanelActions catalog={catalog} />}
                 panel={<FlowsPanelList catalog={catalog} />}
+                selected={activeFlow}
             >
             <div
                 ref={workspaceRef}

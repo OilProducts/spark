@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import {
     ReactFlow,
     MiniMap,
-    Controls,
     Background,
     MarkerType,
     useNodesState,
@@ -83,12 +82,11 @@ import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './component
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
 const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
-const MINIMAP_NODE_THRESHOLD = 10;
-// The zoom controls sit at the bottom left; keep content to their right, and above the
-// minimap a big graph shows at the bottom right.
-const FRAME_PADDING = { top: 24, right: 24, bottom: 24, left: 56 } as const;
+// The view controls live in the toolbar, and the minimap shows only when asked for, so nothing
+// covers the canvas when a graph opens.
+// The sides leave room for self-loops, which reach past their node's box.
+const FRAME_PADDING = { top: 24, right: 48, bottom: 24, left: 48 } as const;
 const MINIMAP_SIZE = { width: 160, height: 108 };
-const MINIMAP_FRAME_PADDING = { ...FRAME_PADDING, bottom: MINIMAP_SIZE.height + 32 } as const;
 const LIVE_ROUTE_THROTTLE_MS = 80;
 const EDITOR_LAYOUT_CANVAS_KIND: FlowCanvasKind = 'editor-parent-only';
 
@@ -286,6 +284,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const flowName = activeFlow;
     const canvasPaneRef = useRef<HTMLDivElement>(null);
     const frame = useReadableFraming(canvasPaneRef);
+    const [showMinimap, setShowMinimap] = useState(false);
     // A newly opened flow, or a switch between its parent and expanded views, opens framed;
     // edits and reloads of the same graph keep the viewport where the user left it.
     const framedGraphRef = useRef<string | null>(null);
@@ -293,9 +292,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         const graphKey = `${flowName}:${expandChildFlowsRef.current}`;
         if (framedGraphRef.current === graphKey) return;
         framedGraphRef.current = graphKey;
-        frame(graphNodes, {
-            padding: graphNodes.length > MINIMAP_NODE_THRESHOLD && !expandChildFlowsRef.current ? MINIMAP_FRAME_PADDING : FRAME_PADDING,
-        });
+        frame(graphNodes, { padding: FRAME_PADDING });
     }, [frame, flowName]);
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
@@ -1391,6 +1388,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     }}
                     onAddNode={onAddNode}
                     runDefaultProjectPath={runDefaultProjectPath}
+                    minimap={isExpandedReadOnlyPreview ? undefined : { shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }}
                     onRun={(projectPath) => {
                         flushPendingSave()
                         setRunProjectPath(projectPath)
@@ -1433,10 +1431,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             minZoom={0.1}
                             maxZoom={1.5}
                         >
-                            <Controls />
-                            {/* ponytail: a small graph fits on screen, where a minimap only covers nodes. The
-                                expanded preview's nodes never reach the minimap, so it would show an empty box. */}
-                            {nodeCount > MINIMAP_NODE_THRESHOLD && !isExpandedReadOnlyPreview ? (
+                            {/* The expanded preview's nodes never reach the minimap, so it would show an empty box. */}
+                            {showMinimap && !isExpandedReadOnlyPreview ? (
                                 <MiniMap
                                     style={MINIMAP_SIZE}
                                     nodeColor="hsl(var(--muted))"
@@ -1447,7 +1443,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         </ReactFlow>
                     ) : (
                         <SheetEmpty data-testid="editor-no-flow-state" icon={GitBranch} title="No flow open">
-                            Select a flow to begin authoring.
+                            Pick a flow from the list to edit it or run it.
                         </SheetEmpty>
                     )
                 }

@@ -186,6 +186,7 @@ export function TriggersPanel() {
         </>
       )}
       panel={panel}
+      selected={createFormOpen ? 'new' : selectedTriggerId}
     >
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="flex w-full max-w-3xl flex-col gap-6">
@@ -227,16 +228,17 @@ export function TriggersPanel() {
                   >
                     Create trigger
                   </Button>
+                  {/* Close keeps the draft for the next New, like the mission editor's Close. */}
                   <Button
                     type="button"
-                    aria-label="Cancel new trigger"
+                    aria-label="Close new trigger"
                     data-testid="trigger-create-cancel-button"
                     variant="ghost"
                     size="sm"
                     disabled={pending}
                     onClick={() => updateTriggersSession({ createFormOpen: false })}
                   >
-                    Cancel
+                    Close
                   </Button>
                 </div>
               </CardContent>

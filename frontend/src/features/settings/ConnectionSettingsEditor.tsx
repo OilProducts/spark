@@ -8,7 +8,7 @@ import { SaveStatus } from './SaveStatus'
 export function ConnectionSettingsEditor() {
     const editor = useConnectionSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-base font-semibold">Server and client connections</h3></CardHeader>
+        <CardHeader><h2 className="text-base font-semibold">Server and client connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-sm text-muted-foreground">Desktop uses its native remote-access control and an automatically assigned port.</p>

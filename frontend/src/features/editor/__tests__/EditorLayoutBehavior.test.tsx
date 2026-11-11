@@ -88,6 +88,8 @@ vi.mock('@xyflow/react', async () => {
     ...actual,
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     useReactFlow: () => stableReactFlowInstance,
+    useStore: (selector: (state: Record<string, boolean>) => unknown) => selector({ nodesDraggable: true, nodesConnectable: true, elementsSelectable: true }),
+    useStoreApi: () => ({ setState: () => {} }),
     ReactFlow: (props: {
       nodes: Node[]
       edges: Edge[]

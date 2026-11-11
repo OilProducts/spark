@@ -43,6 +43,7 @@ export function ProjectsPanel() {
             <ViewLayout
                 view="chats"
                 title="Chats"
+                selected={projectPagePath ? `project:${projectPagePath}` : sidebarProps.activeConversationId}
                 actions={(
                     <ProjectPicker
                         heading="New chat in"

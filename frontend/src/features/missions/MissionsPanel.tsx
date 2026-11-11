@@ -234,7 +234,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
         <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
-    return <ViewLayout view="missions" title="Missions" panel={missionsPanel} actions={<>
+    return <ViewLayout view="missions" title="Missions" panel={missionsPanel} selected={editing === undefined ? null : editing?.id ?? newKey} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" title="Refresh missions" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" /></Button>
         <ProjectPicker heading="New mission in" testId="new-mission-project-picker" defaultProjectPath={defaultProjectChoice(registry)} onPick={path => open(null, null, path)}>
             <Button type="button" variant="outline" size="sm" aria-label="New mission" disabled={busy}><Plus aria-hidden="true" />New</Button>

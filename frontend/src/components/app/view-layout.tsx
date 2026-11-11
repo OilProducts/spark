@@ -1,4 +1,4 @@
-import type { ComponentProps, ComponentType, ReactNode } from 'react'
+import { useEffect, useRef, type ComponentProps, type ComponentType, type ReactNode } from 'react'
 
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
@@ -25,26 +25,33 @@ export function Sheet({ className, ...props }: ComponentProps<'div'>) {
 }
 
 /**
- * A view's side panel (on the ground) beside its sheet; on a narrow viewport they stack, the
- * panel in a 40vh scroller, or at full length in the view's one scroll with `panelInFlow`
- * (the view then scrolls its sheet into view when something is picked).
+ * A view's side panel (on the ground) beside its sheet. On a narrow viewport they stack in the
+ * view's one scroll, the panel at full length, and picking something (`selected` changes)
+ * scrolls the sheet into view.
  */
 export function ViewLayout({
     view,
     title,
     actions,
     panel,
-    panelInFlow = false,
+    selected,
     children,
 }: {
     view: string
     title: string
     actions?: ReactNode
     panel: ReactNode
-    panelInFlow?: boolean
+    /** The key of what the sheet shows; null when nothing is picked. */
+    selected?: string | null
     children: ReactNode
 }) {
     const isNarrowViewport = useNarrowViewport()
+    const sheetRef = useRef<HTMLDivElement | null>(null)
+    useEffect(() => {
+        if (isNarrowViewport && selected) {
+            sheetRef.current?.scrollIntoView({ block: 'start' })
+        }
+    }, [isNarrowViewport, selected])
     return (
         <div
             data-testid={`${view}-view`}
@@ -54,15 +61,16 @@ export function ViewLayout({
             <aside
                 data-testid="side-panel"
                 aria-label={`${title} panel`}
-                className={cn('flex shrink-0 flex-col', isNarrowViewport ? !panelInFlow && 'max-h-[40vh]' : 'w-70')}
+                className={cn('flex shrink-0 flex-col', !isNarrowViewport && 'w-70')}
             >
+                {/* Not a heading: the aside is named for it, and the sheet's h1 leads the page's outline. */}
                 <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-3.5">
-                    <h2 data-testid="side-panel-title" className="text-base font-semibold text-foreground">{title}</h2>
+                    <p data-testid="side-panel-title" className="text-base font-semibold text-foreground">{title}</p>
                     {actions ? <div className="flex items-center gap-1">{actions}</div> : null}
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">{panel}</div>
             </aside>
-            <Sheet data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
+            <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
                 {children}
             </Sheet>
         </div>

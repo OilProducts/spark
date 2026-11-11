@@ -30,8 +30,8 @@ type ActivityDot = 'waiting' | 'running' | 'unread' | null
 const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked' }
 
 // An icon with its name under it; on a phone-width top row there is only room for the icon,
-// and the icons share the row's width so all of them stay on screen.
-const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:h-11 max-sm:w-auto max-sm:min-w-8 max-sm:flex-1 max-sm:shrink'
+// and the icons share the row's width so all of them stay on screen, down to 320px wide.
+const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:h-11 max-sm:w-auto max-sm:min-w-6 max-sm:flex-1 max-sm:shrink'
 const LABEL_CLASS = 'text-xs leading-none max-sm:hidden'
 
 /** Which views have something waiting on you or running, for the dots on their icons. */
@@ -80,7 +80,8 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
     const now = Date.now()
 
     return (
-        <div ref={containerRef} className="relative max-sm:flex max-sm:min-w-8 max-sm:flex-1">
+        // Narrow, the list hangs from the top row's right edge (the sticky nav), not from the bell, so it stays on screen.
+        <div ref={containerRef} className={cn('max-sm:flex max-sm:min-w-6 max-sm:flex-1', !narrow && 'relative')}>
             <button
                 type="button"
                 data-testid="attention-bell"
@@ -107,7 +108,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                     data-testid="attention-bell-list"
                     className={cn(
                         'absolute z-50 w-96 max-w-[calc(100vw-1rem)] rounded-lg border bg-background p-1 shadow-md',
-                        narrow ? 'right-0 top-full mt-1' : 'bottom-0 left-full ml-2',
+                        narrow ? 'right-2 top-full mt-1' : 'bottom-0 left-full ml-2',
                     )}
                 >
                     {items.length === 0 && (

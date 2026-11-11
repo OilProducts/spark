@@ -16,7 +16,7 @@ const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h3 className="text-base font-semibold">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-3">
             {(['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'] as const).map((key) => {

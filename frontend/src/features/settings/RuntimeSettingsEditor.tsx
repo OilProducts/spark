@@ -8,7 +8,7 @@ import { SaveStatus } from './SaveStatus'
 export function RuntimeSettingsEditor() {
     const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
     return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h3 className="text-base font-semibold">Runtime paths</h3></CardHeader>
+        <CardHeader className="px-4"><h2 className="text-base font-semibold">Runtime paths</h2></CardHeader>
         <CardContent className="space-y-3 px-4">
             {pending ? <p role="status">Updating…</p> : !saved && !error ? <p role="status">Loading settings…</p> : null}
             <p className="text-sm text-muted-foreground">Changes require restart. Leave a path empty to use its default.</p>

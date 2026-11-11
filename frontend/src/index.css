@@ -153,44 +153,6 @@
   }
 
   /* React Flow's stylesheet is unlayered, so it beats these layered rules unless marked !important. */
-  .react-flow__controls {
-    overflow: hidden;
-    border: 1px solid hsl(var(--border));
-    border-radius: calc(var(--radius) - 2px);
-    background: hsl(var(--background));
-    box-shadow: none !important;
-  }
-
-  .react-flow__controls-button {
-    width: 28px !important;
-    height: 28px !important;
-    border: 0 !important;
-    border-bottom: 1px solid hsl(var(--border)) !important;
-    background: transparent !important;
-    color: hsl(var(--muted-foreground)) !important;
-    transition:
-      background-color 120ms ease,
-      color 120ms ease;
-  }
-
-  .react-flow__controls-button:last-child {
-    border-bottom: 0 !important;
-  }
-
-  .react-flow__controls-button:hover {
-    background: hsl(var(--accent)) !important;
-    color: hsl(var(--accent-foreground)) !important;
-  }
-
-  .react-flow__controls-button:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 1px hsl(var(--ring));
-  }
-
-  .react-flow__controls-button svg {
-    stroke: currentColor;
-  }
-
   .react-flow__minimap {
     border: 1px solid hsl(var(--border)) !important;
     border-radius: calc(var(--radius) - 2px) !important;

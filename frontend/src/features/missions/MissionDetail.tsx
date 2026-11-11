@@ -212,7 +212,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                     </div>
                 </ChatPane>
             </div>
-            <aside aria-label="Mission overview" className={narrow ? 'px-6 pb-6' : 'w-80 shrink-0 overflow-y-auto py-5 pr-6'}>
+            <aside aria-label="Mission overview" className={narrow ? 'px-6 pb-6' : 'w-64 shrink-0 overflow-y-auto py-5 pr-6 xl:w-80'}>
                 <Well className="flex flex-col gap-5 text-sm">
                     <RailSection label="Objective">
                         <p ref={objectiveText} tabIndex={0} className={`leading-relaxed whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${objectiveOpen ? '' : 'line-clamp-4'}`}>{objective}</p>
@@ -243,7 +243,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                             }}>
                                 <Label className="grid gap-1 text-xs">Concurrent runs<Input autoFocus type="number" min={1} required disabled={disabled} className="bg-background" value={budget.concurrent_runs} onChange={e => setBudget({ ...budget, concurrent_runs: Number(e.target.value) })} /></Label>
                                 <Label className="grid gap-1 text-xs">Total runs<Input type="number" min={1} required disabled={disabled} className="bg-background" value={budget.total_runs} onChange={e => setBudget({ ...budget, total_runs: Number(e.target.value) })} /></Label>
-                                <div className="flex gap-2"><Button type="submit" size="sm" variant="outline" disabled={disabled}>Save budget</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setBudget(null)}>Cancel</Button></div>
+                                <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save budget</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setBudget(null)}>Cancel</Button></div>
                             </form>
                             : <>
                                 <p className="text-xs">{used} of {limits.total_runs} runs · up to {limits.concurrent_runs} at once</p>
@@ -256,7 +256,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                                 <ModelChooser inherited={inherited} projectPath={project} inheritLabel="Project default" disabled={disabled}
                                     value={model.draft ?? inheritedModel} onChange={draft => setModel(current => current && ({ ...current, draft }))} />
                                 <p className="text-xs text-muted-foreground">Applies from the mission's next turn.</p>
-                                <div className="flex gap-2"><Button type="submit" size="sm" variant="outline" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>
+                                <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>
                             </form>
                             : <p className="text-xs">{modelLabel}</p>}
                     </RailSection>

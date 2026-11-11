@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { ReactFlowProvider } from '@xyflow/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -21,7 +22,7 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof EditorCanv
         onRun: vi.fn(),
         ...overrides,
     }
-    render(<EditorCanvasToolbar {...props} />)
+    render(<ReactFlowProvider><EditorCanvasToolbar {...props} /></ReactFlowProvider>)
     return props
 }
 
@@ -35,6 +36,10 @@ describe('EditorCanvasToolbar', () => {
         expect(screen.getByRole('button', { name: 'Parent' })).toHaveAttribute('aria-pressed', 'true')
         expect(screen.getByRole('group', { name: 'Layout' })).toBeInTheDocument()
         expect(screen.getByRole('group', { name: 'Actions' })).toBeInTheDocument()
+        // The view controls sit in the toolbar, not over the canvas; the editable canvas can be locked.
+        const view = screen.getByRole('group', { name: 'Zoom' })
+        expect(view).toContainElement(screen.getByRole('button', { name: 'Fit whole graph' }))
+        expect(view).toContainElement(screen.getByRole('button', { name: 'Lock canvas' }))
 
         screen.getByRole('button', { name: 'Auto-arrange layout' }).focus()
         await user.keyboard('{Enter}')

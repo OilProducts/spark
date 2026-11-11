@@ -74,7 +74,7 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
         <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border px-6 py-4">
             <Button type="submit" size="sm" aria-label={editing && !busy ? 'Save mission' : undefined} disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create mission'}</Button>
             {/* Close keeps the draft for later; Discard throws it away. */}
-            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={close}>Close</Button>
+            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={close}>Close</Button>
             <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={discard}>{editing ? 'Discard changes' : 'Discard draft'}</Button>
         </footer>
         </form>

@@ -50,8 +50,8 @@ export function ProjectPage({
 
     return (
         <section data-testid="project-page" data-project-path={projectPath} className="flex h-full min-h-0 flex-col">
-            <header className="shrink-0 border-b border-border px-6 py-4">
-                <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
+            <header className="shrink-0 border-b border-border py-4">
+                <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-6">
                     <h1 data-testid="project-page-title" className="min-w-0 truncate text-xl font-semibold">{label}</h1>
                     {missing ? <span data-testid="project-page-missing" className="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">folder missing</span> : null}
                     {project.isDefault ? <span className="text-sm text-muted-foreground">default project</span> : null}
@@ -66,7 +66,10 @@ export function ProjectPage({
                         <Plus className="size-3.5" />
                         New chat
                     </Button>
-                    <p data-testid="project-page-path" className="w-full break-all font-mono text-xs text-muted-foreground">{projectPath}</p>
+                    {/* Paths wrap after a slash, not mid-word. */}
+                    <p data-testid="project-page-path" className="w-full break-words font-mono text-xs text-muted-foreground">
+                        {projectPath.split('/').map((part, index) => <span key={index}>{index > 0 ? <>/<wbr /></> : null}{part}</span>)}
+                    </p>
                 </div>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto">

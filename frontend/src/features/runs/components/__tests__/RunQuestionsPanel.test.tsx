@@ -45,8 +45,15 @@ it('labels human gate choices with their display text and answers with the decis
     onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
   />)
   expect(screen.queryByRole('button', { name: 'approve' })).toBeNull()
-  expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('[A]')
-  expect(screen.getByTestId('run-pending-human-gate-option-metadata-revise')).toHaveTextContent('[S]')
+  // The flow's key sits in the button as a key cap and is its shortcut; the answer alone names it.
+  expect(screen.getByTestId('run-pending-human-gate-option-key-approve')).toHaveTextContent('A')
+  expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveAttribute('aria-keyshortcuts', 'A')
+  expect(screen.queryByTestId('run-pending-human-gate-option-metadata-approve')).toBeNull()
+  // With focus on an answer, a key picks its answer; other keys do nothing.
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 'x' })
+  expect(submit).not.toHaveBeenCalled()
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 's' })
+  expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
   fireEvent.click(screen.getByRole('button', { name: 'Send back for changes' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
   fireEvent.click(screen.getByRole('button', { name: 'Approve and ship' }))

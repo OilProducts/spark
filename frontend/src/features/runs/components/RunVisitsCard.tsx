@@ -96,6 +96,8 @@ interface RunVisitsCardProps {
     onViewArtifact: (entry: ArtifactListEntry) => void
     /** The run graph toggle, shown in the rail's view control. */
     graph?: { shown: boolean; onToggle: () => void }
+    /** Put the rail above the details, leaving the width to the graph beside them. */
+    railAbove?: boolean
 }
 
 export function RunVisitsCard({
@@ -119,6 +121,7 @@ export function RunVisitsCard({
     artifactEntries,
     onViewArtifact,
     graph,
+    railAbove = false,
 }: RunVisitsCardProps) {
     // An exit node that simply completed says nothing the status item doesn't.
     const visits = useMemo(
@@ -183,16 +186,18 @@ export function RunVisitsCard({
     return (
         <section
             data-testid="run-visits-panel"
-            data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
+            data-responsive-layout={isNarrowViewport || railAbove ? 'stacked' : 'split'}
+            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : railAbove ? 'h-full min-h-0 flex-col gap-5' : 'h-full min-h-0')}
         >
-            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
+            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport || railAbove ? undefined : 'min-h-0 w-64')}>
                 {/* Steps and Journal exclude each other; the graph is additive, so it is its own
                     one-segment track beside them (a pressed segment beside a pressed segment reads wrong). */}
                 <div className="mb-1.5 flex items-center gap-1.5">
+                    {/* As wide as it is in the 16rem side rail, wherever the rail sits, so the
+                        Graph toggle stays put and the segments never stretch across a wide rail. */}
                     <SegmentedControl
                         aria-label="View"
-                        className="min-w-0 flex-1"
+                        className="min-w-0 max-w-[9.75rem] flex-1"
                         options={[
                             { key: 'steps', label: 'Steps', pressed: !showJournal, onPress: () => setShowJournal(false) },
                             {
@@ -236,7 +241,7 @@ export function RunVisitsCard({
                     aria-label="Visits"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport || railAbove ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button

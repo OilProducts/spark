@@ -136,7 +136,7 @@ describe('RunGraphCard', () => {
         expect(useStore.getState().runDetailSessionsByRunId[run.run_id]?.expandChildFlows).toBe(true)
     })
 
-    it('insets canvas controls inside the default-height viewport', async () => {
+    it('keeps the view controls out of the canvas and shows the minimap only when asked', async () => {
         const run = makeRun('run-controls')
         useStore.getState().setRunsSelectedRunId(run.run_id)
         loadRunGraphPreviewMock.mockResolvedValue({
@@ -166,8 +166,15 @@ describe('RunGraphCard', () => {
         )
 
         await screen.findByTestId('rf__node-start')
-        const controls = screen.getByTestId('run-graph-canvas').querySelector('.react-flow__controls')
-        expect(controls).toHaveStyle({ bottom: '12px', left: '12px' })
+        const canvas = screen.getByTestId('run-graph-canvas')
+        expect(canvas.querySelector('.react-flow__controls')).toBeNull()
+        expect(canvas).not.toContainElement(screen.getByTestId('canvas-view-controls'))
+        expect(canvas.querySelector('.react-flow__minimap')).toBeNull()
+        await act(async () => {
+            screen.getByTestId('canvas-minimap-toggle').click()
+        })
+        expect(canvas.querySelector('.react-flow__minimap')).not.toBeNull()
+        expect(screen.getByTestId('canvas-minimap-toggle')).toHaveAttribute('aria-pressed', 'true')
     })
 })
 

@@ -529,7 +529,7 @@ describe('TriggersPanel', () => {
     await user.type(createScope.getByLabelText('Name'), 'Draft')
     expect(useStore.getState().triggersSession.createFormOpen).toBe(true)
 
-    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    await user.click(screen.getByRole('button', { name: 'Close new trigger' }))
     expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Existing')).toBeVisible()
     expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/project', id: 'trigger-default' }))

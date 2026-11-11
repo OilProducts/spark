@@ -3181,9 +3181,9 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
 
     expect(screen.getByTestId('run-pending-human-gate-item')).toHaveTextContent(pendingPrompt)
-    expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('[A]')
+    expect(screen.getByTestId('run-pending-human-gate-answer-approve')).toHaveAttribute('aria-keyshortcuts', 'A')
     expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('Ship now to production.')
-    expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('[R]')
+    expect(screen.getByTestId('run-pending-human-gate-option-key-rework')).toHaveTextContent('R')
     expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('Send build back for revision.')
   })
 
@@ -3678,7 +3678,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     const multipleChoiceScope = within(multipleChoiceItem as HTMLElement)
     expect(multipleChoiceScope.getByRole('button', { name: 'Promote' })).toBeVisible()
-    expect(screen.getByTestId('run-pending-human-gate-option-metadata-promote')).toHaveTextContent('[P]')
+    expect(screen.getByTestId('run-pending-human-gate-option-key-promote')).toHaveTextContent('P')
     expect(screen.getByTestId('run-pending-human-gate-option-metadata-promote')).toHaveTextContent(
       'Advance this build to production.',
     )

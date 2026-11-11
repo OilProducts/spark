@@ -131,8 +131,8 @@ export function RunList({
         const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
         const attention = ATTENTION[run.status]?.label === stated ? null : ATTENTION[run.status]
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
+        const flowPart = title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name)
         const metaParts = [
-            title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
             underDay ? formatRunTime(run.started_at) : formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
         ].filter((value): value is string => Boolean(value) && value !== '—')
@@ -165,18 +165,25 @@ export function RunList({
                         onClick={() => onSelectRun(run)}
                         title={<span data-testid="run-history-row-title" title={`${title} · ${run.run_id}`}>{title}</span>}
                         meta={(
-                            <span data-testid="run-history-row-meta">
-                                {runProject ? (
-                                    <span data-testid="run-history-row-project" title={run.project_path ?? undefined}>
-                                        {runProject}{metaParts.length > 0 ? ' · ' : ''}
+                            // The project and flow give way when the line is short; the time,
+                            // duration and status word always show.
+                            <span data-testid="run-history-row-meta" className="flex min-w-0">
+                                {runProject || flowPart ? (
+                                    <span className="min-w-0 truncate">
+                                        {runProject ? (
+                                            <span data-testid="run-history-row-project" title={run.project_path ?? undefined}>{runProject}</span>
+                                        ) : null}
+                                        {runProject && flowPart ? ' · ' : ''}{flowPart}
                                     </span>
                                 ) : null}
-                                {metaParts.join(' · ')}
-                                {attention ? (
-                                    <span data-testid="run-history-row-status" className={attention.className}>
-                                        {metaParts.length > 0 ? ' · ' : ''}{attention.label}
-                                    </span>
-                                ) : null}
+                                <span className="shrink-0 whitespace-pre">
+                                    {(runProject || flowPart) && metaParts.length > 0 ? ' · ' : ''}{metaParts.join(' · ')}
+                                    {attention ? (
+                                        <span data-testid="run-history-row-status" className={attention.className}>
+                                            {runProject || flowPart || metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                                        </span>
+                                    ) : null}
+                                </span>
                             </span>
                         )}
                         trailing={lock || childRuns.length > 0 ? (

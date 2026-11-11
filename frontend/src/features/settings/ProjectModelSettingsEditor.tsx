@@ -18,7 +18,6 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
         <CardHeader className="px-4"><h3 className="text-base font-semibold">Project model defaults</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
             {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="break-all text-xs text-muted-foreground">{projectPath}</p>
             <p className="text-sm text-muted-foreground">Overrides for this project. Unsaved edits do not change the saved effective values below.</p>
             <p className="text-xs text-muted-foreground">Saved effective: {editor.saved?.effective ? <>
                 Provider or profile: {profiles.find((p) => p.id === editor.saved?.effective?.llm_profile)?.label} {editor.saved.effective.llm_profile ?? editor.saved.effective.provider ?? 'Provider default'} ·

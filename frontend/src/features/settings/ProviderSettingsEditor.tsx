@@ -12,7 +12,7 @@ const providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemin
 export function ProviderSettingsEditor() {
     const editor = useProviderSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-base font-semibold">Provider connections</h3></CardHeader>
+        <CardHeader><h2 className="text-base font-semibold">Provider connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-sm text-muted-foreground">Credentials stay in environment variables.</p>
