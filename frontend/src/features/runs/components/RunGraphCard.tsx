@@ -77,7 +77,7 @@ function RunGraphCanvasInner({
     const activeLoadRef = useRef(0)
     const paneRef = useRef<HTMLDivElement>(null)
     const frame = useReadableFraming(paneRef)
-    // Open on the step that needs attention: the selected one, else the one waiting or running.
+    // Open on the step that needs attention: the selected one, else the one waiting, running or failed.
     const focusNodeIdRef = useRef<string | null>(null)
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
@@ -106,6 +106,7 @@ function RunGraphCanvasInner({
         focusNodeIdRef.current = selectedNodeId
             ?? statusIds.find((id) => nodeStatusesById[id] === 'waiting')
             ?? statusIds.find((id) => nodeStatusesById[id] === 'running')
+            ?? statusIds.find((id) => nodeStatusesById[id] === 'failed')
             ?? null
     })
 

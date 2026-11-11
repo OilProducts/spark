@@ -35,7 +35,7 @@ function frameAxis(start: number, size: number, zoom: number, paddingStart: numb
 
 /**
  * The viewport that shows the whole graph when it fits at a readable zoom (never magnified past
- * 1×); otherwise the readable zoom around `focus`, or the top of the flow, where it starts.
+ * 1×); otherwise the readable zoom around `focus`, or the top of the flow.
  */
 export function readableViewport(
     bounds: Rect,
@@ -76,7 +76,9 @@ export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
             framedRef.current = { nodes: visibleNodes, request, viewport: null }
             return
         }
+        // Without a focus, a graph too big to show whole opens where the flow starts.
         const focusNode = visibleNodes.find((node) => node.id === request.focusNodeId)
+            ?? visibleNodes.find((node) => node.data?.kind === 'start')
         const focusRect = focusNode ? readNodeRect(focusNode) : null
         const viewport = readableViewport(
             nodesBounds(visibleNodes),

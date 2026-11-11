@@ -966,6 +966,39 @@ describe('schema-2 routes and fork structure', () => {
         expect(resaved.nodes.done.routes).toEqual({ next: { to: 'failed', description: '' } })
     })
 
+    it('lays a failure exit out on its own row below the graph, centred, and still routes to it', async () => {
+        const flow = {
+            ...reviewFlow,
+            nodes: {
+                ...reviewFlow.nodes,
+                start: { ...reviewFlow.nodes.start, routes: { next: { to: 'build', description: 'Build first.' } } },
+                build: {
+                    kind: 'agent_task',
+                    label: 'Build',
+                    config: { kind: 'agent_task', prompt: 'Build it.' },
+                    routes: {
+                        next: { to: 'review', description: 'Built.' },
+                        fail: { to: 'failed', description: 'Build broke.' },
+                    },
+                },
+            },
+        }
+        const hydrated = hydrate(flow)
+        const { nodes, edges } = await layoutWithElk(hydrated.nodes, hydrated.edges)
+        const box = (node: (typeof nodes)[number]) => {
+            const width = node.width ?? Number(node.style?.width ?? 0)
+            const height = node.height ?? Number(node.style?.height ?? 0)
+            return { top: node.position.y, bottom: node.position.y + height, centre: node.position.x + width / 2, left: node.position.x, right: node.position.x + width }
+        }
+        const failed = box(nodes.find((node) => node.id === 'failed')!)
+        const rest = nodes.filter((node) => node.id !== 'failed').map(box)
+
+        expect(rest.every((other) => other.bottom < failed.top)).toBe(true)
+        const restCentre = (Math.min(...rest.map((other) => other.left)) + Math.max(...rest.map((other) => other.right))) / 2
+        expect(Math.abs(failed.centre - restCentre)).toBeLessThan(1)
+        expect(edges.filter((edge) => edge.target === 'failed').every((edge) => (getRenderRoute(edge)?.length ?? 0) >= 2)).toBe(true)
+    })
+
     it('keeps decision IDs that name object properties, such as constructor', () => {
         const hydrated = hydrate(reviewFlow)
         const renamed = hydrated.edges.map((edge) => (

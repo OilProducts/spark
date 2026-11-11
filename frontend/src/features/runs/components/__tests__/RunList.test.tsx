@@ -116,11 +116,11 @@ describe('RunList', () => {
         const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
         expect(titles()).toEqual(['Tighten the review loop', 'changes/CR-1/request.md'])
         // Finished runs sit under a day group, so the row keeps only the time of day; the
-        // project leads the meta line while the list spans every project.
+        // project follows it while the list spans every project.
         expect(screen.getByTestId('run-list-day-group')).toHaveTextContent(/^Mar 2\d/)
-        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change · \d{1,2}:\d{2}\D*$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^\d{1,2}:\d{2}\D* · project-one · Implement Change$/)
         // An untitled run leads with its input and the flow moves to the meta line.
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · \d{1,2}:\d{2}\D* · Failed$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^\d{1,2}:\d{2}\D* · Failed · project-one · Merge Change$/)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
         // The dot carries the status; a word appears only for exceptions.
         const rows = screen.getAllByTestId('run-history-row')
@@ -165,9 +165,9 @@ describe('RunList', () => {
         expect(screen.queryAllByTestId('run-history-row-project')).toHaveLength(0)
         // The group label states the state, so its rows drop the word; a queued run under
         // Running is the exception and keeps it.
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^Selected · .+ · \d+h \d+m$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^.+ · \d+h \d+m · Selected$/)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Queued'])
-        expect(screen.getAllByTestId('run-history-row-meta')[3]).toHaveTextContent(/^Selected · \d{1,2}:\d{2}\D* · 4m 00s$/)
+        expect(screen.getAllByTestId('run-history-row-meta')[3]).toHaveTextContent(/^\d{1,2}:\d{2}\D* · 4m 00s · Selected$/)
         expect(screen.getByTestId('run-list-search-input')).toHaveAttribute('placeholder', 'Search 4 runs')
         const [waiting, active] = screen.getAllByTestId('run-history-row')
         expect(waiting).not.toHaveAttribute('aria-current')

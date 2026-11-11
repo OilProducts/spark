@@ -49,6 +49,8 @@ const OBSTACLE_PADDING = 18
 const EDGE_CORNER_RADIUS = 12
 const BEND_PENALTY = 18
 const PREVIOUS_ROUTE_PENALTY = 1
+// What a route pays to cross an edge routed before it: a short detour beats a crossing.
+const CROSSING_PENALTY = 160
 const SEGMENT_SEPARATION = 5
 // Well inside OBSTACLE_PADDING, so a spread segment never reaches a node.
 const MAX_SEGMENT_SHIFT = 10
@@ -438,6 +440,18 @@ function buildPreviousRouteSegments(route: EdgeRoute | null | undefined): Previo
     return segments
 }
 
+/** Where other routes cross `route` at a right angle. */
+export function routeCrossings(route: EdgeRoute, otherRoutes: EdgeRoute[]): EdgeRoutePoint[] {
+    const others = otherRoutes.flatMap(buildPreviousRouteSegments)
+    return buildPreviousRouteSegments(route).flatMap((segment) => others
+        .filter((other) => other.axis !== segment.axis
+            && other.coordinate > segment.min + EPSILON && other.coordinate < segment.max - EPSILON
+            && segment.coordinate > other.min + EPSILON && segment.coordinate < other.max - EPSILON)
+        .map((other) => (segment.axis === 'horizontal'
+            ? { x: other.coordinate, y: segment.coordinate }
+            : { x: segment.coordinate, y: other.coordinate })))
+}
+
 function segmentMatchesPreviousRoute(
     from: EdgeRoutePoint,
     to: EdgeRoutePoint,
@@ -548,6 +562,25 @@ function buildAdjacency(
     return adjacency
 }
 
+// How many routed segments the segment a-b crosses at a right angle, away from their ends.
+function countCrossings(a: EdgeRoutePoint, b: EdgeRoutePoint, routedSegments: PreviousRouteSegment[]): number {
+    const axis: Axis = a.x === b.x ? 'vertical' : 'horizontal'
+    const [coordinate, from, to] = axis === 'vertical' ? [a.x, a.y, b.y] : [a.y, a.x, b.x]
+    const min = Math.min(from, to)
+    const max = Math.max(from, to)
+    let crossings = 0
+    routedSegments.forEach((segment) => {
+        if (
+            segment.axis !== axis
+            && segment.coordinate > min + EPSILON && segment.coordinate < max - EPSILON
+            && coordinate > segment.min + EPSILON && coordinate < segment.max - EPSILON
+        ) {
+            crossings += 1
+        }
+    })
+    return crossings
+}
+
 function buildSearchKey(nodeId: string, axis: Axis | null): string {
     return `${nodeId}|${axis ?? 'start'}`
 }
@@ -557,7 +590,8 @@ function findShortestOrthogonalPath(
     adjacency: Map<string, GraphNode[]>,
     startNodeId: string,
     endNodeId: string,
-    previousRoute?: EdgeRoute | null,
+    previousRoute: EdgeRoute | null | undefined,
+    routedSegments: PreviousRouteSegment[],
 ): EdgeRoute | null {
     const previousSegments = buildPreviousRouteSegments(previousRoute)
     const distances = new Map<string, number>([[buildSearchKey(startNodeId, null), 0]])
@@ -610,7 +644,8 @@ function findShortestOrthogonalPath(
                 && !segmentMatchesPreviousRoute(currentNode.point, neighbor.point, previousSegments)
                 ? PREVIOUS_ROUTE_PENALTY
                 : 0
-            const nextCost = current.cost + segmentLength + bendPenalty + previousRoutePenalty
+            const crossingPenalty = CROSSING_PENALTY * countCrossings(currentNode.point, neighbor.point, routedSegments)
+            const nextCost = current.cost + segmentLength + bendPenalty + previousRoutePenalty + crossingPenalty
             const nextKey = buildSearchKey(neighbor.id, axis)
             if (nextCost >= (distances.get(nextKey) ?? Number.POSITIVE_INFINITY)) {
                 return
@@ -698,6 +733,7 @@ function routeSingleEdge(
     edge: FixedNodeRouterEdge,
     nodeMap: Map<string, NodeRect>,
     expandedObstacles: ExpandedRect[],
+    routedSegments: PreviousRouteSegment[],
 ): EdgeRoute {
     const sourceRect = nodeMap.get(edge.source)
     const targetRect = nodeMap.get(edge.target)
@@ -749,6 +785,7 @@ function routeSingleEdge(
         createPointId(sourceLead),
         createPointId(targetLead),
         edge.previousRoute,
+        routedSegments,
     )
 
     if (!pathBetweenLeads) {
@@ -823,11 +860,23 @@ export function routeFixedNodeGraph(request: FixedNodeRouterRequest): FixedNodeR
         request.nodes.map((node) => [node.id, node.rect]),
     )
     const expandedObstacles = request.nodes.map((node) => expandRect(node.rect, OBSTACLE_PADDING))
-    const routes = Object.fromEntries(
-        request.edges.map((edge) => [
-            edge.id,
-            routeSingleEdge(edge, nodeMap, expandedObstacles),
-        ]),
-    )
+    // Shortest edges first, so the long ones, such as routes to a shared exit, bend around them.
+    const span = (edge: FixedNodeRouterEdge) => {
+        const source = nodeMap.get(edge.source)
+        const target = nodeMap.get(edge.target)
+        return source && target
+            ? Math.abs(source.x + source.width / 2 - target.x - target.width / 2) + Math.abs(source.y + source.height / 2 - target.y - target.height / 2)
+            : 0
+    }
+    const routedSegments: PreviousRouteSegment[] = []
+    const routesById = new Map<string, EdgeRoute>()
+    ;[...request.edges]
+        .sort((left, right) => span(left) - span(right))
+        .forEach((edge) => {
+            const route = routeSingleEdge(edge, nodeMap, expandedObstacles, routedSegments)
+            routesById.set(edge.id, route)
+            routedSegments.push(...buildPreviousRouteSegments(route))
+        })
+    const routes = Object.fromEntries(request.edges.map((edge) => [edge.id, routesById.get(edge.id) ?? []]))
     return { routes: separateOverlappingSegments(routes) }
 }

@@ -761,13 +761,26 @@ function RunSteerForm({ runId, nodeId, running }: { runId: string; nodeId: strin
 function ToolWork({ visit, command }: { visit: RunVisit; command: string | null }) {
     const { output, exitCode } = visitToolResult(visit)
     return (
-        <div data-testid="run-visit-tool" className="space-y-2 text-sm">
-            {command ? <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground">{command}</pre> : null}
-            {output ? (
-                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
+        <div data-testid="run-visit-tool" className="space-y-3 text-sm">
+            {/* Labelled, and drawn differently, so the command and what it printed never read as one block. */}
+            {command ? (
+                <div className="space-y-1">
+                    <div className="text-xs font-semibold text-muted-foreground">Command</div>
+                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground">{command}</pre>
+                </div>
             ) : null}
-            {exitCode !== null ? (
-                <p className={cn('text-xs', exitCode === 0 ? 'text-muted-foreground' : 'text-warning')}>Exit code {exitCode}</p>
+            {output || exitCode !== null ? (
+                <div className="space-y-1">
+                    <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="font-semibold text-muted-foreground">Output</span>
+                        {exitCode !== null ? (
+                            <span className={exitCode === 0 ? 'text-muted-foreground' : 'font-medium text-warning'}>Exit code {exitCode}</span>
+                        ) : null}
+                    </div>
+                    {output ? (
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
+                    ) : null}
+                </div>
             ) : null}
             {!command && !output && exitCode === null ? (
                 <p className="text-muted-foreground">No command output was recorded for this visit.</p>

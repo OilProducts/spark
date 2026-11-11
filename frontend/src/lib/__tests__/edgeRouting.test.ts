@@ -2,10 +2,12 @@ import {
     buildRoundedPolylinePath,
     getPortAnchorPoint,
     getRouteMidpoint,
+    routeCrossings,
     routeFixedNodeGraph,
     routeIntersectsRect,
     separateOverlappingSegments,
 } from '@/lib/edgeRouting'
+import { routeLabelAnchor } from '@/features/workflow-canvas/ValidationEdge'
 import { describe, expect, it } from 'vitest'
 
 describe('edgeRouting', () => {
@@ -105,5 +107,16 @@ describe('edgeRouting', () => {
         // An edge alone on its stretch of the line stays on it.
         expect(separated.c[1].y).toBe(50)
     })
-})
 
+    it('finds where other routes cross, and places a label on a stretch clear of them', () => {
+        const route = [{ x: 0, y: 0 }, { x: 0, y: 40 }, { x: 300, y: 40 }]
+        const crossing = [{ x: 100, y: 0 }, { x: 100, y: 100 }]
+        const touching = [{ x: 300, y: 40 }, { x: 300, y: 100 }]
+
+        const crossings = routeCrossings(route, [crossing, touching])
+
+        expect(crossings).toEqual([{ x: 100, y: 40 }])
+        expect(routeLabelAnchor(route)).toEqual({ x: 150, y: 40, beside: false })
+        expect(routeLabelAnchor(route, crossings)).toEqual({ x: 200, y: 40, beside: false })
+    })
+})

@@ -23,12 +23,15 @@ type WorkflowNodeSvgFrameProps = {
 
 const NODE_FILL = 'hsl(var(--background))';
 
-// Air: hairline frames on the plain background, no glows; status tints only the stroke.
+// Air: thin frames on the plain background, no glows; status tints only the stroke. At 0.75 every
+// outline keeps 3:1 against the canvas in both themes, so each shape reads.
+const FRAME_STROKE_WIDTH = 1.5;
+
 function statusPalette(token: string): WorkflowNodeFramePalette {
     return {
         fillColor: NODE_FILL,
-        strokeColor: `hsl(var(--${token}) / 0.6)`,
-        nestedStrokeColor: `hsl(var(--${token}) / 0.3)`,
+        strokeColor: `hsl(var(--${token}) / 0.75)`,
+        nestedStrokeColor: `hsl(var(--${token}) / 0.35)`,
     };
 }
 
@@ -54,8 +57,8 @@ export function getWorkflowNodeFramePalette({
     if (status === 'success') return statusPalette('success');
     return {
         fillColor: NODE_FILL,
-        strokeColor: 'hsl(var(--muted-foreground) / 0.5)',
-        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.25)',
+        strokeColor: 'hsl(var(--muted-foreground) / 0.75)',
+        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.35)',
     };
 }
 
@@ -165,10 +168,11 @@ function BoxNodeFrame({ palette }: { palette: WorkflowNodeFramePalette }) {
     return (
         <div
             data-testid="workflow-node-frame-box"
-            className={`absolute inset-0 rounded-lg border`}
+            className="absolute inset-0 rounded-lg border-solid"
             style={{
                 backgroundColor: palette.fillColor,
                 borderColor: palette.strokeColor,
+                borderWidth: FRAME_STROKE_WIDTH,
             }}
             aria-hidden
         />
@@ -182,7 +186,7 @@ function StartNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Mdiamond"
         >
-            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
             <path d={diamondPath(dimensions.width - 20, dimensions.height - 20)} transform="translate(10 10)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
     );
@@ -195,7 +199,7 @@ function ExitNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Msquare"
         >
-            <rect x={1.5} y={1.5} width={dimensions.width - 3} height={dimensions.height - 3} rx={8} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <rect x={1.5} y={1.5} width={dimensions.width - 3} height={dimensions.height - 3} rx={8} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
             <rect x={11} y={11} width={dimensions.width - 22} height={dimensions.height - 22} rx={6} fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
     );
@@ -208,7 +212,7 @@ function HumanGateNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFram
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-hexagon"
         >
-            <path d={hexagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={hexagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
         </SvgFrame>
     );
 }
@@ -220,7 +224,7 @@ function SwitchNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePa
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-diamond"
         >
-            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
         </SvgFrame>
     );
 }
@@ -232,7 +236,7 @@ function ParallelNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFrame
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-component"
         >
-            <path d={componentPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={componentPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
         </SvgFrame>
     );
 }
@@ -244,7 +248,7 @@ function FanInNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-tripleoctagon"
         >
-            <path d={octagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={octagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
             <path d={octagonPath(dimensions.width - 18, dimensions.height - 18)} transform="translate(9 9)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
             <path d={octagonPath(dimensions.width - 34, dimensions.height - 34)} transform="translate(17 17)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
@@ -258,7 +262,7 @@ function ToolNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-parallelogram"
         >
-            <path d={parallelogramPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={parallelogramPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
         </SvgFrame>
     );
 }
@@ -270,7 +274,7 @@ function ManagerNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFrameP
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-house"
         >
-            <path d={housePath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={housePath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={FRAME_STROKE_WIDTH} />
         </SvgFrame>
     );
 }

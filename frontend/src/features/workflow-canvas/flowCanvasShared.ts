@@ -66,6 +66,16 @@ const ELK_OPTIONS = {
     'elk.layered.spacing.nodeNodeBetweenLayers': '48',
     'elk.spacing.nodeNode': '40',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+    // Lets a failure exit's layer constraint hold although it has no laid-out edges.
+    'elk.separateConnectedComponents': 'false',
+}
+
+// An exit whose result is a failure: most steps route to it, so it gets a row of its own below the
+// graph, centred, and its edges are left out of the layered pass, where each long edge would push
+// the graph wider.
+function isFailureExit(node: Node): boolean {
+    const config = asRecord(node.data?.config)
+    return node.data?.kind === 'exit' && asRecord(config?.result)?.outcome === 'failure'
 }
 
 const elk = new ELK()
@@ -465,7 +475,7 @@ function buildExpandedChildPreviewElements(
     }
 }
 
-function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
+function buildElkLayoutGraph(nodes: Node[], edges: Edge[], failureExitIds: Set<string>) {
     return {
         id: 'root',
         layoutOptions: ELK_OPTIONS,
@@ -473,8 +483,11 @@ function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
             id: node.id,
             width: node.width ?? getNodeStyleDimension(node.style?.width) ?? DEFAULT_NODE_WIDTH,
             height: node.height ?? getNodeStyleDimension(node.style?.height) ?? DEFAULT_NODE_HEIGHT,
+            ...(failureExitIds.has(node.id)
+                ? { layoutOptions: { 'elk.layered.layering.layerConstraint': 'LAST_SEPARATE' } }
+                : {}),
         })),
-        edges: edges.map((edge) => ({
+        edges: edges.filter((edge) => !failureExitIds.has(edge.target)).map((edge) => ({
             id: edge.id,
             sources: [edge.source],
             targets: [edge.target],
@@ -485,15 +498,29 @@ function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
 type ElkLayoutNodeLike = {
     x?: number
     y?: number
+    width?: number
+}
+
+function horizontalCentre(children: ElkLayoutNodeLike[]): number {
+    const left = Math.min(...children.map((child) => child.x ?? 0))
+    const right = Math.max(...children.map((child) => (child.x ?? 0) + (child.width ?? 0)))
+    return (left + right) / 2
 }
 
 async function computeElkLayout(nodes: Node[], edges: Edge[]) {
-    const layout = await elk.layout(buildElkLayoutGraph(nodes, edges))
-    const layoutMap = new Map(
-        ((layout.children ?? []) as Array<ElkLayoutNodeLike & { id?: string }>)
-            .filter((child): child is ElkLayoutNodeLike & { id: string } => typeof child.id === 'string')
-            .map((child) => [child.id, child]),
-    )
+    const failureExitIds = new Set(nodes.filter(isFailureExit).map((node) => node.id))
+    const layout = await elk.layout(buildElkLayoutGraph(nodes, edges, failureExitIds))
+    const children = ((layout.children ?? []) as Array<ElkLayoutNodeLike & { id?: string }>)
+        .filter((child): child is ElkLayoutNodeLike & { id: string } => typeof child.id === 'string')
+    const failureRow = children.filter((child) => failureExitIds.has(child.id))
+    const rest = children.filter((child) => !failureExitIds.has(child.id))
+    if (failureRow.length > 0 && rest.length > 0) {
+        const shift = horizontalCentre(rest) - horizontalCentre(failureRow)
+        failureRow.forEach((child) => {
+            child.x = (child.x ?? 0) + shift
+        })
+    }
+    const layoutMap = new Map(children.map((child) => [child.id, child]))
 
     return {
         layoutMap,

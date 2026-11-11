@@ -438,7 +438,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         />
                     ) : (
                         <span className={cn(
-                            'line-clamp-2 text-sm font-semibold',
+                            'line-clamp-2 text-base font-semibold leading-5',
                             isReadOnlyPreviewNode ? 'text-muted-foreground' : 'text-foreground',
                         )}
                         >

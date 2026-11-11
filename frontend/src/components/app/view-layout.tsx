@@ -25,9 +25,9 @@ export function Sheet({ className, ...props }: ComponentProps<'div'>) {
 }
 
 /**
- * A view's side panel (on the ground) beside its sheet. On a narrow viewport they stack in the
- * view's one scroll, the panel at full length, and picking something (`selected` changes)
- * scrolls the sheet into view.
+ * A view's side panel (on the ground) beside its sheet, narrower below 1280px so the sheet keeps
+ * room. On a narrow viewport they stack in the view's one scroll, the panel at full length, and
+ * picking something (`selected` changes) scrolls the sheet into view.
  */
 export function ViewLayout({
     view,
@@ -61,7 +61,7 @@ export function ViewLayout({
             <aside
                 data-testid="side-panel"
                 aria-label={`${title} panel`}
-                className={cn('flex shrink-0 flex-col', !isNarrowViewport && 'w-70')}
+                className={cn('flex shrink-0 flex-col', !isNarrowViewport && 'w-60 xl:w-70')}
             >
                 {/* Not a heading: the aside is named for it, and the sheet's h1 leads the page's outline. */}
                 <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-3.5">

@@ -544,14 +544,15 @@ export function RunsPanel() {
                         {graphCard ? (
                         <div className={isNarrowViewport
                             ? undefined
-                            : 'order-last flex min-h-0 min-w-0 flex-[1_1_0%] flex-col'}
+                            // With the rail above the details, the graph takes the larger share.
+                            : cn('order-last flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
                         >
                             {graphCard}
                         </div>
                         ) : null}
                         <div className={isNarrowViewport
                             ? 'mt-6'
-                            : cn('flex min-h-0 min-w-0 flex-col', graphCard && railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[1_1_0%]')}
+                            : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
                         >
                         <div
                             ref={detailsScrollRef}

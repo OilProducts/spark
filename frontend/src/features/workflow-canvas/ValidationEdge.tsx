@@ -1,12 +1,14 @@
 const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
-import { BaseEdge, EdgeLabelRenderer, useReactFlow, type EdgeProps } from '@xyflow/react'
+import { BaseEdge, EdgeLabelRenderer, useReactFlow, useStore as useFlowStore, type EdgeProps } from '@xyflow/react'
 
 import {
     buildRoundedPolylinePath,
     getRouteMidpoint,
     normalizeRoute,
+    routeCrossings,
     type EdgeRoute,
+    type EdgeRoutePoint,
 } from '@/lib/edgeRouting'
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
 import { useStore as useAppStore } from '@/store'
@@ -41,10 +43,12 @@ function readRenderRoute(value: unknown): EdgeRoute | null {
 }
 
 /**
- * Where a route's label sits: on its longest horizontal run, which lies in the lane between
- * node rows; on a route that only runs vertically, beside its longest run, clear of the line.
+ * Where a route's label sits: on the longest stretch of a horizontal run, in the lane between
+ * node rows, that no other route crosses; on a route that only runs vertically, beside its
+ * longest run, clear of the line.
  */
-export function routeLabelAnchor(route: EdgeRoute): { x: number; y: number; beside: boolean } {
+export function routeLabelAnchor(route: EdgeRoute, crossings: EdgeRoutePoint[] = []): { x: number; y: number; beside: boolean } {
+    let clear: { x: number; y: number; length: number } | null = null
     let horizontal: { x: number; y: number; length: number } | null = null
     let vertical: { x: number; y: number; length: number } | null = null
     for (let index = 1; index < route.length; index += 1) {
@@ -54,11 +58,25 @@ export function routeLabelAnchor(route: EdgeRoute): { x: number; y: number; besi
         const point = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, length }
         if (Math.abs(to.y - from.y) < 1) {
             if (length >= 48 && length > (horizontal?.length ?? 0)) horizontal = point
+            const left = Math.min(from.x, to.x)
+            const right = Math.max(from.x, to.x)
+            const cuts = [
+                left,
+                ...crossings.filter((crossing) => Math.abs(crossing.y - from.y) < 1 && crossing.x > left && crossing.x < right).map((crossing) => crossing.x),
+                right,
+            ].sort((a, b) => a - b)
+            for (let cut = 1; cut < cuts.length; cut += 1) {
+                const stretch = cuts[cut] - cuts[cut - 1]
+                if (stretch >= 48 && stretch > (clear?.length ?? 0)) {
+                    clear = { x: (cuts[cut - 1] + cuts[cut]) / 2, y: from.y, length: stretch }
+                }
+            }
         } else if (length > (vertical?.length ?? 0)) {
             vertical = point
         }
     }
-    if (horizontal) return { x: horizontal.x, y: horizontal.y, beside: false }
+    const best = clear ?? horizontal
+    if (best) return { x: best.x, y: best.y, beside: false }
     if (vertical) return { x: vertical.x, y: vertical.y, beside: true }
     return { ...getRouteMidpoint(route), beside: false }
 }
@@ -105,7 +123,15 @@ export function ValidationEdge({
     // A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
     const rawLabel = (data as Record<string, unknown> | undefined)?.label
     const routeLabel = typeof rawLabel === 'string' ? rawLabel.trim() : ''
-    const labelAnchor = routeLabel ? routeLabelAnchor(renderRoute) : { ...labelPoint, beside: false }
+    // Only a labelled edge reads the other routes, to keep its label off their crossings.
+    const flowEdges = useFlowStore((state) => (routeLabel ? state.edges : null))
+    const crossings = flowEdges
+        ? routeCrossings(renderRoute, flowEdges.flatMap((edge) => {
+            const route = edge.id === id || edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
+            return route ? [route] : []
+        }))
+        : []
+    const labelAnchor = routeLabel ? routeLabelAnchor(renderRoute, crossings) : { ...labelPoint, beside: false }
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isDerivedChildEdge = derivedPreviewMeta?.kind === 'child-edge'
     const isDerivedLinkEdge = derivedPreviewMeta?.kind === 'child-link'
@@ -196,7 +222,7 @@ export function ValidationEdge({
                             <span
                                 data-testid="edge-route-label"
                                 title={routeLabel}
-                                className="max-w-36 truncate rounded-md border border-border bg-background px-1.5 py-px text-xs font-medium text-muted-foreground"
+                                className="line-clamp-2 max-w-44 break-words rounded-md border border-border bg-background px-1.5 py-px text-center text-xs font-medium leading-snug text-muted-foreground"
                             >
                                 {routeLabel}
                             </span>
