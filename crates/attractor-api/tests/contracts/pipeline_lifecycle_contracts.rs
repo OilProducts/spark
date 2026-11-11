@@ -906,6 +906,83 @@ fn worktree_launch_takes_private_defaults_from_the_owning_project() {
     }
 }
 
+/// A launch that starts while a default writer holds the profile-reference
+/// lock observes that writer's whole result: never the old installation model
+/// with the project's reset default.
+#[test]
+fn launch_reads_installation_and_project_defaults_as_one_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    let core = settings.config_dir.join("spark.toml");
+    fs::write(
+        &core,
+        "[models]\nprovider = 'codex'\nmodel = 'workspace-a'\n",
+    )
+    .unwrap();
+    let project = temp.path().join("project");
+    let project = project.to_str().unwrap();
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    registry.ensure_project_paths(project).unwrap();
+    let revision = registry.project_settings(project).unwrap().revision;
+    registry
+        .update_project_model_settings(
+            project,
+            &revision,
+            Some(&json!({"provider": "codex", "model": "project-model"})),
+        )
+        .unwrap();
+    let flow = crate::install_flow(
+        &settings,
+        json!({
+            "schema_version": "2",
+            "id": "coherent_defaults",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "end", "description": "Enter the first workflow step."}}
+                },
+                "end": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+                }
+            }
+        }),
+    );
+    let service = AttractorApiService::new(settings.clone());
+    let writer = spark_storage::settings::lock_profile_references(&settings.config_dir).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let response = std::thread::scope(|scope| {
+        let launch = scope.spawn(|| {
+            started_tx.send(()).unwrap();
+            service.start_pipeline(PipelineStartRequest {
+                wait: Some(true),
+                flow_name: Some(flow.clone()),
+                working_directory: project.into(),
+                project_path: Some(project.into()),
+                ..Default::default()
+            })
+        });
+        started_rx.recv().unwrap();
+        // Give the launch time to reach its reads before the writer finishes.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        fs::write(
+            &core,
+            "[models]\nprovider = 'codex'\nmodel = 'workspace-b'\n",
+        )
+        .unwrap();
+        let revision = registry.project_settings(project).unwrap().revision;
+        registry
+            .update_project_model_settings(project, &revision, None)
+            .unwrap();
+        drop(writer);
+        launch.join().unwrap()
+    });
+    assert_eq!(response.body["status"], "started", "{response:?}");
+    assert_eq!(response.body["model"], "workspace-b");
+}
+
 #[test]
 fn workflow_executes_with_captured_profile_after_profile_file_changes() {
     workflow_executes_with_captured_connection(true);

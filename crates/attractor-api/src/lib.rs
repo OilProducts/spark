@@ -1737,18 +1737,28 @@ impl AttractorApiService {
             Err(error) => return validation_error_response(error),
         };
         // One read of the installation document and of the owning project's
-        // private row: everything below resolves from this snapshot.
-        let core = match spark_storage::settings::read_settings_document(
-            &self.settings.config_dir.join("spark.toml"),
-        ) {
-            Ok(core) => core,
-            Err(error) => return validation_error_response(error.to_string()),
-        };
-        let project_settings = match spark_storage::ProjectRegistry::new(&self.settings.data_dir)
-            .project_settings(&project_path)
-        {
-            Ok(project_settings) => project_settings,
-            Err(error) => return validation_error_response(error.to_string()),
+        // private row: everything below resolves from this snapshot. Every
+        // model/execution default writer holds the profile-reference lock, so
+        // holding it here keeps the row unchanged across both reads and the
+        // pair is one state of the installation and the project.
+        let (core, project_settings) = {
+            let _references =
+                match spark_storage::settings::lock_profile_references(&self.settings.config_dir) {
+                    Ok(lock) => lock,
+                    Err(error) => return validation_error_response(error.to_string()),
+                };
+            let core = match spark_storage::settings::read_settings_document(
+                &self.settings.config_dir.join("spark.toml"),
+            ) {
+                Ok(core) => core,
+                Err(error) => return validation_error_response(error.to_string()),
+            };
+            match spark_storage::ProjectRegistry::new(&self.settings.data_dir)
+                .project_settings(&project_path)
+            {
+                Ok(project_settings) => (core, project_settings),
+                Err(error) => return validation_error_response(error.to_string()),
+            }
         };
         let profiles = unified_llm_adapter::profiles::parse_llm_profiles(&core.values);
         let (defaults, defaults_source) = match spark_storage::settings::project_model_defaults(
