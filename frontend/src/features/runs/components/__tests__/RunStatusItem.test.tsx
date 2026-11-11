@@ -149,13 +149,20 @@ describe('RunStatusItem', () => {
   })
 
   it('shows a failed run failure, its kind, and the visit it stopped in', () => {
-    const stopped = visit('implement', 2, 'failed')
+    const stopped = visit('implement', 3, 'failed')
+    const error = 'codergen backend failed: codex app-server exited unexpectedly'
     const { onSelectVisit } = renderStatus(
-      run({ status: 'failed', last_error: 'codergen backend failed: codex app-server exited unexpectedly' }),
-      [visit('start', 1, 'completed'), stopped],
+      run({ status: 'failed', last_error: error }),
+      [visit('start', 1, 'completed'), visit('implement', 2, 'error', { reason: error, failureKind: 'runtime', tolerable: true }), stopped],
     )
 
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Why it failed')
     expect(screen.getByTestId('run-status-failure')).toHaveTextContent('codex app-server exited unexpectedly')
+    // An earlier visit that hit the same error doesn't repeat it.
+    const earlier = screen.getByTestId('run-status-did-not-pass')
+    expect(within(earlier).getByRole('heading')).toHaveTextContent(/^Earlier errors\s*1$/)
+    expect(earlier).toHaveTextContent('the same error')
+    expect(earlier).not.toHaveTextContent('exited unexpectedly')
     expect(screen.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
     fireEvent.click(within(screen.getByTestId('run-status-stopped-in')).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(stopped)

@@ -274,7 +274,7 @@ describe('Editor flow loading behavior', () => {
           options?.flowName === 'flow-a.dot' && options?.expandChildren === true),
       ).toBe(true)
     })
-    await screen.findByText('Read-only preview. Switch to Parent only to edit.')
+    await screen.findByText('Read-only preview. Switch to Parent to edit.')
     expect(screen.getAllByText('Read-only preview').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
@@ -289,11 +289,11 @@ describe('Editor flow loading behavior', () => {
           options?.flowName === 'flow-b.dot' && options?.expandChildren === true),
       ).toBe(true)
     })
-    await screen.findByText('Read-only preview. Switch to Parent only to edit.')
+    await screen.findByText('Read-only preview. Switch to Parent to edit.')
     await user.click(screen.getByRole('button', { name: 'Parent' }))
     await waitFor(() => {
       expect(
-        screen.queryByText('Read-only preview. Switch to Parent only to edit.'),
+        screen.queryByText('Read-only preview. Switch to Parent to edit.'),
       ).not.toBeInTheDocument()
     })
     expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
@@ -310,7 +310,7 @@ describe('Editor flow loading behavior', () => {
           options?.flowName === 'flow-a.dot' && options?.expandChildren === true),
       ).toBe(true)
     })
-    await screen.findByText('Read-only preview. Switch to Parent only to edit.')
+    await screen.findByText('Read-only preview. Switch to Parent to edit.')
     expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
   })
 })

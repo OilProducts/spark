@@ -440,18 +440,6 @@ function buildPreviousRouteSegments(route: EdgeRoute | null | undefined): Previo
     return segments
 }
 
-/** Where other routes cross `route` at a right angle. */
-export function routeCrossings(route: EdgeRoute, otherRoutes: EdgeRoute[]): EdgeRoutePoint[] {
-    const others = otherRoutes.flatMap(buildPreviousRouteSegments)
-    return buildPreviousRouteSegments(route).flatMap((segment) => others
-        .filter((other) => other.axis !== segment.axis
-            && other.coordinate > segment.min + EPSILON && other.coordinate < segment.max - EPSILON
-            && segment.coordinate > other.min + EPSILON && segment.coordinate < other.max - EPSILON)
-        .map((other) => (segment.axis === 'horizontal'
-            ? { x: other.coordinate, y: segment.coordinate }
-            : { x: segment.coordinate, y: other.coordinate })))
-}
-
 function segmentMatchesPreviousRoute(
     from: EdgeRoutePoint,
     to: EdgeRoutePoint,

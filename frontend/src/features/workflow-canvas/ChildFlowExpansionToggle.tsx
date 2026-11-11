@@ -14,11 +14,11 @@ export function ChildFlowExpansionToggle({
     return (
         <SegmentedControl
             data-testid={testId}
-            aria-label="Child flow view"
+            aria-label="Child flows"
             className="shrink-0"
             options={[
-                { key: 'parent', label: 'Parent only', pressed: !expanded, onPress: () => onChange(false), disabled, className: 'flex-none' },
-                { key: 'expanded', label: 'Child flows', pressed: expanded, onPress: () => onChange(true), disabled, className: 'flex-none' },
+                { key: 'parent', label: 'Parent', pressed: !expanded, onPress: () => onChange(false), disabled, className: 'flex-none' },
+                { key: 'expanded', label: 'Expanded', pressed: expanded, onPress: () => onChange(true), disabled, className: 'flex-none' },
             ]}
         />
     )

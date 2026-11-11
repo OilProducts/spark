@@ -2,7 +2,6 @@ import {
     buildRoundedPolylinePath,
     getPortAnchorPoint,
     getRouteMidpoint,
-    routeCrossings,
     routeFixedNodeGraph,
     routeIntersectsRect,
     separateOverlappingSegments,
@@ -108,15 +107,16 @@ describe('edgeRouting', () => {
         expect(separated.c[1].y).toBe(50)
     })
 
-    it('finds where other routes cross, and places a label on a stretch clear of them', () => {
+    it('places a label where it meets the fewest other routes and labels, preferring the middle of a run', () => {
         const route = [{ x: 0, y: 0 }, { x: 0, y: 40 }, { x: 300, y: 40 }]
         const crossing = [{ x: 100, y: 0 }, { x: 100, y: 100 }]
-        const touching = [{ x: 300, y: 40 }, { x: 300, y: 100 }]
+        // Separated from the route by a few pixels, it would still run under the label.
+        const alongside = [{ x: 120, y: 0 }, { x: 120, y: 44 }, { x: 320, y: 44 }]
 
-        const crossings = routeCrossings(route, [crossing, touching])
-
-        expect(crossings).toEqual([{ x: 100, y: 40 }])
-        expect(routeLabelAnchor(route)).toEqual({ x: 150, y: 40, beside: false })
-        expect(routeLabelAnchor(route, crossings)).toEqual({ x: 200, y: 40, beside: false })
+        expect(routeLabelAnchor(route)).toEqual({ x: 150, y: 40 })
+        expect(routeLabelAnchor(route, [crossing])).toEqual({ x: 150, y: 40 })
+        expect(routeLabelAnchor(route, [crossing, alongside])).toEqual({ x: 72, y: 40 })
+        // With the clear stretch taken by a placed label, it goes beside a vertical run instead.
+        expect(routeLabelAnchor(route, [crossing, alongside], [{ left: 40, right: 110, top: 30, bottom: 50 }])).toEqual({ x: -30, y: 20 })
     })
 })

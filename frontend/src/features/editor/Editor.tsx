@@ -1477,7 +1477,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         ) : null}
                         {isExpandedReadOnlyPreview ? (
                             <div className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground">
-                                Read-only preview. Switch to Parent only to edit.
+                                Read-only preview. Switch to Parent to edit.
                             </div>
                         ) : null}
                     </div>

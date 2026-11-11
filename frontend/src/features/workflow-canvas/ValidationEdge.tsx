@@ -1,12 +1,11 @@
 const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
-import { BaseEdge, EdgeLabelRenderer, useReactFlow, useStore as useFlowStore, type EdgeProps } from '@xyflow/react'
+import { BaseEdge, EdgeLabelRenderer, useReactFlow, useStore as useFlowStore, type Edge, type EdgeProps, type Node } from '@xyflow/react'
 
 import {
     buildRoundedPolylinePath,
     getRouteMidpoint,
     normalizeRoute,
-    routeCrossings,
     type EdgeRoute,
     type EdgeRoutePoint,
 } from '@/lib/edgeRouting'
@@ -42,43 +41,112 @@ function readRenderRoute(value: unknown): EdgeRoute | null {
     return route.length >= 2 ? route : null
 }
 
+// A label's box at text-xs, estimated so labels can be placed before they render; max-w-44 wraps.
+const LABEL_HEIGHT = 20
+const labelWidth = (text: string) => Math.min(176, text.length * 6.6 + 14)
+
+type LabelAnchor = { x: number; y: number }
+type LabelBox = { left: number; right: number; top: number; bottom: number }
+
+const labelBox = (anchor: LabelAnchor, width: number): LabelBox => ({
+    left: anchor.x - width / 2,
+    right: anchor.x + width / 2,
+    top: anchor.y - LABEL_HEIGHT / 2,
+    bottom: anchor.y + LABEL_HEIGHT / 2,
+})
+
+const segmentEntersBox = (from: EdgeRoutePoint, to: EdgeRoutePoint, box: LabelBox) => (
+    Math.max(from.x, to.x) > box.left + 1 && Math.min(from.x, to.x) < box.right - 1
+    && Math.max(from.y, to.y) > box.top + 1 && Math.min(from.y, to.y) < box.bottom - 1
+)
+
 /**
- * Where a route's label sits: on the longest stretch of a horizontal run, in the lane between
- * node rows, that no other route crosses; on a route that only runs vertically, beside its
- * longest run, clear of the line.
+ * Where a route's label sits: on one of its horizontal runs, in the lane between node rows, or
+ * else beside one of its vertical runs, wherever the label's box meets the fewest other routes
+ * and placed labels; a run's middle and longer runs win ties.
  */
-export function routeLabelAnchor(route: EdgeRoute, crossings: EdgeRoutePoint[] = []): { x: number; y: number; beside: boolean } {
-    let clear: { x: number; y: number; length: number } | null = null
-    let horizontal: { x: number; y: number; length: number } | null = null
-    let vertical: { x: number; y: number; length: number } | null = null
-    for (let index = 1; index < route.length; index += 1) {
-        const from = route[index - 1]
-        const to = route[index]
+export function routeLabelAnchor(
+    route: EdgeRoute,
+    otherRoutes: EdgeRoute[] = [],
+    placedLabels: LabelBox[] = [],
+    width = 48,
+): LabelAnchor {
+    const best: { anchor: LabelAnchor | null; cost: number } = { anchor: null, cost: Infinity }
+    const consider = (anchor: LabelAnchor, onSegment: number, preference: number) => {
+        const box = labelBox(anchor, width)
+        const routeHits = otherRoutes.reduce((hits, other) => hits + (other.slice(1).some((to, at) => segmentEntersBox(other[at], to, box)) ? 1 : 0), 0)
+        const ownHits = route.slice(1).filter((to, at) => at !== onSegment && segmentEntersBox(route[at], to, box)).length
+        // Placed labels and nodes: a label over either hides it.
+        const labelHits = placedLabels.filter((other) => other.left < box.right && other.right > box.left && other.top < box.bottom && other.bottom > box.top).length
+        // A hit outweighs any preference, so a clear spot always wins.
+        const cost = (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
+        if (cost < best.cost) Object.assign(best, { anchor, cost })
+    }
+    route.slice(1).forEach((to, at) => {
+        const from = route[at]
         const length = Math.hypot(to.x - from.x, to.y - from.y)
-        const point = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, length }
         if (Math.abs(to.y - from.y) < 1) {
-            if (length >= 48 && length > (horizontal?.length ?? 0)) horizontal = point
             const left = Math.min(from.x, to.x)
             const right = Math.max(from.x, to.x)
-            const cuts = [
-                left,
-                ...crossings.filter((crossing) => Math.abs(crossing.y - from.y) < 1 && crossing.x > left && crossing.x < right).map((crossing) => crossing.x),
-                right,
-            ].sort((a, b) => a - b)
-            for (let cut = 1; cut < cuts.length; cut += 1) {
-                const stretch = cuts[cut] - cuts[cut - 1]
-                if (stretch >= 48 && stretch > (clear?.length ?? 0)) {
-                    clear = { x: (cuts[cut - 1] + cuts[cut]) / 2, y: from.y, length: stretch }
-                }
+            const middle = (left + right) / 2
+            // ponytail: samples every 8px; labels are few, so this stays cheap on the largest flows.
+            const first = Math.min(middle, left + width / 2)
+            const last = Math.max(middle, right - width / 2)
+            for (let x = first; x <= last + 0.5; x += 8) {
+                consider({ x, y: from.y }, at, Math.abs(x - middle) - length)
             }
-        } else if (length > (vertical?.length ?? 0)) {
-            vertical = point
+            consider({ x: middle, y: from.y }, at, -length)
+        } else if (length >= 16) {
+            const y = (from.y + to.y) / 2
+            // Beside a vertical run ranks after every run between rows.
+            consider({ x: from.x - 6 - width / 2, y }, at, 1e5 - length)
+            consider({ x: from.x + 6 + width / 2, y }, at, 1e5 - length)
         }
+    })
+    return best.anchor ?? getRouteMidpoint(route)
+}
+
+/** Every labelled route's label anchor, placed in edge order so each label keeps clear of the nodes and the labels before it. */
+function placeRouteLabels(edges: Edge[], nodes: Node[]): Map<string, LabelAnchor> {
+    const routes = edges.flatMap((edge) => {
+        const route = edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
+        return route ? [{ id: edge.id, route, label: edgeRouteLabel(edge.data) }] : []
+    })
+    const placed: LabelBox[] = nodes.flatMap((node) => {
+        const width = node.measured?.width ?? node.width
+        const height = node.measured?.height ?? node.height
+        return node.hidden || !width || !height
+            ? []
+            : [{ left: node.position.x, right: node.position.x + width, top: node.position.y, bottom: node.position.y + height }]
+    })
+    const anchors = new Map<string, LabelAnchor>()
+    for (const { id, route, label } of routes) {
+        if (!label) continue
+        const width = labelWidth(label)
+        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, width)
+        anchors.set(id, anchor)
+        placed.push(labelBox(anchor, width))
     }
-    const best = clear ?? horizontal
-    if (best) return { x: best.x, y: best.y, beside: false }
-    if (vertical) return { x: vertical.x, y: vertical.y, beside: true }
-    return { ...getRouteMidpoint(route), beside: false }
+    return anchors
+}
+
+// One placement per graph, shared by every labelled edge that renders from it.
+const placedLabelsByGraph = new WeakMap<Edge[], WeakMap<Node[], Map<string, LabelAnchor>>>()
+function routeLabelAnchors(edges: Edge[], nodes: Node[]): Map<string, LabelAnchor> {
+    const byNodes = placedLabelsByGraph.get(edges) ?? new WeakMap<Node[], Map<string, LabelAnchor>>()
+    placedLabelsByGraph.set(edges, byNodes)
+    let anchors = byNodes.get(nodes)
+    if (!anchors) {
+        anchors = placeRouteLabels(edges, nodes)
+        byNodes.set(nodes, anchors)
+    }
+    return anchors
+}
+
+// A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
+function edgeRouteLabel(data: unknown): string {
+    const label = (data as Record<string, unknown> | undefined)?.label
+    return typeof label === 'string' ? label.trim() : ''
 }
 
 function buildFallbackRoute(sourceX: number, sourceY: number, targetX: number, targetY: number): EdgeRoute {
@@ -120,18 +188,12 @@ export function ValidationEdge({
         ?? buildFallbackRoute(sourceX, sourceY, targetX, targetY)
     const edgePath = buildRoundedPolylinePath(renderRoute)
     const labelPoint = getRouteMidpoint(renderRoute)
-    // A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
-    const rawLabel = (data as Record<string, unknown> | undefined)?.label
-    const routeLabel = typeof rawLabel === 'string' ? rawLabel.trim() : ''
-    // Only a labelled edge reads the other routes, to keep its label off their crossings.
+    const routeLabel = edgeRouteLabel(data)
+    // Only a labelled edge reads the other routes, to keep its label off them and their labels.
     const flowEdges = useFlowStore((state) => (routeLabel ? state.edges : null))
-    const crossings = flowEdges
-        ? routeCrossings(renderRoute, flowEdges.flatMap((edge) => {
-            const route = edge.id === id || edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
-            return route ? [route] : []
-        }))
-        : []
-    const labelAnchor = routeLabel ? routeLabelAnchor(renderRoute, crossings) : { ...labelPoint, beside: false }
+    const flowNodes = useFlowStore((state) => (routeLabel ? state.nodes : null))
+    const labelAnchor = (routeLabel && flowEdges && flowNodes ? routeLabelAnchors(flowEdges, flowNodes).get(id) : null)
+        ?? (routeLabel ? routeLabelAnchor(renderRoute, [], [], labelWidth(routeLabel)) : labelPoint)
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isDerivedChildEdge = derivedPreviewMeta?.kind === 'child-edge'
     const isDerivedLinkEdge = derivedPreviewMeta?.kind === 'child-link'
@@ -211,12 +273,8 @@ export function ValidationEdge({
             {routeLabel || diagnosticsForEdge.length > 0 ? (
                 <EdgeLabelRenderer>
                     <div
-                        className={`nodrag nopan absolute flex flex-col gap-1 ${labelAnchor.beside ? 'items-end' : 'items-center'}`}
-                        style={{
-                            transform: labelAnchor.beside
-                                ? `translate(-100%, -50%) translate(${labelAnchor.x - 6}px, ${labelAnchor.y}px)`
-                                : `translate(-50%, -50%) translate(${labelAnchor.x}px, ${labelAnchor.y}px)`,
-                        }}
+                        className="nodrag nopan absolute flex flex-col items-center gap-1"
+                        style={{ transform: `translate(-50%, -50%) translate(${labelAnchor.x}px, ${labelAnchor.y}px)` }}
                     >
                         {routeLabel ? (
                             <span

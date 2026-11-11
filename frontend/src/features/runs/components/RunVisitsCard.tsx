@@ -762,12 +762,10 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
     const { output, exitCode } = visitToolResult(visit)
     return (
         <div data-testid="run-visit-tool" className="space-y-3 text-sm">
-            {/* Labelled, and drawn differently, so the command and what it printed never read as one block. */}
+            {/* The section heading names the command; its output is labelled and drawn differently,
+                so the two never read as one block. */}
             {command ? (
-                <div className="space-y-1">
-                    <div className="text-xs font-semibold text-muted-foreground">Command</div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground">{command}</pre>
-                </div>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground">{command}</pre>
             ) : null}
             {output || exitCode !== null ? (
                 <div className="space-y-1">

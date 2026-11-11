@@ -277,3 +277,23 @@ test('viewport regression baselines capture desktop shell layouts for every view
   await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
   await page.screenshot({ path: screenshotPath('13d-desktop-runs-panel.png'), fullPage: true })
 })
+
+test('narrowing the window with a run open keeps its title below the top bar', async ({ page }) => {
+  await seedRouteState(page)
+  await stubResponsiveSmokeApis(page)
+
+  await page.setViewportSize({ width: 1366, height: 900 })
+  await page.goto('/')
+  await page.getByTestId('activity-runs').click()
+  await page.getByTestId('run-history-row').first().click()
+  const title = page.getByTestId('runs-panel').getByRole('heading', { level: 1 })
+  await expect(title).toBeVisible()
+  await page.getByRole('button', { name: /^graph$/i }).first().click()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+  await expect(title).toBeInViewport()
+  const bar = await page.getByTestId('activity-bar').boundingBox()
+  const heading = await title.boundingBox()
+  expect(heading!.y).toBeGreaterThanOrEqual(bar!.y + bar!.height)
+})

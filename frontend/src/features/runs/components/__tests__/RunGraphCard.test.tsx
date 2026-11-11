@@ -123,7 +123,7 @@ describe('RunGraphCard', () => {
 
         await screen.findByTestId('run-graph-panel')
         await act(async () => {
-            screen.getByRole('button', { name: 'Child flows' }).click()
+            screen.getByRole('button', { name: 'Expanded' }).click()
         })
 
         await waitFor(() => {

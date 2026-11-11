@@ -115,7 +115,8 @@ export function RunStatusItem({
     } else if (kind === 'failed') {
         const infrastructure = classifyRunFailure(run) === 'infrastructure'
         const stoppedIn = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed') ?? lastVisit
-        heading = 'Failed'
+        // The header's badge already says Failed; this section says why.
+        heading = 'Why it failed'
         meta = (
             <span data-testid="run-status-failure-kind" data-kind={infrastructure ? 'infrastructure' : 'flow'}>
                 {infrastructure ? 'Infrastructure: the backend failed, not the flow’s work' : 'The flow ended in failure'}
@@ -189,6 +190,9 @@ export function RunStatusItem({
     }
 
     const didNotPass = errorVisits(visits)
+    // A failed run's own error is shown above; an earlier visit that hit the same error says so
+    // instead of repeating it.
+    const failureMessage = kind === 'failed' ? runFailureMessage(run) : null
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -198,16 +202,18 @@ export function RunStatusItem({
             {body}
             {kind !== 'waiting' && didNotPass.length > 0 ? (
                 <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
-                    <SectionHeading as="h4" count={didNotPass.length}>Errors</SectionHeading>
+                    <SectionHeading as="h4" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
                     <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => (
                             <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
                                 {link(visit)}
                                 <VisitErrorKind visit={visit} />
                                 {': '}
-                                {visit.reason
-                                    ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>
-                                    : <span className="text-muted-foreground">no reason recorded</span>}
+                                {visit.reason && visit.reason.trim() === failureMessage
+                                    ? <span className="text-muted-foreground">the same error</span>
+                                    : visit.reason
+                                        ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>
+                                        : <span className="text-muted-foreground">no reason recorded</span>}
                                 <VisitWrites visit={visit} />
                             </li>
                         ))}
