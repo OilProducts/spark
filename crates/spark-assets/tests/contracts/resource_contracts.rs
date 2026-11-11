@@ -19,6 +19,7 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "math-research/research-program",
     "software-development/audit-codebase",
     "software-development/design-change",
+    "software-development/hill-climb",
     "software-development/implement-change",
     "software-development/investigate-bug",
     "software-development/merge-change",
@@ -134,7 +135,7 @@ fn frontend_asset_lookup_rejects_unsafe_paths_and_symlink_escapes() {
 #[test]
 fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
     let names = flows::starter_flow_names().expect("starter flow names");
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 20);
     assert_eq!(
         names,
         STARTER_FLOW_NAMES
