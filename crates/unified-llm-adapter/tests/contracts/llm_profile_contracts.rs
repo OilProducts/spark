@@ -10,6 +10,12 @@ use unified_llm_adapter::{
 #[test]
 fn missing_config_returns_empty_public_profiles() {
     let temp = tempfile::tempdir().expect("tempdir");
+    // The former dedicated document is never read.
+    std::fs::write(
+        temp.path().join("llm-profiles.toml"),
+        "[profiles.old]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['m']\n",
+    )
+    .unwrap();
 
     assert!(load_llm_profiles(temp.path()).unwrap().is_empty());
     assert_eq!(
@@ -22,9 +28,14 @@ fn missing_config_returns_empty_public_profiles() {
 fn valid_profile_public_metadata_and_env_configured_flags_match_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         r#"
-[profiles.local]
+schema_version = 1
+
+[models]
+llm_profile = "local"
+
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["local-small", "local-large"]
@@ -32,7 +43,7 @@ label = "Local"
 api_key_env = "LOCAL_LLM_API_KEY"
 default_model = "local-large"
 
-[profiles.no_key]
+[llm_profiles.no_key]
 provider = "openai_compatible"
 base_url = "http://localhost:5000/v1"
 models = ["no-key"]
@@ -82,16 +93,16 @@ models = ["no-key"]
 fn profile_backed_openai_compatible_config_uses_endpoint_and_key_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/responses"
 models = ["local-small", "local-large"]
 api_key_env = "LOCAL_LLM_API_KEY"
 default_model = "local-large"
 
-[profiles.no_key]
+[llm_profiles.no_key]
 provider = "openai_compatible"
 base_url = "http://localhost:5000/v1"
 models = ["no-key"]
@@ -154,10 +165,10 @@ fn client_profile_routes_normalize_to_openai_compatible_provider() {
     let temp = tempfile::tempdir().expect("tempdir");
     let base_url = unused_base_url();
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         format!(
             r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "{base_url}"
 models = ["local-large"]
@@ -197,9 +208,9 @@ default_model = "local-large"
 fn client_profile_routes_return_clear_missing_key_errors_when_selected() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["local-large"]
@@ -231,7 +242,7 @@ default_model = "local-large"
 #[test]
 fn profile_parser_reports_compatible_errors() {
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "anthropic"
 base_url = "http://localhost"
 models = ["claude"]
@@ -239,14 +250,14 @@ models = ["claude"]
         "LLM profile 'bad' has unsupported provider 'anthropic'; supported providers: openai_compatible, openrouter, litellm.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost"
 "#,
         "LLM profile 'bad' models must be a non-empty list.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = []
@@ -254,7 +265,7 @@ models = []
         "LLM profile 'bad' must declare at least one model.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = ["one"]
@@ -263,21 +274,21 @@ default_model = "two"
         "LLM profile 'bad' default_model 'two' is not listed in models.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 base_url = "http://localhost"
 models = ["one"]
 "#,
         "LLM profile 'bad' provider is required.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 models = ["one"]
 "#,
         "LLM profile 'bad' base_url is required.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = ["one", "  "]
@@ -285,7 +296,7 @@ models = ["one", "  "]
         "LLM profile 'bad' model is required.",
     );
     assert_profile_error(
-        r#"[profiles.bad]
+        r#"[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = ["one"]
@@ -294,7 +305,7 @@ headers = { "X-Debug" = "true" }
         "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts, vision.",
     );
     assert_profile_error(
-        r#"[profiles.""]
+        r#"[llm_profiles.""]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = ["one"]
@@ -302,7 +313,7 @@ models = ["one"]
         "profile id \"\" is required.",
     );
     assert_profile_error(
-        r#"[profiles]
+        r#"[llm_profiles]
 bad = "not a table"
 "#,
         "LLM profile 'bad' must be a table.",
@@ -313,8 +324,8 @@ bad = "not a table"
 fn missing_profile_and_malformed_toml_errors_match_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
-        r#"[profiles.good]
+        temp.path().join("spark.toml"),
+        r#"[llm_profiles.good]
 provider = "openai_compatible"
 base_url = "http://localhost"
 models = ["one"]
@@ -330,8 +341,7 @@ models = ["one"]
     );
 
     let malformed = tempfile::tempdir().expect("tempdir");
-    std::fs::write(malformed.path().join("llm-profiles.toml"), "[profiles.")
-        .expect("write malformed");
+    std::fs::write(malformed.path().join("spark.toml"), "[llm_profiles.").expect("write malformed");
     assert!(public_llm_profiles(malformed.path())
         .unwrap_err()
         .to_string()
@@ -341,17 +351,17 @@ models = ["one"]
 #[test]
 fn profiles_key_must_be_a_table_when_present() {
     assert_profile_error(
-        r#"profiles = "invalid"
+        r#"llm_profiles = "invalid"
 "#,
-        "LLM profile config must contain a [profiles] table.",
+        "llm_profiles must be a table of [llm_profiles.<id>] profiles.",
     );
 }
 
 #[test]
 fn malformed_profile_errors_do_not_expose_source_credentials() {
     let temp = tempfile::tempdir().unwrap();
-    let source = "[profiles.local]\napi_key_env = pasted-secret-credential\n";
-    let path = temp.path().join("llm-profiles.toml");
+    let source = "[llm_profiles.local]\napi_key_env = pasted-secret-credential\n";
+    let path = temp.path().join("spark.toml");
     std::fs::write(&path, source).unwrap();
     let error = load_llm_profiles(temp.path()).unwrap_err();
     assert!(error.to_string().contains("near byte"));
@@ -363,7 +373,7 @@ fn malformed_profile_errors_do_not_expose_source_credentials() {
 
 fn assert_profile_error(config: &str, expected: &str) {
     let temp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(temp.path().join("llm-profiles.toml"), config).expect("write profiles");
+    std::fs::write(temp.path().join("spark.toml"), config).expect("write profiles");
     let error = public_llm_profiles(temp.path()).unwrap_err();
     assert_eq!(error.to_string(), expected);
 
@@ -383,7 +393,7 @@ fn unused_base_url() -> String {
 #[test]
 fn replacing_file_profile_capture_removes_deleted_routes_without_mutating_active_client() {
     let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("llm-profiles.toml"), "[profiles.original]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['original-model']\ndefault_model='original-model'\n").unwrap();
+    std::fs::write(temp.path().join("spark.toml"), "[llm_profiles.original]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['original-model']\ndefault_model='original-model'\n").unwrap();
     let env = BTreeMap::<String, String>::new();
     let active = Client::from_env_map_and_profiles(&env, temp.path(), None).unwrap();
     let next = active
@@ -405,7 +415,7 @@ fn replacing_file_profile_capture_removes_deleted_routes_without_mutating_active
 fn compatible_profiles_declare_ordered_efforts_for_all_three_providers() {
     for provider in ["openai_compatible", "openrouter", "litellm"] {
         for levels in ["", "reasoning_efforts = ['minimal', 'custom']"] {
-            let raw: toml::value::Table = format!("[profiles.team]\nprovider='{provider}'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\n{levels}\n").parse().unwrap();
+            let raw: toml::value::Table = format!("[llm_profiles.team]\nprovider='{provider}'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\n{levels}\n").parse().unwrap();
             let profile = unified_llm_adapter::profiles::parse_llm_profiles(&raw)
                 .unwrap()
                 .remove("team")
@@ -427,7 +437,7 @@ fn compatible_profiles_declare_ordered_efforts_for_all_three_providers() {
         }
     }
     for levels in ["'high'", "[1]", "['']"] {
-        let raw: toml::value::Table = format!("[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\nreasoning_efforts={levels}\n").parse().unwrap();
+        let raw: toml::value::Table = format!("[llm_profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\nreasoning_efforts={levels}\n").parse().unwrap();
         assert!(unified_llm_adapter::profiles::parse_llm_profiles(&raw)
             .unwrap_err()
             .to_string()
@@ -440,16 +450,16 @@ fn a_profile_declares_vision_for_its_self_hosted_models() {
     let temp = tempfile::tempdir().expect("tempdir");
     let base_url = unused_base_url();
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         format!(
             r#"
-[profiles.seeing]
+[llm_profiles.seeing]
 provider = "openai_compatible"
 base_url = "{base_url}"
 models = ["local-vl"]
 vision = true
 
-[profiles.plain]
+[llm_profiles.plain]
 provider = "openai_compatible"
 base_url = "{base_url}"
 models = ["local-text"]
@@ -464,7 +474,7 @@ models = ["local-text"]
     assert!(!client.require_llm_profile("plain").unwrap().vision);
     assert_profile_error(
         r#"
-[profiles.bad]
+[llm_profiles.bad]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["m"]

@@ -389,8 +389,6 @@ pub struct PipelineStartRequest {
     #[serde(default)]
     pub execution_profile_id: Option<String>,
     #[serde(default)]
-    pub project_default_execution_profile_id: Option<String>,
-    #[serde(default)]
     pub flow_name: Option<String>,
     #[serde(default)]
     pub goal: Option<String>,
@@ -420,7 +418,6 @@ impl Default for PipelineStartRequest {
             llm_profile: None,
             reasoning_effort: None,
             execution_profile_id: None,
-            project_default_execution_profile_id: None,
             flow_name: None,
             goal: None,
             launch_context: None,
@@ -823,14 +820,17 @@ impl AttractorApiService {
             .as_deref()
             .filter(|id| !id.trim().is_empty())
             .ok_or_else(|| "Run record has no execution profile id.".to_string())?;
-        let config_exists = self
-            .settings
-            .config_dir
-            .join(attractor_execution::EXECUTION_PROFILES_FILENAME)
-            .exists();
-        let selection = attractor_execution::resolve_execution_profile_by_id(
-            &self.settings,
-            config_exists.then_some(profile_id),
+        let core = spark_storage::settings::read_settings_document(
+            &self
+                .settings
+                .config_dir
+                .join(attractor_execution::EXECUTION_PROFILES_FILENAME),
+        )
+        .map_err(|error| error.to_string())?;
+        let configured = spark_storage::settings::execution_profiles_configured(&core.values);
+        let selection = attractor_execution::resolve_execution_profile(
+            &core.values,
+            configured.then_some(profile_id),
             None,
             None,
         )
@@ -1652,7 +1652,7 @@ impl AttractorApiService {
     }
 
     pub fn list_llm_profiles(&self) -> RuntimeRouteResponse {
-        let path = self.settings.config_dir.join("llm-profiles.toml");
+        let path = self.settings.config_dir.join("spark.toml");
         let document = match spark_storage::settings::read_settings_document(&path) {
             Ok(document) => document,
             Err(error) => {
@@ -1736,14 +1736,47 @@ impl AttractorApiService {
             Ok(lock) => lock,
             Err(error) => return validation_error_response(error),
         };
-        let (defaults, defaults_source) =
-            match spark_agent_adapter::config::read_project_model_defaults(
-                &self.settings,
-                &working_directory,
+        // One read of the installation document and of the owning project's
+        // private row: everything below resolves from this snapshot. Every
+        // model/execution default writer holds the profile-reference lock, so
+        // holding it here keeps the row unchanged across both reads and the
+        // pair is one state of the installation and the project.
+        let (core, project_settings) = {
+            let _references =
+                match spark_storage::settings::lock_profile_references(&self.settings.config_dir) {
+                    Ok(lock) => lock,
+                    Err(error) => return validation_error_response(error.to_string()),
+                };
+            let core = match spark_storage::settings::read_settings_document(
+                &self.settings.config_dir.join("spark.toml"),
             ) {
-                Ok(defaults) => defaults,
+                Ok(core) => core,
                 Err(error) => return validation_error_response(error.to_string()),
             };
+            match spark_storage::ProjectRegistry::new(&self.settings.data_dir)
+                .project_settings(&project_path)
+            {
+                Ok(project_settings) => (core, project_settings),
+                Err(error) => return validation_error_response(error.to_string()),
+            }
+        };
+        let profiles = unified_llm_adapter::profiles::parse_llm_profiles(&core.values);
+        let (defaults, defaults_source) = match spark_storage::settings::project_model_defaults(
+            &self.settings,
+            &core,
+            &project_settings,
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|defaults| {
+            spark_agent_adapter::config::validate_model_settings_with_profiles(
+                profiles.as_ref().unwrap_or(&BTreeMap::new()),
+                &defaults.0,
+            )
+            .map(|_| defaults)
+        }) {
+            Ok(defaults) => defaults,
+            Err(error) => return validation_error_response(error),
+        };
         let (mut selected_model, _) =
             resolve_launch_model(&flow, request.model.as_deref(), &requested_context);
         let explicit_provider =
@@ -1788,19 +1821,19 @@ impl AttractorApiService {
                 .then(|| defaults.reasoning_effort.clone())
                 .flatten()
         });
-        let mut configuration = match spark_storage::settings::read_execution_configuration(
+        let mut configuration = match spark_storage::settings::execution_configuration(
             &self.settings.config_dir,
+            &core,
             &spark_common::paths::ProcessEnvironment,
         ) {
             Ok(configuration) => configuration,
             Err(error) => return validation_error_response(&error.to_string()),
         };
         configuration.retain_startup_settings(&self.settings);
-        let profiles = match unified_llm_adapter::load_llm_profiles(&self.settings.config_dir) {
-            Ok(profiles) => profiles,
-            Err(_) => {
-                return validation_error_response("Invalid LLM profiles; check llm-profiles.toml.")
-            }
+        let Ok(profiles) = profiles else {
+            return validation_error_response(
+                "Invalid LLM profiles; check [llm_profiles] in spark.toml.",
+            );
         };
         if defaults.llm_profile.is_some()
             && selected_profile == defaults.llm_profile
@@ -1843,10 +1876,10 @@ impl AttractorApiService {
         }
         let diagnostic_payloads = flow_diagnostics_payload(&flow.diagnostics());
         let error_payloads = diagnostic_payloads.clone();
-        let execution_selection = match attractor_execution::resolve_execution_profile_by_id(
-            &self.settings,
+        let execution_selection = match attractor_execution::resolve_execution_profile(
+            &core.values,
             request.execution_profile_id.as_deref(),
-            request.project_default_execution_profile_id.as_deref(),
+            project_settings.execution_profile_id.as_deref(),
             None,
         ) {
             Ok(selection) => selection,

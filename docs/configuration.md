@@ -96,9 +96,13 @@ Client preferences also store `home_sidebar_primary_split_ratio` (a finite numbe
 
 ## Profile documents
 
-`llm_profiles` and `execution_profiles` are workspace settings sections backed by
-`llm-profiles.toml` and `execution-profiles.toml`. Their revisions are independent
-of the core document. Reads expose stored profile definitions; LLM profiles also
+`llm_profiles` and `execution_profiles` are workspace settings sections stored in
+`spark.toml` as `[llm_profiles.<id>]`, `[execution_profiles.<id>]` and
+`[execution_defaults]` (`execution_profile_id`). They share the document's
+revision and lock with the core sections: a save rejects a stale revision even
+when another section changed, and preserves the sections it does not replace.
+Separate `llm-profiles.toml` and `execution-profiles.toml` files are not read.
+Reads expose stored profile definitions; LLM profiles also
 report credential-reference status without resolving secrets into the response.
 The Settings screen supports explicit Save/Discard, creation and deletion, and
 keeps drafts after validation errors or conflicts. Profile pickers refresh after

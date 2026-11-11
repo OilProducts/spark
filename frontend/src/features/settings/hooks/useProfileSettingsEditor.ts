@@ -16,7 +16,7 @@ export function useProfileSettingsEditor<T>(section: ProfileSection, parse: (val
             if (pending) return
             void profileSettingsRequest(section, parse).then((view) => {
                 if (cancelled || saved?.revision === view.revision) return
-                if (dirty) setMessage('Profiles changed elsewhere. Your draft is retained; Discard reloads the latest values.')
+                if (dirty) setMessage('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.')
                 else { setSaved(view); setDraft(view.stored); setError('') }
             }).catch((error: unknown) => { if (!cancelled) setError(error instanceof Error ? error.message : 'Unable to load profiles.') })
         }

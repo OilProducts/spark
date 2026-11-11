@@ -354,27 +354,35 @@ pub(crate) fn capture_execution_settings(
     settings: &SparkSettings,
     effective: &ModelSettings,
 ) -> WorkspaceResult<(Value, Option<unified_llm_adapter::LlmProfile>)> {
+    // One read of the installation document keeps the snapshot coherent.
+    let core =
+        spark_storage::settings::read_settings_document(&settings.config_dir.join("spark.toml"))?;
+    let profile_definitions = unified_llm_adapter::profiles::parse_llm_profiles(&core.values);
     let profile_contents = effective
         .llm_profile
         .as_deref()
         .map(|id| {
-            unified_llm_adapter::get_llm_profile(&settings.config_dir, id).map_err(|_| {
-                WorkspaceError::Validation("Unable to load selected LLM profile.".into())
-            })
+            profile_definitions
+                .as_ref()
+                .ok()
+                .and_then(|profiles| profiles.get(id.trim()).cloned())
+                .ok_or_else(|| {
+                    WorkspaceError::Validation("Unable to load selected LLM profile.".into())
+                })
         })
         .transpose()?;
-    let mut configuration = spark_storage::settings::read_execution_configuration(
+    let mut configuration = spark_storage::settings::execution_configuration(
         &settings.config_dir,
+        &core,
         &spark_common::paths::ProcessEnvironment,
     )?;
     configuration.retain_startup_settings(settings);
     spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
-    let profile_definitions = unified_llm_adapter::load_llm_profiles(&settings.config_dir)
-        .map_err(|_| {
-            WorkspaceError::Validation(
-                "Unable to load LLM profiles; check llm-profiles.toml.".into(),
-            )
-        })?;
+    let profile_definitions = profile_definitions.map_err(|_| {
+        WorkspaceError::Validation(
+            "Unable to load LLM profiles; check [llm_profiles] in spark.toml.".into(),
+        )
+    })?;
     Ok((
         json!({"configuration": configuration, "llm_profiles": profile_definitions, "model_settings": effective, "llm_profile": profile_contents}),
         profile_contents,
@@ -3650,15 +3658,6 @@ impl WorkspaceConversationService {
             .get("execution_profile_id")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        let project_default_execution_profile_id = if execution_profile_id.is_none() {
-            ProjectRegistry::new(self.settings.data_dir.clone())
-                .read_project_record(working_directory)
-                .ok()
-                .flatten()
-                .and_then(|record| record.execution_profile_id)
-        } else {
-            None
-        };
         // A malformed value fails the launch rather than dropping the overrides.
         let node_overrides = match serde_json::from_value(
             artifact.get("node_overrides").cloned().unwrap_or_default(),
@@ -3695,7 +3694,6 @@ impl WorkspaceConversationService {
                     .and_then(Value::as_str)
                     .and_then(non_empty_string),
                 execution_profile_id,
-                project_default_execution_profile_id,
                 goal: artifact
                     .get("goal")
                     .and_then(Value::as_str)

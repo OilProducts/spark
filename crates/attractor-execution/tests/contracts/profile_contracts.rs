@@ -7,8 +7,8 @@ use serde_json::json;
 #[test]
 fn malformed_profile_errors_redact_source_and_error_chain() {
     let temp = tempfile::tempdir().unwrap();
-    let source = "[profiles.local.metadata]\ncredential = pasted-secret-credential\n";
-    let path = temp.path().join("execution-profiles.toml");
+    let source = "[execution_profiles.local.metadata]\ncredential = pasted-secret-credential\n";
+    let path = temp.path().join("spark.toml");
     std::fs::write(&path, source).unwrap();
     let settings = ExecutionProfileConfigRoot::new(temp.path());
     let error = load_execution_profile_config(&settings, None, None, None).unwrap_err();
@@ -27,23 +27,23 @@ fn profile_resolution_matches_python_fixture_observations() {
     let config_dir = temp.path().join("config");
     std::fs::create_dir_all(&config_dir).expect("config dir");
     std::fs::write(
-        config_dir.join("execution-profiles.toml"),
+        config_dir.join("spark.toml"),
         r#"
-[defaults]
+[execution_defaults]
 execution_profile_id = "native-fast"
 
-[profiles.native-fast]
+[execution_profiles.native-fast]
 label = "Native Fast"
 mode = "native"
 capabilities = ["filesystem", "subprocess"]
 
-[profiles.container]
+[execution_profiles.container]
 label = "Container"
 mode = "local_container"
 image = "spark-worker:compat"
 enabled = false
 capabilities = ["filesystem"]
-[profiles.container.metadata]
+[execution_profiles.container.metadata]
 worker = "spark-server worker run-node"
 "#,
     )
@@ -86,7 +86,24 @@ worker = "spark-server worker run-node"
 #[test]
 fn missing_config_synthesizes_native_unless_profile_was_selected() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = ExecutionProfileConfigRoot::new(temp.path().join("absent-config"));
+    let config_dir = temp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    // Core sections alone declare no profiles, and the former document is never read.
+    std::fs::write(
+        config_dir.join("spark.toml"),
+        "[models]\nprovider = 'codex'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("execution-profiles.toml"),
+        "[profiles.container]\nlabel = 'Container'\nmode = 'native'\n",
+    )
+    .unwrap();
+    let settings = ExecutionProfileConfigRoot::new(&config_dir);
+    assert_eq!(
+        public_execution_placement_settings(&settings)["config"]["synthesized_native_default"],
+        true
+    );
 
     let selection =
         resolve_execution_profile_by_id(&settings, None, None, None).expect("native default");
@@ -94,11 +111,15 @@ fn missing_config_synthesizes_native_unless_profile_was_selected() {
     assert_eq!(selection.selection_source, "implementation_default");
     assert_eq!(selection.profile.label, "Native");
 
+    let selection = resolve_execution_profile_by_id(&settings, None, Some("native"), None)
+        .expect("a project may select the synthesized native profile");
+    assert_eq!(selection.selection_source, "project_default");
+
     let error =
         resolve_execution_profile_by_id(&settings, Some("container"), None, None).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "execution profile 'container' was selected, but execution-profiles.toml does not exist"
+        "execution profile 'container' was selected, but spark.toml has no [execution_profiles]"
     );
 }
 
@@ -108,9 +129,9 @@ fn invalid_local_container_image_and_field_errors_match_fixture() {
     let config_dir = temp.path().join("config");
     std::fs::create_dir_all(&config_dir).expect("config dir");
     std::fs::write(
-        config_dir.join("execution-profiles.toml"),
+        config_dir.join("spark.toml"),
         r#"
-[profiles.container]
+[execution_profiles.container]
 label = "Container"
 mode = "local_container"
 "#,
@@ -122,9 +143,12 @@ mode = "local_container"
         .expect_err("missing image is invalid");
     assert_eq!(
         error.to_string(),
-        "invalid execution profile config: profiles.container.image: image is required for local_container profiles"
+        "invalid execution profile config: execution_profiles.container.image: image is required for local_container profiles"
     );
-    assert_eq!(error.field_errors[0].field, "profiles.container.image");
+    assert_eq!(
+        error.field_errors[0].field,
+        "execution_profiles.container.image"
+    );
     assert_eq!(
         error.field_errors[0].profile_id.as_deref(),
         Some("container")
@@ -136,7 +160,7 @@ mode = "local_container"
     assert_eq!(
         settings_view["validation_errors"],
         json!([{
-            "field": "profiles.container.image",
+            "field": "execution_profiles.container.image",
             "message": "image is required for local_container profiles",
             "profile_id": "container",
         }])
@@ -149,18 +173,18 @@ fn parser_rejects_invalid_mode_enabled_and_capability_shapes() {
     let config_dir = temp.path().join("config");
     std::fs::create_dir_all(&config_dir).expect("config dir");
     std::fs::write(
-        config_dir.join("execution-profiles.toml"),
+        config_dir.join("spark.toml"),
         r#"
-[profiles.bad_mode]
+[execution_profiles.bad_mode]
 label = "Bad"
 mode = "remote_worker"
 
-[profiles.bad_enabled]
+[execution_profiles.bad_enabled]
 label = "Bad Enabled"
 mode = "native"
 enabled = "yes"
 
-[profiles.bad_capabilities]
+[execution_profiles.bad_capabilities]
 label = "Bad Capabilities"
 mode = "native"
 capabilities = ["filesystem", ""]
@@ -176,12 +200,15 @@ capabilities = ["filesystem", ""]
         .map(|error| (error.field.as_str(), error.message.as_str()))
         .collect::<Vec<_>>();
     assert!(fields.contains(&(
-        "profiles.bad_mode.mode",
+        "execution_profiles.bad_mode.mode",
         "execution mode must be one of: native, local_container"
     )));
-    assert!(fields.contains(&("profiles.bad_enabled.enabled", "enabled must be a boolean")));
     assert!(fields.contains(&(
-        "profiles.bad_capabilities.capabilities[1]",
+        "execution_profiles.bad_enabled.enabled",
+        "enabled must be a boolean"
+    )));
+    assert!(fields.contains(&(
+        "execution_profiles.bad_capabilities.capabilities[1]",
         "capability must be a non-empty string"
     )));
 }

@@ -12,13 +12,13 @@ fn project_service_validates_execution_profile_selection() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config");
     fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.native-dev]
+[execution_profiles.native-dev]
 label = "Native Dev"
 mode = "native"
 
-[profiles.disabled]
+[execution_profiles.disabled]
 label = "Disabled"
 mode = "native"
 enabled = false
@@ -222,9 +222,9 @@ fn project_service_chat_models_include_safe_configured_profile_models() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config");
     fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 label = "Local"
 provider = "openai_compatible"
 base_url = "http://127.0.0.1:1234/v1"
@@ -516,11 +516,6 @@ fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
-    let default_profile = registry
-        .read_project_record("/projects/unregistered-flow")
-        .unwrap()
-        .and_then(|record| record.execution_profile_id);
-    assert_eq!(default_profile, None);
     fs::create_dir_all(&settings.project_root).unwrap();
     let response = attractor_api::AttractorApiService::new(settings.clone()).start_pipeline(
         attractor_api::PipelineStartRequest {
@@ -529,7 +524,6 @@ fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
                 super::review_artifact_contracts::simple_flow(),
             )),
             working_directory: settings.project_root.to_string_lossy().into_owned(),
-            project_default_execution_profile_id: default_profile,
             wait: Some(true),
             ..attractor_api::PipelineStartRequest::default()
         },
@@ -546,23 +540,23 @@ fn chat_models_expose_catalog_defaults_fallbacks_and_profile_specific_levels() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).unwrap();
     fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["shared"]
 reasoning_efforts = ["minimal", "high"]
-[profiles.other]
+[llm_profiles.other]
 provider = "openai_compatible"
 base_url = "http://localhost:4001/v1"
 models = ["shared"]
-[profiles.router]
+[llm_profiles.router]
 provider = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
 models = ["remote"]
 reasoning_efforts = ["high"]
-[profiles.proxy]
+[llm_profiles.proxy]
 provider = "litellm"
 base_url = "http://localhost:4002/v1"
 models = ["remote"]

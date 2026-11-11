@@ -8,7 +8,6 @@ export interface RunInitiationFormState {
     reasoningEffort?: string | null
     launchContext?: Record<string, unknown> | null
     executionProfileId?: string | null
-    projectDefaultExecutionProfileId?: string | null
 }
 
 export interface PipelineStartPayload {
@@ -19,7 +18,6 @@ export interface PipelineStartPayload {
     llm_profile?: string | null
     reasoning_effort?: string | null
     execution_profile_id?: string | null
-    project_default_execution_profile_id?: string | null
     launch_context?: Record<string, unknown> | null
     flow_name: string
 }
@@ -115,10 +113,6 @@ export function buildPipelineStartPayload(
     const executionProfileId = form.executionProfileId?.trim()
     if (executionProfileId) {
         payload.execution_profile_id = executionProfileId
-    }
-    const projectDefaultExecutionProfileId = form.projectDefaultExecutionProfileId?.trim()
-    if (!executionProfileId && projectDefaultExecutionProfileId) {
-        payload.project_default_execution_profile_id = projectDefaultExecutionProfileId
     }
     return payload
 }

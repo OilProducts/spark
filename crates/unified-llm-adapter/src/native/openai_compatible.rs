@@ -484,7 +484,7 @@ where
         }
     } else if let Some(effort) = &request.reasoning_effort {
         if config.reasoning_efforts.is_empty() {
-            return Err(invalid_request_error(&provider, "Explicit reasoning_effort requires declared levels in the llm-profiles.toml profile setting reasoning_efforts (or provider reasoning_efforts configuration)"));
+            return Err(invalid_request_error(&provider, "Explicit reasoning_effort requires declared levels in the LLM profile setting reasoning_efforts (or provider reasoning_efforts configuration)"));
         }
         body.insert("reasoning_effort".to_string(), json!(effort));
     }

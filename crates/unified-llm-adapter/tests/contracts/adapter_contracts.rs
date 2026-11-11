@@ -165,9 +165,9 @@ fn m6_provider_profile_resource_observation() -> Value {
 
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "http://127.0.0.1:4000/v1"
 models = ["local-small", "local-large"]
@@ -175,7 +175,7 @@ label = "Local"
 api_key_env = "LOCAL_PROFILE_API_KEY"
 default_model = "local-large"
 
-[profiles.no_key]
+[llm_profiles.no_key]
 provider = "openai_compatible"
 base_url = "http://127.0.0.1:5000/v1"
 models = ["no-key-model"]

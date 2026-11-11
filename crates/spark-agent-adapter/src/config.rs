@@ -34,6 +34,19 @@ pub fn validate_model_settings(
     settings: &spark_common::settings::SparkSettings,
     value: &spark_common::settings::ModelSettings,
 ) -> Result<(), String> {
+    // An unloadable profile section fails only a selection that needs it.
+    let profiles = match value.llm_profile {
+        Some(_) => unified_llm_adapter::load_llm_profiles(&settings.config_dir).unwrap_or_default(),
+        None => Default::default(),
+    };
+    validate_model_settings_with_profiles(&profiles, value)
+}
+
+/// `validate_model_settings` against already-loaded profile contents.
+pub fn validate_model_settings_with_profiles(
+    profiles: &std::collections::BTreeMap<String, unified_llm_adapter::LlmProfile>,
+    value: &spark_common::settings::ModelSettings,
+) -> Result<(), String> {
     value.validate().map_err(|error| error.to_string())?;
     if let Some(provider) = value.provider.as_deref() {
         let normalized = validate_provider(provider)?;
@@ -63,11 +76,11 @@ pub fn validate_model_settings(
         }
     }
     if let Some(profile_id) = value.llm_profile.as_deref() {
-        let profile = unified_llm_adapter::get_llm_profile(&settings.config_dir, profile_id)
-            .map_err(|_| {
-                "Unable to load the selected LLM profile; check llm-profiles.toml.".to_string()
-            })?;
-        validate_profile_model(&profile, value.model.as_deref())?;
+        let profile = profiles.get(profile_id.trim()).ok_or_else(|| {
+            "Unable to load the selected LLM profile; check [llm_profiles] in spark.toml."
+                .to_string()
+        })?;
+        validate_profile_model(profile, value.model.as_deref())?;
     }
     if let Some(effort) = value.reasoning_effort.as_deref() {
         validate_reasoning_effort(effort)?;

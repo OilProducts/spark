@@ -17,8 +17,8 @@ the image architecture, so the same build works on Linux and macOS
 
 ## Register the profile
 
-Merge `execution-profiles.example.toml` into
-`$SPARK_HOME/config/execution-profiles.toml`, adjusting the
+Merge the sections of `execution-profiles.example.toml` into
+`$SPARK_HOME/config/spark.toml`, adjusting the
 `container.mounts` paths. The source is a dedicated directory for this profile;
 the destination must match the worker's effective `codex_runtime_root` (the
 example uses `/home/YOU/.spark/runtime/codex`). Set that absolute runtime root

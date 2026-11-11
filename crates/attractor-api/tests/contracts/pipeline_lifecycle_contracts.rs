@@ -140,8 +140,8 @@ fn start_pipeline_uses_launch_context_llm_selection_before_graph_defaults() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     fs::write(
-        settings.config_dir.join("llm-profiles.toml"),
-        r#"[profiles.launch-profile]
+        settings.config_dir.join("spark.toml"),
+        r#"[llm_profiles.launch-profile]
 provider = "openai_compatible"
 base_url = "http://localhost:4000/v1"
 models = ["launch-model"]
@@ -800,9 +800,8 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     });
     assert_eq!(response.body["model"], "workspace-model");
     assert_eq!(response.body["reasoning_effort"], "high");
-    fs::write(&core, "[models]\nllm_profile = \"local\"\n").unwrap();
-    let profile_file = settings.config_dir.join("llm-profiles.toml");
-    fs::write(&profile_file, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://localhost:4000/v1\"\nmodels = [\"local-model\"]\ndefault_model = \"local-model\"\n").unwrap();
+    fs::write(&core, "[models]\nllm_profile = \"local\"\n[llm_profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://localhost:4000/v1\"\nmodels = [\"local-model\"]\ndefault_model = \"local-model\"\n").unwrap();
+    let profile_file = core;
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("profile".into()),
@@ -837,6 +836,154 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
 }
 
 #[test]
+fn worktree_launch_takes_private_defaults_from_the_owning_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("spark.toml"),
+        "[models]\nprovider = 'codex'\nmodel = 'workspace-model'\n\
+         [execution_profiles.owner]\nlabel = 'Owner'\nmode = 'native'\n\
+         [execution_profiles.worktree]\nlabel = 'Worktree'\nmode = 'native'\n",
+    )
+    .unwrap();
+    let owner = temp.path().join("owner");
+    let worktree = temp.path().join("checkouts/run");
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    for (path, name) in [(&owner, "owner"), (&worktree, "worktree")] {
+        let path = path.to_str().unwrap();
+        registry.ensure_project_paths(path).unwrap();
+        let revision = registry.project_settings(path).unwrap().revision;
+        registry
+            .update_project_model_settings(
+                path,
+                &revision,
+                Some(&json!({"provider": "codex", "model": format!("{name}-model")})),
+            )
+            .unwrap();
+        let revision = registry.project_settings(path).unwrap().revision;
+        registry
+            .update_project_record(
+                path,
+                spark_storage::ProjectRecordUpdate {
+                    expected_revision: Some(revision),
+                    execution_profile_id: Some(Some(name.into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let service = AttractorApiService::new(settings.clone());
+    let flow = crate::install_flow(
+        &settings,
+        json!({
+            "schema_version": "2",
+            "id": "owning_project",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "end", "description": "Enter the first workflow step."}}
+                },
+                "end": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+                }
+            }
+        }),
+    );
+    for (project_path, expected) in [(Some(&owner), "owner"), (None, "worktree")] {
+        let response = service.start_pipeline(PipelineStartRequest {
+            wait: Some(true),
+            flow_name: Some(flow.clone()),
+            working_directory: worktree.to_string_lossy().into_owned(),
+            project_path: project_path.map(|path| path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        assert_eq!(response.body["status"], "started", "{response:?}");
+        assert_eq!(response.body["model"], format!("{expected}-model"));
+        assert_eq!(response.body["execution_profile_id"], expected);
+    }
+}
+
+/// A launch that starts while a default writer holds the profile-reference
+/// lock observes that writer's whole result: never the old installation model
+/// with the project's reset default.
+#[test]
+fn launch_reads_installation_and_project_defaults_as_one_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    let core = settings.config_dir.join("spark.toml");
+    fs::write(
+        &core,
+        "[models]\nprovider = 'codex'\nmodel = 'workspace-a'\n",
+    )
+    .unwrap();
+    let project = temp.path().join("project");
+    let project = project.to_str().unwrap();
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    registry.ensure_project_paths(project).unwrap();
+    let revision = registry.project_settings(project).unwrap().revision;
+    registry
+        .update_project_model_settings(
+            project,
+            &revision,
+            Some(&json!({"provider": "codex", "model": "project-model"})),
+        )
+        .unwrap();
+    let flow = crate::install_flow(
+        &settings,
+        json!({
+            "schema_version": "2",
+            "id": "coherent_defaults",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "end", "description": "Enter the first workflow step."}}
+                },
+                "end": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}
+                }
+            }
+        }),
+    );
+    let service = AttractorApiService::new(settings.clone());
+    let writer = spark_storage::settings::lock_profile_references(&settings.config_dir).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let response = std::thread::scope(|scope| {
+        let launch = scope.spawn(|| {
+            started_tx.send(()).unwrap();
+            service.start_pipeline(PipelineStartRequest {
+                wait: Some(true),
+                flow_name: Some(flow.clone()),
+                working_directory: project.into(),
+                project_path: Some(project.into()),
+                ..Default::default()
+            })
+        });
+        started_rx.recv().unwrap();
+        // Give the launch time to reach its reads before the writer finishes.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        fs::write(
+            &core,
+            "[models]\nprovider = 'codex'\nmodel = 'workspace-b'\n",
+        )
+        .unwrap();
+        let revision = registry.project_settings(project).unwrap().revision;
+        registry
+            .update_project_model_settings(project, &revision, None)
+            .unwrap();
+        drop(writer);
+        launch.join().unwrap()
+    });
+    assert_eq!(response.body["status"], "started", "{response:?}");
+    assert_eq!(response.body["model"], "workspace-b");
+}
+
+#[test]
 fn workflow_executes_with_captured_profile_after_profile_file_changes() {
     workflow_executes_with_captured_connection(true);
 }
@@ -858,18 +1005,9 @@ fn workflow_executes_with_captured_connection(profile: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
-    let profiles = settings.config_dir.join(if profile {
-        "llm-profiles.toml"
-    } else {
-        "spark.toml"
-    });
+    let profiles = settings.config_dir.join("spark.toml");
     if profile {
-        fs::write(&profiles, format!("[profiles.captured]\nprovider='openai_compatible'\nbase_url='http://{address}/v1'\nmodels=['captured-model']\ndefault_model='captured-model'\n")).unwrap();
-        fs::write(
-            settings.config_dir.join("spark.toml"),
-            "[models]\nllm_profile = 'captured'\n",
-        )
-        .unwrap();
+        fs::write(&profiles, format!("[models]\nllm_profile = 'captured'\n[llm_profiles.captured]\nprovider='openai_compatible'\nbase_url='http://{address}/v1'\nmodels=['captured-model']\ndefault_model='captured-model'\n")).unwrap();
     } else {
         fs::write(&profiles, format!("[models]\nprovider='openai_compatible'\nmodel='captured-model'\n[providers.openai_compatible]\nbase_url='http://{address}/v1'\n[agents]\nmax_turns=5\n")).unwrap();
     }
@@ -939,8 +1077,8 @@ fn retry_retains_captured_execution_profile_after_configuration_changes() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).unwrap();
-    let path = settings.config_dir.join("execution-profiles.toml");
-    fs::write(&path, "[defaults]\nexecution_profile_id='stable'\n[profiles.stable]\nmode='native'\nlabel='Captured'\ncapabilities=['filesystem']\n[profiles.stable.metadata]\nmarker='original'\n").unwrap();
+    let path = settings.config_dir.join("spark.toml");
+    fs::write(&path, "[execution_defaults]\nexecution_profile_id='stable'\n[execution_profiles.stable]\nmode='native'\nlabel='Captured'\ncapabilities=['filesystem']\n[execution_profiles.stable.metadata]\nmarker='original'\n").unwrap();
     let service = AttractorApiService::new(settings.clone());
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),

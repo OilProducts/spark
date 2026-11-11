@@ -33,8 +33,8 @@ pub use modes::{
     EXECUTION_MODE_NATIVE,
 };
 pub use profile::{
-    load_execution_profile_config, resolve_execution_profile_by_id, ExecutionProfile,
-    ExecutionProfileConfigRoot, ExecutionProfileGraph, ExecutionProfileSelection,
+    load_execution_profile_config, resolve_execution_profile, resolve_execution_profile_by_id,
+    ExecutionProfile, ExecutionProfileConfigRoot, ExecutionProfileGraph, ExecutionProfileSelection,
     ExecutionProfileSettings, EXECUTION_PROFILES_FILENAME, IMPLEMENTATION_NATIVE_PROFILE_ID,
 };
 pub use protocol::{

@@ -2637,7 +2637,7 @@ struct BuiltLlmRequest {
     llm_profile: Option<String>,
     reasoning_effort: Option<String>,
     provider_profile_selector: String,
-    /// The selected llm-profiles.toml profile declares `vision = true`.
+    /// The selected LLM profile declares `vision = true`.
     vision: bool,
 }
 

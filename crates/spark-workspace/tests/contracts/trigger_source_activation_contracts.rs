@@ -469,8 +469,8 @@ fn activation_with_a_disabled_profile_saves_the_trigger_inactive() {
     // Saving checks no profile; activation that it exists and can run.
     fs::create_dir_all(&settings.config_dir).unwrap();
     fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
-        "[profiles.off]\nlabel = \"Off\"\nmode = \"native\"\nenabled = false\n",
+        settings.config_dir.join("spark.toml"),
+        "[execution_profiles.off]\nlabel = \"Off\"\nmode = \"native\"\nenabled = false\n",
     )
     .unwrap();
     let service = crate::triggers(settings.clone());

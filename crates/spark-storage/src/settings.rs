@@ -140,55 +140,63 @@ pub fn lock_profile_references(config_dir: &Path) -> Result<File> {
 /// Check authored profile references while holding `lock_profile_references`.
 /// Domain validators remain responsible for model compatibility and policies.
 pub fn validate_profile_references(config_dir: &Path, value: &serde_json::Value) -> Result<()> {
+    let path = config_dir.join("spark.toml");
+    validate_profile_references_in(&path, &read_settings_document(&path)?.values, value)
+}
+
+fn validate_profile_references_in(
+    path: &Path,
+    document: &toml::Table,
+    value: &serde_json::Value,
+) -> Result<()> {
     match value {
         serde_json::Value::Object(fields) => {
             for (key, value) in fields {
-                let filename = match key.as_str() {
-                    "llm_profile" | "_attractor.runtime.launch_profile" => {
-                        Some("llm-profiles.toml")
-                    }
-                    "execution_profile_id" => Some("execution-profiles.toml"),
+                let section = match key.as_str() {
+                    "llm_profile" | "_attractor.runtime.launch_profile" => Some("llm_profiles"),
+                    "execution_profile_id" => Some("execution_profiles"),
                     _ => None,
                 };
-                if let (Some(filename), Some(id)) = (filename, value.as_str()) {
+                if let (Some(section), Some(id)) = (section, value.as_str()) {
                     let id = id.trim();
-                    if id.is_empty() {
-                        continue;
-                    }
-                    let path = config_dir.join(filename);
-                    let document = read_settings_document(&path)?;
-                    if filename == "execution-profiles.toml"
-                        && document.revision == "absent"
-                        && id == "native"
+                    if id.is_empty()
+                        || (section == "execution_profiles"
+                            && !execution_profiles_configured(document)
+                            && id == "native")
                     {
                         continue;
                     }
                     if !document
-                        .values
-                        .get("profiles")
+                        .get(section)
                         .and_then(toml::Value::as_table)
                         .is_some_and(|profiles| profiles.keys().any(|key| key.trim() == id))
                     {
                         return Err(invalid(
-                            &path,
+                            path,
                             format!(
                                 "Unknown profile reference in {key}; select an existing profile."
                             ),
                         ));
                     }
                 } else {
-                    validate_profile_references(config_dir, value)?;
+                    validate_profile_references_in(path, document, value)?;
                 }
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                validate_profile_references(config_dir, value)?;
+                validate_profile_references_in(path, document, value)?;
             }
         }
         _ => (),
     }
     Ok(())
+}
+
+/// Whether the installation document declares execution profiles; without
+/// them only the synthesized `native` profile exists.
+pub fn execution_profiles_configured(document: &toml::Table) -> bool {
+    document.contains_key("execution_profiles") || document.contains_key("execution_defaults")
 }
 
 pub(crate) fn lock_document(path: &Path) -> Result<File> {
@@ -345,28 +353,39 @@ pub fn read_project_model_defaults(
     spark_common::settings::ModelSettings,
     spark_common::settings::ModelSettingsSource,
 )> {
+    let core = read_settings_document(&settings.config_dir.join("spark.toml"))?;
+    let project = crate::ProjectRegistry::new(&settings.data_dir).project_settings(project_path)?;
+    project_model_defaults(settings, &core, &project)
+}
+
+/// `read_project_model_defaults` over an already-read installation document
+/// and project row, for callers resolving one configuration snapshot.
+pub fn project_model_defaults(
+    settings: &spark_common::settings::SparkSettings,
+    core: &SettingsDocument,
+    project: &crate::ProjectSettings,
+) -> Result<(
+    spark_common::settings::ModelSettings,
+    spark_common::settings::ModelSettingsSource,
+)> {
     use spark_common::settings::{resolve_model_settings, ModelSettings};
-    let core = settings.config_dir.join("spark.toml");
-    let workspace: ModelSettings = read_settings_document(&core)?
-        .section(&core, "models")?
-        .unwrap_or_default();
-    let stored = crate::ProjectRegistry::new(&settings.data_dir)
-        .project_settings(project_path)?
-        .model_settings;
-    let project: Option<ModelSettings> =
-        stored
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| {
-                invalid(
-                    &settings
-                        .data_dir
-                        .join(crate::conversation::STATE_DATABASE_FILE_NAME),
-                    "Invalid project model_settings; check field names and types.",
-                )
-            })?;
+    let path = settings.config_dir.join("spark.toml");
+    let workspace: ModelSettings = core.section(&path, "models")?.unwrap_or_default();
+    let project: Option<ModelSettings> = project
+        .model_settings
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| {
+            invalid(
+                &settings
+                    .data_dir
+                    .join(crate::conversation::STATE_DATABASE_FILE_NAME),
+                "Invalid project model_settings; check field names and types.",
+            )
+        })?;
     let (group, source) = resolve_model_settings(&workspace, project.as_ref(), None)
-        .map_err(|_| invalid(&core, "Invalid model defaults; select exactly one provider or profile and nonempty optional fields."))?;
+        .map_err(|_| invalid(&path, "Invalid model defaults; select exactly one provider or profile and nonempty optional fields."))?;
     Ok((group.clone(), source))
 }
 
@@ -376,8 +395,17 @@ pub fn read_execution_configuration(
     config_dir: &Path,
     env: &impl spark_common::paths::Environment,
 ) -> Result<ExecutionConfiguration> {
+    let document = read_settings_document(&config_dir.join("spark.toml"))?;
+    execution_configuration(config_dir, &document, env)
+}
+
+/// `read_execution_configuration` over an already-read installation document.
+pub fn execution_configuration(
+    config_dir: &Path,
+    document: &SettingsDocument,
+    env: &impl spark_common::paths::Environment,
+) -> Result<ExecutionConfiguration> {
     let path = config_dir.join("spark.toml");
-    let document = read_settings_document(&path)?;
     validate_core_sections(&path, &document.values)?;
     let providers: spark_common::provider_settings::ProviderConnections =
         document.section(&path, "providers")?.unwrap_or_default();

@@ -647,10 +647,10 @@ fn profile_backed_local_openai_compatible_endpoint_uses_http_transport_without_a
     });
     let temp = tempfile::tempdir().expect("profile tempdir");
     std::fs::write(
-        temp.path().join("llm-profiles.toml"),
+        temp.path().join("spark.toml"),
         format!(
             r#"
-[profiles.local]
+[llm_profiles.local]
 provider = "openai_compatible"
 base_url = "{}/local"
 models = ["local-model"]

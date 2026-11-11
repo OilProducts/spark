@@ -995,7 +995,7 @@ fn compatible_effort_requires_declaration_but_does_not_validate_provider_values(
                     assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
                     assert!(error
                         .message
-                        .contains("llm-profiles.toml profile setting reasoning_efforts"));
+                        .contains("LLM profile setting reasoning_efforts"));
                 } else {
                     assert_eq!(
                         result

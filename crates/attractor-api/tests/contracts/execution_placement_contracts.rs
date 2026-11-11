@@ -16,12 +16,12 @@ fn execution_placement_settings_exposes_profile_metadata() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[defaults]
+[execution_defaults]
 execution_profile_id = "native-fast"
 
-[profiles.native-fast]
+[execution_profiles.native-fast]
 label = "Native Fast"
 mode = "native"
 capabilities = ["filesystem"]
@@ -46,9 +46,9 @@ fn execution_placement_settings_route_uses_mounted_attractor_metadata_path() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.native-fast]
+[execution_profiles.native-fast]
 label = "Native Fast"
 mode = "native"
 "#,
@@ -107,9 +107,9 @@ fn execution_placement_settings_reports_invalid_config_as_validation_payload() {
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         r#"
-[profiles.container]
+[execution_profiles.container]
 label = "Container"
 mode = "local_container"
 "#,
@@ -123,7 +123,7 @@ mode = "local_container"
     assert_eq!(
         response.body["validation_errors"][0],
         json!({
-            "field": "profiles.container.image",
+            "field": "execution_profiles.container.image",
             "message": "image is required for local_container profiles",
             "profile_id": "container"
         })
@@ -237,9 +237,9 @@ fn service_with_fake_docker(
 fn write_container_profile(settings: &SparkSettings, image: &str) {
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
+        settings.config_dir.join("spark.toml"),
         format!(
-            r#"[profiles.container]
+            r#"[execution_profiles.container]
 label = "Container"
 mode = "local_container"
 image = "{image}"
@@ -252,11 +252,11 @@ image = "{image}"
 fn write_container_profile_with_missing_default(settings: &SparkSettings) {
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
     std::fs::write(
-        settings.config_dir.join("execution-profiles.toml"),
-        r#"[defaults]
+        settings.config_dir.join("spark.toml"),
+        r#"[execution_defaults]
 execution_profile_id = "missing-default"
 
-[profiles.container]
+[execution_profiles.container]
 label = "Container"
 mode = "local_container"
 image = "spark-worker:test"
@@ -571,16 +571,16 @@ fn startup_recovery_reconstructs_matching_container_placement() {
 #[test]
 fn retry_reconstruction_failures_are_persisted_without_native_or_docker_execution() {
     for (case, config, expected) in [
-        ("missing", "[profiles.other]\nlabel = \"Other\"\nmode = \"native\"\n", "does not exist"),
-        ("disabled", "[profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\nimage = \"spark-worker:test\"\nenabled = false\n", "disabled"),
-        ("invalid", "[profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\n", "image is required"),
-        ("mode-changed", "[profiles.container]\nlabel = \"Container\"\nmode = \"native\"\n", "no longer matches"),
-        ("image-changed", "[profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\nimage = \"spark-worker:new\"\n", "no longer matches"),
+        ("missing", "[execution_profiles.other]\nlabel = \"Other\"\nmode = \"native\"\n", "does not exist"),
+        ("disabled", "[execution_profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\nimage = \"spark-worker:test\"\nenabled = false\n", "disabled"),
+        ("invalid", "[execution_profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\n", "image is required"),
+        ("mode-changed", "[execution_profiles.container]\nlabel = \"Container\"\nmode = \"native\"\n", "no longer matches"),
+        ("image-changed", "[execution_profiles.container]\nlabel = \"Container\"\nmode = \"local_container\"\nimage = \"spark-worker:new\"\n", "no longer matches"),
     ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = settings(temp.path());
         std::fs::create_dir_all(&settings.config_dir).expect("config dir");
-        std::fs::write(settings.config_dir.join("execution-profiles.toml"), config)
+        std::fs::write(settings.config_dir.join("spark.toml"), config)
             .expect("profiles");
         let run_id = format!("retry-{case}");
         seed_retry(&settings, &run_id);

@@ -10,7 +10,8 @@ use toml::value::Table;
 use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::openai_compatible::OpenAICompatibleRequestConfig;
 
-pub const PROFILE_CONFIG_FILE: &str = "llm-profiles.toml";
+/// The installation settings document; profiles are its `[llm_profiles.<id>]` tables.
+pub const PROFILE_CONFIG_FILE: &str = "spark.toml";
 const SUPPORTED_PROFILE_PROVIDERS: &[&str] = &["openai_compatible", "openrouter", "litellm"];
 const SUPPORTED_PROFILE_KEYS: &[&str] = &[
     "api_key_env",
@@ -183,23 +184,24 @@ pub fn load_llm_profiles(
             .map(|span| format!(" near byte {}", span.start))
             .unwrap_or_default();
         LlmProfileConfigurationError::new(format!(
-            "Invalid LLM profile config: malformed TOML{position}; check llm-profiles.toml syntax."
+            "Invalid LLM profile config: malformed TOML{position}; check spark.toml syntax."
         ))
     })?;
     let table = raw.as_table().cloned().unwrap_or_default();
     parse_llm_profiles(&table)
 }
 
+/// Reads the `llm_profiles` section of an installation settings document.
 /// The same pure validator is used by disk readers and revision-checked edits.
 pub fn parse_llm_profiles(
     table: &Table,
 ) -> Result<BTreeMap<String, LlmProfile>, LlmProfileConfigurationError> {
-    let Some(profiles_raw) = table.get("profiles") else {
+    let Some(profiles_raw) = table.get("llm_profiles") else {
         return Ok(BTreeMap::new());
     };
     let Some(profiles_raw) = profiles_raw.as_table() else {
         return Err(LlmProfileConfigurationError::new(
-            "LLM profile config must contain a [profiles] table.",
+            "llm_profiles must be a table of [llm_profiles.<id>] profiles.",
         ));
     };
 
