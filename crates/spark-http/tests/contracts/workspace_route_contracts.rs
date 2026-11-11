@@ -172,6 +172,175 @@ async fn project_deletion_route_removes_conversations_then_the_directory() {
     assert_eq!(again.0, StatusCode::NOT_FOUND, "{}", again.1);
 }
 
+/// Records each turn's conversation and pinned frame.
+#[derive(Default)]
+struct FrameAgent {
+    frames: std::sync::Mutex<Vec<(String, String)>>,
+}
+impl FrameAgent {
+    /// The frame of the first turn in `conversation`, once it has run.
+    async fn frame(&self, conversation: &str) -> String {
+        for _ in 0..600 {
+            let frames = self.frames.lock().unwrap().clone();
+            if let Some((_, frame)) = frames.iter().find(|(id, _)| id == conversation) {
+                return frame.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("no turn in {conversation}");
+    }
+}
+impl spark_agent_adapter::AgentTurnBackend for FrameAgent {
+    fn run_turn(
+        &self,
+        request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        let frame = request.metadata[spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        self.frames
+            .lock()
+            .unwrap()
+            .push((request.conversation_id, frame));
+        Ok(final_answer("Understood."))
+    }
+}
+
+/// A standing role started again after its project was removed and
+/// registered again begins in a new conversation with its retained memory;
+/// the removed conversation stays deleted and takes no late writes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_role_started_again_after_project_removal_keeps_its_memory_in_a_new_conversation() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let roles = settings.bundled_dir().join("roles");
+    fs::create_dir_all(&roles).unwrap();
+    fs::write(
+        roles.join("coordinator.md"),
+        include_str!("../../../spark-assets/assets/roles/coordinator.md"),
+    )
+    .unwrap();
+    let project_dir = root.join("returning");
+    fs::create_dir_all(&project_dir).expect("project");
+    let store = crate::shared_store(&settings.data_dir);
+    let agent = std::sync::Arc::new(FrameAgent::default());
+    let app = spark_http::build_app_with_conversation_store(
+        settings.clone(),
+        store.clone(),
+        agent.clone(),
+    )
+    .expect("app");
+    let register = || {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/projects/register",
+            Some(json!({"project_path": project_dir})),
+        )
+    };
+    let registered = register().await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
+    let project = registered.1["project_path"].as_str().unwrap().to_string();
+    let query = crate::encode_query(&project);
+    let start = format!("/workspace/api/roles/coordinator/start?project_path={query}");
+
+    let first = request_json(app.clone(), "POST", &start, None).await;
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    let removed_conversation = first.1["conversation_id"].as_str().unwrap().to_string();
+    agent.frame(&removed_conversation).await;
+    let memory = spark_common::project::project_storage_dir_for(&settings.data_dir, &project)
+        .unwrap()
+        .join("memory/coordinator");
+    fs::create_dir_all(&memory).unwrap();
+    fs::write(memory.join("index.md"), "The build is slow.").unwrap();
+
+    let deleted = request_json(
+        app.clone(),
+        "DELETE",
+        &format!("/workspace/api/projects?project_path={query}"),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.0, StatusCode::OK, "{}", deleted.1);
+    let again = register().await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    // Registration alone restarts nothing.
+    let listed = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/roles?project_path={query}"),
+        None,
+    )
+    .await;
+    assert_eq!(listed.1["roles"], json!([]), "{}", listed.1);
+
+    let restarted = request_json(app.clone(), "POST", &start, None).await;
+    assert_eq!(restarted.0, StatusCode::OK, "{}", restarted.1);
+    let conversation = restarted.1["conversation_id"].as_str().unwrap().to_string();
+    assert_ne!(conversation, removed_conversation);
+    let frame = agent.frame(&conversation).await;
+    assert!(
+        frame.contains(&format!("Your memory is {}", memory.display())),
+        "{frame}"
+    );
+    let read = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/roles/coordinator/memory?project_path={query}&file=index.md"),
+        None,
+    )
+    .await;
+    assert_eq!(read.0, StatusCode::OK, "{}", read.1);
+    assert!(
+        read.1.to_string().contains("The build is slow."),
+        "{}",
+        read.1
+    );
+    // The removed conversation stays deleted: a late write is rejected and
+    // reads do not find it.
+    let repository = spark_storage::ConversationRepository::new(store.clone());
+    assert!(repository
+        .touch_conversation(&removed_conversation, &project)
+        .is_err());
+    assert_eq!(
+        repository
+            .conversation_project_path(&removed_conversation)
+            .unwrap(),
+        None
+    );
+    let old = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/conversations/{removed_conversation}?project_path={query}"),
+        None,
+    )
+    .await;
+    assert_eq!(old.0, StatusCode::NOT_FOUND, "{}", old.1);
+    // The role keeps its new conversation across later controls.
+    let stopped = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/roles/coordinator/stop?project_path={query}"),
+        None,
+    )
+    .await;
+    assert_eq!(stopped.0, StatusCode::OK, "{}", stopped.1);
+    assert_eq!(stopped.1["conversation_id"], conversation.as_str());
+    let summaries = request_json(
+        app.clone(),
+        "GET",
+        &format!("/workspace/api/projects/conversations?project_path={query}"),
+        None,
+    )
+    .await;
+    assert!(crate::summary_entries(&summaries.1)
+        .iter()
+        .any(|entry| entry["conversation_id"] == conversation.as_str()
+            && entry["standing_role"]["name"] == "coordinator"));
+}
+
 /// Reads of a project and its conversations, as a stale browser tab sends them.
 async fn stale_project_reads(app: &axum::Router, project_path: &str) {
     let project = crate::encode_query(project_path);

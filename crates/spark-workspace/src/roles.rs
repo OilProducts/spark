@@ -36,6 +36,11 @@ pub struct RoleRecord {
     pub project_path: String,
     #[serde(default)]
     pub stopped_at: Option<String>,
+    /// The conversation of a role started again after its project's removal
+    /// deleted its default one, which stays deleted. Unset, the role works in
+    /// the default conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_conversation_id: Option<String>,
     /// Derived on read from the role conversation's inbox; never stored.
     #[serde(flatten)]
     pub inbox: Inbox,
@@ -82,9 +87,17 @@ fn stored(role: &RoleRecord) -> Value {
     value
 }
 
-/// A role conversation's id; conversation ids are global, so it names the project.
+/// A role conversation's default id; conversation ids are global, so it
+/// names the project.
 pub fn conversation_id(project_id: &str, name: &str) -> String {
     format!("role-{project_id}-{name}")
+}
+
+/// The conversation `role` works in.
+fn role_conversation_id(role: &RoleRecord) -> String {
+    role.replacement_conversation_id
+        .clone()
+        .unwrap_or_else(|| conversation_id(&role.project_id, &role.name))
 }
 
 /// The role file `name` as `project` resolves it.
@@ -137,18 +150,31 @@ impl WorkspaceRoleService {
         Ok(ProjectRegistry::new(self.settings.data_dir.clone())
             .ensure_project_paths(project_path)?)
     }
-    fn default_record(scope: &ProjectPaths, name: &str) -> RoleRecord {
-        decode::<RoleRecord>(
+    /// A role being started. Its default conversation, if deleted with an
+    /// earlier removal of the project, stays deleted: the role gets a new one.
+    fn new_record(&self, scope: &ProjectPaths, name: &str) -> WorkspaceResult<RoleRecord> {
+        let mut role = decode::<RoleRecord>(
             json!({"name": name, "project_id": scope.project_id, "project_path": scope.project_path}),
         )
-        .unwrap()
+        .unwrap();
+        let default = conversation_id(&scope.project_id, name);
+        if self
+            .store
+            .database()
+            .read(|read| read.conversation_location(&default))?
+            .is_some_and(|(_, deleted)| deleted)
+        {
+            role.replacement_conversation_id =
+                Some(format!("{default}-{}", uuid::Uuid::new_v4().simple()));
+        }
+        Ok(role)
     }
     /// The saved record.
     fn load(repo: &RecordRepository, name: &str) -> WorkspaceResult<Option<RoleRecord>> {
         repo.read(name)?.map(decode).transpose()
     }
     fn with_derived(&self, mut role: RoleRecord) -> RoleRecord {
-        role.conversation_id = conversation_id(&role.project_id, &role.name);
+        role.conversation_id = role_conversation_id(&role);
         role.inbox = Inbox::read(&self.store, &role.conversation_id).unwrap_or_default();
         role.conversation_handle = spark_storage::ConversationRepository::new(self.store.clone())
             .find_conversation_handle(&role.conversation_id)
@@ -201,17 +227,19 @@ impl WorkspaceRoleService {
             .map(|role| self.with_derived(role))
             .collect())
     }
-    /// The standing role whose conversation this is, if any. Reads without
-    /// the lock, so turn setup under it can call this.
+    /// The standing role whose conversation this is, if any: a deleted
+    /// earlier conversation of a role is no longer its. Reads without the
+    /// lock, so turn setup under it can call this.
     pub fn conversation_role(&self, project: &str, conversation_id: &str) -> Option<RoleRecord> {
         let scope = self.read_scope(project).ok()?;
-        let name = conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
-        Self::load(
-            &RecordRepository::roles(&self.settings.data_dir, &scope.project_id),
-            name,
-        )
-        .ok()?
-        .map(|role| self.with_derived(role))
+        conversation_id.strip_prefix(&format!("role-{}-", scope.project_id))?;
+        RecordRepository::roles(&self.settings.data_dir, &scope.project_id)
+            .list()
+            .ok()?
+            .into_iter()
+            .filter_map(|value| decode::<RoleRecord>(value).ok())
+            .find(|role| role_conversation_id(role) == conversation_id)
+            .map(|role| self.with_derived(role))
     }
 
     /// Runs `work` on the role under the project's role lock, delivers
@@ -236,14 +264,14 @@ impl WorkspaceRoleService {
             let saved = record.stored().cloned();
             let mut role: RoleRecord = match &saved {
                 Some(value) => decode(value.clone())?,
-                None if create => Self::default_record(&scope, name),
+                None if create => self.new_record(&scope, name)?,
                 None => {
                     return Err(WorkspaceError::NotFound(format!(
                         "Role {name} is not started"
                     )))
                 }
             };
-            role.conversation_id = conversation_id(&role.project_id, &role.name);
+            role.conversation_id = role_conversation_id(&role);
             role.inbox = Inbox::read(&self.store, &role.conversation_id)?;
             work(&mut record, &mut role)?;
             if deliver {
@@ -375,9 +403,14 @@ impl WorkspaceRoleService {
             })
         };
         if let Some(run_id) = request.source_payload["run_id"].as_str() {
-            if inbox::run_owner(&self.settings, run_id)?.is_some_and(|owner| {
-                owner.conversation_id == conversation_id(&scope.project_id, name)
-            }) {
+            let own = Self::load(
+                &RecordRepository::roles(&self.settings.data_dir, &scope.project_id),
+                name,
+            )?
+            .map(|role| role_conversation_id(&role));
+            if inbox::run_owner(&self.settings, run_id)?
+                .is_some_and(|owner| Some(owner.conversation_id) == own)
+            {
                 return skip("Run was launched by this role; trigger delivery skipped.");
             }
         }
