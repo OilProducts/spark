@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react"
+import { Plus, RefreshCw, Zap } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
@@ -16,7 +16,7 @@ import { useStore } from "@/store"
 import { triggerKey } from "@/lib/workspaceClient"
 import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/api/triggersApi"
 import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
-import { ViewLayout } from "@/components/app/view-layout"
+import { SheetEmpty, ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
 import { SectionHeading } from "@/components/app/section-heading"
 import { ListGroupLabel, SidePanelRow } from "@/components/app/side-panel-row"
@@ -128,7 +128,7 @@ export function TriggersPanel() {
             {group.note ? <p className="font-normal">{group.note}</p> : null}
           </ListGroupLabel>
           {status !== 'ready' && status !== 'error' ? (
-            <p data-testid={group.loadingTestId} className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
+            <p data-testid={group.loadingTestId} className="px-3 py-1 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
@@ -163,7 +163,7 @@ export function TriggersPanel() {
             )
           })}
           {status === 'ready' && group.triggers.length === 0 ? (
-            <p className="px-3 py-1 text-xs text-muted-foreground">{group.emptyText}</p>
+            <p className="px-3 py-1 text-sm text-muted-foreground">{group.emptyText}</p>
           ) : null}
         </div>
       ))}
@@ -176,23 +176,19 @@ export function TriggersPanel() {
       title="Triggers"
       actions={(
         <>
-          <Button type="button" variant="ghost" size="xs" onClick={() => void refreshTriggers()}>
-            {loading ? 'Refreshing…' : 'Refresh'}
+          <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh triggers" title="Refresh triggers" onClick={() => void refreshTriggers()}>
+            <RefreshCw aria-hidden="true" className={loading ? "animate-spin" : undefined} />
           </Button>
-          <Button type="button" data-testid="trigger-new-button" variant="outline" size="xs" onClick={openCreateForm}>
-            <Plus />
+          <Button type="button" data-testid="trigger-new-button" variant="outline" size="sm" aria-label="New trigger" onClick={openCreateForm}>
+            <Plus aria-hidden="true" />
             New
           </Button>
         </>
       )}
       panel={panel}
     >
-    <section data-testid="triggers-panel" className="h-full overflow-auto p-6">
+    <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
-        <p className="text-sm text-muted-foreground">
-          Automations that start flows on a schedule, on events, or from webhooks.
-        </p>
-
         {error ? (
           <InlineError>{error}</InlineError>
         ) : null}
@@ -209,11 +205,10 @@ export function TriggersPanel() {
           </InlineError>
         ) : null}
 
-        <div className="grid gap-6">
-          {createFormOpen ? (
-            <Card className="gap-4 py-4">
-              <CardHeader className="gap-1 px-0">
-                <CardTitle role="heading" aria-level={3} className="text-xl font-semibold">New trigger</CardTitle>
+        {createFormOpen ? (
+            <Card className="gap-6 border-t-0 py-0">
+              <CardHeader className="px-0">
+                <CardTitle role="heading" aria-level={1} className="text-xl font-semibold tracking-tight">New trigger</CardTitle>
               </CardHeader>
               <CardContent className="px-0 pt-0">
                 <TriggerEditor
@@ -222,12 +217,13 @@ export function TriggersPanel() {
                   mode="create"
                   protectedTrigger={false}
                 />
-                <div className="mt-4 flex justify-end gap-2">
+                <div className="mt-6 flex justify-end gap-2">
                   <Button
                     type="button"
                     aria-label="Cancel new trigger"
                     data-testid="trigger-create-cancel-button"
                     variant="ghost"
+                    size="sm"
                     disabled={pending}
                     onClick={() => updateTriggersSession({ createFormOpen: false })}
                   >
@@ -236,6 +232,7 @@ export function TriggersPanel() {
                   <Button
                     type="button"
                     data-testid="trigger-create-button"
+                    size="sm"
                     disabled={pending || isRegenerating || !newTriggerForm.projectPath}
                     onClick={() => void onCreateTrigger()}
                   >
@@ -245,11 +242,11 @@ export function TriggersPanel() {
               </CardContent>
             </Card>
           ) : selectedTrigger && editTriggerForm ? (
-            <Card className="gap-4 py-4">
+            <Card className="gap-6 border-t-0 py-0">
               <CardHeader className="flex flex-row items-start justify-between gap-2 px-0">
                 <div className="min-w-0">
-                  <CardTitle role="heading" aria-level={3} className="truncate text-xl font-semibold">{selectedTrigger.name}</CardTitle>
-                  <div className="mt-1 text-xs text-muted-foreground">
+                  <CardTitle role="heading" aria-level={1} className="truncate text-xl leading-snug font-semibold tracking-tight">{selectedTrigger.name}</CardTitle>
+                  <div className="mt-1 text-sm text-muted-foreground">
                     {selectedTrigger.protected ? 'System trigger' : 'Custom trigger'}
                   </div>
                 </div>
@@ -260,7 +257,7 @@ export function TriggersPanel() {
                     disabled={pending || isRegenerating}
                     onClick={() => void onDeleteSelectedTrigger()}
                     variant="destructive"
-                    size="xs"
+                    size="sm"
                   >
                     Delete
                   </Button>
@@ -276,8 +273,8 @@ export function TriggersPanel() {
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
-                  <Well className="mt-4 space-y-2 text-sm">
-                    <SectionHeading as="h4">Shared webhook ingress</SectionHeading>
+                  <Well className="mt-6 space-y-2 text-sm">
+                    <SectionHeading>Shared webhook ingress</SectionHeading>
                     <div className="text-muted-foreground">POST JSON to <code>{SHARED_WEBHOOK_ENDPOINT}</code> with:</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
@@ -290,16 +287,16 @@ export function TriggersPanel() {
                       data-testid="trigger-regenerate-secret-button"
                       onClick={() => void onRegenerateWebhookSecret()}
                       variant="outline"
-                      size="xs"
+                      size="sm"
                     >
                       {isRegenerating ? 'Regenerating…' : 'Regenerate secret'}
                     </Button>
                   </Well>
                 ) : null}
 
-                <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <Well className="text-sm">
-                    <SectionHeading as="h4">Runtime</SectionHeading>
+                    <SectionHeading>Runtime</SectionHeading>
                     <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
@@ -312,7 +309,7 @@ export function TriggersPanel() {
                     ) : null}
                   </Well>
                   <Well className="text-sm">
-                    <SectionHeading as="h4">Recent history</SectionHeading>
+                    <SectionHeading>Recent history</SectionHeading>
                     <div className="mt-2 space-y-2">
                       {selectedTrigger.state.recent_history.slice(0, 5).map((entry) => (
                         <div key={`${entry.timestamp}-${entry.status}`}>
@@ -328,12 +325,13 @@ export function TriggersPanel() {
                   </Well>
                 </div>
 
-                {externalChange ? <p role="status">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
-                <div className="mt-4 flex justify-end gap-2">
-                  <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                {externalChange ? <p role="status" className="mt-4 text-sm">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
+                <div className="mt-6 flex justify-end gap-2">
+                  <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
                   <Button aria-label="Save selected trigger"
                     type="button"
                     data-testid="trigger-save-button"
+                    size="sm"
                     disabled={pending || isRegenerating}
                     onClick={() => void onSaveSelectedTrigger()}
                   >
@@ -343,8 +341,12 @@ export function TriggersPanel() {
               </CardContent>
             </Card>
           ) : null}
-        </div>
       </div>
+      {!createFormOpen && !(selectedTrigger && editTriggerForm) ? (
+        <SheetEmpty icon={Zap} title="No trigger selected" className="h-auto flex-1">
+          Triggers start flows on a schedule, on events, or from webhooks. Select one or create a new one.
+        </SheetEmpty>
+      ) : null}
     </section>
     </ViewLayout>
   )

@@ -136,12 +136,12 @@ describe('Overview finished since', () => {
 
         expect(finished()).toEqual(['run-done', 'run-failed'])
         const [done, failed] = screen.getAllByTestId('overview-finished-item')
-        expect(done.textContent).toContain('1h 0m')
+        expect(done.textContent).toContain('1h 00m')
         expect(done.textContent).toContain('Completed') // the dot's name for assistive tech
         expect(done.textContent).not.toContain('Failed')
         expect(failed.textContent?.match(/Failed/g)).toHaveLength(1) // the visible word is the only one
         expect(failed.querySelector('[data-mark="failed"]')).not.toBeNull()
-        expect(failed.textContent).toContain('Run · Review · app')
+        expect(failed.textContent).toContain('Run · app') // the title already names the flow
         expect(failed.textContent).toContain('Failed')
         expect(failed.querySelector('[data-testid="overview-source-link"]')?.textContent).toBe('Ship the fix')
         expect(screen.getByTestId('overview-finished').textContent).toContain('2 · 1 failed')

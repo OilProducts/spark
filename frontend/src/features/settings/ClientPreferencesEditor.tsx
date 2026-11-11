@@ -12,7 +12,7 @@ import { SaveStatus } from './SaveStatus'
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
     return <Card>
-        <CardHeader><h3 className="text-lg font-semibold">Client preferences</h3></CardHeader>
+        <CardHeader><h3 className="text-base font-semibold">Client preferences</h3></CardHeader>
         <CardContent className="space-y-3">
             {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
@@ -24,7 +24,7 @@ export function ClientPreferencesEditor() {
                     </NativeSelect>
                 </Field>
                 <h4 className="text-sm font-semibold">Editor</h4>
-                <p className="text-xs">Defaults for newly opened flows.</p>
+                <p className="text-sm text-muted-foreground">Defaults for newly opened flows.</p>
                 <Field><FieldLabel htmlFor="preference-editor-mode">Editor mode</FieldLabel>
                     <NativeSelect id="preference-editor-mode" value={editor.draft?.editor_mode ?? ''}
                         onChange={(event) => { const mode = event.target.value as EditorMode | ''; editor.setDraft((draft) => draft && ({ ...draft, editor_mode: mode || null })) }}>
@@ -51,19 +51,19 @@ export function ClientPreferencesEditor() {
                 </Field>
                 <h4 className="text-sm font-semibold">Layout</h4>
                 <Field><FieldLabel htmlFor="preference-sidebar-width">Editor sidebar width (pixels)</FieldLabel>
-                    <Input id="preference-sidebar-width" type="number" min={256} max={560} step={1}
+                    <Input id="preference-sidebar-width" className="w-40" type="number" min={256} max={560} step={1}
                         aria-invalid={editor.invalidWidth} aria-describedby="preference-sidebar-help preference-sidebar-error"
                         value={editor.draft?.editor_sidebar_width ?? ''}
                         onChange={(event) => { const width = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: width })) }} />
-                    <p id="preference-sidebar-help" className="text-xs">256–560 pixels. Leave blank for the default of 288. Applies after saving.</p>
+                    <p id="preference-sidebar-help" className="text-xs text-muted-foreground">256–560 pixels. Leave blank for the default of 288. Applies after saving.</p>
                     {editor.invalidWidth && <p id="preference-sidebar-error" role="alert">Choose a whole number from 256 to 560.</p>}
                 </Field>
                 <Field><FieldLabel htmlFor="preference-home-split">Home sidebar primary split (0–1)</FieldLabel>
-                    <Input id="preference-home-split" type="number" min={0} max={1} step={0.01}
+                    <Input id="preference-home-split" className="w-40" type="number" min={0} max={1} step={0.01}
                         aria-invalid={editor.invalidSplit} aria-describedby="preference-home-split-help preference-split-error"
                         value={editor.draft?.home_sidebar_primary_split_ratio ?? ''}
                         onChange={(event) => { const ratio = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, home_sidebar_primary_split_ratio: ratio })) }} />
-                    <p id="preference-home-split-help" className="text-xs">Share of sidebar height for the top pane. Leave blank for automatic sizing.</p>
+                    <p id="preference-home-split-help" className="text-xs text-muted-foreground">Share of sidebar height for the top pane. Leave blank for automatic sizing.</p>
                     {editor.invalidSplit && <p id="preference-split-error" role="alert">Choose a number from 0 to 1.</p>}
                 </Field>
                 <h4 className="text-sm font-semibold">Runs</h4>
@@ -74,13 +74,13 @@ export function ClientPreferencesEditor() {
                     </NativeSelect>
                 </Field>)}
                 <Field><FieldLabel htmlFor="run-preference-graph-height">Run graph height (pixels)</FieldLabel>
-                    <Input id="run-preference-graph-height" aria-invalid={editor.invalidGraphHeight} aria-describedby={editor.invalidGraphHeight ? "preference-graph-error" : undefined} type="number" min={280} max={960} value={editor.draft?.run_presentation?.graph_height ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, graph_height: event.target.value === '' ? null : Number(event.target.value) } }))} />
+                    <Input id="run-preference-graph-height" className="w-40" aria-invalid={editor.invalidGraphHeight} aria-describedby={editor.invalidGraphHeight ? "preference-graph-error" : undefined} type="number" min={280} max={960} value={editor.draft?.run_presentation?.graph_height ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, graph_height: event.target.value === '' ? null : Number(event.target.value) } }))} />
                     {editor.invalidGraphHeight && <p id="preference-graph-error" role="alert">Choose a whole number from 280 to 960.</p>}
                 </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
-                <Button variant="ghost" aria-label="Discard client preferences changes" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
+                <Button variant="ghost" aria-label="Discard client preferences changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

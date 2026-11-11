@@ -59,14 +59,17 @@ export function RunHeaderBar({
         ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
     ].filter((fact) => fact && fact !== '—')
+    // The title is the one the run list shows. The flow's own title joins the breadcrumb
+    // only under a title of the run's own; a title made from the flow's name says it already.
     const title = runTitle(run)
-    const flow = flowTitle || flowTitleFromName(run.flow_name)
-    const showFlow = flow !== title
+    const flow = flowTitle?.trim() || flowTitleFromName(run.flow_name)
+    const showFlow = title !== flowTitleFromName(run.flow_name) && flow.toLowerCase() !== title.toLowerCase()
     const tone = runRecordTone(run)
 
     return (
         <header data-testid="run-summary-panel" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-            <div className="min-w-0 flex-1 space-y-1">
+            {/* At least 20rem before the actions share the row, so a narrow screen wraps them below. */}
+            <div className="min-w-[min(100%,20rem)] flex-1 space-y-1">
                 {project || showFlow ? (
                     <p className="truncate text-xs text-muted-foreground">
                         {project}
@@ -75,13 +78,13 @@ export function RunHeaderBar({
                     </p>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                    <h3
+                    <h1
                         data-testid="run-header-title"
                         className="min-w-0 truncate text-xl font-semibold tracking-tight text-foreground"
                         title={`${title} · ${run.run_id}`}
                     >
                         {title}
-                    </h3>
+                    </h1>
                     <StatusPill data-testid="run-header-status" tone={tone}>
                         {formatRunStatusLabel(run)}
                     </StatusPill>
@@ -122,7 +125,7 @@ export function RunHeaderBar({
                         title={selectedVisitLabel
                             ? `Start a new run from ${selectedVisitLabel}`
                             : 'Start a new run from a node you pick on the graph'}
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
                     >
                         {selectedVisitLabel ? 'Continue from here' : 'Continue from…'}

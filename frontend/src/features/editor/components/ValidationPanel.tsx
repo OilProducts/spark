@@ -4,6 +4,7 @@ import { useStore } from '@/store';
 import { useNarrowViewport } from '@/lib/useNarrowViewport';
 import { Button } from '@/components/ui/button';
 import { NativeSelect } from '@/components/ui/native-select';
+import { SegmentedControl } from '@/components/app/segmented-control';
 
 const severityStyles: Record<string, string> = {
     error: 'text-destructive',
@@ -163,32 +164,25 @@ export function ValidationPanel() {
                     onChange={(event) => setSortMode(event.target.value as SortMode)}
                     className="h-7 w-auto px-2 text-sm"
                 >
-                    <option value="severity">Sort: Severity</option>
-                    <option value="line">Sort: Line</option>
-                    <option value="rule">Sort: Rule</option>
+                    <option value="severity">Sort: severity</option>
+                    <option value="line">Sort: line</option>
+                    <option value="rule">Sort: rule</option>
                 </NativeSelect>
                 <div data-testid="validation-visible-count" className="text-xs text-muted-foreground">
                     {sortedDiagnostics.length} visible
                 </div>
             </div>
-            <div className="mt-2 grid grid-cols-4 gap-1">
-                {(['all', 'error', 'warning', 'info'] as SeverityFilter[]).map((filterValue) => (
-                    <Button
-                        key={filterValue}
-                        data-testid={filterTestIds[filterValue]}
-                        onClick={() => setSeverityFilter(filterValue)}
-                        variant={severityFilter === filterValue ? 'secondary' : 'outline'}
-                        size="xs"
-                        className={`px-1.5 py-1 text-xs font-medium capitalize ${
-                            severityFilter === filterValue
-                                ? 'border-foreground/50 text-foreground'
-                                : 'border-border/60 bg-background text-muted-foreground hover:bg-muted/50'
-                        }`}
-                    >
-                        {filterValue}
-                    </Button>
-                ))}
-            </div>
+            <SegmentedControl
+                aria-label="Severity"
+                className="mt-2"
+                options={(['all', 'error', 'warning', 'info'] as SeverityFilter[]).map((filterValue) => ({
+                    key: filterValue,
+                    label: <span className="capitalize">{filterValue}</span>,
+                    pressed: severityFilter === filterValue,
+                    onPress: () => setSeverityFilter(filterValue),
+                    'data-testid': filterTestIds[filterValue],
+                }))}
+            />
             <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
                 {sortedDiagnostics.map((diag, index) => (
                     <Button

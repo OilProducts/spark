@@ -1,3 +1,4 @@
+import { cn } from '@/lib/utils'
 import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
 import { Check, MessageSquare } from 'lucide-react'
 
@@ -6,7 +7,7 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, openAttentionItem, openChat, openMission, openRun, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, openChat, openMission, openRun, useAttentionItems } from '@/app/useAttention'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -65,11 +66,11 @@ function Section({ heading, count, testId, children }: { heading: ReactNode; cou
     )
 }
 
-/** A one-line empty state: a well with a check. */
-function EmptyWell({ children, ...props }: ComponentProps<'div'>) {
+/** A one-line empty state: a well, with a check when nothing left to do is good news. */
+function EmptyWell({ children, check = true, ...props }: ComponentProps<'div'> & { check?: boolean }) {
     return (
-        <Well className="flex items-center gap-2.5 py-3.5 text-sm" {...props}>
-            <Check aria-hidden="true" className="size-4 shrink-0 text-success" />
+        <Well className={cn('flex items-center gap-2.5 py-3.5 text-sm', !check && 'text-muted-foreground')} {...props}>
+            {check ? <Check aria-hidden="true" className="size-4 shrink-0 text-success" /> : null}
             {children}
         </Well>
     )
@@ -105,6 +106,11 @@ function SourceLink({ source }: { source: Source | null }) {
 }
 
 const itemTitle = (item: Started) => (item.kind === 'run' ? runTitle(item.run) : item.mission.fields.title || 'Untitled mission')
+// A run's flow is worth naming under its title only when the title doesn't already say it.
+const distinctFlowTitle = (item: Started & { kind: 'run' }) => {
+    const flow = flowTitle(item.run.flow_name)
+    return flow.toLowerCase() === itemTitle(item).toLowerCase() ? null : flow
+}
 const openItem = (item: Started) => (item.kind === 'run' ? openRun(item.id) : openMission(item.id, item.mission.project_path))
 const itemProject = (item: Started) => (item.kind === 'run' ? item.run.project_path : item.mission.project_path)
 const itemDuration = (item: Started) => (item.kind === 'run'
@@ -183,7 +189,7 @@ export function OverviewPanel() {
                                     >
                                         <StatusDot tone="warning" />
                                         <span className="flex min-w-0 flex-1 flex-col gap-px">
-                                            <span className="truncate text-sm font-medium">{item.title || item.run_id || item.id}</span>
+                                            <span className="truncate text-sm font-medium">{attentionTitle(item, runs)}</span>
                                             <span className="truncate text-xs text-muted-foreground">{ATTENTION_KIND_LABELS[item.kind]} · {projectLabel(registry, item.project_path)}</span>
                                         </span>
                                     </button>
@@ -235,7 +241,7 @@ export function OverviewPanel() {
                             ) : null}
                         </div>
                     ) : loaded ? (
-                        <EmptyWell>No chats yet.</EmptyWell>
+                        <EmptyWell check={false}>No chats yet.</EmptyWell>
                     ) : (
                         <Well className="py-3.5 text-sm text-muted-foreground">Loading chats…</Well>
                     )}
@@ -257,7 +263,7 @@ export function OverviewPanel() {
                                         <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                         <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
                                             <span className="truncate">
-                                                {[item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? flowTitle(item.run.flow_name) : null, projectLabel(registry, itemProject(item))].filter(Boolean).join(' · ')}
+                                                {[item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null, projectLabel(registry, itemProject(item))].filter(Boolean).join(' · ')}
                                             </span>
                                             <SourceLink source={sourceOf(item, chats, missions)} />
                                             <ExceptionWord mark={item.mark} />

@@ -8,30 +8,30 @@ import { SaveStatus } from './SaveStatus'
 export function ConnectionSettingsEditor() {
     const editor = useConnectionSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-lg font-semibold">Server and client connections</h3></CardHeader>
+        <CardHeader><h3 className="text-base font-semibold">Server and client connections</h3></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-xs">Desktop uses its native remote-access control and an automatically assigned port.</p>
-            {editor.saved?.running_server && <p className="text-xs">Running server: {editor.saved.running_server.server_host}:{editor.saved.running_server.server_port}</p>}
+            <p className="text-sm text-muted-foreground">Desktop uses its native remote-access control and an automatically assigned port.</p>
+            {editor.saved?.running_server && <p className="text-xs text-muted-foreground">Running server: {editor.saved.running_server.server_host}:{editor.saved.running_server.server_port}</p>}
             {editor.draft && editor.saved && <>
                 <Field><FieldLabel htmlFor="connection-host">Server host</FieldLabel>
                     <Input id="connection-host" disabled={editor.pending} value={editor.draft.server_host ?? ''} aria-invalid={editor.invalidHost} aria-describedby={editor.invalidHost ? "connection-host-error" : undefined}
                         onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, server_host: event.target.value || null }))} />
                     {editor.invalidHost && <p id="connection-host-error" role="alert">Enter an IP address or hostname.</p>}
-                    <p className="text-xs">Effective: {editor.saved.effective ? editor.saved.effective.server_host ?? '127.0.0.1' : 'Unavailable'} · {editor.saved.sources?.server_host} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">Effective: {editor.saved.effective ? editor.saved.effective.server_host ?? '127.0.0.1' : 'Unavailable'} · {editor.saved.sources?.server_host} · Requires restart</p>
                 </Field>
                 <Field><FieldLabel htmlFor="connection-port">Server port</FieldLabel>
-                    <Input id="connection-port" type="number" min={0} max={65535} disabled={editor.pending} value={editor.draft.server_port ?? ''} aria-invalid={editor.invalidPort} aria-describedby={editor.invalidPort ? "connection-port-error" : undefined}
+                    <Input id="connection-port" className="w-40" type="number" min={0} max={65535} disabled={editor.pending} value={editor.draft.server_port ?? ''} aria-invalid={editor.invalidPort} aria-describedby={editor.invalidPort ? "connection-port-error" : undefined}
                         onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, server_port: event.target.value === '' ? null : Number(event.target.value) }))} />
                     {editor.invalidPort && <p id="connection-port-error" role="alert">Enter a whole number from 0 to 65535.</p>}
-                    <p className="text-xs">Effective: {editor.saved.effective ? editor.saved.effective.server_port ?? 8000 : 'Unavailable'} · {editor.saved.sources?.server_port} · Requires restart · 0 assigns an available port</p>
+                    <p className="text-xs text-muted-foreground">Effective: {editor.saved.effective ? editor.saved.effective.server_port ?? 8000 : 'Unavailable'} · {editor.saved.sources?.server_port} · Requires restart · 0 assigns an available port</p>
                 </Field>
-                {editor.saved.client_config_dir && <p className="text-xs">New CLI configuration directory: {editor.saved.client_config_dir}</p>}
+                {editor.saved.client_config_dir && <p className="text-xs text-muted-foreground">New CLI configuration directory: {editor.saved.client_config_dir}</p>}
                 <Field><FieldLabel htmlFor="connection-target">Client API target</FieldLabel>
                     <Input id="connection-target" disabled={editor.pending} value={editor.draft.client_api_base_url ?? ''} aria-invalid={editor.invalidTarget} aria-describedby={editor.invalidTarget ? "connection-target-error" : undefined}
                         onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, client_api_base_url: event.target.value || null }))} />
                     {editor.invalidTarget && <p id="connection-target-error" role="alert">Enter an HTTP(S) URL without credentials, query or fragment.</p>}
-                    <p className="text-xs">Effective: {editor.saved.effective ? editor.saved.effective.client_api_base_url ?? 'http://127.0.0.1:8000' : 'Unavailable'} · {editor.saved.sources?.client_api_base_url} · Applies to new CLI commands</p>
+                    <p className="text-xs text-muted-foreground">Effective: {editor.saved.effective ? editor.saved.effective.client_api_base_url ?? 'http://127.0.0.1:8000' : 'Unavailable'} · {editor.saved.sources?.client_api_base_url} · Applies to new CLI commands</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
                     <Button variant="outline" aria-label="Save server and client connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>

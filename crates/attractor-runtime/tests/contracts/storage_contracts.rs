@@ -6,7 +6,7 @@ use attractor_core::{
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
-    CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore, RunsRoot,
+    stage_transition_event, CreateRunRequest, NodeArtifacts, RunRootPaths, RunStore, RunsRoot,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -293,21 +293,29 @@ fn raw_events_append_and_normalize_to_newest_first_journal_entries() {
     store
         .append_event(
             &paths,
+            stage_transition_event("run-events", 0, "work", "done", "review", 2),
+        )
+        .expect("stage transition");
+    store
+        .append_event(
+            &paths,
             checkpoint_saved_event("run-events", "done", vec!["work".to_string()]),
         )
         .expect("checkpoint event");
 
     let events = store.read_raw_events(&paths).expect("events");
-    assert_eq!(events.len(), 7);
-    assert_eq!(events.last().and_then(|event| event.sequence), Some(7));
+    assert_eq!(events.len(), 8);
+    assert_eq!(events.last().and_then(|event| event.sequence), Some(8));
 
     let journal = store.read_journal(&paths).expect("journal");
-    assert_eq!(journal[0].id, "journal-7");
+    assert_eq!(journal[0].id, "journal-8");
     assert_eq!(journal[0].kind, "checkpoint");
     assert_eq!(journal[0].summary, "Checkpoint saved at done");
-    assert_eq!(journal[1].summary, "Stage work completed (completed)");
-    assert_eq!(journal[2].summary, "[work] running");
-    assert_eq!(journal[3].summary, "Stage work started");
+    assert_eq!(journal[1].summary, "work → review on done (visit 2)");
+    assert_eq!(journal[2].summary, "Stage work completed");
+    assert_eq!(journal[3].summary, "[work] running");
+    assert_eq!(journal[4].summary, "Stage work started");
+    assert_eq!(journal[7].summary, "Run created");
 }
 
 #[test]

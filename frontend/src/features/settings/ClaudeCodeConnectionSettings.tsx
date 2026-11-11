@@ -54,7 +54,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false, onRetry }: { a
 
     const disabled = busy || (!connection && !error)
     return <div className="space-y-3 text-sm">
-        <p>Sign in to your Claude account for Claude Code in Spark. Claude Code refreshes this sign-in automatically.</p>
+        <p className="text-muted-foreground">Sign in to your Claude account for Claude Code in Spark. Claude Code refreshes this sign-in automatically.</p>
         <p role="status" aria-live="polite">
             {!connection ? (error ? 'Connection unavailable.' : 'Checking connection…')
                 : pending ? 'Waiting for sign-in… Finish in the browser window that opened.'
@@ -89,7 +89,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false, onRetry }: { a
 
 export function ClaudeCodeConnectionSettings() {
     return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h3 className="text-lg font-semibold">Claude Code connection</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-base font-semibold">Claude Code connection</h3></CardHeader>
         <CardContent className="px-4"><ClaudeCodeConnectionControls /></CardContent>
     </Card>
 }

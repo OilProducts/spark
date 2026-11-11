@@ -1,4 +1,5 @@
-import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/app/segmented-control'
+
 export function ChildFlowExpansionToggle({
     expanded,
     onChange,
@@ -11,30 +12,14 @@ export function ChildFlowExpansionToggle({
     testId?: string
 }) {
     return (
-        <div
+        <SegmentedControl
             data-testid={testId}
-            className="flex rounded-md border border-border bg-background p-1"
-        >
-            <Button
-                type="button"
-                size="xs"
-                variant={expanded ? 'ghost' : 'default'}
-                disabled={disabled}
-                className={expanded ? 'text-muted-foreground hover:text-foreground' : ''}
-                onClick={() => onChange(false)}
-            >
-                Parent only
-            </Button>
-            <Button
-                type="button"
-                size="xs"
-                variant={expanded ? 'default' : 'ghost'}
-                disabled={disabled}
-                className={expanded ? '' : 'text-muted-foreground hover:text-foreground'}
-                onClick={() => onChange(true)}
-            >
-                Child flows
-            </Button>
-        </div>
+            aria-label="Child flow view"
+            className="shrink-0"
+            options={[
+                { key: 'parent', label: 'Parent only', pressed: !expanded, onPress: () => onChange(false), disabled, className: 'flex-none' },
+                { key: 'expanded', label: 'Child flows', pressed: expanded, onPress: () => onChange(true), disabled, className: 'flex-none' },
+            ]}
+        />
     )
 }

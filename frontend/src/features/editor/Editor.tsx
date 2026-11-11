@@ -10,6 +10,7 @@ import {
     useEdgesState,
     applyNodeChanges,
     applyEdgeChanges,
+    useReactFlow,
 } from '@xyflow/react';
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -18,7 +19,8 @@ import { useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store'
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
-import { Well } from '@/components/app/well';
+import { SheetEmpty } from '@/components/app/view-layout';
+import { GitBranch } from 'lucide-react';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
     buildCanonicalFlowModelFromEditorState,
@@ -81,6 +83,9 @@ import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './component
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
 const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
+const MINIMAP_NODE_THRESHOLD = 10;
+// A small flow opens at its natural size rather than magnified.
+const FIT_VIEW_OPTIONS = { maxZoom: 1 };
 const LIVE_ROUTE_THROTTLE_MS = 80;
 const EDITOR_LAYOUT_CANVAS_KIND: FlowCanvasKind = 'editor-parent-only';
 
@@ -276,6 +281,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     ];
     const optimizationLabel = activeOptimizations.length ? activeOptimizations.join(', ') : 'none';
     const flowName = activeFlow;
+    const { fitView } = useReactFlow();
+    // A newly opened flow, or a switch between its parent and expanded views, opens framed;
+    // edits and reloads of the same graph keep the viewport where the user left it.
+    const framedGraphRef = useRef<string | null>(null);
+    const frameNewGraph = useCallback(() => {
+        const graphKey = `${flowName}:${expandChildFlowsRef.current}`;
+        if (framedGraphRef.current === graphKey) return;
+        framedGraphRef.current = graphKey;
+        void fitView(FIT_VIEW_OPTIONS);
+    }, [fitView, flowName]);
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
@@ -804,6 +819,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
                 setNodes(hydrated.nodes);
                 setEdges(hydrated.edges);
+                frameNewGraph();
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
                 }
@@ -841,6 +857,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         activeProjectPath,
         flowReloadToken,
         clearDiagnostics,
+        frameNewGraph,
         hydrateFromPreview,
         requestPreview,
         replaceFlowMetadata,
@@ -1319,6 +1336,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey
                 setNodes(hydrated.nodes)
                 setEdges(hydrated.edges)
+                frameNewGraph()
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false)
                 }
@@ -1336,6 +1354,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     }, [
         expandChildFlows,
         flowName,
+        frameNewGraph,
         hydrateFromPreview,
         isHydrated,
         isActive,
@@ -1404,30 +1423,27 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             }}
                             elevateEdgesOnSelect
                             fitView
+                            fitViewOptions={FIT_VIEW_OPTIONS}
                             colorMode="light"
                             onlyRenderVisibleElements={onlyRenderVisibleElements}
                             minZoom={0.1}
                             maxZoom={1.5}
                         >
                             <Controls />
-                            <MiniMap
-                                nodeColor="hsl(var(--muted))"
-                                maskColor="hsl(var(--background)/0.5)"
-                            />
+                            {/* ponytail: a small graph fits on screen, where a minimap only covers nodes. The
+                                expanded preview's nodes never reach the minimap, so it would show an empty box. */}
+                            {nodeCount > MINIMAP_NODE_THRESHOLD && !isExpandedReadOnlyPreview ? (
+                                <MiniMap
+                                    nodeColor="hsl(var(--muted))"
+                                    maskColor="hsl(var(--background)/0.5)"
+                                />
+                            ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>
                     ) : (
-                        <div
-                            data-testid="editor-no-flow-state"
-                            className="flex h-full items-center justify-center p-6"
-                        >
-                            <Well className="max-w-md px-6 py-5 text-center">
-                                <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Choose one from the Flows panel.
-                                </p>
-                            </Well>
-                        </div>
+                        <SheetEmpty data-testid="editor-no-flow-state" icon={GitBranch} title="No flow open">
+                            Select a flow to begin authoring.
+                        </SheetEmpty>
                     )
                 }
 

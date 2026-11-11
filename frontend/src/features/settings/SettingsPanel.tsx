@@ -148,9 +148,9 @@ export function SettingsPanel() {
                 </TabsList>
             )}
         >
-        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
+        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:gap-2 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:grid-rows-none [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
-                <p className="text-sm text-muted-foreground">
+                <p className="px-4 text-sm text-muted-foreground">
                     Saved settings apply to new work. Environment and command-line overrides take precedence over saved values.
                 </p>
 
@@ -160,10 +160,10 @@ export function SettingsPanel() {
 
                 <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">
-                        <h3 className="text-lg font-semibold">Model defaults (workspace)</h3>
+                        <h3 className="text-base font-semibold">Model defaults (workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
-                        <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
+                        <p className="text-sm text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
                         {models.pending ? <p role="status">Updating…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
                         {/* The workspace has no parent: its default is the stored Codex group, whose effort can still be set. */}
@@ -171,7 +171,7 @@ export function SettingsPanel() {
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="outline" aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
-                            <Button aria-label="Discard workspace model defaults changes" size="sm" variant="ghost" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
+                            <Button aria-label="Discard workspace model defaults changes" size="sm" variant="ghost" disabled={models.pending || (!models.dirty && !models.error)} onClick={() => void models.discard()}>Discard</Button>
                         </div>
                         {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
@@ -188,9 +188,9 @@ export function SettingsPanel() {
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
                 <Card className="gap-4 py-4">
-                    <CardHeader className="px-4"><h3 className="text-lg font-semibold">Scoped configuration</h3></CardHeader>
+                    <CardHeader className="px-4"><h3 className="text-base font-semibold">Scoped configuration</h3></CardHeader>
                     <CardContent className="space-y-3 px-4">
-                        <p className="text-xs text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
+                        <p className="text-sm text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="outline" onClick={() => useStore.getState().setViewMode('editor')}>Open flow editor</Button>
                             <Button variant="outline" onClick={() => useStore.getState().setViewMode('triggers')}>Edit triggers</Button>
@@ -201,7 +201,7 @@ export function SettingsPanel() {
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
                 {getTauriInvoke() ? (
                     <Card className="gap-4 py-4">
-                        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-semibold">Desktop server</h3></CardHeader>
+                        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Desktop server</h3></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
                             {desktopSettings ? <>
                             <Well className="flex items-center justify-between gap-4 px-3 py-2">

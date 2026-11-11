@@ -1,5 +1,6 @@
 import { buildDiagnosticMaps, normalizeGraphAttrs } from '@/state/store-helpers'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import {
     Background,
     Controls,
@@ -7,6 +8,7 @@ import {
     MiniMap,
     ReactFlow,
     ReactFlowProvider,
+    useReactFlow,
     type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -42,6 +44,13 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
+// React Flow's own zoom floor: below it a fitted graph's labels are too small to read.
+const MIN_FIT_ZOOM = 0.5
+const FIT_PADDING = 24
+// The zoom controls sit at the bottom left; keep content to their right.
+const CONTROLS_GUTTER = 52
+const FIT_VIEW_PADDING = { top: `${FIT_PADDING}px`, right: `${FIT_PADDING}px`, bottom: `${FIT_PADDING}px`, left: `${CONTROLS_GUTTER}px` } as const
+
 const EMPTY_DIAGNOSTICS: import('@/store').DiagnosticEntry[] = []
 const EMPTY_GRAPH_NODES: Node[] = []
 
@@ -65,6 +74,8 @@ function RunGraphCanvasInner({
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
+    const paneRef = useRef<HTMLDivElement>(null)
+    const { fitView, getNodesBounds, getViewport, setViewport } = useReactFlow()
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
     const edges = matchingVariant ? runDetailSession?.graphEdges ?? [] : []
@@ -86,6 +97,29 @@ function RunGraphCanvasInner({
             }
         })
     ), [nodes, nodeStatusesById, selectedNodeId])
+
+    // Fit each loaded graph whole. Only a graph too big to read whole opens at its top-left
+    // (the start of the flow), and the Fit view control still shows all of it.
+    useEffect(() => {
+        if (nodes.length === 0) {
+            return
+        }
+        void fitView({ padding: FIT_VIEW_PADDING, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }).then(() => {
+            const pane = paneRef.current
+            if (!pane) {
+                return
+            }
+            const bounds = getNodesBounds(nodes)
+            const { x, y, zoom } = getViewport()
+            const overflowsX = bounds.width * zoom > pane.clientWidth - CONTROLS_GUTTER - FIT_PADDING
+            const overflowsY = bounds.height * zoom > pane.clientHeight - 2 * FIT_PADDING
+            void setViewport({
+                x: overflowsX ? CONTROLS_GUTTER - bounds.x * zoom : x,
+                y: overflowsY ? FIT_PADDING - bounds.y * zoom : y,
+                zoom,
+            })
+        })
+    }, [nodes, fitView, getNodesBounds, getViewport, setViewport])
 
     useEffect(() => {
         const loadId = activeLoadRef.current + 1
@@ -179,6 +213,7 @@ function RunGraphCanvasInner({
 
     return (
         <div
+            ref={paneRef}
             data-testid="run-graph-canvas"
             className={
                 paneHeight === 'fill'
@@ -190,8 +225,6 @@ function RunGraphCanvasInner({
             <ReactFlow
                 nodes={decoratedNodes}
                 edges={edges}
-                fitView
-                fitViewOptions={{ padding: 0.15 }}
                 nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable={true}
@@ -267,31 +300,31 @@ export function RunGraphCard({
         >
             <CardHeader className="gap-1 px-0">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                    <h3
-                        className="shrink-0 whitespace-nowrap text-sm font-semibold text-foreground"
-                    >
+                    <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground">
                         Run graph
-                    </h3>
+                    </h2>
                     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                         {onOpenInEditor ? (
                             <Button
                                 onClick={onOpenInEditor}
                                 data-testid="run-graph-open-in-editor-button"
                                 variant="outline"
-                                size="xs"
+                                size="sm"
                                 disabled={Boolean(openInEditorDisabledReason)}
                                 title={openInEditorDisabledReason ?? 'Open this flow in the Editor with the selected node focused'}
                             >
-                                Open in Editor
+                                Open in editor
                             </Button>
                         ) : null}
                         <Button
                             onClick={() => setRefreshToken((current) => current + 1)}
                             data-testid="run-graph-refresh-button"
-                            variant="outline"
-                            size="xs"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Refresh graph"
+                            title="Refresh graph"
                         >
-                            {graphStatus === 'loading' ? 'Refreshing…' : 'Refresh'}
+                            <RefreshCw aria-hidden="true" className={graphStatus === 'loading' ? 'animate-spin' : undefined} />
                         </Button>
                         <ChildFlowExpansionToggle
                             expanded={expandChildFlows}

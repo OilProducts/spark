@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import { FilePlus } from 'lucide-react'
+import { Plus, RefreshCw } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
@@ -157,26 +157,28 @@ export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useF
             <Button
                 type="button"
                 variant="ghost"
-                size="xs"
+                size="icon-sm"
+                aria-label="Refresh flows"
+                title="Refresh flows"
                 data-testid="editor-flow-refresh-button"
                 onClick={() => {
                     void catalog.refreshFlows()
                 }}
                 disabled={catalog.isRefreshingFlows}
             >
-                {catalog.isRefreshingFlows ? 'Refreshing…' : 'Refresh'}
+                <RefreshCw aria-hidden="true" className={catalog.isRefreshingFlows ? 'animate-spin' : undefined} />
             </Button>
             <Button
                 type="button"
-                variant="ghost"
-                size="icon-xs"
+                variant="outline"
+                size="sm"
+                aria-label="New flow"
                 onClick={() => {
                     void catalog.createNewFlow()
                 }}
-                title="New Flow"
             >
-                <FilePlus className="size-3.5" />
-                <span className="sr-only">Create flow</span>
+                <Plus aria-hidden="true" />
+                New
             </Button>
         </>
     )

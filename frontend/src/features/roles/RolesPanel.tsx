@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { MessageSquare, Play, RefreshCw } from 'lucide-react'
+import { ChevronDown, MessageSquare, Network, Play, RefreshCw } from 'lucide-react'
 import { useStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Empty, EmptyDescription } from '@/components/ui/empty'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
-import { ViewLayout } from '@/components/app/view-layout'
+import { SectionHeading } from '@/components/app/section-heading'
+import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -36,7 +36,7 @@ export function DiffBlock({ diff }: { diff: string }) {
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
     return <section aria-label={title} className="flex flex-col gap-2">
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h2 className="text-base font-semibold">{title}</h2>
         {children}
     </section>
 }
@@ -88,11 +88,11 @@ function MemoryBrowser({ project, role }: { project: string; role: string }) {
 function LiveDetails({ project, role }: { project: string; role: LiveRole }) {
     return <div data-testid="role-live-status" className="flex flex-col gap-2 text-sm">
         <p><span className="text-muted-foreground">State</span> {role.state} · <span className="text-muted-foreground">Budget</span> {budgetLine(role)}</p>
-        <h4 className="text-xs font-semibold text-muted-foreground">Recent wakes</h4>
+        <SectionHeading as="h3">Recent wakes</SectionHeading>
         {role.recent_events.length
             ? <ul className="flex flex-col gap-0.5 text-xs">{role.recent_events.map((event) => <li key={event.seq}>{event.kind} · {event.source} · <span className="text-muted-foreground">{event.at}</span></li>)}</ul>
             : <p className="text-xs text-muted-foreground">No wakes yet.</p>}
-        <h4 className="text-xs font-semibold text-muted-foreground">Memory</h4>
+        <SectionHeading as="h3">Memory</SectionHeading>
         <MemoryBrowser project={project} role={role.name} />
     </div>
 }
@@ -120,9 +120,9 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
     useEffect(() => {
         fetchRoleFile(project, item.name).then(setDetail, (e: Error) => setError(e.message))
     }, [project, item.name])
-    return <section aria-label="Role" className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
+    return <section aria-label="Role" className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
         <header className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">{item.title ?? item.name}</h2>
+            <h1 className="text-xl font-semibold tracking-tight">{item.title ?? item.name}</h1>
             {item.title && item.title !== item.name && <span className="text-xs text-muted-foreground">{item.name}</span>}
             <DefinitionBadges item={item} />
             <span className="flex-1" />
@@ -209,19 +209,19 @@ export function RolesPanel() {
                 {startError(entry) && <InlineError dense>{startError(entry)}</InlineError>}
             </li>)}</ul>
         </section>)}
-        {!project && <Empty className="text-xs"><EmptyDescription>Choose a project</EmptyDescription></Empty>}
-        {project && !list && !error && <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>}
+        {!project && <p className="px-3 py-1 text-sm text-muted-foreground">Choose a project</p>}
+        {project && !list && !error && <p className="px-3 py-1 text-sm text-muted-foreground">Loading…</p>}
     </div>
     return <ViewLayout view="roles" title="Roles" panel={panel} actions={<>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" className="size-4" /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh roles" title="Refresh roles" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" /></Button>
         <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelected(null); setList(null) }}>
-            <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span></Button>
+            <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span><ChevronDown aria-hidden="true" className="text-muted-foreground" /></Button>
         </ProjectPicker>
     </>}>
         {project && item
             ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} {...control(item)} startError={startError(item)} />
-            : <div data-testid="roles-empty-state" className="flex h-full items-center justify-center p-6">
-                <Empty className="max-w-md items-center text-center"><EmptyDescription>Select a role to see its prompt and where it is used. Start a standing role to open its conversation.</EmptyDescription></Empty>
-            </div>}
+            : <SheetEmpty data-testid="roles-empty-state" icon={Network} title="No role selected">
+                Select a role to see its prompt and where it is used. Start a standing role to open its conversation.
+            </SheetEmpty>}
     </ViewLayout>
 }

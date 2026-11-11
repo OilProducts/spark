@@ -38,7 +38,7 @@ const closedActors: Record<string, string> = { assistant: 'the mission agent', h
 
 function RailSection({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
     return <section aria-label={label} className="flex flex-col gap-2">
-        <SectionHeading as="h3" action={action}>{label}</SectionHeading>
+        <SectionHeading action={action}>{label}</SectionHeading>
         {children}
     </section>
 }
@@ -149,7 +149,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         <header className="flex shrink-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-border px-6 pt-5 pb-4">
             <div className="flex min-w-0 flex-1 basis-80 flex-col gap-1.5">
                 <p className="truncate text-xs text-muted-foreground">{projectLabel(registry, project)} · Mission</p>
-                <h2 ref={heading} tabIndex={-1} title={mission.fields.title} className="line-clamp-2 max-w-[62ch] text-xl leading-snug font-semibold break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.title}</h2>
+                <h1 ref={heading} tabIndex={-1} title={mission.fields.title} className="line-clamp-2 max-w-[62ch] text-xl leading-snug font-semibold tracking-tight break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.title}</h1>
                 <div role="status" className="flex min-w-0 items-center gap-2.5">
                     <StatusPill tone={missionTone(mission)}>{stateWord}</StatusPill>
                     {' '}
@@ -195,7 +195,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                                 {mission.closed.status === 'done'
                                     ? <Check aria-hidden="true" className="size-4 text-success" />
                                     : <X aria-hidden="true" className={`size-4 ${statusTextClassName(mission.closed.status === 'failed' ? 'destructive' : 'neutral')}`} />}
-                                <h3 className="font-semibold">Closed as {mission.closed.status}</h3>
+                                <h2 className="font-semibold">Closed as {mission.closed.status}</h2>
                                 {' '}
                                 <span className="text-muted-foreground">· <time dateTime={mission.closed.at}>{formatMissionDate(mission.closed.at)}</time>{closedActor && `, by ${closedActor}`}</span>
                             </div>

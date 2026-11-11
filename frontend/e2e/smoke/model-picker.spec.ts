@@ -32,7 +32,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         await page.locator('.react-flow__node').filter({ hasText: 'Ingest Spec' }).click()
         const inspector = page.locator('[data-inspector-scope="node"]')
         await expect(inspector).toBeVisible()
-        const advanced = inspector.getByRole('button', { name: 'Show Advanced' })
+        const advanced = inspector.getByRole('button', { name: 'Show advanced' })
         if (await advanced.isVisible()) await advanced.click()
         await inspector.getByRole('button', { name: /^Model:/ }).click()
         await expect(page.getByRole('combobox', { name: 'Search models' })).toBeFocused()

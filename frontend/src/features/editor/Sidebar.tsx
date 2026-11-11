@@ -327,7 +327,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         selectedNodeId,
         selectedEdgeId,
     })
-    const inspectorTitle = activeInspectorScope === 'edge' ? 'Edge' : activeInspectorScope === 'node' ? 'Node' : activeInspectorScope === 'graph' ? 'Graph' : 'Flows'
     const showGraphInspector = activeInspectorScope === 'graph'
     const showNodeInspector = activeInspectorScope === 'node'
     const showEdgeInspector = activeInspectorScope === 'edge'
@@ -388,14 +387,19 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         }))
     }
 
+    // Seed a new session from the derived one, or its drafts start empty and the other list's keys vanish from view.
+    const updateSelectedNodeInspectorSession = (patch: Partial<typeof selectedNodeInspectorSession>) => {
+        if (selectedNodeId) {
+            updateEditorNodeInspectorSession(selectedNodeId, { ...selectedNodeInspectorSession, ...patch })
+        }
+    }
+
     const handleReadsContextChange = (value: string) => {
         const parsed = parseContextKeyDraft(value)
-        if (selectedNodeId) {
-            updateEditorNodeInspectorSession(selectedNodeId, {
-                readsContextDraft: value,
-                readsContextError: parsed.error,
-            })
-        }
+        updateSelectedNodeInspectorSession({
+            readsContextDraft: value,
+            readsContextError: parsed.error,
+        })
         if (parsed.error) {
             return
         }
@@ -404,12 +408,10 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
 
     const handleWritesContextChange = (value: string) => {
         const parsed = parseContextKeyDraft(value)
-        if (selectedNodeId) {
-            updateEditorNodeInspectorSession(selectedNodeId, {
-                writesContextDraft: value,
-                writesContextError: parsed.error,
-            })
-        }
+        updateSelectedNodeInspectorSession({
+            writesContextDraft: value,
+            writesContextError: parsed.error,
+        })
         if (parsed.error) {
             return
         }
@@ -517,16 +519,12 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
             data-inspector-active-scope={activeInspectorScope}
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`bg-background flex flex-col shrink-0 overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[46vh] border-b' : 'border-r'
+                isNarrowViewport ? 'w-full max-h-[40vh] border-t' : 'border-r'
             }`}
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >
-            <div className="px-4 pb-2 pt-4">
-                <div className="text-xs font-semibold text-muted-foreground">{inspectorTitle}</div>
-            </div>
-
             {isFilesMode ? (
-                <p data-testid="inspector-files-mode-notice" className="px-4 pb-2 text-xs text-muted-foreground">
+                <p data-testid="inspector-files-mode-notice" className="px-4 pt-4 text-xs text-muted-foreground">
                     Read-only while editing files. Switch to Structured to edit here.
                 </p>
             ) : null}
@@ -554,16 +552,9 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         onOpenGraphChildSettings={openGraphChildSettings}
                         onReadsContextChange={handleReadsContextChange}
                         onWritesContextChange={handleWritesContextChange}
-                        onSetShowAdvanced={(value) => {
-                            if (!selectedNodeId) {
-                                return
-                            }
-                            updateEditorNodeInspectorSession(selectedNodeId, {
-                                showAdvanced: typeof value === 'function'
-                                    ? value(showAdvanced)
-                                    : value,
-                            })
-                        }}
+                        onSetShowAdvanced={(value) => updateSelectedNodeInspectorSession({
+                            showAdvanced: typeof value === 'function' ? value(showAdvanced) : value,
+                        })}
                         onNodeExtensionValueChange={handleNodeExtensionValueChange}
                         onNodeExtensionRemove={handleNodeExtensionRemove}
                         onNodeExtensionAdd={handleNodeExtensionAdd}

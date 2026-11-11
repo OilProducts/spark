@@ -180,7 +180,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
-                            <Sidebar desktopWidthPx={editorSidebarWidth} />
+                            {isNarrowViewport ? null : <Sidebar desktopWidthPx={editorSidebarWidth} />}
                             {!isNarrowViewport && hasActiveFlow ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
@@ -200,6 +200,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                             <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
                                 <Editor isActive={isActive} />
                             </div>
+                            {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
+                            {isNarrowViewport ? <Sidebar desktopWidthPx={editorSidebarWidth} /> : null}
                         </EditorGraphBridgeProvider>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

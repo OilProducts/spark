@@ -62,8 +62,8 @@ export function TriggerEditor({
     const fieldId = (suffix: string) => `${mode}-trigger-${suffix}`
 
     return (
-        <div className="mt-4 space-y-3">
-            <div className="grid gap-3 lg:grid-cols-2">
+        // One two-column grid for every field; selects fill their cell like inputs.
+        <div className="grid gap-4 sm:grid-cols-2 [&_[data-slot=native-select-wrapper]]:w-full">
                 <TriggerField label="Name" htmlFor={fieldId('name')} className="text-sm">
                     <Input
                         id={fieldId('name')}
@@ -71,6 +71,25 @@ export function TriggerEditor({
                         onChange={(event) => onChange({ ...form, name: event.target.value })}
                         className="text-sm"
                     />
+                </TriggerField>
+                {/* A trigger belongs to a project: chosen on create, fixed after. */}
+                <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
+                    <NativeSelect
+                        id={fieldId('project-choice')}
+                        value={form.projectPath}
+                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
+                        disabled={mode === 'edit'}
+                        className="text-sm"
+                    >
+                        {mode === 'edit' && !projectRegistry[form.projectPath] ? (
+                            <option value={form.projectPath}>{form.projectPath}</option>
+                        ) : null}
+                        {orderProjects(projectRegistry).map((project) => (
+                            <option key={project.directoryPath} value={project.directoryPath}>
+                                {projectLabel(projectRegistry, project.directoryPath)}
+                            </option>
+                        ))}
+                    </NativeSelect>
                 </TriggerField>
                 <TriggerField label="Action" htmlFor={fieldId('action')}>
                     <NativeSelect id={fieldId('action')} value={form.actionMode} disabled={protectedTrigger} onChange={e => onChange({ ...form, actionMode: e.target.value })}>
@@ -100,9 +119,6 @@ export function TriggerEditor({
                         className="text-sm font-mono"
                     />
                 </TriggerField>}
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-3">
                 <TriggerField label="Source type" htmlFor={fieldId('source-type')} className="text-sm">
                     <NativeSelect
                         id={fieldId('source-type')}
@@ -114,40 +130,12 @@ export function TriggerEditor({
                         <option value="schedule">Schedule</option>
                         <option value="poll">Poll</option>
                         <option value="webhook">Webhook</option>
-                        <option value="flow_event">Flow Event</option>
+                        <option value="flow_event">Flow event</option>
                     </NativeSelect>
                 </TriggerField>
-                {/* A trigger belongs to a project: chosen on create, fixed after. */}
-                <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
-                    <NativeSelect
-                        id={fieldId('project-choice')}
-                        value={form.projectPath}
-                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
-                        disabled={mode === 'edit'}
-                        className="text-sm"
-                    >
-                        {mode === 'edit' && !projectRegistry[form.projectPath] ? (
-                            <option value={form.projectPath}>{form.projectPath}</option>
-                        ) : null}
-                        {orderProjects(projectRegistry).map((project) => (
-                            <option key={project.directoryPath} value={project.directoryPath}>
-                                {projectLabel(projectRegistry, project.directoryPath)}
-                            </option>
-                        ))}
-                    </NativeSelect>
-                </TriggerField>
-                <Label htmlFor={fieldId('enabled')} className="flex items-end gap-2 text-sm">
-                    <Checkbox
-                        id={fieldId('enabled')}
-                        checked={form.enabled}
-                        onCheckedChange={(checked) => onChange({ ...form, enabled: checked === true })}
-                    />
-                    <span className="text-sm font-medium text-foreground">Enabled</span>
-                </Label>
-            </div>
 
             {form.sourceType === 'schedule' ? (
-                <div className="grid gap-3 lg:grid-cols-2">
+                <>
                     <TriggerField label="Schedule kind" htmlFor={fieldId('schedule-kind')} className="text-sm">
                         <NativeSelect
                             id={fieldId('schedule-kind')}
@@ -157,7 +145,7 @@ export function TriggerEditor({
                             className="text-sm"
                         >
                             <option value="interval">Interval</option>
-                            <option value="once">One Shot</option>
+                            <option value="once">One shot</option>
                             <option value="weekly">Weekly</option>
                         </NativeSelect>
                     </TriggerField>
@@ -173,7 +161,7 @@ export function TriggerEditor({
                         </TriggerField>
                     ) : null}
                     {form.scheduleKind === 'once' ? (
-                        <TriggerField label="Run at (ISO UTC)" htmlFor={fieldId('schedule-run-at')} className="text-sm lg:col-span-2">
+                        <TriggerField label="Run at (ISO UTC)" htmlFor={fieldId('schedule-run-at')} className="text-sm sm:col-span-2">
                             <Input
                                 id={fieldId('schedule-run-at')}
                                 value={form.scheduleRunAt}
@@ -196,7 +184,7 @@ export function TriggerEditor({
                                     placeholder="mon,wed,fri"
                                 />
                             </TriggerField>
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-2 gap-4">
                                 <TriggerField label="Hour" htmlFor={fieldId('schedule-hour')} className="text-sm">
                                     <Input
                                         id={fieldId('schedule-hour')}
@@ -218,12 +206,12 @@ export function TriggerEditor({
                             </div>
                         </>
                     ) : null}
-                </div>
+                </>
             ) : null}
 
             {form.sourceType === 'poll' ? (
-                <div className="grid gap-3 lg:grid-cols-2">
-                    <TriggerField label="Poll URL" htmlFor={fieldId('poll-url')} className="text-sm lg:col-span-2">
+                <>
+                    <TriggerField label="Poll URL" htmlFor={fieldId('poll-url')} className="text-sm">
                         <Input
                             id={fieldId('poll-url')}
                             value={form.pollUrl}
@@ -259,7 +247,7 @@ export function TriggerEditor({
                             className="text-sm"
                         />
                     </TriggerField>
-                    <TriggerField label="Headers JSON" htmlFor={fieldId('poll-headers-json')} className="text-sm lg:col-span-2">
+                    <TriggerField label="Headers JSON" htmlFor={fieldId('poll-headers-json')} className="text-sm sm:col-span-2">
                         <Textarea
                             id={fieldId('poll-headers-json')}
                             value={form.pollHeadersText}
@@ -268,11 +256,11 @@ export function TriggerEditor({
                             className="min-h-24 font-mono text-sm"
                         />
                     </TriggerField>
-                </div>
+                </>
             ) : null}
 
             {form.sourceType === 'flow_event' ? (
-                <div className="grid gap-3 lg:grid-cols-2">
+                <>
                     <TriggerField label="Observed flow" htmlFor={fieldId('flow-event-flow-name')} className="text-sm">
                         <Input
                             id={fieldId('flow-event-flow-name')}
@@ -293,16 +281,16 @@ export function TriggerEditor({
                             placeholder="completed,failed"
                         />
                     </TriggerField>
-                </div>
+                </>
             ) : null}
 
             {form.sourceType === 'webhook' ? (
-                <Well className="p-3 text-sm text-muted-foreground">
+                <Well className="p-3 text-sm text-muted-foreground sm:col-span-2">
                     Webhook triggers use the shared ingress endpoint at <code>{SHARED_WEBHOOK_ENDPOINT}</code>. The key and secret are generated automatically.
                 </Well>
             ) : null}
 
-            {form.actionMode === 'static' && <TriggerField label="Static context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
+            {form.actionMode === 'static' && <TriggerField label="Static context JSON" htmlFor={fieldId('static-context-json')} className="text-sm sm:col-span-2">
                 <Textarea
                     id={fieldId('static-context-json')}
                     value={form.staticContextText}
@@ -311,6 +299,15 @@ export function TriggerEditor({
                     className="min-h-24 font-mono text-sm"
                 />
             </TriggerField>}
+
+            <div className="flex items-center gap-2 sm:col-span-2">
+                <Checkbox
+                    id={fieldId('enabled')}
+                    checked={form.enabled}
+                    onCheckedChange={(checked) => onChange({ ...form, enabled: checked === true })}
+                />
+                <Label htmlFor={fieldId('enabled')}>Enabled</Label>
+            </div>
         </div>
     )
 }

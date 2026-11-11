@@ -242,13 +242,13 @@ describe('Graph and settings behavior', () => {
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
-    expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Apply to nodes' })).toBeEnabled()
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
 
-    await user.clear(screen.getByLabelText('Default Max Retries'))
-    await user.type(screen.getByLabelText('Default Max Retries'), '-1')
+    await user.clear(screen.getByLabelText('Default max retries'))
+    await user.type(screen.getByLabelText('Default max retries'), '-1')
 
     expect(screen.getByText('Max retries default must be a non-negative integer.')).toBeVisible()
     expect(useStore.getState().flowMetadataErrors.max_retries).toContain('non-negative integer')
@@ -267,7 +267,7 @@ describe('Graph and settings behavior', () => {
     { graphThinking: '', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '4096', expectedThinking: 'budget', expectedBudget: 4096 },
-  ])('Apply To Nodes resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
+  ])('Apply to nodes resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
     graphThinking, workspaceThinking, graphBudget, expectedThinking, expectedBudget,
   }) => {
     const user = userEvent.setup()
@@ -284,7 +284,7 @@ describe('Graph and settings behavior', () => {
       </ReactFlowProvider>,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Apply To Nodes' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to nodes' }))
 
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
@@ -303,7 +303,7 @@ describe('Graph and settings behavior', () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().setFlowMetadata({
-        title: '  Implement From Plan File  ',
+        title: '  Implement from plan file  ',
         description: '  Snapshot a plan file, implement it, and iterate until complete.  ',
         custom_attr: 'keep me',
       } as Record<string, string>)
@@ -311,7 +311,7 @@ describe('Graph and settings behavior', () => {
 
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    expect(screen.getByLabelText('Title')).toHaveValue('Implement From Plan File')
+    expect(screen.getByLabelText('Title')).toHaveValue('Implement from plan file')
     expect(screen.getByLabelText('Description')).toHaveValue(
       'Snapshot a plan file, implement it, and iterate until complete.',
     )
@@ -324,7 +324,7 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByText('description')).not.toBeInTheDocument()
 
     const flow = buildFlow([], [], useStore.getState().flowMetadata)
-    expect(flow.title).toBe('Implement From Plan File')
+    expect(flow.title).toBe('Implement from plan file')
     expect(flow.description).toBe('Snapshot a plan file, implement it, and iterate until complete.')
   })
 
@@ -369,8 +369,8 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-subgraph-add')).not.toBeInTheDocument()
 
-    await user.clear(screen.getByLabelText('Default Max Retries'))
-    await user.type(screen.getByLabelText('Default Max Retries'), '3')
+    await user.clear(screen.getByLabelText('Default max retries'))
+    await user.type(screen.getByLabelText('Default max retries'), '3')
 
     const state = useStore.getState()
     const flow = buildFlow([], [], state.flowMetadata)
@@ -421,7 +421,7 @@ describe('Graph and settings behavior', () => {
     const user = userEvent.setup()
     const firstRender = wrapWithFlowProvider(<GraphSettings />)
 
-    await user.click(screen.getByRole('button', { name: 'Graph Settings' }))
+    await user.click(screen.getByRole('button', { name: 'Graph settings' }))
     await waitFor(() => {
       expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     })
@@ -455,12 +455,12 @@ describe('Graph and settings behavior', () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    await user.type(screen.getByLabelText('Execution Lock Key'), 'integration')
+    await user.type(screen.getByLabelText('Execution lock key'), 'integration')
     expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
     expect(buildFlow([], [], useStore.getState().flowMetadata).execution_lock)
       .toEqual({ scope: 'project', key: 'integration', conflict_policy: 'queue' })
 
-    await user.clear(screen.getByLabelText('Execution Lock Key'))
+    await user.clear(screen.getByLabelText('Execution lock key'))
     const base = { execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' } }
     expect(buildFlow([], [], useStore.getState().flowMetadata, base).execution_lock).toBeUndefined()
     expect(buildFlow([], [], {}, base).execution_lock).toEqual(base.execution_lock)

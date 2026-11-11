@@ -103,7 +103,7 @@ export function ValidationEdge({
     const edgeStyle: CSSProperties = {
         strokeLinecap: 'round',
         strokeLinejoin: 'round',
-        strokeWidth: 1.25,
+        strokeWidth: 1.5,
         ...style,
     }
 
@@ -118,11 +118,11 @@ export function ValidationEdge({
     } else if (isDerivedLinkEdge) {
         edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.6)'
         edgeStyle.strokeDasharray = '6 6'
-        edgeStyle.strokeWidth = 1.25
+        edgeStyle.strokeWidth = 1.5
         edgeStyle.opacity = 0.8
     } else if (isDerivedChildEdge) {
         edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.45)'
-        edgeStyle.strokeWidth = 1.25
+        edgeStyle.strokeWidth = 1.5
         edgeStyle.opacity = 0.62
     } else if (selected) {
         edgeStyle.stroke = 'hsl(var(--primary))'
@@ -166,7 +166,7 @@ export function ValidationEdge({
                         <div
                             data-testid="edge-diagnostic-badge"
                             onClick={handleSelect}
-                            className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${badgeClass}`}
+                            className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-medium ${badgeClass}`}
                             title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
                         >
                             {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}

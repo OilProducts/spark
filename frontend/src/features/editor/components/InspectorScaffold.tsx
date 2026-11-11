@@ -26,20 +26,19 @@ export function InspectorScaffold({
         <section
             data-testid="inspector-scaffold"
             data-inspector-scope={scopeLabel.toLowerCase()}
-            className="p-4"
         >
             <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                    <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                        {scopeLabel}
-                    </span>
-                    <h2 className="text-lg font-semibold text-foreground">{title}</h2>
-                </div>
+                <h2 className="text-base font-semibold text-foreground">{title}</h2>
                 {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
                 {entityValue ? (
                     <div className="rounded-lg bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}
-                        <span className="font-mono break-all">{entityValue}</span>
+                        {/* Paths wrap after a slash, not mid-word. */}
+                        <span className="font-mono break-words">
+                            {entityValue.split('/').map((part, index) => (
+                                <span key={index}>{index > 0 ? <>/<wbr /></> : null}{part}</span>
+                            ))}
+                        </span>
                     </div>
                 ) : null}
             </div>

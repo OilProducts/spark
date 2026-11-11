@@ -170,10 +170,13 @@ export function buildEdgeLayoutAssignments(
                 ? chooseDefaultSourceSide(sourceRect, targetRect)
                 : 'bottom'
         )
+        // A self-loop leaves and re-enters on its source side.
         const targetSide = targetIntent ?? savedEdgeLayout?.targetSide ?? (
-            sourceRect && targetRect
-                ? chooseDefaultTargetSide(sourceRect, targetRect)
-                : 'top'
+            edge.source === edge.target
+                ? sourceSide
+                : sourceRect && targetRect
+                    ? chooseDefaultTargetSide(sourceRect, targetRect)
+                    : 'top'
         )
 
         return {
@@ -192,45 +195,25 @@ export function buildEdgeLayoutAssignments(
         }
     })
 
-    const sourceGroups = new Map<string, Array<{ layoutKey: string; projection: number; edgeId: string }>>()
-    const targetGroups = new Map<string, Array<{ layoutKey: string; projection: number; edgeId: string }>>()
+    // Edges leaving and entering one side of a node share its slots, so an outgoing and an
+    // incoming edge never meet at the same point.
+    const sideGroups = new Map<string, Array<{ slotKey: string; projection: number; edgeId: string }>>()
+    const addToSideGroup = (groupKey: string, slotKey: string, projection: number, edgeId: string) => {
+        const entries = sideGroups.get(groupKey) ?? []
+        entries.push({ slotKey, projection, edgeId })
+        sideGroups.set(groupKey, entries)
+    }
 
     baseAssignments.forEach((assignment) => {
-        const sourceGroupKey = `${assignment.source}:${assignment.sourceSide}`
-        const targetGroupKey = `${assignment.target}:${assignment.targetSide}`
-        const sourceEntries = sourceGroups.get(sourceGroupKey) ?? []
-        sourceEntries.push({
-            layoutKey: assignment.layoutKey,
-            projection: assignment.sourceProjection,
-            edgeId: assignment.edgeId,
-        })
-        sourceGroups.set(sourceGroupKey, sourceEntries)
-
-        const targetEntries = targetGroups.get(targetGroupKey) ?? []
-        targetEntries.push({
-            layoutKey: assignment.layoutKey,
-            projection: assignment.targetProjection,
-            edgeId: assignment.edgeId,
-        })
-        targetGroups.set(targetGroupKey, targetEntries)
+        addToSideGroup(`${assignment.source}:${assignment.sourceSide}`, `${assignment.layoutKey}:source`, assignment.sourceProjection, assignment.edgeId)
+        addToSideGroup(`${assignment.target}:${assignment.targetSide}`, `${assignment.layoutKey}:target`, assignment.targetProjection, assignment.edgeId)
     })
 
-    const sourceSlotByLayoutKey = new Map<string, { slot: number; slotCount: number }>()
-    sourceGroups.forEach((entries) => {
+    const slotByKey = new Map<string, { slot: number; slotCount: number }>()
+    sideGroups.forEach((entries) => {
         const sortedEntries = [...entries].sort(compareLayoutGroupEntry)
         sortedEntries.forEach((entry, index) => {
-            sourceSlotByLayoutKey.set(entry.layoutKey, {
-                slot: index,
-                slotCount: sortedEntries.length,
-            })
-        })
-    })
-
-    const targetSlotByLayoutKey = new Map<string, { slot: number; slotCount: number }>()
-    targetGroups.forEach((entries) => {
-        const sortedEntries = [...entries].sort(compareLayoutGroupEntry)
-        sortedEntries.forEach((entry, index) => {
-            targetSlotByLayoutKey.set(entry.layoutKey, {
+            slotByKey.set(entry.slotKey, {
                 slot: index,
                 slotCount: sortedEntries.length,
             })
@@ -239,8 +222,8 @@ export function buildEdgeLayoutAssignments(
 
     const assignments = Object.fromEntries(
         baseAssignments.map((assignment) => {
-            const sourceSlot = sourceSlotByLayoutKey.get(assignment.layoutKey) ?? { slot: 0, slotCount: 1 }
-            const targetSlot = targetSlotByLayoutKey.get(assignment.layoutKey) ?? { slot: 0, slotCount: 1 }
+            const sourceSlot = slotByKey.get(`${assignment.layoutKey}:source`) ?? { slot: 0, slotCount: 1 }
+            const targetSlot = slotByKey.get(`${assignment.layoutKey}:target`) ?? { slot: 0, slotCount: 1 }
             return [assignment.layoutKey, {
                 edgeId: assignment.edgeId,
                 layoutKey: assignment.layoutKey,

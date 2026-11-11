@@ -131,7 +131,7 @@ export function GraphRunConfigurationSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Run Configuration"
+                title="Run configuration"
                 description="Editor-scoped runtime defaults used while authoring and previewing this flow."
             />
             <div className="space-y-3">
@@ -144,7 +144,7 @@ export function GraphRunConfigurationSection({
                         placeholder="codex default"
                     />
                 </GraphSettingsField>
-                <GraphSettingsField label="Working Directory" htmlFor="graph-run-working-directory">
+                <GraphSettingsField label="Working directory" htmlFor="graph-run-working-directory">
                     <Input
                         id="graph-run-working-directory"
                         value={workingDir}
@@ -170,7 +170,7 @@ export function GraphMetadataSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Flow Metadata"
+                title="Flow metadata"
             />
             <div className="space-y-3">
                 <GraphSettingsField
@@ -182,7 +182,7 @@ export function GraphMetadataSection({
                         value={flowMetadata.title || ''}
                         onChange={(event) => updateFlowMetadata('title', event.target.value)}
                         className="h-8 text-sm"
-                        placeholder="Implement From Plan File"
+                        placeholder="Implement from plan file"
                     />
                 </GraphSettingsField>
                 <GraphSettingsField
@@ -199,7 +199,7 @@ export function GraphMetadataSection({
                     />
                 </GraphSettingsField>
                 <GraphSettingsField
-                    label="Execution Lock Key"
+                    label="Execution lock key"
                     htmlFor="graph-attr-execution-lock-key"
                     helper="Runs of flows sharing this key queue one at a time per project. Leave empty for no lock."
                 >
@@ -229,8 +229,8 @@ export function GraphLaunchInputsSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Launch Inputs"
-                description="Define the structured fields Spark should collect before a run starts."
+                title="Launch inputs"
+                description="Fields Spark collects as context values before a run starts."
             />
             <LaunchInputsEditor
                 entries={launchInputDrafts}
@@ -260,12 +260,12 @@ export function GraphResultSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Run Result"
+                title="Run result"
                 description="Choose the node response Spark should surface after a run completes."
             />
             <div className="space-y-3">
                 <GraphSettingsField
-                    label="Result Node"
+                    label="Result node"
                     htmlFor="graph-attr-spark-result-node"
                     helper={FLOW_METADATA_HELP.result_node}
                 >
@@ -302,7 +302,7 @@ export function GraphResultSection({
                 </div>
                 {summaryEnabled ? (
                     <GraphSettingsField
-                        label="Summary Prompt"
+                        label="Summary prompt"
                         htmlFor="graph-attr-spark-result-summary-prompt"
                         helper={FLOW_METADATA_HELP.result_summary_prompt}
                     >
@@ -337,7 +337,7 @@ export function GraphExecutionDefaultsSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Execution Defaults"
+                title="Execution defaults"
             />
             <GraphSettingsNotice
                 data-testid="flow-metadata-help"
@@ -363,7 +363,7 @@ export function GraphExecutionDefaultsSection({
                 <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                         <GraphSettingsField
-                            label="Default Max Retries"
+                            label="Default max retries"
                             htmlFor="graph-attr-default-max-retries"
                             helper={FLOW_METADATA_HELP.max_retries}
                             error={flowMetadataErrors.max_retries}
@@ -407,7 +407,7 @@ export function GraphAdvancedAttrsSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Extension Metadata"
+                title="Extension metadata"
                 action={(
                     <Button
                         type="button"
@@ -417,7 +417,7 @@ export function GraphAdvancedAttrsSection({
                         className="h-8 px-2 text-xs"
                         onClick={() => setShowAdvancedFlowMetadata((current) => !current)}
                     >
-                        {showAdvancedFlowMetadata ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
+                        {showAdvancedFlowMetadata ? 'Hide advanced fields' : 'Show advanced fields'}
                     </Button>
                 )}
             />
@@ -455,7 +455,7 @@ export function GraphLlmDefaultsSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Model Defaults"
+                title="Model defaults"
             />
             <div className="space-y-3">
                 <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
@@ -483,7 +483,7 @@ export function GraphLlmDefaultsSection({
                         className="h-8 px-2 text-xs"
                         title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
                     >
-                        Apply To Nodes
+                        Apply to nodes
                     </Button>
                     <Button
                         type="button"
@@ -502,7 +502,7 @@ export function GraphLlmDefaultsSection({
 
                         }}
                     >
-                        Reset From Global
+                        Reset from global
                     </Button>
                 </div>
             </div>

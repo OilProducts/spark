@@ -21,11 +21,11 @@ import { useEditorGraphBridgeRef } from '@/features/editor/EditorGraphBridgeCont
 import { statusToneClassName } from '@/features/runs/model/shared'
 
 import {
+    WORKFLOW_NODE_KINDS,
     WorkflowNodeFrame,
     getWorkflowNodeContainerStyle,
     getWorkflowNodeContentClassName,
     getWorkflowNodeFramePalette,
-    getWorkflowNodeOverlayOffsetClassName,
 } from './workflowNodeFrames'
 import { useCanvasSessionMode, useCanvasRunId } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
@@ -64,6 +64,13 @@ const FLOW_PORT_HANDLES = [
         targetStyle: { left: 0, top: '42%', transform: 'translate(-50%, -50%)' },
     },
 ] as const
+
+const NODE_STATUS_LABELS: Record<string, string> = {
+    running: 'Running',
+    success: 'Succeeded',
+    failed: 'Failed',
+    waiting: 'Needs input',
+}
 
 type BaseWorkflowNodeProps = NodeProps & {
     defaultShape: WorkflowNodeShape
@@ -179,7 +186,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const hasDiagnosticWarning = diagnosticsForNode.some((diag) => diag.severity === 'warning')
     const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
-    const overlayOffsetClassName = getWorkflowNodeOverlayOffsetClassName(renderedShape)
+    const nodeKind = WORKFLOW_NODE_KINDS[renderedShape]
+    const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
         'h-2.5 w-2.5 transition-opacity',
@@ -364,45 +372,32 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 />
             ))}
 
-            <div className={cn('absolute left-2 right-2 z-20 flex items-start justify-between', overlayOffsetClassName)}>
-                <div className="min-w-0">
-                    {isWaiting && (
-                        <div className="rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-warning">
-                            Needs Input
-                        </div>
-                    )}
-                    {isReadOnlyPreviewNode && (
-                        <div className="mt-1 rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            Read-only Preview
-                        </div>
-                    )}
-                </div>
-                <div className="flex min-w-0 flex-col items-end gap-1">
-                    {selected && isEditorCanvas && !isReadOnlyEditorCanvas && (
-                        <button
-                            onClick={openDetailsEditor}
-                            className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                        >
-                            Edit
-                        </button>
-                    )}
-                    {diagnosticsCount > 0 && (
-                        <div
-                            data-testid="node-diagnostic-badge"
-                            className={cn(
-                                'rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide',
-                                hasDiagnosticError
-                                    ? 'text-destructive'
-                                    : hasDiagnosticWarning
-                                        ? 'text-warning'
-                                        : 'text-info',
-                            )}
-                            title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
-                        >
-                            {diagnosticsCount} {hasDiagnosticError ? 'Error' : hasDiagnosticWarning ? 'Warn' : 'Info'}
-                        </div>
-                    )}
-                </div>
+            {/* Above the node, so badges never collide with a non-rectangular frame. */}
+            <div className="absolute bottom-full right-0 z-20 mb-1 flex items-center gap-1">
+                {selected && isEditorCanvas && !isReadOnlyEditorCanvas && (
+                    <button
+                        onClick={openDetailsEditor}
+                        className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+                    >
+                        Edit
+                    </button>
+                )}
+                {diagnosticsCount > 0 && (
+                    <div
+                        data-testid="node-diagnostic-badge"
+                        className={cn(
+                            'rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium',
+                            hasDiagnosticError
+                                ? 'text-destructive'
+                                : hasDiagnosticWarning
+                                    ? 'text-warning'
+                                    : 'text-info',
+                        )}
+                        title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
+                    >
+                        {diagnosticsCount} {hasDiagnosticError ? 'Error' : hasDiagnosticWarning ? 'Warn' : 'Info'}
+                    </div>
+                )}
             </div>
 
             <div
@@ -412,7 +407,14 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     getWorkflowNodeContentClassName(renderedShape),
                 )}
             >
-                <div className="flex w-full flex-col items-center justify-center gap-1">
+                <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1">
+                    {derivedPreviewMeta?.kind === 'child-cluster' ? null : (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                            <nodeKind.Icon className="size-3.5 shrink-0" aria-hidden />
+                            {/* A start node labelled Start needs no second Start. */}
+                            {nodeKind.caption.toLowerCase() === displayLabel.toLowerCase() ? null : nodeKind.caption}
+                        </span>
+                    )}
                     {isEditingLabel ? (
                         <input
                             ref={inputRef}
@@ -425,22 +427,20 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         />
                     ) : (
                         <span className={cn(
-                            'line-clamp-3 text-sm font-semibold',
+                            'line-clamp-2 text-sm font-semibold',
                             isReadOnlyPreviewNode ? 'text-muted-foreground' : 'text-foreground',
                         )}
                         >
                             {displayLabel}
                         </span>
                     )}
-                    {status !== 'idle' && (
-                        <span
-                            className={cn(
-                                'rounded-sm px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider',
-                                statusToneClassName(status),
-                            )}
-                        >
-                            {status}
+                    {displayStatus !== 'idle' && (
+                        <span className={cn('text-xs font-medium', statusToneClassName(displayStatus))}>
+                            {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
                         </span>
+                    )}
+                    {isReadOnlyPreviewNode && (
+                        <span className="text-xs text-muted-foreground">Read-only preview</span>
                     )}
                 </div>
             </div>
@@ -459,12 +459,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
 
             <NodeToolbar isVisible={isEditingDetails} position={Position.Bottom} className="nodrag nopan">
                 <div className="mt-2 w-64 rounded-md border border-border bg-card p-3 shadow-lg">
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Node Properties
+                    <div className="text-sm font-semibold text-foreground">
+                        Node properties
                     </div>
                     <div className="mt-2 space-y-2">
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Visual Shape</label>
+                            <label className="text-xs font-medium text-foreground">Visual shape</label>
                             <select
                                 value={draftShape}
                                 onChange={(event) => setDraftShape(event.target.value)}
@@ -489,7 +489,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         )}
                         {visibility.showToolCommand && (
                             <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Tool Command</label>
+                                <label className="text-xs font-medium text-foreground">Tool command</label>
                                 <input
                                     value={draftToolCommand}
                                     onChange={(event) => setDraftToolCommand(event.target.value)}
@@ -501,7 +501,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showParallelOptions && (
                             <>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Max Parallel</label>
+                                    <label className="text-xs font-medium text-foreground">Max parallel</label>
                                     <input
                                         value={draftMaxParallel}
                                         onChange={(event) => setDraftMaxParallel(event.target.value)}
@@ -514,7 +514,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showManagerOptions && (
                             <>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager Poll Interval</label>
+                                    <label className="text-xs font-medium text-foreground">Manager poll interval</label>
                                     <input
                                         value={draftManagerPollInterval}
                                         onChange={(event) => setDraftManagerPollInterval(event.target.value)}
@@ -523,7 +523,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager Max Cycles</label>
+                                    <label className="text-xs font-medium text-foreground">Manager max cycles</label>
                                     <input
                                         value={draftManagerMaxCycles}
                                         onChange={(event) => setDraftManagerMaxCycles(event.target.value)}
@@ -532,7 +532,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager Stop Condition</label>
+                                    <label className="text-xs font-medium text-foreground">Manager stop condition</label>
                                     <input
                                         value={draftManagerStopCondition}
                                         onChange={(event) => setDraftManagerStopCondition(event.target.value)}
@@ -541,7 +541,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager Actions</label>
+                                    <label className="text-xs font-medium text-foreground">Manager actions</label>
                                     <input
                                         value={draftManagerActions}
                                         onChange={(event) => setDraftManagerActions(event.target.value)}
@@ -550,7 +550,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager Steer Cooldown</label>
+                                    <label className="text-xs font-medium text-foreground">Manager steer cooldown</label>
                                     <input
                                         data-testid="node-toolbar-attr-input-manager.steer_cooldown"
                                         value={draftManagerSteerCooldown}
@@ -567,16 +567,16 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                         onChange={(event) => setDraftStackChildAutostart(event.target.checked)}
                                         className="h-4 w-4 rounded border border-input"
                                     />
-                                    Start Child Automatically
+                                    Start child automatically
                                 </label>
                             </>
                         )}
                         {visibility.showAdvanced && (
                             <button
                                 onClick={() => setShowAdvanced((prev) => !prev)}
-                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
                             >
-                                {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
+                                {showAdvanced ? 'Hide advanced' : 'Show advanced'}
                             </button>
                         )}
                         {visibility.showAdvanced && showAdvanced && (
@@ -585,7 +585,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <>
                                         <div className="grid grid-cols-2 gap-2">
                                             <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">Max Retries</label>
+                                                <label className="text-xs font-medium text-foreground">Max retries</label>
                                                 <input
                                                     value={draftMaxRetries}
                                                     onChange={(event) => setDraftMaxRetries(event.target.value)}
@@ -605,7 +605,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                         {visibility.showToolCommand && (
                                             <>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Pre Hook Override</label>
+                                                    <label className="text-xs font-medium text-foreground">Pre-hook override</label>
                                                     <input
                                                         data-testid="node-toolbar-attr-input-tool.hooks.pre"
                                                         value={draftToolHooksPre}
@@ -620,7 +620,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                     )}
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Post Hook Override</label>
+                                                    <label className="text-xs font-medium text-foreground">Post-hook override</label>
                                                     <input
                                                         data-testid="node-toolbar-attr-input-tool.hooks.post"
                                                         value={draftToolHooksPost}
@@ -635,7 +635,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                     )}
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Artifact Paths</label>
+                                                    <label className="text-xs font-medium text-foreground">Artifact paths</label>
                                                     <input
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.paths"
                                                         value={draftToolArtifactsPaths}
@@ -645,7 +645,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                     />
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Stdout Artifact</label>
+                                                    <label className="text-xs font-medium text-foreground">Stdout artifact</label>
                                                     <input
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.stdout"
                                                         value={draftToolArtifactsStdout}
@@ -655,7 +655,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                     />
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Stderr Artifact</label>
+                                                    <label className="text-xs font-medium text-foreground">Stderr artifact</label>
                                                     <input
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.stderr"
                                                         value={draftToolArtifactsStderr}

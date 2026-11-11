@@ -178,7 +178,7 @@ describe('TaskNode', () => {
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
 
         fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-        const toolbar = screen.getByText('Node Properties').parentElement?.parentElement
+        const toolbar = screen.getByText('Node properties').parentElement?.parentElement
         const shapeSelect = toolbar?.querySelector('select')
         expect(shapeSelect).toBeTruthy()
         fireEvent.change(shapeSelect as HTMLSelectElement, { target: { value: 'house' } })
@@ -190,7 +190,7 @@ describe('TaskNode', () => {
         await waitFor(() => {
             expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
         })
-        expect(screen.queryByText('Node Properties')).not.toBeInTheDocument()
+        expect(screen.queryByText('Node properties')).not.toBeInTheDocument()
     })
 
     it('shows graph inheritance and saves an atomic model and effort draft in the canvas toolbar', async () => {
@@ -199,7 +199,7 @@ describe('TaskNode', () => {
         renderWithFlowProvider(<SingleNodeHarness node={{ id: 'task', type: 'task', selected: true,
             position: { x: 0, y: 0 }, data: { label: 'Task', kind: 'agent_task', shape: 'box', config: { kind: 'agent_task' } } }} />)
         fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-        await user.click(screen.getByRole('button', { name: 'Show Advanced' }))
+        await user.click(screen.getByRole('button', { name: 'Show advanced' }))
         expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default: graph-model · High')
         await chooseModel(user, 'anthropic', 'claude-sonnet-4-6')
         await chooseEffort(user, 'Low')
@@ -262,7 +262,7 @@ describe('TaskNode', () => {
         for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
             expect(screen.queryByText(legacy)).not.toBeInTheDocument()
         }
-        const toolbar = screen.getByText('Node Properties').parentElement?.parentElement
+        const toolbar = screen.getByText('Node properties').parentElement?.parentElement
         const maxParallel = Array.from(toolbar?.querySelectorAll('input') ?? []).find((input) => input.value === '3')
         expect(maxParallel).toBeTruthy()
     })
@@ -343,7 +343,7 @@ nodeDiagnostics: {
         )
 
         expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
-        expect(screen.getByText('Needs Input')).toBeInTheDocument()
+        expect(screen.getByText('Needs input')).toBeInTheDocument()
         expect(screen.queryByText('Human Input Required')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
         expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 Warn')

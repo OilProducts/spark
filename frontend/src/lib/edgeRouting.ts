@@ -724,27 +724,27 @@ function buildFallbackRoute(
     ])
 }
 
-function buildSelfLoopRoute(anchor: EdgeRoutePoint, side: RouteSide): EdgeRoute {
-    const horizontalOffset = side === 'left' ? -PORT_LEAD_DISTANCE * 2 : PORT_LEAD_DISTANCE * 2
-    const verticalOffset = side === 'top' ? -PORT_LEAD_DISTANCE * 2 : PORT_LEAD_DISTANCE * 2
+// A small loop just outside the node: out of the source port, round to the target port.
+function buildSelfLoopRoute(rect: NodeRect, sourcePort: RoutedPort, targetPort: RoutedPort): EdgeRoute {
+    const sourceAnchor = getPortAnchorPoint(rect, sourcePort)
+    const targetAnchor = getPortAnchorPoint(rect, targetPort)
+    const sourceLead = getPortLeadPoint(sourceAnchor, sourcePort.side)
+    const targetLead = getPortLeadPoint(targetAnchor, targetPort.side)
+    const isHorizontal = (side: RouteSide) => side === 'left' || side === 'right'
 
-    if (side === 'left' || side === 'right') {
-        return normalizeRoute([
-            anchor,
-            { x: anchor.x + horizontalOffset, y: anchor.y },
-            { x: anchor.x + horizontalOffset, y: anchor.y - PORT_LEAD_DISTANCE * 2 },
-            { x: anchor.x, y: anchor.y - PORT_LEAD_DISTANCE * 2 },
-            anchor,
-        ])
+    if (isHorizontal(sourcePort.side) === isHorizontal(targetPort.side) && sourcePort.side !== targetPort.side) {
+        // Opposite sides: wrap over the top, or round the right.
+        const corners = isHorizontal(sourcePort.side)
+            ? [{ x: sourceLead.x, y: rect.y - PORT_LEAD_DISTANCE }, { x: targetLead.x, y: rect.y - PORT_LEAD_DISTANCE }]
+            : [{ x: rect.x + rect.width + PORT_LEAD_DISTANCE, y: sourceLead.y }, { x: rect.x + rect.width + PORT_LEAD_DISTANCE, y: targetLead.y }]
+        return normalizeRoute([sourceAnchor, sourceLead, ...corners, targetLead, targetAnchor])
     }
 
-    return normalizeRoute([
-        anchor,
-        { x: anchor.x, y: anchor.y + verticalOffset },
-        { x: anchor.x - PORT_LEAD_DISTANCE * 2, y: anchor.y + verticalOffset },
-        { x: anchor.x - PORT_LEAD_DISTANCE * 2, y: anchor.y },
-        anchor,
-    ])
+    // Same or adjacent sides: one corner joins the two leads (it is the target lead when the sides match).
+    const corner = isHorizontal(sourcePort.side)
+        ? { x: sourceLead.x, y: targetLead.y }
+        : { x: targetLead.x, y: sourceLead.y }
+    return normalizeRoute([sourceAnchor, sourceLead, corner, targetLead, targetAnchor])
 }
 
 function routeSingleEdge(
@@ -758,12 +758,12 @@ function routeSingleEdge(
         return normalizeRoute(edge.previousRoute ?? [])
     }
 
+    if (edge.source === edge.target) {
+        return buildSelfLoopRoute(sourceRect, edge.sourcePort, edge.targetPort)
+    }
+
     const sourceAnchor = getPortAnchorPoint(sourceRect, edge.sourcePort)
     const targetAnchor = getPortAnchorPoint(targetRect, edge.targetPort)
-
-    if (edge.source === edge.target) {
-        return buildSelfLoopRoute(sourceAnchor, edge.sourcePort.side)
-    }
 
     const sourceLead = getPortEscapePoint(sourceAnchor, edge.sourcePort.side, expandedObstacles)
     const targetLead = getPortEscapePoint(targetAnchor, edge.targetPort.side, expandedObstacles)

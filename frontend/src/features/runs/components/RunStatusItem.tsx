@@ -165,16 +165,16 @@ export function RunStatusItem({
                 ) : null}
             </>
         )
-        // A completed run can reach a failure exit; its result name and evidence say why.
-        const failed = run.outcome === 'failure'
-        const outcomeReason = failed || run.outcome_reason_code ? formatOutcomeReason(run) : null
+        // A completed run can reach a failure exit; its result name and evidence say why, above
+        // the result. A success exit's evidence is a run fact.
+        const outcomeReason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
         body = (
             <>
                 {outcomeReason ? (
                     <p
                         data-testid="run-status-outcome-reason"
                         data-outcome={run.outcome ?? undefined}
-                        className={`whitespace-pre-wrap break-words text-sm ${failed ? 'text-warning' : 'text-muted-foreground'}`}
+                        className="whitespace-pre-wrap break-words text-sm text-warning"
                     >
                         {outcomeReason}
                     </p>
@@ -192,7 +192,7 @@ export function RunStatusItem({
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h3 className="text-lg font-semibold text-foreground">{heading}</h3>
+                <h2 className="text-base font-semibold text-foreground">{heading}</h2>
                 <span className="text-sm text-muted-foreground">{meta}</span>
             </header>
             {body}
@@ -237,7 +237,7 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
     }
     return (
         <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
-            <ProjectConversationMarkdown content={result.body_markdown || ''} />
+            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} />
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
                     Summary unavailable: {result.summary_error}
@@ -245,6 +245,19 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
             ) : null}
         </div>
     )
+}
+
+// A raw result that is one JSON value reads best indented, in a code block.
+function resultMarkdown(body: string): string {
+    const trimmed = body.trim()
+    if (!/^[[{]/.test(trimmed)) {
+        return body
+    }
+    try {
+        return `\`\`\`json\n${JSON.stringify(JSON.parse(trimmed), null, 2)}\n\`\`\``
+    } catch {
+        return body
+    }
 }
 
 function RunOutputs({
@@ -328,7 +341,9 @@ function RunFacts({ run }: { run: RunRecord }) {
     const tokenBreakdown = (bucket: TokenUsageBucketResponse) => (
         `${formatTokenCount(bucket.total_tokens)} (${formatTokenCount(bucket.input_tokens)} in, ${formatTokenCount(bucket.cached_input_tokens)} cached, ${formatTokenCount(bucket.output_tokens)} out)`
     )
+    const outcome = run.status === 'completed' && run.outcome !== 'failure' && run.outcome_reason_code ? formatOutcomeReason(run) : null
     const facts: Array<[id: string, label: string, value: ReactNode]> = [
+        ...(outcome ? [['outcome', 'Outcome', outcome] as [string, string, ReactNode]] : []),
         ['model', 'Model', [run.model || 'default', provider, run.reasoning_effort].filter(Boolean).join(' · ')],
         ...(run.execution_profile_id || run.execution_mode
             ? [['execution', 'Execution', [run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean).join(' · ')] as [string, string, ReactNode]]

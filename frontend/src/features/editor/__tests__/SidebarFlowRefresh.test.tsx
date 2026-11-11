@@ -149,7 +149,6 @@ describe('Editor sidebar manual refresh', () => {
         await waitFor(() => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
             expect(refreshButton).toBeDisabled()
-            expect(refreshButton).toHaveTextContent('Refreshing…')
         })
 
         pendingRefresh.resolve(['alpha.dot', 'gamma.dot'])
@@ -158,7 +157,7 @@ describe('Editor sidebar manual refresh', () => {
             expect(within(flowTree).getByRole('button', { name: 'gamma.dot' })).toBeVisible()
         })
         expect(refreshButton).toBeEnabled()
-        expect(refreshButton).toHaveTextContent('Refresh')
+        expect(refreshButton).toHaveAccessibleName('Refresh flows')
         expect(useStore.getState().activeFlow).toBe('alpha.dot')
 
         await user.click(refreshButton)
@@ -184,7 +183,7 @@ describe('Editor sidebar manual refresh', () => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(1)
         })
 
-        await user.click(screen.getByRole('button', { name: 'Create flow' }))
+        await user.click(screen.getByRole('button', { name: 'New flow' }))
         await user.type(screen.getByTestId('shared-dialog-input'), 'beta')
         await user.click(screen.getByTestId('shared-dialog-confirm'))
 

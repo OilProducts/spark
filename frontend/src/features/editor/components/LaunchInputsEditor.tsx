@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 
 const LAUNCH_INPUT_TYPE_OPTIONS: Array<{ value: LaunchInputType; label: string }> = [
     { value: 'string', label: 'String' },
-    { value: 'string[]', label: 'String List' },
+    { value: 'string[]', label: 'String list' },
     { value: 'boolean', label: 'Boolean' },
     { value: 'number', label: 'Number' },
     { value: 'json', label: 'JSON' },
@@ -48,14 +48,6 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
 
     return (
         <Well data-testid="graph-launch-inputs-editor" className="space-y-3 p-3">
-            <div className="space-y-1">
-                <p className="text-sm font-semibold text-foreground">
-                    Launch inputs
-                </p>
-                <p className="text-xs text-muted-foreground">
-                    Define the `context.*` values Spark should collect before launching this flow.
-                </p>
-            </div>
             {entries.length === 0 ? (
                 <div className="text-xs text-muted-foreground">
                     No launch inputs declared yet.
@@ -75,7 +67,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                 value={entry.label}
                                 onChange={(event) => updateEntry(index, { label: event.target.value })}
                                 className="h-8 px-2 text-sm"
-                                placeholder="Request Summary"
+                                placeholder="Request summary"
                             />
                         </Field>
                         <Field>
@@ -84,7 +76,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                 data-testid={`graph-launch-input-type-${index}`}
                                 value={entry.type}
                                 onChange={(event) => updateEntry(index, { type: event.target.value as LaunchInputType })}
-                                className="h-8 px-2 text-sm"
+                                size="sm"
                             >
                                 {LAUNCH_INPUT_TYPE_OPTIONS.map((option) => (
                                     <option key={option.value} value={option.value}>
@@ -95,7 +87,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                         </Field>
                     </div>
                     <Field>
-                        <FieldLabel>Context Key</FieldLabel>
+                        <FieldLabel>Context key</FieldLabel>
                         <Input
                             data-testid={`graph-launch-input-key-${index}`}
                             value={entry.key}
@@ -129,8 +121,8 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             data-testid={`graph-launch-input-remove-${index}`}
                             onClick={() => removeEntry(index)}
                             variant="outline"
-                            size="xs"
-                            className="text-xs text-muted-foreground hover:text-foreground"
+                            size="sm"
+                            className="text-muted-foreground hover:text-foreground"
                         >
                             Remove
                         </Button>
@@ -143,10 +135,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     data-testid="graph-launch-input-add"
                     onClick={addEntry}
                     variant="outline"
-                    size="xs"
-                    className="h-8 text-xs"
+                    size="sm"
                 >
-                    Add Launch Input
+                    Add launch input
                 </Button>
                 {error ? (
                     <p data-testid="graph-launch-inputs-error" className="text-xs text-destructive">

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { ArrowRight, ChevronRight, CircleHelp, Minus, Undo2, Workflow, X, type LucideIcon } from 'lucide-react'
 
 import type { RunExecutionPrompt, RunTranscriptSegment } from '@/lib/api/attractorApi'
@@ -42,7 +42,7 @@ const MARKS: Record<VisitMark, { Icon: LucideIcon; label: string; tone: StatusTo
     error: { Icon: X, label: 'Error', tone: 'warning' },
     failed: { Icon: X, label: 'Failed', tone: 'destructive' },
     interrupted: { Icon: Minus, label: 'Interrupted', tone: 'warning' },
-    waiting: { Icon: CircleHelp, label: 'Waiting on a question', tone: 'info' },
+    waiting: { Icon: CircleHelp, label: 'Waiting on a question', tone: 'warning' },
     loop_back: { Icon: Undo2, label: 'Sent back', tone: 'warning' },
 }
 
@@ -52,7 +52,7 @@ const OUTCOME_TONES: Record<RunVisit['outcome'], StatusTone> = {
     failed: 'destructive',
     interrupted: 'warning',
     running: 'info',
-    waiting: 'info',
+    waiting: 'warning',
 }
 
 // ponytail: fixed file set per execution; list the directory if nodes write more worth reading.
@@ -185,9 +185,9 @@ export function RunVisitsCard({
             className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
         >
             <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
-                {/* Steps and Journal exclude each other on the track; the graph is additive, so
-                    its toggle stands apart (a pressed segment beside a pressed segment reads wrong). */}
-                <div className="mb-1.5 flex items-center gap-1">
+                {/* Steps and Journal exclude each other; the graph is additive, so it is its own
+                    one-segment track beside them (a pressed segment beside a pressed segment reads wrong). */}
+                <div className="mb-1.5 flex items-center gap-1.5">
                     <SegmentedControl
                         aria-label="View"
                         className="min-w-0 flex-1"
@@ -203,20 +203,19 @@ export function RunVisitsCard({
                         ]}
                     />
                     {graph ? (
-                        <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            aria-pressed={graph.shown}
-                            aria-keyshortcuts="g"
-                            title="Show or hide the run graph (g)"
-                            data-testid="run-graph-toggle"
-                            onClick={graph.onToggle}
-                            className="shrink-0 px-2 text-xs text-muted-foreground hover:bg-background/60 hover:text-foreground aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-foreground"
-                        >
-                            <Workflow className="size-3.5" />
-                            Graph
-                        </Button>
+                        <SegmentedControl
+                            aria-label="Graph"
+                            className="flex-none"
+                            options={[{
+                                key: 'graph',
+                                label: <><Workflow className="size-3.5" />Graph</>,
+                                pressed: graph.shown,
+                                onPress: graph.onToggle,
+                                'aria-keyshortcuts': 'g',
+                                title: 'Show or hide the run graph (g)',
+                                'data-testid': 'run-graph-toggle',
+                            }]}
+                        />
                     ) : null}
                 </div>
                 {isPerformanceDebugEnabled() ? (
@@ -311,6 +310,10 @@ export function RunVisitsCard({
                                             className={cn('flex', statusTextClassName(Mark.tone))}
                                         >
                                             <Mark.Icon className="size-3.5" />
+                                        </span>
+                                    ) : visit.outcome === 'running' ? (
+                                        <span role="img" title="Running" aria-label="Running" data-testid="run-visit-row-running" className="flex">
+                                            <StatusDot tone="info" className="animate-pulse" />
                                         </span>
                                     ) : null}
                                 </span>
@@ -434,7 +437,7 @@ function RunVisitView({
         <article data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-                    <h3 data-testid="run-visit-view-title" className="text-lg font-semibold text-foreground">{visit.label}</h3>
+                    <h2 data-testid="run-visit-view-title" className="text-base font-semibold text-foreground">{visit.label}</h2>
                     {headerMeta ? <span className="text-sm text-muted-foreground">{headerMeta}</span> : null}
                     {returned ? null : outcomePill}
                 </div>
@@ -764,24 +767,43 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
     )
 }
 
+// The journal names the day once and each entry by its time of day.
+const JOURNAL_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+const JOURNAL_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+
 function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[]; timelineError: string | null }) {
+    let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
-            <h3 className="text-lg font-semibold text-foreground">Journal</h3>
+            <h2 className="text-base font-semibold text-foreground">Journal</h2>
             {timelineError ? <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError> : null}
             <ol className="flex flex-col gap-1 text-sm">
-                {journal.map((event) => (
-                    <li key={event.id} data-testid="run-journal-row" className="flex gap-3">
-                        <span className="shrink-0 text-xs leading-5 tabular-nums text-muted-foreground">{formatTimestamp(event.receivedAt)}</span>
-                        <span className={cn(
-                            'min-w-0 break-words',
-                            event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,
-                        )}
-                        >
-                            {event.summary}
-                        </span>
-                    </li>
-                ))}
+                {journal.map((event) => {
+                    const date = new Date(event.receivedAt)
+                    const valid = !Number.isNaN(date.getTime())
+                    const day = valid ? JOURNAL_DAY.format(date) : ''
+                    const startsDay = day !== previousDay
+                    previousDay = day
+                    return (
+                        <Fragment key={event.id}>
+                            {startsDay && day ? (
+                                <li className="pb-1 pt-3 text-xs font-semibold text-muted-foreground first:pt-0">{day}</li>
+                            ) : null}
+                            <li data-testid="run-journal-row" className="flex gap-3">
+                                <span className="w-20 shrink-0 text-xs leading-5 tabular-nums text-muted-foreground" title={formatTimestamp(event.receivedAt)}>
+                                    {valid ? JOURNAL_TIME.format(date) : '—'}
+                                </span>
+                                <span className={cn(
+                                    'min-w-0 break-words',
+                                    event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,
+                                )}
+                                >
+                                    {event.summary}
+                                </span>
+                            </li>
+                        </Fragment>
+                    )
+                })}
             </ol>
         </section>
     )

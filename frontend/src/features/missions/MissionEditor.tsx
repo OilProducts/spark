@@ -43,7 +43,7 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
     }}>
         <header className="shrink-0 border-b border-border px-6 pt-5 pb-4">
             {projectName && <p data-testid="new-mission-project" className="mb-1.5 text-xs text-muted-foreground">New mission in <span className="text-foreground">{projectName}</span></p>}
-            <h2 ref={heading} tabIndex={-1} className="text-xl font-semibold break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{editing?.fields.title ?? 'New mission'}</h2>
+            <h1 ref={heading} tabIndex={-1} className="text-xl font-semibold tracking-tight break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{editing?.fields.title ?? 'New mission'}</h1>
             {unsaved && <p className="mt-1 text-xs text-muted-foreground">Unsaved changes</p>}
         </header>
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={e => { e.preventDefault(); void save() }}>
@@ -64,7 +64,7 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
                     {playbooks.map(p => <NativeSelectOption key={p.name} value={p.name} title={p.description}>{p.title || p.name}</NativeSelectOption>)}
                 </NativeSelect></Label>}
             </fieldset>
-            {editing && <div className="border-t border-border pt-4"><Button type="button" variant="outline" disabled={busy || Boolean(changed) || conflict} onClick={() => void archive()}>{editing.fields.archived ? 'Restore mission' : 'Archive mission'}</Button></div>}
+            {editing && <div className="border-t border-border pt-4"><Button type="button" size="sm" variant="outline" disabled={busy || Boolean(changed) || conflict} onClick={() => void archive()}>{editing.fields.archived ? 'Restore mission' : 'Archive mission'}</Button></div>}
             {editing && <details className="border-t border-border pt-4"><summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Activity</summary><ol className="mt-2 space-y-3">{(latest ?? editing).activity.map(a => <li key={a.revision} className="border-b border-border pb-3">
                 <p className="text-xs text-muted-foreground">{a.actor === 'assistant' ? 'Assistant' : 'Human'} · <time>{a.at}</time></p>
                 {a.note && <p className="mt-1 whitespace-pre-wrap break-words">{a.note}</p>}
@@ -72,9 +72,9 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
             </li>)}</ol>{!editing.activity.length && <Empty className="mt-2 text-xs"><EmptyDescription>No activity yet</EmptyDescription></Empty>}</details>}
         </div></div>
         <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border px-6 py-4">
-            <Button type="submit" aria-label={editing && !busy ? 'Save mission' : undefined} disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create mission'}</Button>
-            <Button type="button" variant="outline" disabled={busy} onClick={close}>{editing ? 'Close' : 'Cancel'}</Button>
-            <Button aria-label="Discard mission changes" type="button" variant="ghost" disabled={busy} onClick={discard}>Discard</Button>
+            <Button type="submit" size="sm" aria-label={editing && !busy ? 'Save mission' : undefined} disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create mission'}</Button>
+            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={close}>{editing ? 'Close' : 'Cancel'}</Button>
+            <Button aria-label="Discard mission changes" type="button" size="sm" variant="ghost" disabled={busy} onClick={discard}>Discard</Button>
         </footer>
         </form>
     </section>

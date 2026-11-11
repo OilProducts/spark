@@ -1,17 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { Button } from '@/components/ui/button'
-import { Empty, EmptyDescription } from '@/components/ui/empty'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
 import { Input } from '@/components/ui/input'
-import { Plus, RefreshCw, Search } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Plus, RefreshCw, Search, Target } from 'lucide-react'
 import { MissionDetail } from './MissionDetail'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { MissionEditor } from './MissionEditor'
 import { missionTone, shortLine } from './model/missionModel'
-import { ViewLayout } from '@/components/app/view-layout'
+import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
@@ -232,14 +230,14 @@ export function MissionsPanel({ active }: { active: boolean }) {
             </section>
         })}
         {!visible.length && (loaded && !loadError
-            ? <Empty className="text-xs"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
-            : <p className="px-3 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
+            ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions'}</p>
+            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
         <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
     return <ViewLayout view="missions" title="Missions" panel={missionsPanel} actions={<>
-        <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh missions</TooltipContent></Tooltip></TooltipProvider>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" title="Refresh missions" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" /></Button>
         <ProjectPicker heading="New mission in" testId="new-mission-project-picker" defaultProjectPath={defaultProjectChoice(registry)} onPick={path => open(null, null, path)}>
-            <Button type="button" variant="outline" size="sm" aria-label="New mission" disabled={busy}><Plus aria-hidden="true" className="size-3.5" />New</Button>
+            <Button type="button" variant="outline" size="sm" aria-label="New mission" disabled={busy}><Plus aria-hidden="true" />New</Button>
         </ProjectPicker>
     </>}>
         <section aria-label="Project missions" className="flex h-full min-h-0 flex-col">
@@ -248,7 +246,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
                     ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
                     : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} project={project} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
-                : <div className="p-6"><Empty><EmptyDescription>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</EmptyDescription></Empty></div>}
+                : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
         </section>
     </ViewLayout>
 }

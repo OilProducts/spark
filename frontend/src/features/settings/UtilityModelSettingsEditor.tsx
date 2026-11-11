@@ -23,9 +23,9 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
     const utilityDefault = UTILITY_DEFAULTS.find(({ provider }) => discovery?.payload?.providers?.[provider]?.status === 'available') ?? codexDefault
     const invalidModel = !!editor.draft && !isModelSelectionValid(editor.draft.llm_profile || editor.draft.provider || '', editor.draft.model, profiles)
     return <Card className="gap-4 py-4">
-        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-semibold">Utility model</h3></CardHeader>
+        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Utility model</h3></CardHeader>
         <CardContent className="space-y-3 px-4 pt-0">
-            <p className="text-xs text-muted-foreground">A small, fast model Spark uses for housekeeping, such as naming threads. Off until you choose one; Spark does not fall back to the chat model.</p>
+            <p className="text-sm text-muted-foreground">A small, fast model Spark uses for housekeeping, such as naming threads. Off until you choose one; Spark does not fall back to the chat model.</p>
             {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
                 <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft !== null}
@@ -34,7 +34,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
             </fieldset>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" aria-label="Save utility model" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
-                <Button aria-label="Discard utility model changes" size="sm" variant="ghost" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
+                <Button aria-label="Discard utility model changes" size="sm" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}

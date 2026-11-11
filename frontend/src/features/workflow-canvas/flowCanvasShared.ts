@@ -61,8 +61,10 @@ const ELK_OPTIONS = {
     'elk.algorithm': 'layered',
     'elk.direction': 'DOWN',
     'elk.edgeRouting': 'ORTHOGONAL',
-    'elk.layered.spacing.nodeNodeBetweenLayers': '30',
-    'elk.spacing.nodeNode': '20',
+    // Gaps must clear the router's obstacle padding on both nodes plus a lane for edges,
+    // or ports escape straight through the next node.
+    'elk.layered.spacing.nodeNodeBetweenLayers': '48',
+    'elk.spacing.nodeNode': '40',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
 }
 

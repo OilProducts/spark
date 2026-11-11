@@ -2,10 +2,13 @@ import { useState } from 'react'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useAgentSettingsEditor } from './hooks/useAgentSettingsEditor'
 import { SaveStatus } from './SaveStatus'
+import { SettingsSummary } from './SettingsSummary'
 
 const defaultPath = (key: string) => key === 'claude_config_dir' ? '<SPARK_HOME>/runtime/claude' : 'Platform default'
 const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum tool rounds per input', default_command_timeout_ms: 'Default command timeout (milliseconds)', max_command_timeout_ms: 'Maximum command timeout (milliseconds)', loop_detection_window: 'Loop detection window', max_subagent_depth: 'Maximum subagent depth', codex_binary: 'Codex binary', codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_binary: 'Claude binary', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex JSON-RPC tracing', agent_trace: 'Agent tracing' } as const
@@ -13,28 +16,28 @@ const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h3 className="text-lg font-semibold">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h3 className="text-base font-semibold">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-        {editor.draft && <fieldset disabled={editor.pending} className="space-y-2">
+        {editor.draft && <fieldset disabled={editor.pending} className="space-y-3">
             {(['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'] as const).map((key) => {
                 const value = editor.draft![key]
                 const invalid = !Number.isSafeInteger(value) || value < 0 || (key === 'default_command_timeout_ms' && value <= 0) || (key === 'max_command_timeout_ms' && value < editor.draft!.default_command_timeout_ms) || (key === 'loop_detection_window' && editor.draft!.enable_loop_detection && value <= 0)
                 return <Field key={key}>
                 <FieldLabel htmlFor={`agent-${key}`}>{labels[key]}</FieldLabel>
-                {(key === 'max_turns' || key === 'max_tool_rounds_per_input') && <p className="text-xs">0 means unlimited.</p>}
-                <Input id={`agent-${key}`} aria-invalid={invalid} aria-describedby={invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={editor.draft![key]} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: Number(event.target.value) }))} />
+                {(key === 'max_turns' || key === 'max_tool_rounds_per_input') && <p className="text-xs text-muted-foreground">0 means unlimited.</p>}
+                <Input id={`agent-${key}`} className="w-40" aria-invalid={invalid} aria-describedby={invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={editor.draft![key]} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: Number(event.target.value) }))} />
             </Field>})}
-            <label><input type="checkbox" checked={editor.draft.enable_loop_detection} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, enable_loop_detection: event.target.checked }))} /> Enable loop detection</label>
-            <details ref={(node) => { if (node && (Object.values(editor.draft?.native ?? {}).some((value) => typeof value === 'string' && !value.trim()))) node.open = true }}><summary>Runtime paths</summary>
+            <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft.enable_loop_detection} onCheckedChange={(checked) => editor.setDraft((draft) => draft && ({ ...draft, enable_loop_detection: checked }))} />Enable loop detection</Label>
+            <details ref={(node) => { if (node && (Object.values(editor.draft?.native ?? {}).some((value) => typeof value === 'string' && !value.trim()))) node.open = true }}><SettingsSummary>Runtime paths</SettingsSummary>
             {(['codex_binary', 'codex_runtime_root', 'codex_seed_dir', 'claude_binary', 'claude_config_dir'] as const).map((key) => <Field key={key}>
                 <FieldLabel htmlFor={`agent-native-${key}`}>{labels[key]}</FieldLabel>
                 <Input id={`agent-native-${key}`} aria-describedby={`agent-native-${key}-error`} aria-invalid={editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim()} value={editor.draft?.native?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value || null } }))} />
                 {editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim() && <p id={`agent-native-${key}-error`} role="alert">Enter a nonempty path or leave blank for the default.</p>}
-                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs">Startup: {editor.saved.active_startup[key] ?? defaultPath(key)} · Retained until restart</p>}
-                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
+                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs text-muted-foreground">Startup: {editor.saved.active_startup[key] ?? defaultPath(key)} · Retained until restart</p>}
+                <p className="text-xs text-muted-foreground">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
             </Field>)}
             </details>
-            <details><summary>Permissions and environment</summary>
+            <details><SettingsSummary>Permissions and environment</SettingsSummary>
             <Field><FieldLabel htmlFor="agent-environment-inheritance">Tool environment inheritance</FieldLabel>
                 <NativeSelect id="agent-environment-inheritance" value={editor.draft.environment_inheritance ?? 'inherit_core_only'} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, environment_inheritance: event.target.value as 'inherit_all' | 'inherit_none' | 'inherit_core_only' }))}>
                     <option value="inherit_core_only">Core variables only</option><option value="inherit_all">All variables</option><option value="inherit_none">None</option>
@@ -45,24 +48,24 @@ export function AgentSettingsEditor() {
                     <option value="">Default (bypass permissions)</option>
                     {(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'] as const).map((mode) => <option key={mode} value={mode}>{{ default: 'Default', acceptEdits: 'Accept edits', bypassPermissions: 'Bypass permissions', plan: 'Plan', dontAsk: 'Do not ask', auto: 'Automatic' }[mode]}</option>)}
                 </NativeSelect>
-                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.claude_permission_mode ?? 'bypassPermissions' : 'Unavailable'}</p>
+                <p className="text-xs text-muted-foreground">Effective: {editor.saved?.effective ? editor.saved.effective.native?.claude_permission_mode ?? 'bypassPermissions' : 'Unavailable'}</p>
             </Field>
             </details>
-            <details><summary>Tracing</summary>
+            <details><SettingsSummary>Tracing</SettingsSummary>
             {(['codex_jsonrpc_trace', 'agent_trace'] as const).map((key) => <Field key={key}>
                 <FieldLabel htmlFor={`agent-${key}`}>{labels[key]}</FieldLabel>
                 <NativeSelect id={`agent-${key}`} value={editor.draft?.native?.[key] == null ? '' : String(editor.draft.native[key])} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value === '' ? null : event.target.value === 'true' } }))}>
                     <option value="">Default (off)</option><option value="true">On</option><option value="false">Off</option>
                 </NativeSelect>
-                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ? 'On' : 'Off' : 'Unavailable'}</p>
+                <p className="text-xs text-muted-foreground">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ? 'On' : 'Off' : 'Unavailable'}</p>
             </Field>)}
             </details>
-            <details ref={(node) => { if (node && ((['tool_output_limits', 'line_limits'] as const).some((key) => Object.entries(editor.draft![key]).some(([tool, value]) => !tool.trim() || !Number.isSafeInteger(value) || value < 0)))) node.open = true }}><summary>Tool-output limits</summary>
+            <details ref={(node) => { if (node && ((['tool_output_limits', 'line_limits'] as const).some((key) => Object.entries(editor.draft![key]).some(([tool, value]) => !tool.trim() || !Number.isSafeInteger(value) || value < 0)))) node.open = true }}><SettingsSummary>Tool-output limits</SettingsSummary>
             {(['tool_output_limits', 'line_limits'] as const).map((key) => <fieldset key={key} className="space-y-2">
                 <legend>{key === 'tool_output_limits' ? 'Tool output character limits' : 'Tool output line limits'}</legend>
                 {Object.entries(editor.draft![key]).map(([tool, limit]) => <Field key={tool}>
                     <FieldLabel htmlFor={`agent-${key}-${tool}`}>{tool}</FieldLabel>
-                    <Input id={`agent-${key}-${tool}`} aria-describedby={editor.invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={limit} aria-invalid={!Number.isSafeInteger(limit) || limit < 0} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: { ...draft[key], [tool]: Number(event.target.value) } }))} />
+                    <Input id={`agent-${key}-${tool}`} className="w-40" aria-describedby={editor.invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={limit} aria-invalid={!Number.isSafeInteger(limit) || limit < 0} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: { ...draft[key], [tool]: Number(event.target.value) } }))} />
                     <Button variant="outline" onClick={() => editor.setDraft((draft) => { if (!draft) return draft; const limits = { ...draft[key] }; delete limits[tool]; return { ...draft, [key]: limits } })}>Remove {tool} {key === 'line_limits' ? 'line' : 'character'} limit</Button>
                 </Field>)}
                 <FieldLabel htmlFor={`agent-new-${key}`}>Tool name for {key === 'line_limits' ? 'line' : 'character'} limit</FieldLabel>

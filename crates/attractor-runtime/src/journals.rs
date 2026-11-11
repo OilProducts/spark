@@ -175,9 +175,11 @@ fn journal_summary(
     let source_prefix = source_prefix(source_scope, source_parent_node_id, source_flow_name);
     match raw_type {
         "log" => string_payload(event, "msg").unwrap_or_else(|| "Log entry".to_string()),
-        "lifecycle" => string_payload(event, "phase")
-            .map(|phase| format!("{source_prefix}Lifecycle phase: {phase}"))
-            .unwrap_or_else(|| format!("{source_prefix}Lifecycle event")),
+        "lifecycle" => match string_payload(event, "phase").as_deref() {
+            Some("INITIALIZE") => format!("{source_prefix}Run created"),
+            Some(phase) => format!("{source_prefix}Run phase: {}", phase.to_lowercase()),
+            None => format!("{source_prefix}Lifecycle event"),
+        },
         "runtime" => runtime_summary(event, &source_prefix),
         "state" => {
             let state_node = string_payload(event, "node")
@@ -269,7 +271,9 @@ fn journal_summary(
                 node_id.unwrap_or("unknown")
             )
         }
+        // "completed" is what the summary already says; only another outcome is news.
         "StageCompleted" => string_payload(event, "outcome")
+            .filter(|outcome| outcome != "completed")
             .map(|outcome| {
                 format!(
                     "{source_prefix}Stage {} completed ({outcome})",
@@ -282,6 +286,20 @@ fn journal_summary(
                     node_id.unwrap_or("unknown")
                 )
             }),
+        // Same wording as the UI's live summary: "build → signoff on next".
+        "StageTransition" => {
+            let target = string_payload(event, "target").unwrap_or_else(|| "unknown".to_string());
+            let decision =
+                string_payload(event, "decision").unwrap_or_else(|| "unknown".to_string());
+            let visit = numeric_payload(event, "visit")
+                .filter(|visit| *visit > 1)
+                .map(|visit| format!(" (visit {visit})"))
+                .unwrap_or_default();
+            format!(
+                "{source_prefix}{} → {target} on {decision}{visit}",
+                node_id.unwrap_or("unknown")
+            )
+        }
         "StageFailed" => string_payload(event, "error")
             .map(|error| {
                 format!(
