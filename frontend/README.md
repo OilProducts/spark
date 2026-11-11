@@ -12,8 +12,7 @@ The UI is responsible for:
 
 ## Development
 
-From the repo root, `just setup` prepares the whole checkout.
-If you only need the frontend toolchain in this directory, install dependencies with:
+Install dependencies with:
 
 ```bash
 npm ci
@@ -27,8 +26,6 @@ npm run dev
 
 By default, the Vite dev server proxies API requests to `http://127.0.0.1:8000`.
 Override that with `VITE_BACKEND_URL` if needed.
-
-From the repo root, `just dev-run` is the normal full-stack workflow.
 
 ## Shared UI Boundary
 
@@ -50,11 +47,7 @@ From the repo root, `just dev-run` is the normal full-stack workflow.
 ## Build Output
 
 Production assets are emitted to `frontend/dist/`.
-From the repo root, use `just deliverable` to build the production frontend and Cargo release binaries:
-
-```bash
-just deliverable
-```
+From the repo root, `just run-release` builds them and launches the desktop app.
 
 ## Related Docs
 

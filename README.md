@@ -30,24 +30,10 @@ Every Spark process (the desktop app, `spark-server` and the `spark` CLI) uses o
 
 ## Development
 
-Prepare the frontend toolchain and Cargo dependencies:
+Build and launch the desktop app with the production frontend and release optimizations:
 
 ```bash
-just setup
-```
-
-Run the backend and frontend together from a source checkout:
-
-```bash
-just dev-run
-```
-
-The backend uses `SPARK_HOME=~/.spark-dev` by default and serves on `127.0.0.1:8010`. The Vite frontend proxies to that backend unless `VITE_BACKEND_URL` is set.
-
-Build the frontend and release binaries:
-
-```bash
-just deliverable
+just run-release
 ```
 
 ## Validation
@@ -63,7 +49,7 @@ npm --prefix frontend run build
 
 `just test` runs the full cutover validation gate: Rust formatting, Cargo tests, frontend unit tests, and the frontend production build.
 
-Rust integration tests use grouped `contracts` and `process_contracts` targets. Focus a case with a module filter, such as `cargo test --workspace --all-features --test process_contracts llm_backend_contracts::case_name` (scoping it like the full gate reuses its build; `-p` builds a different feature set and recompiles). Debug builds retain line tables for backtraces while reducing artifact size. `just rust-cache-size` reports Cargo target usage without changing it; `just clean-rust-cache` is the explicit, opt-in cache cleanup command.
+Rust integration tests use grouped `contracts` and `process_contracts` targets. Focus a case with a module filter, such as `cargo test --workspace --all-features --test process_contracts llm_backend_contracts::case_name` (scoping it like the full gate reuses its build; `-p` builds a different feature set and recompiles). Debug builds retain line tables for backtraces while reducing artifact size.
 
 ## Runtime Assets
 

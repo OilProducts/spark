@@ -476,8 +476,6 @@ Operational rules:
 - Every Spark process, desktop, server and CLI alike, uses one data directory: `$SPARK_HOME` when it is set, else `~/.spark`. `spark-server --data-dir` overrides it for that server. Agents receive the server's data directory as `SPARK_HOME`, and their homes are `$SPARK_HOME/runtime/<agent>`.
 - The service loads provider secrets from `$SPARK_HOME/config/provider.env` when that file exists.
 - Source checkouts should use `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- init` and `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- serve --port 8010` instead of mutating a stable packaged runtime.
-- Packaged container workflows use `compose.package.yaml` and keep host-visible runtime state under the configured Spark home volume.
-
 ## Storage, Removal And Reset
 
 Spark stores data by owner. Below, `P` is a project's `.spark/` directory, `H`

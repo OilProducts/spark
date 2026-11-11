@@ -26,7 +26,7 @@
   `run-advanced-toggle-button`, which no longer exist anywhere in
   `frontend/src`.
 - [ ] **Manual desktop verification of blocking human gates**
-  (`just dev-desktop`). Narrowed 2026-07-21: live chat streaming and live run
+  (`just run-release`). Narrowed 2026-07-21: live chat streaming and live run
   streaming were verified extensively in production desktop use during the
   2026-07-19..21 loam build (conversation nimble-stream, multi-hour milestone
   runs); blocking `human_gate` nodes were never exercised on the desktop in
