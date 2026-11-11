@@ -18,11 +18,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }
@@ -209,7 +205,7 @@ fn a_retry_without_progress_logs_each_milestone_once_and_tail_applies_limit() {
     assert!(project_run_milestones(&settings, "run-tail", &[])
         .expect("retry")
         .is_empty());
-    assert!(!settings.workspace_dir.join("event-log.jsonl").exists());
+    assert!(!settings.data_dir.join("workspace/event-log.jsonl").exists());
 
     let tail = read_workflow_log_tail(&settings, 100).expect("tail");
     assert_eq!(tail.len(), 1, "a retry never duplicates a milestone");

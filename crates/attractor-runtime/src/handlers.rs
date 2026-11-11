@@ -1941,8 +1941,8 @@ impl RuntimeHandlerRunner {
                 .flatten()
                 .any(|record| record_stops_fork(record, tolerate));
         if let Some(paths) = runtime.run_paths.as_ref().filter(|_| stopped) {
-            crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
-                paths.runs_dir.clone(),
+            crate::controls::RuntimeControls::new(crate::RunStore::for_runs_root(
+                paths.runs_root.clone(),
             ))
             .cancel_orphaned_children(&runtime.run_id, None, "aborted_by_user")
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
@@ -2269,8 +2269,8 @@ impl RuntimeHandlerRunner {
                     crate::manager_loop::recorded_child_failure(paths, &current)
                 }) {
                     Ok(None) => match runtime.run_paths.as_ref().map_or(Ok(()), |paths| {
-                        crate::controls::RuntimeControls::new(crate::RunStore::for_runs_dir(
-                            paths.runs_dir.clone(),
+                        crate::controls::RuntimeControls::new(crate::RunStore::for_runs_root(
+                            paths.runs_root.clone(),
                         ))
                         .cancel_orphaned_children(
                             &runtime.run_id,
@@ -2725,6 +2725,13 @@ fn resolve_tool_env_map(
 ) -> std::result::Result<BTreeMap<String, String>, String> {
     let bindings = tool_attr_string_map(runtime, "tool.env_map")?;
     let mut env = BTreeMap::new();
+    if let Some(work) = runtime
+        .context
+        .get(crate::PROJECT_WORK_DIR_KEY)
+        .and_then(Value::as_str)
+    {
+        env.insert(crate::PROJECT_WORK_DIR_ENV.to_string(), work.to_string());
+    }
     for (name, context_key) in bindings {
         if !is_valid_env_var_name(&name) {
             return Err(format!(
@@ -3803,7 +3810,7 @@ fn write_branch_record(dir: &Path, index: usize, record: &Value) -> std::io::Res
 /// started and has no record gets one from its saved progress. Any
 /// failure is returned, so the caller publishes nothing and can redo this.
 pub(crate) fn cancel_unsettled_branches(paths: &RunRootPaths) -> std::io::Result<()> {
-    let store = crate::RunStore::for_runs_dir(paths.runs_dir.clone());
+    let store = crate::RunStore::for_runs_root(paths.runs_root.clone());
     let children = |dir: PathBuf| -> std::io::Result<Vec<PathBuf>> {
         match fs::read_dir(dir) {
             Err(error)

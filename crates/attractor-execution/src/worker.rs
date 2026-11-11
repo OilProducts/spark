@@ -45,7 +45,7 @@ where
     };
     let run_paths = request.run_root.as_ref().and_then(|metadata| {
         attractor_runtime::RunRootPaths::from_existing_root(
-            metadata.runs_dir.clone(),
+            metadata.runs_root.clone(),
             metadata.project_id.clone(),
             &request.run_id,
             metadata.root.clone(),

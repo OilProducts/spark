@@ -124,7 +124,7 @@ export function ProjectPage({
                                 </p>
                             ) : (
                                 <p className="text-xs text-muted-foreground">
-                                    Removing deletes its Spark threads, workflow history, and runs; project files stay on disk.
+                                    Removing deletes its registration, Spark threads, and installed automation; its files, run history, learned memory, and working files stay, and running pipelines continue.
                                 </p>
                             )}
                             {removeError ? <InlineError dense>{removeError}</InlineError> : null}

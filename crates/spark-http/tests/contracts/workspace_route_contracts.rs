@@ -338,7 +338,8 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
 
     // The registry is a database row: no project file is written.
     let project_root = settings
-        .projects_dir
+        .data_dir
+        .join("projects")
         .join(register.1["project_id"].as_str().expect("project id"));
     assert!(!project_root.join("project.toml").exists());
 
@@ -1013,11 +1014,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -1717,10 +1714,7 @@ async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_scope_i
     .await;
     assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
     assert_eq!(saved.1["runtime"]["stored"]["runs_dir"], "/new/runs");
-    assert_eq!(
-        saved.1["runtime"]["effective"]["runs_dir"],
-        config.runs_dir.to_string_lossy().as_ref()
-    );
+    assert_eq!(saved.1["runtime"]["effective"]["runs_dir"], json!(null));
     assert_ne!(saved.1["runtime"]["revision"], revision);
     let persisted = fs::read_to_string(&path).unwrap();
     assert!(persisted.contains("keep = 12"));

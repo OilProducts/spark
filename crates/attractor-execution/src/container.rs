@@ -269,7 +269,7 @@ impl ContainerizedNodeExecutor {
                 .map(str::to_string),
             config_dir: std::env::var_os("SPARK_CONFIG_DIR").map(PathBuf::from),
             run_root: request.run_paths.as_ref().map(|paths| RunRootMetadata {
-                runs_dir: paths.runs_dir.clone(),
+                runs_root: paths.runs_root.clone(),
                 project_id: paths.project_id.clone(),
                 root: paths.root.clone(),
             }),
@@ -465,7 +465,16 @@ path "${5:-${SPARK_CLAUDE_CODE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}}
             ),
             mount_arg(&run_root, &run_root),
         ];
-        mounts.extend(profile_mounts(&self.selection.profile)?);
+        let declared = profile_mounts(&self.selection.profile)?;
+        if let Some(work) = request
+            .context
+            .get(attractor_runtime::PROJECT_WORK_DIR_KEY)
+            .and_then(Value::as_str)
+        {
+            // ponytail: no flow binds role memory yet; mount it here when one does.
+            mounts.push(project_work_mount(Path::new(work), &declared)?);
+        }
+        mounts.extend(declared);
         for mount in dedupe(mounts) {
             args.push("-v".to_string());
             args.push(mount);
@@ -674,6 +683,28 @@ pub fn profile_mounts_for_test(
     profile: &crate::profile::ExecutionProfile,
 ) -> Result<Vec<String>, RuntimeNodeError> {
     profile_mounts(profile)
+}
+
+/// The project's work directory, read/write at the same absolute path, so
+/// agents never see a path the container lacks.
+fn project_work_mount(work: &Path, declared: &[String]) -> Result<String, RuntimeNodeError> {
+    if !work.is_dir() {
+        return Err(RuntimeNodeError::terminal(format!(
+            "Project work directory {} is not an existing directory, so the container cannot mount it",
+            work.display()
+        )));
+    }
+    if let Some(conflict) = declared.iter().find(|spec| {
+        spec.split(':')
+            .nth(1)
+            .is_some_and(|target| Path::new(target).starts_with(work))
+    }) {
+        return Err(RuntimeNodeError::terminal(format!(
+            "container.mounts entry {conflict:?} conflicts with the project work directory {}",
+            work.display()
+        )));
+    }
+    Ok(mount_arg(work, work))
 }
 
 fn mount_arg(source: &Path, target: &Path) -> String {

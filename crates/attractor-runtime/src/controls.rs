@@ -89,6 +89,9 @@ pub struct ContinueRunRequest {
     /// The flow's lock resolved against the new run's project; none clears it.
     #[serde(default)]
     pub execution_lock: Option<attractor_core::RunExecutionLock>,
+    /// `project_path`'s work area; none keeps the source's.
+    #[serde(default)]
+    pub project_work_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,6 +282,9 @@ impl RuntimeControls {
         let project_path = request.project_path.as_deref().and_then(non_empty_string);
         // Children resolve by name through the new run's flow and project.
         context.insert("internal.flow_name".to_string(), json!(flow_name.clone()));
+        if let Some(work) = request.project_work_dir.as_deref() {
+            context.insert(crate::PROJECT_WORK_DIR_KEY.to_string(), json!(work));
+        }
         if let Some(project) = project_path.as_deref() {
             context.insert(
                 "internal.org_root".to_string(),

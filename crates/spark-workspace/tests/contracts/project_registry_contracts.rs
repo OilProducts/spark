@@ -402,11 +402,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }
@@ -530,7 +526,14 @@ fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
     );
     assert_eq!(response.body["status"], "started", "{:?}", response.body);
     assert_eq!(response.body["execution_profile_id"], "native");
-    assert!(!registry.projects_root().exists());
+    // Launch creates the project's work area, never its registration.
+    assert_eq!(
+        registry
+            .read_project_record(&settings.project_root.to_string_lossy())
+            .unwrap(),
+        None
+    );
+    assert!(registry.list_project_records().unwrap().is_empty());
 }
 
 #[test]
@@ -789,4 +792,118 @@ fn project_state_updates_never_resurrect_deleted_projects() {
         .update_project_state(&store, favorite(&deleted_dir))
         .expect("update after re-registration");
     assert!(updated.is_favorite);
+}
+
+/// Removing a project through the service keeps its working files, memory
+/// and runs usable: a Git worktree with an uncommitted edit still works, a
+/// running pipeline keeps writing its run, and nothing re-registers it.
+#[test]
+fn project_removal_keeps_a_usable_worktree_memory_and_a_writable_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let store = crate::shared_store(&settings.data_dir);
+    let service = WorkspaceProjectService::new(settings.clone());
+    let conversations = crate::conversations(settings.clone());
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=Spark",
+                "-c",
+                "user.email=spark@example.com",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    git(&project_dir, &["init", "-q"]);
+    fs::write(project_dir.join("tracked.txt"), "base\n").unwrap();
+    git(&project_dir, &["add", "tracked.txt"]);
+    git(&project_dir, &["commit", "-qm", "base"]);
+    let record = service
+        .register_project(
+            &store,
+            ProjectRegistrationRequest {
+                project_path: project_dir.to_string_lossy().into_owned(),
+                execution_profile_id: None,
+            },
+        )
+        .expect("register");
+    let project = record.project_path.clone();
+    let storage =
+        spark_common::project::project_storage_dir_for(&settings.data_dir, &project).unwrap();
+    assert_eq!(
+        storage,
+        registry.project_paths(&project).unwrap().root,
+        "one calculation names the project's private storage"
+    );
+    let worktree = spark_common::project::project_work_dir(&settings.data_dir, &project)
+        .unwrap()
+        .join("checkouts/run-kept");
+    let worktree_arg = worktree.to_string_lossy().into_owned();
+    git(
+        &project_dir,
+        &["worktree", "add", "-q", "-b", "kept", &worktree_arg],
+    );
+    fs::write(worktree.join("tracked.txt"), "uncommitted\n").unwrap();
+    let memory = storage.join("memory/coordinator");
+    fs::create_dir_all(&memory).unwrap();
+    fs::write(memory.join("index.md"), "# Known\n").unwrap();
+    let runs = attractor_runtime::RunStore::for_settings(&settings);
+    let run = runs
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: attractor_core::RunRecord::new("run-active", &project),
+            ..attractor_runtime::CreateRunRequest::default()
+        })
+        .expect("run");
+
+    service
+        .delete_project(&conversations, &project)
+        .expect("delete");
+    assert_eq!(registry.read_project_record(&project).unwrap(), None);
+    assert!(store.pending_project_deletion(&project).unwrap().is_none());
+
+    assert_eq!(
+        git(&worktree, &["status", "--porcelain"]),
+        " M tracked.txt\n"
+    );
+    git(&worktree, &["commit", "-qam", "kept work"]);
+    let api = spark_workspace::definitions::WorkspaceDefinitionService::new(
+        settings.clone(),
+        store.clone(),
+    );
+    let note = api
+        .memory(&project, "coordinator", Some("index.md"))
+        .unwrap();
+    assert_eq!(note["content"], "# Known\n");
+    // The pipeline keeps writing its run after removal.
+    runs.append_event(
+        &run,
+        attractor_core::RawRuntimeEvent {
+            sequence: None,
+            event_type: "after-removal".into(),
+            run_id: "run-active".into(),
+            emitted_at: "2026-11-10T00:00:00Z".into(),
+            payload: Default::default(),
+        },
+    )
+    .expect("append");
+    runs.update_run_record("run-active", |record| record.status = "completed".into())
+        .expect("update")
+        .expect("run found");
+    let found = runs.find_run_root("run-active").unwrap().expect("found");
+    assert_eq!(found.root, storage.join("runs/run-active"));
+    assert!(runs
+        .read_raw_events(&found)
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "after-removal"));
+    assert_eq!(registry.read_project_record(&project).unwrap(), None);
 }

@@ -19,7 +19,7 @@ export function useRemoveProject(projectPath: string) {
         const label = projectLabel(useStore.getState().projectRegistry, projectPath)
         const confirmed = await confirm({
             title: 'Remove project?',
-            description: `Remove project "${label}" from Spark? This deletes its local threads, workflow history, and runs, but does not delete the project files.`,
+            description: `Remove project "${label}" from Spark? This deletes its registration, local threads, standing roles, missions, and trigger activations. Its files, pipeline run history, learned memory, and working files are kept, and pipelines already running continue.`,
             confirmLabel: 'Remove project',
             cancelLabel: 'Keep project',
             confirmVariant: 'destructive',

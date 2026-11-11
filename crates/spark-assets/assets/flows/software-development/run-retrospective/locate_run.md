@@ -20,7 +20,15 @@ routes:
 
 ```sh
 set -eu
-run_dir=$(find "$SPARK_RUNS_ROOT" -mindepth 2 -maxdepth 2 -type d -name "$SPARK_TARGET_RUN_ID" | head -1)
+# Default runs live in <project-id>/runs/<run-id>, an external runs root
+# holds <project-id>/<run-id>.
+run_dir=
+for dir in "$SPARK_RUNS_ROOT"/*/runs/"$SPARK_TARGET_RUN_ID" "$SPARK_RUNS_ROOT"/*/"$SPARK_TARGET_RUN_ID"; do
+  if [ -f "$dir/run.json" ]; then
+    run_dir=$dir
+    break
+  fi
+done
 if [ -z "$run_dir" ]; then
   echo "run $SPARK_TARGET_RUN_ID not found under $SPARK_RUNS_ROOT" >&2
   exit 1

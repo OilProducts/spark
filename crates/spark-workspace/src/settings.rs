@@ -97,7 +97,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
                 match section {
                     "runtime" => {
                         view["effective"] = json!(RuntimeSettings {
-                            runs_dir: Some(settings.runs_dir.clone()),
+                            runs_dir: settings.runs_dir.clone(),
                             ui_dir: settings.ui_dir.clone(),
                             project_roots: settings.project_roots.clone()
                         });
@@ -255,7 +255,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
         }
     }
     result["runtime"]["active_startup"] = json!(RuntimeSettings {
-        runs_dir: Some(settings.runs_dir.clone()),
+        runs_dir: settings.runs_dir.clone(),
         ui_dir: settings.ui_dir.clone(),
         project_roots: settings.project_roots.clone()
     });

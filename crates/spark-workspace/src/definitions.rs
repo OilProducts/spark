@@ -208,9 +208,12 @@ impl WorkspaceDefinitionService {
         if !valid_role_name(role) {
             return Err(invalid(format!("Invalid role name: {role}")));
         }
-        // A symlinked memory directory must not lead out of the project's state.
-        let dir = memory_dir(project.trim(), role);
-        let root = Path::new(project.trim()).join(".spark").join("state");
+        // A symlinked memory directory must not lead out of the project's
+        // private storage.
+        let dir = memory_dir(&self.settings, project.trim(), role)?;
+        let root =
+            spark_common::project::project_storage_dir_for(&self.settings.data_dir, project.trim())
+                .map_err(|error| invalid(error.to_string()))?;
         let dir = match (dir.canonicalize(), root.canonicalize()) {
             (Ok(dir), Ok(root)) if dir.starts_with(&root) && dir.is_dir() => dir,
             _ if file.is_none() => return Ok(json!({ "role": role, "files": [] })),

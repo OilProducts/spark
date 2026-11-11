@@ -806,11 +806,10 @@ pub(super) fn simple_flow() -> Value {
 }
 
 fn runs_dir_is_empty(settings: &SparkSettings) -> bool {
-    match fs::read_dir(&settings.runs_dir) {
-        Ok(mut entries) => entries.next().is_none(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => panic!("read runs dir: {error}"),
-    }
+    attractor_runtime::RunStore::for_settings(settings)
+        .list_run_records()
+        .expect("list runs")
+        .is_empty()
 }
 
 pub(super) fn settings(root: &Path) -> SparkSettings {
@@ -827,11 +826,7 @@ fn settings_for_project(project_root: &Path, root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }
@@ -1034,6 +1029,13 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let frame = request.metadata[spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
         .as_str()
         .expect("pinned frame");
+    let storage = spark_common::project::project_storage_dir_for(
+        &settings.data_dir,
+        &project_path.to_string_lossy(),
+    )
+    .unwrap();
+    let runs = format!("{}/<run-id>/", storage.join("runs").display());
+    let work = format!("private work area is {}", storage.join("work").display());
     for expected in [
         "You are the Spark workspace assistant",
         "spark convo run-request",
@@ -1041,7 +1043,9 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
         "do not use any other Spark installation",
         "Every flow can be launched",
         ".spark/definitions",
-        "$SPARK_HOME/attractor/runs",
+        runs.as_str(),
+        work.as_str(),
+        "SPARK_PROJECT_WORK_DIR",
         "spark playbook list --project ",
     ] {
         assert!(frame.contains(expected), "frame lacks {expected}: {frame}");

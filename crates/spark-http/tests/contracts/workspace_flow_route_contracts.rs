@@ -333,7 +333,12 @@ async fn workspace_definition_routes_show_layers_copies_and_memory_read_only() {
     std::fs::write(org.join("roles/helper.md"), helper_role).expect("role");
     let edited_role = "---\ntype: Role\n---\n\nYou edit.\n";
     std::fs::write(org.join("roles/editor.md"), edited_role).expect("copy");
-    let memory = project.join(".spark/state/memory/coordinator");
+    let memory = spark_common::project::project_storage_dir_for(
+        &settings.data_dir,
+        &project.to_string_lossy(),
+    )
+    .expect("storage")
+    .join("memory/coordinator");
     std::fs::create_dir_all(memory.join("notes")).expect("memory");
     std::fs::write(memory.join("index.md"), "# Known\n").expect("index");
     std::fs::write(memory.join("notes/a.md"), "note a\n").expect("note");
@@ -549,7 +554,12 @@ async fn workspace_definition_routes_refuse_symlinks_out_of_the_project_and_bund
     symlink(outside.join("flow/review.md"), nodelink.join("review.md")).expect("link");
     std::fs::create_dir_all(org.join("flows/loop")).expect("loop");
     symlink(org.join("flows"), org.join("flows/loop/back")).expect("link");
-    let memory = project.join(".spark/state/memory");
+    let memory = spark_common::project::project_storage_dir_for(
+        &settings.data_dir,
+        &project.to_string_lossy(),
+    )
+    .expect("storage")
+    .join("memory");
     std::fs::create_dir_all(&memory).expect("memory");
     symlink(&outside, memory.join("coordinator")).expect("link");
 
@@ -878,11 +888,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }

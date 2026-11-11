@@ -31,11 +31,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("home"),
         config_dir: root.join("home/config"),
         runtime_dir: root.join("home/runtime"),
-        logs_dir: root.join("home/logs"),
-        workspace_dir: root.join("home/workspace"),
-        projects_dir: root.join("home/projects"),
-        attractor_dir: root.join("home/attractor"),
-        runs_dir: root.join("home/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: vec![],
     }

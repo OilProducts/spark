@@ -6,6 +6,7 @@ contracts:
   reads_context:
   - context.milestone.id
   - context.milestone.requirement_ids
+  - internal.project_work_dir
   response: decision_envelope
 execution:
   llm_model: gpt-6.1-sol
@@ -22,4 +23,4 @@ routes:
     description: Required work for this bounded node invocation remains and can be continued in the same session; no completed judgment is being asserted.
 ---
 
-Read context.milestone.id, context.milestone.requirement_ids, the milestone state in .spark/state/spec-implementation/current/milestones/<context milestone id>/state.json, and .spark/state/spec-implementation/current/validation-result.json if it exists. Treat context.milestone.id plus milestone-local state as authoritative even if shared runtime milestone metadata drifted during implementation. Write .spark/state/spec-implementation/current/milestones/<context milestone id>/result.json with fields status, outcome, summary, completed_requirement_ids, and evidence setting the JSON field values "status": "completed" and "outcome": "success". The completed_requirement_ids list should come from context.milestone.requirement_ids. Choose `done` only after the result file is written. Respond with ONLY a JSON decision envelope.
+Read context.milestone.id, context.milestone.requirement_ids, the milestone state in <internal.project_work_dir>/spec-implementation/current/milestones/<context milestone id>/state.json, and <internal.project_work_dir>/spec-implementation/current/validation-result.json if it exists. Treat context.milestone.id plus milestone-local state as authoritative even if shared runtime milestone metadata drifted during implementation. Write <internal.project_work_dir>/spec-implementation/current/milestones/<context milestone id>/result.json with fields status, outcome, summary, completed_requirement_ids, and evidence setting the JSON field values "status": "completed" and "outcome": "success". The completed_requirement_ids list should come from context.milestone.requirement_ids. Choose `done` only after the result file is written. Respond with ONLY a JSON decision envelope.

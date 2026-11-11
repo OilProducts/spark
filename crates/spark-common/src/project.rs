@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use crate::error::{Result, SparkCommonError};
@@ -67,18 +68,51 @@ pub fn definitions_dir(project: &Path) -> PathBuf {
     project.join(".spark").join("definitions")
 }
 
-/// The project's Spark working data, created on first use with a
-/// `.gitignore` holding `*` if missing, so none of it reaches source review.
-pub fn state_dir(project: &Path) -> std::result::Result<PathBuf, String> {
-    let state = project.join(".spark").join("state");
-    std::fs::create_dir_all(&state)
-        .map_err(|error| format!("Unable to create {}: {error}", state.display()))?;
-    let ignore = state.join(".gitignore");
-    if !ignore.exists() {
-        std::fs::write(&ignore, "*\n")
-            .map_err(|error| format!("Unable to write {}: {error}", ignore.display()))?;
+/// `G`, the installation's private storage for one project:
+/// `<home>/projects/<project-id>/`, holding `conversations/`,
+/// `memory/<role>/`, `runs/<run-id>/` (unless runs are configured elsewhere)
+/// and `work/`. Pure path arithmetic: nothing is created or registered.
+pub fn project_storage_dir(home: &Path, project_id: &str) -> PathBuf {
+    home.join("projects").join(project_id)
+}
+
+/// `G` for the project at `project_path`, by its path-derived identity.
+pub fn project_storage_dir_for(home: &Path, project_path: &str) -> Result<PathBuf> {
+    Ok(project_storage_dir(home, &build_project_id(project_path)?))
+}
+
+/// `G/work`: durable working files flows and agents keep for a project,
+/// bound to runs as `internal.project_work_dir` / `SPARK_PROJECT_WORK_DIR`.
+pub fn project_work_dir(home: &Path, project_path: &str) -> Result<PathBuf> {
+    Ok(project_storage_dir_for(home, project_path)?.join("work"))
+}
+
+/// Where pipeline run roots live.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunsRoot {
+    /// The installation home `H`: each project's runs are `G/runs/<run-id>`.
+    Home(PathBuf),
+    /// An explicitly configured root: `<root>/<project-id>/<run-id>`.
+    External(PathBuf),
+}
+
+impl RunsRoot {
+    /// The directory whose children are project ids.
+    pub fn projects_dir(&self) -> PathBuf {
+        match self {
+            Self::Home(home) => home.join("projects"),
+            Self::External(root) => root.clone(),
+        }
     }
-    Ok(state)
+
+    /// The directory whose children are one project's run roots.
+    pub fn project_runs_dir(&self, project_id: &str) -> PathBuf {
+        match self {
+            Self::Home(home) => project_storage_dir(home, project_id).join("runs"),
+            Self::External(root) => root.join(project_id),
+        }
+    }
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

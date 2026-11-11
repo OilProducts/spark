@@ -491,11 +491,9 @@ pub struct SparkSettings {
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
     pub runtime_dir: PathBuf,
-    pub logs_dir: PathBuf,
-    pub workspace_dir: PathBuf,
-    pub projects_dir: PathBuf,
-    pub attractor_dir: PathBuf,
-    pub runs_dir: PathBuf,
+    /// An explicitly configured external runs root; `None` keeps each
+    /// project's runs in its private storage. See [`Self::runs_root`].
+    pub runs_dir: Option<PathBuf>,
     pub ui_dir: Option<PathBuf>,
     pub project_roots: Vec<PathBuf>,
 }
@@ -506,6 +504,13 @@ impl SparkSettings {
     /// from the packaged assets on every start.
     pub fn bundled_dir(&self) -> PathBuf {
         self.data_dir.join("bundled")
+    }
+
+    pub fn runs_root(&self) -> crate::project::RunsRoot {
+        match &self.runs_dir {
+            Some(root) => crate::project::RunsRoot::External(root.clone()),
+            None => crate::project::RunsRoot::Home(self.data_dir.clone()),
+        }
     }
 }
 
@@ -540,17 +545,10 @@ pub fn resolve_settings_with_persisted(
     };
     let config_dir = data_dir.join("config");
     let runtime_dir = data_dir.join("runtime");
-    let logs_dir = data_dir.join("logs");
-    let workspace_dir = data_dir.join("workspace");
-    let projects_dir = workspace_dir.join("projects");
-    let attractor_dir = data_dir.join("attractor");
-    let runs_dir = coalesce_path(
+    let runs_dir = coalesce_optional_path(
         overrides.runs_dir.as_ref(),
         None,
-        persisted
-            .runs_dir
-            .as_ref()
-            .unwrap_or(&attractor_dir.join("runs")),
+        persisted.runs_dir.as_ref(),
     )?;
     let ui_dir = coalesce_optional_path(
         overrides.ui_dir.as_ref(),
@@ -605,10 +603,6 @@ pub fn resolve_settings_with_persisted(
         data_dir,
         config_dir,
         runtime_dir,
-        logs_dir,
-        workspace_dir,
-        projects_dir,
-        attractor_dir,
         runs_dir,
         ui_dir,
         project_roots,
@@ -618,11 +612,9 @@ pub fn resolve_settings_with_persisted(
 pub fn validate_settings(settings: &SparkSettings) -> Result<()> {
     ensure_directory(&settings.config_dir, "config")?;
     ensure_directory(&settings.runtime_dir, "runtime")?;
-    ensure_directory(&settings.logs_dir, "logs")?;
-    ensure_directory(&settings.workspace_dir, "workspace")?;
-    ensure_directory(&settings.projects_dir, "projects")?;
-    ensure_directory(&settings.attractor_dir, "attractor")?;
-    ensure_directory(&settings.runs_dir, "runs")?;
+    if let Some(runs_dir) = settings.runs_dir.as_deref() {
+        ensure_directory(runs_dir, "runs")?;
+    }
     if let Some(ui_dir) = settings.ui_dir.as_deref() {
         if !ui_dir.join("index.html").exists() {
             return Err(SparkCommonError::InvalidUiDirectory(ui_dir.to_path_buf()));
@@ -721,7 +713,7 @@ impl ExecutionConfiguration {
     pub fn retain_startup_settings(&mut self, settings: &SparkSettings) {
         self.config_dir = settings.config_dir.clone();
         self.runtime = RuntimeSettings {
-            runs_dir: Some(settings.runs_dir.clone()),
+            runs_dir: settings.runs_dir.clone(),
             ui_dir: settings.ui_dir.clone(),
             project_roots: settings.project_roots.clone(),
         };

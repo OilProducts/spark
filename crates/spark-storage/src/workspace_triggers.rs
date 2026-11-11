@@ -1,11 +1,10 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
-use spark_common::project::{definitions_dir, state_dir};
+use spark_common::project::definitions_dir;
 use spark_common::settings::SparkSettings;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -291,7 +290,7 @@ impl TriggerDefinitionRepository {
             trigger_definition_toml(&parse_trigger_definition(&definition.id, &payload, &path)?);
         fs::create_dir_all(self.root_dir())
             .map_err(|source| StorageError::io("create trigger directory", &path, source))?;
-        self.replace(&path, text.as_bytes())?;
+        crate::atomic::write_atomic(&path, text.as_bytes())?;
         Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
@@ -314,37 +313,6 @@ impl TriggerDefinitionRepository {
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(StorageError::io("delete trigger definition", &path, source)),
         }
-    }
-
-    /// Replaces `path` atomically: the new bytes are staged in
-    /// `<project>/.spark/state/tmp` (on the project's filesystem), then
-    /// renamed over the definition. A failed or partial write leaves the
-    /// original untouched and no file among the definitions.
-    fn replace(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        let project = Path::new(&self.project_path);
-        let staging = state_dir(project)
-            .map(|state| state.join("tmp"))
-            .and_then(|tmp| {
-                fs::create_dir_all(&tmp)
-                    .map(|()| tmp.clone())
-                    .map_err(|error| format!("Unable to create {}: {error}", tmp.display()))
-            })
-            .map_err(|error| {
-                StorageError::io(
-                    "stage trigger definition",
-                    path,
-                    std::io::Error::other(error),
-                )
-            })?;
-        let mut temp = tempfile::Builder::new()
-            .prefix(".spark-trigger-")
-            .tempfile_in(&staging)
-            .map_err(|source| StorageError::io("stage trigger definition", &staging, source))?;
-        temp.write_all(bytes)
-            .map_err(|source| StorageError::io("write trigger definition", path, source))?;
-        temp.persist(path)
-            .map_err(|error| StorageError::io("replace trigger definition", path, error.error))?;
-        Ok(())
     }
 
     fn lock(&self, trigger_id: &str) -> Result<fs::File> {

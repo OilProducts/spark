@@ -408,7 +408,7 @@ pub(crate) fn run_owner(
     settings: &SparkSettings,
     run_id: &str,
 ) -> WorkspaceResult<Option<RunOwner>> {
-    let key = (settings.runs_dir.clone(), run_id.to_string());
+    let key = (settings.runs_root(), run_id.to_string());
     if let Some(owner) = run_owners().lock().unwrap().get(&key).cloned() {
         return Ok(owner);
     }
@@ -438,10 +438,12 @@ pub(crate) fn run_owner(
 // ponytail: one entry per observed run for the process lifetime, like the publisher's cursors.
 #[allow(clippy::type_complexity)]
 fn run_owners() -> &'static std::sync::Mutex<
-    std::collections::HashMap<(std::path::PathBuf, String), Option<RunOwner>>,
+    std::collections::HashMap<(spark_common::project::RunsRoot, String), Option<RunOwner>>,
 > {
     static OWNERS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, String), Option<RunOwner>>>,
+        std::sync::Mutex<
+            std::collections::HashMap<(spark_common::project::RunsRoot, String), Option<RunOwner>>,
+        >,
     > = std::sync::OnceLock::new();
     OWNERS.get_or_init(Default::default)
 }

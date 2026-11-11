@@ -188,6 +188,7 @@ fn definitions_are_plain_files_and_writes_leave_the_project_history_unchanged() 
     assert!(!org.join(".git").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_failed_staging_write_leaves_the_definition_as_it_was_and_a_retry_succeeds() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -197,10 +198,10 @@ fn a_failed_staging_write_leaves_the_definition_as_it_was_and_a_retry_succeeds()
     saved.revision = repository.put(&saved, None).expect("create");
     let path = repository.definition_path("trigger-a").unwrap();
     let original = std::fs::read(&path).unwrap();
-    // A file where the staging directory belongs makes every staged write fail.
-    let staging = Path::new(&project).join(".spark/state/tmp");
-    std::fs::remove_dir_all(&staging).unwrap();
-    std::fs::write(&staging, "not a directory").unwrap();
+    // A read-only definitions directory makes every staged write fail.
+    use std::os::unix::fs::PermissionsExt;
+    let triggers = repository.root_dir();
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     // A failed create leaves no definition behind.
     assert!(repository
@@ -221,7 +222,7 @@ fn a_failed_staging_write_leaves_the_definition_as_it_was_and_a_retry_succeeds()
     assert_eq!(file_names(&repository.root_dir()), vec!["trigger-a.toml"]);
 
     // Once staging works again, retrying with the original revision succeeds.
-    std::fs::remove_file(&staging).unwrap();
+    std::fs::set_permissions(&triggers, std::fs::Permissions::from_mode(0o755)).unwrap();
     repository.put(&edited, None).expect("retry edit");
     assert_eq!(repository.get("trigger-a").unwrap().unwrap().name, "Edited");
 }
@@ -309,11 +310,6 @@ fn a_failed_or_partial_write_leaves_the_original_definition_and_nothing_malforme
             vec!["trigger-a.toml"],
             "{mode}"
         );
-        // No staged leftovers.
-        assert!(
-            file_names(&Path::new(&project).join(".spark/state/tmp")).is_empty(),
-            "{mode}"
-        );
     }
 }
 
@@ -389,7 +385,7 @@ fn reads_create_nothing_and_the_first_write_creates_the_definition_file() {
     assert!(repository.get("trigger-a").expect("get").is_none());
     assert!(!project.join(".spark").exists(), "reads create nothing");
 
-    // The first write creates the definition file and stages it in state.
+    // The first write creates the definition file and nothing else.
     repository
         .put(&webhook_definition("trigger-a"), None)
         .expect("create");
@@ -407,10 +403,7 @@ fn reads_create_nothing_and_the_first_write_creates_the_definition_file() {
             }
         }
     }
-    assert_eq!(
-        std::fs::read_to_string(spark.join("state/.gitignore")).unwrap(),
-        "*\n"
-    );
+    assert!(!spark.join("state").exists());
 }
 
 #[test]

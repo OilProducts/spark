@@ -7,6 +7,7 @@ contracts:
   - context.item.id
   - context.item.title
   - context.item.attempts
+  - internal.project_work_dir
   response: decision_envelope
 execution:
   llm_model: gpt-6.1-sol
@@ -26,4 +27,4 @@ routes:
     description: The completed verification supports the diagnosis, plan or active-item state under this node’s stated checks; write its required evidence and clear stale findings as instructed.
 ---
 
-Read the current milestone state in .spark/state/spec-implementation/current/milestones/<current milestone id>/state.json. Treat context.item.id as the authoritative live binding for the active item once work on an item has begun. Confirm state.json.current_item_id equals context.item.id, the matching item exists exactly once in the items array, that item is status=in_progress, and no other item is status=in_progress. Repair purely mechanical drift directly, for example rewriting current_item_id to match when context.item.id already names the sole in_progress item. If context.item.id is missing, state.json points at a different item, multiple items are in_progress, the matching item is missing, or a downstream item advanced despite attempts=0 or unmet dependencies, choose `replan` so Validate Item Plan can repair the queue from the evidence. Choose `verified` only when the active-item live binding is coherent and the durable ledger agrees with it. Respond with ONLY a JSON decision envelope.
+Read the current milestone state in <internal.project_work_dir>/spec-implementation/current/milestones/<current milestone id>/state.json. Treat context.item.id as the authoritative live binding for the active item once work on an item has begun. Confirm state.json.current_item_id equals context.item.id, the matching item exists exactly once in the items array, that item is status=in_progress, and no other item is status=in_progress. Repair purely mechanical drift directly, for example rewriting current_item_id to match when context.item.id already names the sole in_progress item. If context.item.id is missing, state.json points at a different item, multiple items are in_progress, the matching item is missing, or a downstream item advanced despite attempts=0 or unmet dependencies, choose `replan` so Validate Item Plan can repair the queue from the evidence. Choose `verified` only when the active-item live binding is coherent and the durable ledger agrees with it. Respond with ONLY a JSON decision envelope.

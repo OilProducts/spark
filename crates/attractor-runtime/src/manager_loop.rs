@@ -250,7 +250,7 @@ fn autostart_child_pipeline(
                 let store = runtime
                     .run_paths
                     .as_ref()
-                    .map(|paths| RunStore::for_runs_dir(paths.runs_dir.clone()));
+                    .map(|paths| RunStore::for_runs_root(paths.runs_root.clone()));
                 if let Some(bundle) = store
                     .as_ref()
                     .and_then(|store| store.read_run_bundle(&linked_child_run_id).ok().flatten())
@@ -293,7 +293,7 @@ fn autostart_child_pipeline(
     // unacknowledged invocation rather than manufacturing a sibling.
     if linked_child_run_id.is_empty() {
         if let Some(parent_paths) = runtime.run_paths.as_ref() {
-            let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
+            let store = RunStore::for_runs_root(parent_paths.runs_root.clone());
             let acknowledged =
                 acknowledged_children(&store, parent_paths, &runtime.run_id).unwrap_or_default();
             let candidates = store
@@ -492,7 +492,7 @@ fn autostart_child_pipeline(
         // through the run controls like any other child.
         match runtime.run_paths.as_ref() {
             Some(paths) => {
-                let store = RunStore::for_runs_dir(paths.runs_dir.clone());
+                let store = RunStore::for_runs_root(paths.runs_root.clone());
                 watch_owner_cancel(runtime, &store, &child_run_id, || launcher(request))
             }
             None => launcher(request),
@@ -573,7 +573,7 @@ pub(crate) fn recorded_child_failure(
     node_id: &str,
 ) -> crate::error::Result<Option<(FailureKind, String)>> {
     let run_id = &parent_paths.run_id;
-    let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
+    let store = RunStore::for_runs_root(parent_paths.runs_root.clone());
     let acknowledged = acknowledged_children(&store, parent_paths, run_id)?;
     Ok(store
         .list_child_run_bundles(run_id)?
@@ -610,7 +610,7 @@ fn child_failed_reason(child_run_id: &str, reason: &str) -> String {
 /// means the child is the unconsumed durable invocation crash recovery adopts.
 fn linked_child_is_history(runtime: &HandlerRuntime, child_run_id: &str) -> Option<String> {
     let parent_paths = runtime.run_paths.as_ref()?;
-    let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
+    let store = RunStore::for_runs_root(parent_paths.runs_root.clone());
     let child_bundle = store.read_run_bundle(child_run_id).ok().flatten()?;
     let owner = child_bundle
         .record
@@ -659,7 +659,7 @@ fn bundle_restart_marked(runtime: &HandlerRuntime, run_id: &str) -> bool {
     runtime
         .run_paths
         .as_ref()
-        .map(|paths| RunStore::for_runs_dir(paths.runs_dir.clone()))
+        .map(|paths| RunStore::for_runs_root(paths.runs_root.clone()))
         .and_then(|store| store.read_run_bundle(run_id).ok().flatten())
         .and_then(|bundle| bundle.record)
         .is_some_and(|record| restart_marked_record(&record))
@@ -690,7 +690,7 @@ fn request_child_cancel(runtime: &HandlerRuntime, context: &ContextMap) -> bool 
     let Some(paths) = runtime.run_paths.as_ref() else {
         return false;
     };
-    crate::controls::RuntimeControls::new(RunStore::for_runs_dir(paths.runs_dir.clone()))
+    crate::controls::RuntimeControls::new(RunStore::for_runs_root(paths.runs_root.clone()))
         .request_cancel(&child_run_id)
         .is_ok()
 }
@@ -870,10 +870,9 @@ fn launch_default_child_run(
     // Child runs inherit the parent's run-event observer so their journal
     // appends reach the live layer too.
     let store = match runner.run_event_observer() {
-        Some(observer) => {
-            RunStore::for_runs_dir(parent_paths.runs_dir.clone()).with_run_event_observer(observer)
-        }
-        None => RunStore::for_runs_dir(parent_paths.runs_dir.clone()),
+        Some(observer) => RunStore::for_runs_root(parent_paths.runs_root.clone())
+            .with_run_event_observer(observer),
+        None => RunStore::for_runs_root(parent_paths.runs_root.clone()),
     };
     let start_node = resolve_start_node(&request.child_flow).map_err(|error| error.to_string())?;
     let mut child_context = request.parent_context.clone();
@@ -914,7 +913,11 @@ fn launch_default_child_run(
     set_context(
         &mut child_context,
         "internal.runs_dir",
-        json!(parent_paths.runs_dir.to_string_lossy().to_string()),
+        json!(parent_paths
+            .runs_root
+            .projects_dir()
+            .to_string_lossy()
+            .to_string()),
     );
     set_context(
         &mut child_context,
@@ -1051,7 +1054,7 @@ fn resolve_child_result(
         return resolver(child_run_id);
     }
     let run_paths = runtime.run_paths.as_ref()?;
-    let store = RunStore::for_runs_dir(run_paths.runs_dir.clone());
+    let store = RunStore::for_runs_root(run_paths.runs_root.clone());
     store
         .read_run_meta(child_run_id)
         .ok()

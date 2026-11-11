@@ -38,18 +38,30 @@ A project file with the same name as a bundled one replaces it. A launch with
 no project uses bundled flows only, and a name missing from the project's
 definitions falls back to the bundled library. Every flow can be launched, by people and by agents.
 
+To choose models for one project's flow or nodes, copy the flow into the
+project's definitions and set `defaults` or the nodes' `execution` there. No
+project settings file adds another layer: a project's own default model and
+execution profile are private to the installation, and launch-time choices
+apply as usual. The operations guide's storage section lists where Spark keeps
+everything else.
+
 Editor saves write the changed files into the project's definitions; Spark
 runs no Git there, and versioning them is the operator's choice. Saving a
 bundled flow first copies it into the definitions. Deleting a project copy
 reverts to the bundled flow; bundled flows cannot be deleted.
 
-Flows keep project working data under `<project>/.spark/state/` (for example
-`checkouts/` or `changes/`), never elsewhere in `.spark/` or the project. A
-step that creates `.spark/state/` writes `.spark/state/.gitignore` holding `*`
-when it is missing, so working data stays out of every Git command run in the
-project; write no other ignore file. The Home project's directory is `$HOME`,
-whose `.spark/` is also the default data directory; only its `definitions/` and
-`state/` belong to the project.
+Flows keep durable working data (checkouts, ledgers, generated scripts) in
+the project's private work area, outside the project: Spark supplies it to
+every run of the project, root and child alike, as the context binding
+`internal.project_work_dir` and to every tool as `SPARK_PROJECT_WORK_DIR`.
+Each flow uses its own subdirectory, such as `checkouts/` or
+`spec-implementation/`. An agent node that needs the path declares
+`internal.project_work_dir` in `contracts.reads_context`. The area outlives
+runs and project removal; Spark never cleans it, so a flow that creates
+something there removes it when it is done with it. Write nothing for this
+into the project's `.spark/` and no ignore file. A Git worktree there still
+belongs to its source repository: it stays usable only while that repository
+does, and moving it breaks it.
 
 The Rust `FlowDefinition` type is the assembled form of a flow, and
 `assets/schemas/flow-definition.schema.json` describes its JSON form. The
@@ -417,10 +429,8 @@ routes:
 ---
 
 ```sh
-repo_root=$(git rev-parse --show-toplevel)
-mkdir -p "${repo_root}/.spark/state/checkouts"
-[ -e "${repo_root}/.spark/state/.gitignore" ] || printf '*\n' > "${repo_root}/.spark/state/.gitignore"
-worktree="${repo_root}/.spark/state/checkouts/${SPARK_RUN_ID}"
+mkdir -p "${SPARK_PROJECT_WORK_DIR}/checkouts"
+worktree="${SPARK_PROJECT_WORK_DIR}/checkouts/${SPARK_RUN_ID}"
 git worktree add -b "spark/task/${SPARK_RUN_ID}" "$worktree" >/dev/null
 printf '{"path":"%s"}' "$worktree"
 ```

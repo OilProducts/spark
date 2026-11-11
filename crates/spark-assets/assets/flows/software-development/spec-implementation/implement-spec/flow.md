@@ -2,7 +2,7 @@
 type: Flow
 id: implement_spec_program
 title: Implement Spec Program
-description: A greenfield software-development program flow. It creates committed spec packages under specs/<slug>/, stores workflow state under .spark/state/spec-implementation/<slug>/, refreshes .spark/state/spec-implementation/current/ as a stable runtime alias to the active workspace, surfaces the committed spec package through current/spec/, extracts a requirement ledger, proposes an architecture, plans milestones, dispatches a milestone worker as a child flow, and audits conformance until the specification is covered or the effort is blocked.
+description: A greenfield software-development program flow. It creates committed spec packages under specs/<slug>/, stores workflow state under the project work area's spec-implementation/<slug>/, refreshes the project work area's spec-implementation/current/ as a stable runtime alias to the active workspace, surfaces the committed spec package through current/spec/, extracts a requirement ledger, proposes an architecture, plans milestones, dispatches a milestone worker as a child flow, and audits conformance until the specification is covered or the effort is blocked.
 schema_version: '2'
 inputs:
 - key: context.request.spec_path

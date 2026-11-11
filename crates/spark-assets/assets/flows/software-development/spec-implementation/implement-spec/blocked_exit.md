@@ -3,6 +3,8 @@ type: agent_task
 title: Blocked Exit
 runtime: {}
 contracts:
+  reads_context:
+  - internal.project_work_dir
   response: decision_envelope
 retry:
   max_retries: 1
@@ -21,4 +23,4 @@ routes:
     description: Required work for this bounded node invocation remains and can be continued in the same session; no completed judgment is being asserted.
 ---
 
-Inspect .spark/state/spec-implementation/current/state.json, .spark/state/spec-implementation/current/spec/source.md, .spark/state/spec-implementation/current/spec/requirements.json, .spark/state/spec-implementation/current/milestones.json, and any current milestone artifacts. In notes, write a short summary of what remains blocked and why the program could not complete automatically, citing the originating blocker evidence. Choose `done` once that summary is complete. Respond with ONLY a JSON decision envelope.
+Inspect <internal.project_work_dir>/spec-implementation/current/state.json, <internal.project_work_dir>/spec-implementation/current/spec/source.md, <internal.project_work_dir>/spec-implementation/current/spec/requirements.json, <internal.project_work_dir>/spec-implementation/current/milestones.json, and any current milestone artifacts. In notes, write a short summary of what remains blocked and why the program could not complete automatically, citing the originating blocker evidence. Choose `done` once that summary is complete. Respond with ONLY a JSON decision envelope.

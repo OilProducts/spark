@@ -242,6 +242,117 @@ fn streams_canonical_events_to_host_once_in_order_before_exit_and_notifies() {
     );
 }
 
+/// Records every container command's arguments, answering like [`StreamingFake`].
+struct Recording(StreamingFake, Arc<Mutex<Vec<Vec<String>>>>);
+
+impl ContainerCommandRunner for Recording {
+    fn command_exists(&self, name: &str) -> bool {
+        self.0.command_exists(name)
+    }
+
+    fn run(&mut self, spec: CommandSpec) -> io::Result<CommandResult> {
+        self.1.lock().unwrap().push(spec.args.clone());
+        self.0.run(spec)
+    }
+
+    fn run_streaming(
+        &mut self,
+        spec: CommandSpec,
+        callback: &mut dyn FnMut(&str),
+    ) -> io::Result<CommandResult> {
+        self.0.run_streaming(spec, callback)
+    }
+}
+
+#[test]
+fn containers_mount_the_project_work_dir_at_its_own_path_or_refuse_to_start() {
+    let (temp, _, mut request, _, _) = fixture(vec![]);
+    let work = temp.path().join("projects/project-id/work");
+    request.context.insert(
+        attractor_runtime::PROJECT_WORK_DIR_KEY.into(),
+        json!(work.to_string_lossy()),
+    );
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let execute = |mounts: Vec<String>| {
+        let profile = ExecutionProfile {
+            id: "container".into(),
+            label: "Container".into(),
+            mode: ExecutionMode::LocalContainer,
+            enabled: true,
+            image: Some("worker:test".into()),
+            capabilities: vec![],
+            metadata: BTreeMap::from([("container.mounts".into(), json!(mounts))]),
+        };
+        ContainerizedNodeExecutor::new(
+            ExecutionProfileSelection {
+                profile,
+                selected_profile_id: "container".into(),
+                selection_source: "test".into(),
+            },
+            RuntimeHandlerRunner::new(),
+        )
+        .with_command_runner(Recording(
+            StreamingFake {
+                frames: vec![result()],
+                exit_code: 0,
+                stderr: String::new(),
+                io_failure: false,
+                delivered: Arc::new(Mutex::new(0)),
+                after_first_line: None,
+                expected_identity: None,
+            },
+            recorded.clone(),
+        ))
+        .execute(request.clone())
+    };
+    let started = || {
+        recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|args| args[0] == "run")
+            .cloned()
+    };
+
+    let missing = execute(vec![]).unwrap_err();
+    assert!(
+        missing.message.contains("is not an existing directory"),
+        "{}",
+        missing.message
+    );
+    assert_eq!(started(), None);
+
+    std::fs::create_dir_all(&work).unwrap();
+    let shadowing = format!(
+        "{}:{}",
+        temp.path().display(),
+        work.join("checkouts").display()
+    );
+    let conflict = execute(vec![shadowing]).unwrap_err();
+    assert!(
+        conflict
+            .message
+            .contains("conflicts with the project work directory"),
+        "{}",
+        conflict.message
+    );
+    assert_eq!(started(), None);
+
+    let outcome = execute(vec![]).unwrap();
+    assert_eq!(outcome.status, OutcomeStatus::Completed);
+    let run = started().expect("container started");
+    let mount = format!(
+        "{}:{}:rw",
+        work.canonicalize().unwrap().display(),
+        work.display()
+    );
+    assert!(
+        run.windows(2)
+            .any(|pair| pair[0] == "-v" && pair[1] == mount),
+        "{run:?}"
+    );
+}
+
 #[test]
 fn rejects_every_invalid_stream_shape_with_diagnostics() {
     let cases = [
@@ -361,7 +472,7 @@ fn worker_protocol_preserves_repeated_visit_and_retry_execution_identity() {
             model: None,
             config_dir: None,
             run_root: Some(RunRootMetadata {
-                runs_dir: paths.runs_dir.clone(),
+                runs_root: paths.runs_root.clone(),
                 project_id: paths.project_id.clone(),
                 root: paths.root.clone(),
             }),
@@ -574,7 +685,7 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
         model: None,
         config_dir: None,
         run_root: Some(RunRootMetadata {
-            runs_dir: paths.runs_dir.clone(),
+            runs_root: paths.runs_root.clone(),
             project_id: paths.project_id.clone(),
             root: paths.root.clone(),
         }),

@@ -23,6 +23,10 @@ pub const RUNTIME_LAST_NODE_ID_KEY: &str = "_attractor.runtime.last_node.id";
 pub const RUNTIME_LAST_NODE_UPDATES_KEY: &str = "_attractor.runtime.last_node.context_updates";
 pub use attractor_core::RUNTIME_SESSIONS_KEY;
 pub const INTERNAL_PIPELINE_RETRY_RUN_ID_KEY: &str = "internal.pipeline_retry_run_id";
+/// The owning project's `G/work`, bound at launch and inherited by child runs;
+/// tools see it as [`PROJECT_WORK_DIR_ENV`].
+pub const PROJECT_WORK_DIR_KEY: &str = "internal.project_work_dir";
+pub const PROJECT_WORK_DIR_ENV: &str = "SPARK_PROJECT_WORK_DIR";
 const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] =
     &["last_response", "last_stage", RUNTIME_SESSIONS_KEY];
 const MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &[RUNTIME_SESSIONS_KEY];

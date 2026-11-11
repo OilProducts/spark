@@ -8,6 +8,7 @@ use attractor_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use spark_common::project::RunsRoot;
 use spark_common::settings::SparkSettings;
 use spark_storage::{write_json_atomic, write_text_atomic, JsonWriteOptions};
 
@@ -30,7 +31,7 @@ pub type RunEventObserver = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct RunStore {
-    runs_dir: PathBuf,
+    runs_root: RunsRoot,
     run_event_observer: Option<RunEventObserver>,
 }
 
@@ -38,7 +39,7 @@ impl std::fmt::Debug for RunStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RunStore")
-            .field("runs_dir", &self.runs_dir)
+            .field("runs_root", &self.runs_root)
             .field("run_event_observer", &self.run_event_observer.is_some())
             .finish()
     }
@@ -98,17 +99,23 @@ pub struct NodeExecution {
 
 impl RunStore {
     pub fn for_settings(settings: &SparkSettings) -> Self {
+        Self::for_runs_root(settings.runs_root())
+    }
+
+    /// A store over an external runs root: `<runs_dir>/<project-id>/<run-id>`.
+    pub fn for_runs_dir(runs_dir: impl Into<PathBuf>) -> Self {
+        Self::for_runs_root(RunsRoot::External(runs_dir.into()))
+    }
+
+    pub fn for_runs_root(runs_root: RunsRoot) -> Self {
         Self {
-            runs_dir: settings.runs_dir.clone(),
+            runs_root,
             run_event_observer: None,
         }
     }
 
-    pub fn for_runs_dir(runs_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            runs_dir: runs_dir.into(),
-            run_event_observer: None,
-        }
+    pub fn runs_root(&self) -> &RunsRoot {
+        &self.runs_root
     }
 
     pub fn with_run_event_observer(mut self, observer: RunEventObserver) -> Self {
@@ -127,7 +134,7 @@ impl RunStore {
     }
 
     pub fn run_root(&self, project_path: &str, run_id: &str) -> Result<RunRootPaths> {
-        RunRootPaths::new(self.runs_dir.clone(), project_path, run_id)
+        RunRootPaths::new(self.runs_root.clone(), project_path, run_id)
     }
 
     pub fn list_node_executions(&self, paths: &RunRootPaths) -> Result<Vec<NodeExecution>> {
@@ -330,25 +337,11 @@ impl RunStore {
 
     pub fn find_run_root(&self, run_id: &str) -> Result<Option<RunRootPaths>> {
         let run_id = crate::paths::validate_run_id(run_id)?;
-        if !self.runs_dir.exists() {
-            return Ok(None);
-        }
-        let projects = fs::read_dir(&self.runs_dir).map_err(|source| {
-            RuntimeStorageError::io("list run projects", &self.runs_dir, source)
-        })?;
-        for project_entry in projects {
-            let project_entry = project_entry.map_err(|source| {
-                RuntimeStorageError::io("list run project entry", &self.runs_dir, source)
-            })?;
-            let project_path = project_entry.path();
-            if !project_path.is_dir() {
-                continue;
-            }
-            let candidate = project_path.join(&run_id);
+        for (project_id, runs) in self.project_runs_dirs()? {
+            let candidate = runs.join(&run_id);
             if candidate.is_dir() {
-                let project_id = project_entry.file_name().to_string_lossy().to_string();
                 return Ok(Some(RunRootPaths::from_existing_root(
-                    self.runs_dir.clone(),
+                    self.runs_root.clone(),
                     project_id,
                     &run_id,
                     candidate,
@@ -356,6 +349,34 @@ impl RunStore {
             }
         }
         Ok(None)
+    }
+
+    /// Every project's runs directory that exists, registered or not.
+    fn project_runs_dirs(&self) -> Result<Vec<(String, PathBuf)>> {
+        let projects_dir = self.runs_root.projects_dir();
+        let projects = match fs::read_dir(&projects_dir) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(RuntimeStorageError::io(
+                    "list run projects",
+                    &projects_dir,
+                    source,
+                ))
+            }
+        };
+        let mut dirs = Vec::new();
+        for project_entry in projects {
+            let project_entry = project_entry.map_err(|source| {
+                RuntimeStorageError::io("list run project entry", &projects_dir, source)
+            })?;
+            let project_id = project_entry.file_name().to_string_lossy().to_string();
+            let runs = self.runs_root.project_runs_dir(&project_id);
+            if runs.is_dir() {
+                dirs.push((project_id, runs));
+            }
+        }
+        Ok(dirs)
     }
 
     pub fn read_run_bundle(&self, run_id: &str) -> Result<Option<RunBundle>> {
@@ -649,28 +670,14 @@ impl RunStore {
     }
 
     pub(crate) fn list_existing_run_roots(&self) -> Result<Vec<RunRootPaths>> {
-        if !self.runs_dir.exists() {
-            return Ok(Vec::new());
-        }
         let mut roots = Vec::new();
-        let projects = fs::read_dir(&self.runs_dir).map_err(|source| {
-            RuntimeStorageError::io("list run projects", &self.runs_dir, source)
-        })?;
-        for project_entry in projects {
-            let project_entry = project_entry.map_err(|source| {
-                RuntimeStorageError::io("list run project entry", &self.runs_dir, source)
-            })?;
-            let project_path = project_entry.path();
-            if !project_path.is_dir() {
-                continue;
-            }
-            let project_id = project_entry.file_name().to_string_lossy().to_string();
-            let runs = fs::read_dir(&project_path).map_err(|source| {
-                RuntimeStorageError::io("list project runs", &project_path, source)
+        for (project_id, project_runs) in self.project_runs_dirs()? {
+            let runs = fs::read_dir(&project_runs).map_err(|source| {
+                RuntimeStorageError::io("list project runs", &project_runs, source)
             })?;
             for run_entry in runs {
                 let run_entry = run_entry.map_err(|source| {
-                    RuntimeStorageError::io("list project run entry", &project_path, source)
+                    RuntimeStorageError::io("list project run entry", &project_runs, source)
                 })?;
                 let run_root = run_entry.path();
                 if !run_root.is_dir() {
@@ -678,7 +685,7 @@ impl RunStore {
                 }
                 let run_id = run_entry.file_name().to_string_lossy().to_string();
                 roots.push(RunRootPaths::from_existing_root(
-                    self.runs_dir.clone(),
+                    self.runs_root.clone(),
                     project_id.clone(),
                     &run_id,
                     run_root,
@@ -688,15 +695,14 @@ impl RunStore {
         Ok(roots)
     }
 
+    /// Removes every project's runs directory, and nothing else of its
+    /// private storage.
     pub fn delete_all_runs(&self) -> Result<()> {
-        if self.runs_dir.exists() {
-            fs::remove_dir_all(&self.runs_dir).map_err(|source| {
-                RuntimeStorageError::io("delete runs directory", &self.runs_dir, source)
+        for (_, runs) in self.project_runs_dirs()? {
+            fs::remove_dir_all(&runs).map_err(|source| {
+                RuntimeStorageError::io("delete runs directory", &runs, source)
             })?;
         }
-        fs::create_dir_all(&self.runs_dir).map_err(|source| {
-            RuntimeStorageError::io("create runs directory", &self.runs_dir, source)
-        })?;
         Ok(())
     }
 

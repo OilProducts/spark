@@ -32,14 +32,12 @@ routes:
 
 ```sh
 set -eu
-repo_root=$(git rev-parse --show-toplevel)
 base_commit=$(git rev-parse --verify "${SPARK_BASE_REF}^{commit}")
 branch="spark/hill-climb/${SPARK_RUN_ID}"
-state="${repo_root}/.spark/state"
-worktree="${state}/checkouts/${SPARK_RUN_ID}"
-evidence_root="${state}/hill-climb/${SPARK_RUN_ID}"
-mkdir -p "${state}/checkouts" "$evidence_root"
-[ -e "${state}/.gitignore" ] || printf '*\n' > "${state}/.gitignore"
+work="${SPARK_PROJECT_WORK_DIR}"
+worktree="${work}/checkouts/${SPARK_RUN_ID}"
+evidence_root="${work}/hill-climb/${SPARK_RUN_ID}"
+mkdir -p "${work}/checkouts" "$evidence_root"
 if ! git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1; then
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     git worktree add "$worktree" "$branch" >/dev/null

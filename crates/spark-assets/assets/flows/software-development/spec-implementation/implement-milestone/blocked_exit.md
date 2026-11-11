@@ -6,6 +6,7 @@ contracts:
   reads_context:
   - context.milestone.id
   - context.milestone.title
+  - internal.project_work_dir
   response: decision_envelope
 execution:
   llm_model: gpt-6.1-sol
@@ -22,4 +23,4 @@ routes:
     description: Required work for this bounded node invocation remains and can be continued in the same session; no completed judgment is being asserted.
 ---
 
-Read context.milestone.id, context.milestone.title, .spark/state/spec-implementation/current/spec/source.md, .spark/state/spec-implementation/current/spec/requirements.json, and the current milestone state under .spark/state/spec-implementation/current/milestones/<context milestone id>/. Treat context.milestone.id plus the milestone-local state as the authoritative identity for this worker even if shared runtime bindings under .spark/state/spec-implementation/current/current-milestone.json or state.json.current_milestone_id drifted during implementation. Write .spark/state/spec-implementation/current/milestones/<context milestone id>/result.json with fields status, outcome, outcome_reason_code, outcome_reason_message, and summary setting the JSON field values "status": "completed", "outcome": "failure", and "outcome_reason_code": "blocked", with outcome_reason_message set to a short summary of what remains blocked and why the milestone could not complete automatically, and the summary citing the originating blocker evidence. Choose `done` only after the result file is written. Respond with ONLY a JSON decision envelope.
+Read context.milestone.id, context.milestone.title, <internal.project_work_dir>/spec-implementation/current/spec/source.md, <internal.project_work_dir>/spec-implementation/current/spec/requirements.json, and the current milestone state under <internal.project_work_dir>/spec-implementation/current/milestones/<context milestone id>/. Treat context.milestone.id plus the milestone-local state as the authoritative identity for this worker even if shared runtime bindings under <internal.project_work_dir>/spec-implementation/current/current-milestone.json or state.json.current_milestone_id drifted during implementation. Write <internal.project_work_dir>/spec-implementation/current/milestones/<context milestone id>/result.json with fields status, outcome, outcome_reason_code, outcome_reason_message, and summary setting the JSON field values "status": "completed", "outcome": "failure", and "outcome_reason_code": "blocked", with outcome_reason_message set to a short summary of what remains blocked and why the milestone could not complete automatically, and the summary citing the originating blocker evidence. Choose `done` only after the result file is written. Respond with ONLY a JSON decision envelope.

@@ -519,7 +519,12 @@ fn codergen_external_sink_wins_over_reconstructed_run_paths() {
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let streamed = Arc::new(Mutex::new(Vec::new()));
     let sink_events = Arc::clone(&streamed);
@@ -626,7 +631,12 @@ fn node_thinking_reaches_the_publisher_without_touching_the_run_record() {
     .expect("flow parses");
     let node = flow.nodes.get("task").expect("task").clone();
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-thinking").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-thinking",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let seen_at_notice = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&seen_at_notice);
@@ -885,7 +895,12 @@ fn run_status_events_node(paths: &RunRootPaths) -> spark_storage::ActivityReposi
 #[test]
 fn resumed_node_projects_events_left_pending_by_a_crash_exactly_once() {
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     let crashed =
         spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"));
     crashed
@@ -942,7 +957,12 @@ fn resumed_node_projects_events_left_pending_by_a_crash_exactly_once() {
 #[test]
 fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
     let temp = tempdir().unwrap();
-    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    let paths = RunRootPaths::new(
+        attractor_runtime::RunsRoot::External(temp.path().into()),
+        "project",
+        "run-1",
+    )
+    .unwrap();
     std::fs::create_dir_all(paths.logs_dir()).unwrap();
     let records = run_status_events_node(&paths)
         .read_transcript_records()

@@ -18,11 +18,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }
@@ -770,4 +766,25 @@ fn continuations_resolve_the_effective_flows_lock_against_their_project() {
     wait_until("moved continuation runs after project B releases", || {
         read_status(&settings, &moved) == "completed"
     });
+
+    // A run moved to another project works in that project's area.
+    let work_dir = |run: &str| {
+        attractor_runtime::RunStore::for_settings(&settings)
+            .read_run_bundle(run)
+            .expect("read run")
+            .and_then(|bundle| bundle.checkpoint)
+            .expect("checkpoint")
+            .context[attractor_runtime::PROJECT_WORK_DIR_KEY]
+            .clone()
+    };
+    let expected = |project: &Path| {
+        serde_json::json!(spark_common::project::project_work_dir(
+            &settings.data_dir,
+            &path(project)
+        )
+        .expect("work dir")
+        .to_string_lossy())
+    };
+    assert_eq!(work_dir(&snapshot), expected(&project_a));
+    assert_eq!(work_dir(&moved), expected(&project_b));
 }

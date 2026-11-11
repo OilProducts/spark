@@ -224,7 +224,7 @@ impl ConversationStore {
 
     /// Delete a registered project: fence its work, tombstone everything it
     /// owns with a durable cleanup marker in one transaction, then remove its
-    /// directory once the cleanup barrier allows. `cancel` then interrupts
+    /// conversation files once the cleanup barrier allows. `cancel` then interrupts
     /// each tombstoned conversation's running work. A cleanup failure keeps the
     /// marker and is returned; repeating the deletion retries it.
     pub fn delete_project(
@@ -342,14 +342,33 @@ impl ConversationStore {
             self.pending_deletions().remove(project_path);
             return Ok(());
         };
-        let root = self.registry.projects_root().join(&marker.project_id);
+        let root = spark_common::project::project_storage_dir(
+            self.registry.home_dir(),
+            &marker.project_id,
+        );
         self.database.after_checkpoint(|view| {
             if view.project_has_live_conversations(project_path)? {
                 return Err(StorageError::CleanupDeferred {
                     reason: format!("project {project_path} has live conversations again"),
                 });
             }
-            remove_dir_if_exists(&root, "delete workspace project directory")
+            // Conversation files are the only project storage removal deletes;
+            // memory, work, runs and unknown entries stay, and keep `root`.
+            remove_dir_if_exists(
+                &root.join("conversations"),
+                "delete project conversations directory",
+            )?;
+            match fs::remove_dir(&root) {
+                Err(source)
+                    if !matches!(
+                        source.kind(),
+                        ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty
+                    ) =>
+                {
+                    Err(StorageError::io("delete project directory", &root, source))
+                }
+                _ => Ok(()),
+            }
         })?;
         self.database.remove_project_deletion(project_path)?;
         self.pending_deletions().remove(project_path);

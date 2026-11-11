@@ -370,7 +370,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
     assert_eq!(payload["conversation_id"], conversation_id);
     let data_dir = conversations_dir
         .ancestors()
-        .nth(4)
+        .nth(3)
         .expect("data directory");
     crate::write_conversation_snapshot(data_dir, &payload);
 }
@@ -385,11 +385,7 @@ pub(super) fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::<PathBuf>::new(),
     }

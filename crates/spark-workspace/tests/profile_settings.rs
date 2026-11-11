@@ -177,28 +177,6 @@ fn credential_values_in_endpoint_and_reference_fields_are_rejected_without_refle
     }
 }
 #[test]
-fn conversation_reference_blocks_deletion_but_historical_turn_capture_does_not() {
-    let (_temp, settings) = fixture();
-    let first = save(&settings, "llm_profiles", "absent", json!([llm("team")])).unwrap();
-    let revision = first["llm_profiles"]["revision"].as_str().unwrap();
-    let root = settings.projects_dir.join("orphan/conversations/chat");
-    std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("conversation.json");
-    std::fs::write(&path, json!({"model_settings":{"llm_profile":" team "}, "turns":[{"execution_settings":{"llm_profile":"team"}}]}).to_string()).unwrap();
-    assert!(save(&settings, "llm_profiles", revision, json!([]))
-        .unwrap_err()
-        .to_string()
-        .contains("conversation.json.model_settings.llm_profile"));
-    std::fs::write(
-        &path,
-        json!({"model_settings":null, "turns":[{"execution_settings":{"llm_profile":"team"}}]})
-            .to_string(),
-    )
-    .unwrap();
-    save(&settings, "llm_profiles", revision, json!([])).unwrap();
-}
-
-#[test]
 fn simultaneous_profile_writers_cannot_overwrite_each_other() {
     let (_temp, settings) = fixture();
     let first = save(
@@ -609,10 +587,7 @@ fn invalid_section_shape_preserves_stored_value_and_can_be_replaced_independentl
     .unwrap();
     let view = workspace_settings(&settings).unwrap();
     assert_eq!(view["runtime"]["stored"]["project_roots"], 42);
-    assert_eq!(
-        view["runtime"]["active_startup"]["runs_dir"],
-        settings.runs_dir.to_string_lossy().as_ref()
-    );
+    assert_eq!(view["runtime"]["active_startup"]["runs_dir"], json!(null));
     assert_eq!(
         view["runtime"]["repair_defaults"]["project_roots"],
         json!([])

@@ -733,12 +733,10 @@ fn saving_a_bundled_flow_creates_a_project_copy_and_deleting_it_reverts() {
         );
     }
     assert_eq!(service.get_flow("work", project_path).status_code, 404);
-    // Nothing is left staged, and nothing went through Git.
+    // Nothing is left staged or written outside the definitions, and nothing
+    // went through Git.
     assert_eq!(staged(&project), Vec::<String>::new());
-    assert_eq!(
-        fs::read_to_string(project.join(".spark/state/.gitignore")).expect("ignore"),
-        "*\n"
-    );
+    assert!(!project.join(".spark/state").exists());
     assert_parent_untouched(&project);
 
     // Deleting a bundled flow is refused.
@@ -800,18 +798,7 @@ fn a_delete_that_cannot_move_the_copy_keeps_it() {
     );
     let copy = org.join("flows/work");
 
-    // A symlinked staging root is refused.
-    let outside = temp.path().join("outside");
-    fs::create_dir_all(&outside).expect("outside");
-    fs::create_dir_all(project.join(".spark/state")).expect("state");
-    std::os::unix::fs::symlink(&outside, project.join(".spark/state/tmp")).expect("link");
-    let refused = service.delete_flow("work", project_path);
-    assert_eq!(refused.status_code, 500, "{}", refused.body);
-    assert_eq!(read_flow_dir(&copy).expect("copy"), valid_flow());
-    assert_eq!(fs::read_dir(&outside).expect("outside").count(), 0);
-    fs::remove_file(project.join(".spark/state/tmp")).expect("unlink");
-
-    // A rename that fails leaves the copy, and no empty staging directory.
+    // Staging that fails leaves the copy, and no empty staging directory.
     let flows = org.join("flows");
     fs::set_permissions(&flows, fs::Permissions::from_mode(0o555)).expect("chmod");
     let failed = service.delete_flow("work", project_path);
@@ -855,11 +842,15 @@ fn a_delete_whose_cleanup_fails_still_deletes_and_keeps_the_staged_copy() {
         service.get_flow("shared", project_path).body["layer"],
         "bundled"
     );
+    // The staged copy sits beside the deleted flow, on its filesystem, and
+    // never lists as a flow.
     let left = staged(&project);
     assert_eq!(left.len(), 1, "{left:?}");
+    let listed = service.list_flows(project_path).body.to_string();
+    assert!(!listed.contains(".spark-deleting-"), "{listed}");
     // Removal stops at the locked directory; files it reached first (in
     // platform readdir order) may already be gone.
-    let recovered = project.join(".spark/state/tmp").join(&left[0]).join("flow");
+    let recovered = org.join("flows").join(&left[0]).join("flow");
     if let Ok(task) = fs::read_to_string(recovered.join("task.md")) {
         assert!(task.contains("Project work"));
     }
@@ -951,21 +942,34 @@ fn assert_parent_untouched(project: &Path) {
     assert_eq!(git(project, &["diff", "--cached", "--name-only"]), "");
 }
 
-/// The entries deletions left in `.spark/state/tmp`.
+/// Deletion staging directories (`.spark-deleting-*`) under the project's
+/// flows, relative to them.
 fn staged(project: &Path) -> Vec<String> {
-    fs::read_dir(project.join(".spark/state/tmp"))
-        .map(|entries| {
-            entries
-                .map(|entry| {
-                    entry
-                        .expect("entry")
-                        .file_name()
+    let flows = spark_common::project::definitions_dir(project).join("flows");
+    let mut found = Vec::new();
+    let mut pending = vec![flows.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten() {
+            let path = entry.expect("entry").path();
+            if !path.is_dir() || path.is_symlink() {
+                continue;
+            }
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".spark-deleting-"))
+            {
+                found.push(
+                    path.strip_prefix(&flows)
+                        .unwrap()
                         .to_string_lossy()
-                        .to_string()
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+                        .to_string(),
+                );
+            } else {
+                pending.push(path);
+            }
+        }
+    }
+    found
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -989,11 +993,7 @@ fn settings(root: &Path) -> SparkSettings {
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
         runtime_dir: root.join("spark-home/runtime"),
-        logs_dir: root.join("spark-home/logs"),
-        workspace_dir: root.join("spark-home/workspace"),
-        projects_dir: root.join("spark-home/workspace/projects"),
-        attractor_dir: root.join("spark-home/attractor"),
-        runs_dir: root.join("spark-home/attractor/runs"),
+        runs_dir: None,
         ui_dir: None,
         project_roots: Vec::new(),
     }

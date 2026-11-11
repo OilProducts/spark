@@ -466,6 +466,9 @@ pub struct ResolvedContinueFlow {
     pub flow_name: Option<String>,
     #[serde(default)]
     pub execution_lock: Option<RunExecutionLock>,
+    /// The work area of a project the run moves to; none keeps the source's.
+    #[serde(default)]
+    pub project_work_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -526,6 +529,7 @@ impl RuntimeControlService {
             llm_profile: request.llm_profile,
             reasoning_effort: request.reasoning_effort,
             execution_lock: resolved_flow.execution_lock,
+            project_work_dir: resolved_flow.project_work_dir,
         };
         match self.controls.continue_from_snapshot(request) {
             Ok(started) => RuntimeRouteResponse::json(200, json!(started)),
@@ -1630,10 +1634,10 @@ impl AttractorApiService {
                 json!({"detail": format!("{} leads outside the project's flows.", resolved.name)}),
             );
         }
-        let project = Path::new(project_path.unwrap_or_default().trim());
-        // Moving the copy into a fresh directory under state deletes it at
+        // Moving the copy into a fresh directory beside it deletes it at
         // once; removing it from there may then fail without undoing that.
-        let staging = match stage_for_deletion(project) {
+        let parent = resolved.path.parent().unwrap_or(Path::new("."));
+        let staging = match stage_for_deletion(parent) {
             Ok(staging) => staging,
             Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
         };
@@ -1900,6 +1904,13 @@ impl AttractorApiService {
         }
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
+        let project_work_dir =
+            match spark_common::project::project_work_dir(&self.settings.data_dir, &project_path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}))
+                }
+            };
         let mut record = RunRecord::new(&run_id, &working_directory);
         record.flow_name = flow_name.clone();
         record.working_directory = working_directory.clone();
@@ -1974,14 +1985,25 @@ impl AttractorApiService {
         // root from the runtime, not from ambient environment guesses.
         runtime_context.insert(
             "internal.runs_dir".to_string(),
-            json!(self.settings.runs_dir.to_string_lossy().to_string()),
+            json!(self
+                .settings
+                .runs_root()
+                .projects_dir()
+                .to_string_lossy()
+                .to_string()),
+        );
+        runtime_context.insert(
+            attractor_runtime::PROJECT_WORK_DIR_KEY.to_string(),
+            json!(project_work_dir.to_string_lossy().to_string()),
         );
         // Subflow children resolve by name through the same roots.
         runtime_context.insert("internal.flow_name".to_string(), json!(flow_name.clone()));
         flow_roots_context(&roots, &mut runtime_context);
 
-        if let Err(error) = fs::create_dir_all(&working_directory) {
-            return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+        for directory in [Path::new(&working_directory), project_work_dir.as_path()] {
+            if let Err(error) = fs::create_dir_all(directory) {
+                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+            }
         }
 
         // Create the run on disk before responding: the run_id resolves to a
@@ -2501,6 +2523,22 @@ impl AttractorApiService {
             Ok(lock) => lock,
             Err(error) => return validation_error_response(error),
         };
+        // A run moved to another project works in that project's area.
+        let project_work_dir = match request
+            .project_path
+            .as_deref()
+            .map(|project| {
+                let work =
+                    spark_common::project::project_work_dir(&self.settings.data_dir, project)
+                        .map_err(|error| error.to_string())?;
+                fs::create_dir_all(&work).map_err(|error| error.to_string())?;
+                Ok::<_, String>(work.to_string_lossy().into_owned())
+            })
+            .transpose()
+        {
+            Ok(work) => work,
+            Err(detail) => return RuntimeRouteResponse::json(400, json!({"detail": detail})),
+        };
         let response = RuntimeControlService::new(self.observed_store()).continue_pipeline(
             pipeline_id,
             request,
@@ -2510,6 +2548,7 @@ impl AttractorApiService {
                 flow_files,
                 flow_name: Some(flow_name),
                 execution_lock,
+                project_work_dir,
             },
         );
         self.execute_prepared_route_response(&response, flow);
@@ -3420,27 +3459,19 @@ fn overlay_flow_files(
     assemble_flow_files(&texts)
 }
 
-/// Makes `target`'s flow files exactly `source`'s: copies each and removes
-/// any other flow file.
-/// A new, empty directory under `<project>/.spark/state/tmp`, kept when
-/// its handle drops.
-fn stage_for_deletion(project: &Path) -> std::result::Result<PathBuf, String> {
-    let reject_symlink = |path: &Path| match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_symlink() => Err(format!("{} is a symlink", path.display())),
-        _ => Ok(()),
-    };
-    reject_symlink(&project.join(".spark/state"))?;
-    let tmp = spark_common::project::state_dir(project)?.join("tmp");
-    reject_symlink(&tmp)?;
-    fs::create_dir_all(&tmp)
-        .map_err(|error| format!("Unable to create {}: {error}", tmp.display()))?;
+/// A new, empty `.spark-deleting-*` directory in `parent`, on the deleted
+/// flow's filesystem and skipped by flow enumeration, kept when its handle
+/// drops.
+fn stage_for_deletion(parent: &Path) -> std::result::Result<PathBuf, String> {
     tempfile::Builder::new()
-        .prefix("deleting-")
-        .tempdir_in(&tmp)
+        .prefix(".spark-deleting-")
+        .tempdir_in(parent)
         .map(tempfile::TempDir::keep)
-        .map_err(|error| format!("Unable to stage in {}: {error}", tmp.display()))
+        .map_err(|error| format!("Unable to stage in {}: {error}", parent.display()))
 }
 
+/// Makes `target`'s flow files exactly `source`'s: copies each and removes
+/// any other flow file.
 fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
     let texts =
         attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;
@@ -4014,7 +4045,7 @@ fn pipeline_detail_payload(bundle: &RunBundle, children: &[RunBundle]) -> Value 
         "child_runs".to_string(),
         json!(child_run_summaries(children)),
     );
-    let executions = RunStore::for_runs_dir(bundle.paths.runs_dir.clone())
+    let executions = RunStore::for_runs_root(bundle.paths.runs_root.clone())
         .list_node_executions(&bundle.paths)
         .unwrap_or_default();
     payload.insert("executions".to_string(), json!(executions));
@@ -4325,17 +4356,18 @@ fn list_run_records(
     settings: &SparkSettings,
     project_path_filter: Option<&str>,
 ) -> Result<Vec<Value>, String> {
-    let runs_dir = &settings.runs_dir;
-    if !runs_dir.exists() {
+    let runs_root = settings.runs_root();
+    let projects_dir = runs_root.projects_dir();
+    if !projects_dir.exists() {
         return Ok(Vec::new());
     }
     let project_path_filter = project_path_filter
         .and_then(|value| trimmed_option(Some(value)))
         .map(|value| absolutize_path(&value));
     let mut records = Vec::new();
-    for project_entry in fs::read_dir(runs_dir).map_err(|error| error.to_string())? {
+    for project_entry in fs::read_dir(&projects_dir).map_err(|error| error.to_string())? {
         let project_entry = project_entry.map_err(|error| error.to_string())?;
-        let project_path = project_entry.path();
+        let project_path = runs_root.project_runs_dir(&project_entry.file_name().to_string_lossy());
         if !project_path.is_dir() {
             continue;
         }
@@ -4487,7 +4519,7 @@ fn child_run_summaries(children: &[RunBundle]) -> Vec<Value> {
         .iter()
         .map(|child| {
             let record = child.record.as_ref();
-            let executions = RunStore::for_runs_dir(child.paths.runs_dir.clone())
+            let executions = RunStore::for_runs_root(child.paths.runs_root.clone())
                 .list_node_executions(&child.paths)
                 .unwrap_or_default();
             json!({
