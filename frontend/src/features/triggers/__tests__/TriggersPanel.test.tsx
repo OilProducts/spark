@@ -225,6 +225,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     const createScope = await openCreateTriggerForm(user)
+    expect(createScope.getByLabelText('Every')).toHaveAccessibleDescription(/^First run in 5 minutes \((Today|Tomorrow) at .+\), then every 5 minutes\.$/)
     expect(within(createScope.getByLabelText('Starts when')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
     await user.type(createScope.getByLabelText('Name'), 'Created schedule')
     await user.selectOptions(createScope.getByLabelText('Flow to start'), await createScope.findByRole('option', { name: 'Test planning' }))
@@ -236,6 +237,20 @@ describe('TriggersPanel', () => {
     })
     expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Created schedule')).toBeVisible()
+  })
+
+  it('words the status card in plain time and result words', async () => {
+    const fired = new Date().toISOString()
+    const trigger = makeTrigger({ id: 'ran' })
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([{ ...trigger, state: { ...trigger.state, last_fired_at: fired, last_result: 'success', recent_history: [{ timestamp: fired, status: 'failed', message: 'Boom' }] } }]))
+    renderTriggersPanel()
+    expect(await screen.findByText(/^Last triggered: Today at \d{1,2}:\d{2}\s[AP]M$/)).toBeVisible()
+    expect(screen.getByText('Last result: Succeeded')).toBeVisible()
+    expect(screen.getByText('Failed')).toBeVisible()
+    // Editing: the status card shows the next run, so the interval has no first-run hint.
+    expect(screen.getByLabelText('Every')).not.toHaveAccessibleDescription()
   })
 
   it('shows shared webhook ingress details and regenerates webhook secrets', async () => {

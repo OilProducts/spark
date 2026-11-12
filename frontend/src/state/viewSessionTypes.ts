@@ -16,6 +16,7 @@ import type {
     RunRecord,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
+import type { RunStatusKind } from '@/features/runs/model/runOverviewModel'
 
 export type ResourceStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -42,6 +43,8 @@ export interface RunsListSessionState {
     selectedRunId: string | null
     /** The project the run list shows, or every project when null. */
     projectFilter: string | null
+    /** The one state the run list shows, or every state when null or absent. */
+    statusFilter?: RunStatusKind | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]

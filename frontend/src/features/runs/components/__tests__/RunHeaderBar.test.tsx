@@ -98,6 +98,10 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
         // With no visit selected, Continue asks for the node to start from.
         expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from…')
+        // The actions explain themselves without hovering, naming only the ones shown.
+        expect(screen.getByTestId('run-header-actions-help')).toHaveTextContent(
+            'Continue from… starts a new run from a step you pick, keeping results so far. Re-run starts over with the same inputs.',
+        )
         unmount()
 
         const failed = renderHeader(makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' }), 'Transform')
@@ -108,12 +112,17 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('title', expect.stringContaining('from the step where it failed, with the same flow'))
         expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform, reusing this run’s results so far')
         expect(screen.getByTestId('run-summary-rerun-button')).toHaveAttribute('title', expect.stringContaining('from the beginning, with the same inputs'))
+        // Focus reads each button's own sentence from the visible line.
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAccessibleDescription('Retry picks up from the failed step.')
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAccessibleDescription('Continue from here starts a new run from Transform, keeping results so far.')
+        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAccessibleDescription('Re-run starts over with the same inputs.')
         failed.unmount()
 
         renderHeader(makeRun({ status: 'waiting', ended_at: null }))
         expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
         expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
         expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('run-header-actions-help')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Needs input')
         expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
         // A waiting run states its start like a finished one, then how long it has been going.

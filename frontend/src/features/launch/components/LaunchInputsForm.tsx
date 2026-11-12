@@ -12,6 +12,8 @@ interface LaunchInputsFormProps {
     flowName: string | null
     parsedLaunchInputs: ParsedLaunchInputDefinitions
     launchInputValues: LaunchInputFormValues
+    /** What is wrong with each input, by key, after a run was asked for. */
+    errors?: Record<string, string>
     launchInputsCollapsed: boolean
     onToggleCollapsed: () => void
     onInputChange: (entry: LaunchInputDefinition, value: string) => void
@@ -22,11 +24,13 @@ export function LaunchInputsForm({
     flowName,
     parsedLaunchInputs,
     launchInputValues,
+    errors = {},
     launchInputsCollapsed,
     onToggleCollapsed,
     onInputChange,
 }: LaunchInputsFormProps) {
     const canCollapseLaunchInputs = parsedLaunchInputs.entries.length > 0
+    const hasRequired = parsedLaunchInputs.entries.some((entry) => entry.required)
     return (
         <div
             data-testid="execution-launch-inputs"
@@ -41,6 +45,7 @@ export function LaunchInputsForm({
                     className="text-sm font-semibold text-foreground"
                 >
                     What this run needs
+                    {hasRequired ? <span className="ml-2 text-xs font-normal text-muted-foreground"><span aria-hidden="true" className="text-destructive">*</span> required</span> : null}
                 </p>
                 {canCollapseLaunchInputs ? (
                     <Button
@@ -73,11 +78,14 @@ export function LaunchInputsForm({
                     {parsedLaunchInputs.entries.map((entry) => {
                         const id = `launch-input-${flowName || 'flow'}-${entry.key}`.replace(/[^\w-]/g, '-')
                         const descriptionId = entry.description ? `${id}-description` : undefined
+                        const error = errors[entry.key]
+                        const errorId = error ? `${id}-error` : undefined
                         const common = {
                             id,
                             'data-testid': `execution-launch-input-${entry.key}`,
-                            'aria-describedby': descriptionId,
+                            'aria-describedby': [errorId, descriptionId].filter(Boolean).join(' ') || undefined,
                             'aria-required': entry.required || undefined,
+                            'aria-invalid': error ? true : undefined,
                             value: launchInputValues[entry.key] ?? '',
                         }
                         return (
@@ -89,7 +97,7 @@ export function LaunchInputsForm({
                                 <div>
                                     <Label htmlFor={id} className="text-sm">
                                         {entry.label}
-                                        {entry.required ? null : <span className="font-normal text-muted-foreground">(optional)</span>}
+                                        {entry.required ? <span aria-hidden="true" className="text-destructive">*</span> : <span className="font-normal text-muted-foreground">(optional)</span>}
                                     </Label>
                                     {entry.description ? (
                                         <p id={descriptionId} className="mt-0.5 text-xs leading-5 text-muted-foreground">
@@ -138,6 +146,9 @@ export function LaunchInputsForm({
                                         placeholder='{"key": "value"}'
                                     />
                                 )}
+                                {error ? (
+                                    <p id={errorId} data-testid={`execution-launch-input-error-${entry.key}`} className="text-xs text-destructive">{error}</p>
+                                ) : null}
                             </div>
                         )
                     })}

@@ -6,6 +6,9 @@ import {
     buildTriggerActionPayload,
     buildTriggerSourcePayload,
     createEmptyTriggerForm,
+    firstIntervalRunHint,
+    formatTriggerResult,
+    formatTriggerTimestamp,
     intervalSeconds,
     splitInterval,
     triggerToFormState,
@@ -57,6 +60,36 @@ describe('trigger form intervals', () => {
         const form = triggerToFormState(trigger({ kind: 'once', run_at: '2030-01-01T10:00:00Z' }))
         expect(form.scheduleRunAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
         expect(buildTriggerSourcePayload(form)).toEqual({ kind: 'once', run_at: '2030-01-01T10:00:00Z' })
+    })
+})
+
+describe('trigger status wording', () => {
+    // A Wednesday. Times print with a narrow space before AM/PM on newer ICU.
+    const now = Date.parse('2026-11-11T20:13:47')
+    const plain = (text: string) => text.replace(/\s/g, ' ')
+    const when = (value: string | null) => plain(formatTriggerTimestamp(value, now))
+
+    it('names nearby days, drops seconds, and adds the year only when it is not this year', () => {
+        expect(when('2026-11-11T20:13:47')).toBe('Today at 8:13 PM')
+        expect(when('2026-11-12T09:00:00')).toBe('Tomorrow at 9:00 AM')
+        expect(when('2026-11-10T23:59:00')).toBe('Yesterday at 11:59 PM')
+        expect(when('2026-11-16T20:13:00')).toBe('Mon, Nov 16 at 8:13 PM')
+        expect(when('2027-01-04T08:00:00')).toBe('Mon, Jan 4, 2027 at 8:00 AM')
+        expect(when(null)).toBe('Never')
+    })
+
+    it('words a result as a capitalized word', () => {
+        expect(formatTriggerResult('success')).toBe('Succeeded')
+        expect(formatTriggerResult('failed')).toBe('Failed')
+        expect(formatTriggerResult('failure')).toBe('Failed')
+        expect(formatTriggerResult('validation_error')).toBe('Validation error')
+        expect(formatTriggerResult(null)).toBe('Never')
+    })
+
+    it('says a new interval trigger first runs one interval after it is saved', () => {
+        expect(plain(firstIntervalRunHint(86400, now))).toBe('First run in 1 day (Tomorrow at 8:13 PM), then every day.')
+        expect(plain(firstIntervalRunHint(300, now))).toBe('First run in 5 minutes (Today at 8:18 PM), then every 5 minutes.')
+        expect(firstIntervalRunHint(1e20 * 86400, now)).toMatch(/^First run in [^(]+, then every [^(]+\.$/)
     })
 })
 

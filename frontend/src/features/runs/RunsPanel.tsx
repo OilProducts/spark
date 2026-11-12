@@ -58,6 +58,7 @@ const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_reques
 function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
+    const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     return (
         <RunList
@@ -73,6 +74,8 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             summaryLabel={`${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
             // The filter already names the project; rows repeat it only across all projects.
             showProject={!projectFilter}
+            statusFilter={statusFilter}
+            onStatusFilterChange={(next) => useStore.getState().updateRunsListSession({ statusFilter: next })}
         />
     )
 }

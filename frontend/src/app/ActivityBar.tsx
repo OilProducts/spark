@@ -5,7 +5,7 @@ import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
-import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, useAttentionItems } from './useAttention'
+import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
@@ -53,7 +53,9 @@ export function activityDots(
     }
 }
 
-function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: boolean }) {
+/** `items` is null until the first check answers; `failed` when the latest check failed. */
+function AttentionBell({ items: loadedItems, failed, narrow }: { items: AttentionItem[] | null; failed: boolean; narrow: boolean }) {
+    const items = loadedItems ?? []
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const [open, setOpen] = useState(false)
@@ -85,21 +87,31 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
             <button
                 type="button"
                 data-testid="attention-bell"
-                aria-label={items.length > 0 ? `Inbox: ${items.length} ${items.length === 1 ? 'item' : 'items'} waiting on you` : 'Inbox: nothing waiting on you'}
+                aria-label={items.length > 0
+                    ? `Inbox: ${items.length} ${items.length === 1 ? 'item' : 'items'} waiting on you`
+                    : failed ? 'Inbox: could not check what is waiting on you' : loadedItems ? 'Inbox: nothing waiting on you' : 'Inbox'}
                 title="Waiting on you"
                 onClick={() => setOpen((previous) => !previous)}
                 className={ITEM_CLASS}
             >
                 <span className="relative">
                     <Bell className="size-4.5" />
-                    {items.length > 0 && (
+                    {items.length > 0 ? (
                         <span
                             data-testid="attention-bell-count"
                             className="absolute -right-2.5 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
                         >
                             {items.length}
                         </span>
-                    )}
+                    ) : failed ? (
+                        <span
+                            data-testid="attention-bell-failed"
+                            aria-hidden="true"
+                            className="absolute -right-2.5 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-xs font-medium text-destructive-foreground"
+                        >
+                            !
+                        </span>
+                    ) : null}
                 </span>
                 <span className={LABEL_CLASS}>Inbox</span>
             </button>
@@ -107,15 +119,22 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                 <div
                     data-testid="attention-bell-list"
                     className={cn(
-                        'absolute z-50 w-96 max-w-[calc(100vw-1rem)] rounded-lg border bg-background p-1 shadow-md',
-                        narrow ? 'right-2 top-full mt-1' : 'bottom-0 left-full ml-2',
+                        // A long list scrolls inside the viewport instead of running off it.
+                        'absolute z-50 w-96 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-lg border bg-background p-1 shadow-md',
+                        narrow ? 'right-2 top-full mt-1 max-h-[calc(100dvh-5rem)]' : 'bottom-0 left-full ml-2 max-h-[calc(100dvh-6rem)]',
                     )}
                 >
-                    {items.length === 0 && (
-                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                            Nothing is waiting on you.
+                    {failed ? (
+                        <div data-testid="attention-bell-error" role="alert" className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs text-destructive">
+                            {items.length > 0 ? 'Couldn’t refresh; this list may be out of date.' : 'Couldn’t check what is waiting on you.'}
+                            <button type="button" onClick={refreshAttention} className="shrink-0 font-medium underline underline-offset-4">Try again</button>
                         </div>
-                    )}
+                    ) : null}
+                    {items.length === 0 && !failed ? (
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                            {loadedItems ? 'Nothing is waiting on you.' : 'Checking…'}
+                        </div>
+                    ) : null}
                     {items.map((item) => (
                         <button
                             key={`${item.kind}:${item.id}`}
@@ -152,7 +171,9 @@ export function ActivityBar() {
     const missions = useStore((state) => state.missionBoard)
     const chatRunning = useChatRunning()
     const isNarrowViewport = useNarrowViewport()
-    const attention = useAttentionItems() ?? []
+    const loadedAttention = useAttentionItems()
+    const attentionFailed = useAttentionFailed()
+    const attention = loadedAttention ?? []
     const overviewUnread = useOverviewUnread(attention)
     const dots = {
         ...activityDots(
@@ -219,7 +240,7 @@ export function ActivityBar() {
             <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
             <span className="flex-1 max-sm:hidden" />
-            <AttentionBell items={attention} narrow={isNarrowViewport} />
+            <AttentionBell items={loadedAttention} failed={attentionFailed} narrow={isNarrowViewport} />
             {renderItem({ mode: 'settings', label: 'Settings', icon: Settings, testId: 'activity-settings' })}
         </nav>
     )

@@ -1,6 +1,8 @@
 import { RunList } from '@/features/runs/components/RunList'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
+import type { RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { describe, expect, it, vi } from 'vitest'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
@@ -34,6 +36,36 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
 })
 
 describe('RunList', () => {
+    it('narrows to one state from chips with counts, and finds runs by state words in the search', () => {
+        const runs = [
+            makeRun({ run_id: 'run-ok', status: 'completed', title: 'Deploy docs', ended_at: '2026-03-22T01:00:00Z' }),
+            makeRun({ run_id: 'run-bad', status: 'failed', title: 'Nightly sync', ended_at: '2026-03-22T01:00:00Z' }),
+            makeRun({ run_id: 'run-ask', status: 'waiting', title: 'Ship release' }),
+        ]
+        function Harness() {
+            const [statusFilter, setStatusFilter] = useState<RunStatusKind | null>(null)
+            return <RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={null} status="ready" summaryLabel="3 runs" statusFilter={statusFilter} onStatusFilterChange={setStatusFilter} />
+        }
+        render(<Harness />)
+        const ids = () => screen.queryAllByTestId('run-history-row').map((row) => row.dataset.runId)
+
+        // Only states that have runs are offered.
+        expect(screen.getByTestId('run-list-status-filter-all')).toHaveTextContent('All3')
+        expect(screen.getByTestId('run-list-status-filter-failed')).toHaveTextContent('Failed1')
+        expect(screen.queryByTestId('run-list-status-filter-running')).toBeNull()
+
+        fireEvent.click(screen.getByTestId('run-list-status-filter-failed'))
+        expect(screen.getByTestId('run-list-status-filter-failed')).toHaveAttribute('aria-pressed', 'true')
+        expect(ids()).toEqual(['run-bad'])
+        fireEvent.click(screen.getByTestId('run-list-status-filter-all'))
+        expect(ids()).toHaveLength(3)
+
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'failed' } })
+        expect(ids()).toEqual(['run-bad'])
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'needs input' } })
+        expect(ids()).toEqual(['run-ask'])
+    })
+
     it('shows the cold-load notice only when no runs have been loaded yet', () => {
         render(
             <RunList

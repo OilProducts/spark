@@ -16,6 +16,8 @@ import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 import {
     INTERVAL_UNITS,
     SHARED_WEBHOOK_ENDPOINT,
+    firstIntervalRunHint,
+    intervalSeconds,
     type TriggerFieldErrors,
     type TriggerFormState,
     type TriggerSourceType,
@@ -110,6 +112,7 @@ function IntervalField({
     unit,
     onChange,
     error,
+    hint,
     disabled,
 }: {
     id: string
@@ -118,10 +121,11 @@ function IntervalField({
     unit: number
     onChange: (value: string, unit: number) => void
     error?: string
+    hint?: string
     disabled: boolean
 }) {
     return (
-        <TriggerField label={label} htmlFor={id} error={error} className="text-sm">
+        <TriggerField label={label} htmlFor={id} hint={hint} error={error} className="text-sm">
             <div className="flex gap-2">
                 <Input
                     id={id}
@@ -133,7 +137,7 @@ function IntervalField({
                     onChange={(event) => onChange(event.target.value, unit)}
                     disabled={disabled}
                     className="w-24 shrink-0 text-sm"
-                    {...describedBy(id, error)}
+                    {...describedBy(id, error, hint)}
                 />
                 <NativeSelect aria-label={`${label} unit`} value={unit} onChange={(event) => onChange(value, Number(event.target.value))} disabled={disabled} className="text-sm">
                     {INTERVAL_UNITS.map((entry) => <option key={entry.seconds} value={entry.seconds}>{entry.label}</option>)}
@@ -198,6 +202,9 @@ export function TriggerEditor({
     const itemIdHint = 'What identifies each item, such as id. Each new one starts the action.'
     const headersHint = <>A JSON object, such as <code>{'{"Authorization": "Bearer …"}'}</code>.</>
     const statusesHint = 'completed, failed or validation_error, separated by commas. Leave empty for any.'
+    // Editing: the status card shows the next run instead.
+    const scheduleSeconds = intervalSeconds(form.scheduleInterval, form.scheduleIntervalUnit)
+    const intervalHint = mode === 'create' && scheduleSeconds ? firstIntervalRunHint(scheduleSeconds) : undefined
     const contextHint = <>A JSON object the flow reads as <code>context.trigger_static</code>, such as <code>{'{"branch": "main"}'}</code>.</>
 
     return (
@@ -288,6 +295,7 @@ export function TriggerEditor({
                             unit={form.scheduleIntervalUnit}
                             onChange={(scheduleInterval, scheduleIntervalUnit) => onChange({ ...form, scheduleInterval, scheduleIntervalUnit })}
                             error={errors.scheduleInterval}
+                            hint={intervalHint}
                             disabled={sourceConfigurationDisabled}
                         />
                     ) : null}

@@ -64,19 +64,21 @@ export function LlmProfilesEditor() {
     </CardContent></Card>
 }
 
-function ExecutionProfileFields({ profile, index, change, remove, onValidity, deletionBlocked, invalidId, savedStatus }: {
-    savedStatus: string; deletionBlocked: boolean; invalidId: boolean; profile: ExecutionProfileSettings; index: number; change: (patch: Partial<ExecutionProfileSettings>) => void; remove: () => void; onValidity: (invalid: boolean) => void
+const EXECUTION_MODE_PLACES: Record<ExecutionProfileSettings['mode'], string> = { native: 'On this computer', local_container: 'In a local container' }
+
+function ExecutionProfileFields({ profile, index, change, remove, onValidity, deletionBlocked, invalidId, saved }: {
+    saved: boolean; deletionBlocked: boolean; invalidId: boolean; profile: ExecutionProfileSettings; index: number; change: (patch: Partial<ExecutionProfileSettings>) => void; remove: () => void; onValidity: (invalid: boolean) => void
 }) {
     const id = useId()
     const [metadata, setMetadata] = useState(JSON.stringify(profile.metadata, null, 2))
     const [error, setError] = useState('')
     const mounts = profile.metadata['container.mounts']
     const [mountText, setMountText] = useState(Array.isArray(mounts) ? mounts.join('\n') : '')
-    return <details ref={(node) => { if (node && (invalidId || !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim()) || !!error)) node.open = true }} className="space-y-2 rounded-xl bg-muted p-3"><SettingsSummary>{profile.label || profile.id || `Execution profile ${index + 1}`} · {savedStatus}</SettingsSummary>
+    return <details ref={(node) => { if (node && (invalidId || !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim()) || !!error)) node.open = true }} className="space-y-2 rounded-xl bg-muted p-3"><SettingsSummary>{profile.label || profile.id || `Execution profile ${index + 1}`} · {EXECUTION_MODE_PLACES[profile.mode]}{profile.enabled ? '' : ' · Off'}{saved ? '' : ' · Not saved yet'}</SettingsSummary>
         <label className="grid gap-2 text-sm font-medium">Profile ID<Input aria-invalid={invalidId} aria-describedby={invalidId ? `${id}-profile-error` : undefined} value={profile.id} onChange={(event) => change({ id: event.target.value })} /></label>
         <label className="grid gap-2 text-sm font-medium">Label<Input aria-invalid={!profile.label.trim()} aria-describedby={!profile.label.trim() ? `${id}-profile-error` : undefined} value={profile.label} onChange={(event) => change({ label: event.target.value })} /></label>
         {(invalidId || !profile.label.trim()) && <p id={`${id}-profile-error`} role="alert">Enter a unique profile ID without surrounding whitespace and a nonempty label.</p>}
-        <label className="grid gap-2 text-sm font-medium">Mode<NativeSelect aria-label="Mode" value={profile.mode} onChange={(event) => change({ mode: event.target.value as ExecutionProfileSettings['mode'] })}><option value="native">Native</option><option value="local_container">Local container</option></NativeSelect></label>
+        <label className="grid gap-2 text-sm font-medium">Mode<NativeSelect aria-label="Mode" value={profile.mode} onChange={(event) => change({ mode: event.target.value as ExecutionProfileSettings['mode'] })}><option value="native">{EXECUTION_MODE_PLACES.native}</option><option value="local_container">{EXECUTION_MODE_PLACES.local_container}</option></NativeSelect></label>
         <Label className="flex items-center gap-2"><Switch checked={profile.enabled} onCheckedChange={(enabled) => change({ enabled })} />Enabled</Label>
         <div hidden={profile.mode !== 'local_container'}>
         <label className="grid gap-2 text-sm font-medium">Container image<Input aria-invalid={profile.mode === 'local_container' && !profile.image?.trim()} aria-describedby={profile.mode === 'local_container' && !profile.image?.trim() ? `${id}-image-error` : undefined} value={profile.image ?? ''} onChange={(event) => change({ image: event.target.value || undefined })} /></label>
@@ -118,7 +120,7 @@ export function ExecutionProfilesEditor() {
             <label className="grid gap-2 text-sm font-medium">Default execution profile<NativeSelect aria-label="Default execution profile" value={editor.draft?.default_execution_profile_id ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, default_execution_profile_id: event.target.value || null }))}>
                 <option value="">Spark default</option>{profiles.filter((profile) => profile.enabled).map((profile, index) => <option key={index} value={profile.id}>{profile.label || profile.id}</option>)}
             </NativeSelect></label>
-            {profiles.map((profile, index) => <ExecutionProfileFields key={`${editor.saved?.revision}-${generation}-${index}`} profile={profile} index={index} savedStatus={editor.saved?.stored?.profiles.find((saved) => saved.id === profile.id)?.enabled === true ? 'Saved: enabled' : editor.saved?.stored?.profiles.some((saved) => saved.id === profile.id) ? 'Saved: disabled' : 'Unsaved'} invalidId={!profile.id.trim() || profile.id !== profile.id.trim() || profiles.filter((p) => p.id === profile.id).length > 1} deletionBlocked={Object.values(invalidMetadata).some(Boolean)} change={(patch) => change(index, patch)}
+            {profiles.map((profile, index) => <ExecutionProfileFields key={`${editor.saved?.revision}-${generation}-${index}`} profile={profile} index={index} saved={!!editor.saved?.stored?.profiles.some((saved) => saved.id === profile.id)} invalidId={!profile.id.trim() || profile.id !== profile.id.trim() || profiles.filter((p) => p.id === profile.id).length > 1} deletionBlocked={Object.values(invalidMetadata).some(Boolean)} change={(patch) => change(index, patch)}
                 onValidity={(invalid) => setInvalidMetadata((value) => ({ ...value, [index]: invalid }))}
                 remove={() => { if (Object.values(invalidMetadata).some(Boolean)) return; editor.setDraft((draft) => draft && ({ ...draft, profiles: profiles.filter((_, at) => at !== index) })); setGeneration((value) => value + 1); setInvalidMetadata({}) }} />)}
             <Button variant="outline" onClick={() => editor.setDraft((draft) => draft && ({ ...draft, profiles: [...profiles, { id: '', label: '', mode: 'native', enabled: true, capabilities: [], metadata: {} }] }))}>Add execution profile</Button>

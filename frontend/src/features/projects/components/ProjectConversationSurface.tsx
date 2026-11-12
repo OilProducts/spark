@@ -69,11 +69,12 @@ interface ProjectConversationSurfaceProps {
     onUseModelDefaults?: () => void
 }
 
-const MODEL_SOURCE_LABELS = {
-    conversation: 'Conversation override',
-    role: 'Role default',
-    project: 'Project default',
-    workspace: 'Workspace default',
+// Where the chat's model comes from, and where to change it.
+const MODEL_SOURCES = {
+    conversation: { label: 'Model: set for this chat', title: 'Chosen for this chat with the model picker.' },
+    role: { label: 'Model: role default', title: "Set by this chat's role. Pick a model to use another one in this chat." },
+    project: { label: 'Model: project default', title: "Change it in this project's settings, or pick a model for this chat." },
+    workspace: { label: 'Model: workspace default', title: 'Change it in Settings, or pick a model for this chat.' },
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
@@ -208,7 +209,7 @@ export function ProjectConversationSurface({
                                         <Folder aria-hidden="true" className="size-3.5 shrink-0" />
                                         <span className="truncate">Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span></span>
                                     </p>
-                                    {modelSettingsSource ? <span className="text-xs text-muted-foreground">{MODEL_SOURCE_LABELS[modelSettingsSource]}</span> : null}
+                                    {modelSettingsSource ? <span className="text-xs text-muted-foreground" title={MODEL_SOURCES[modelSettingsSource].title}>{MODEL_SOURCES[modelSettingsSource].label}</span> : null}
                                     {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
                                     <ContextMeter usage={contextUsage} />
                                 </>

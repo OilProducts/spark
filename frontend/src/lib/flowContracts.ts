@@ -20,7 +20,8 @@ export interface ParsedContextKeyList {
 
 export interface LaunchContextBuildResult {
     launchContext: Record<string, unknown>
-    errors: string[]
+    /** What is wrong with each input, by its key; empty when every input is valid. */
+    errors: Record<string, string>
 }
 
 export type LaunchInputFormValues = Record<string, string>
@@ -199,7 +200,7 @@ export function buildLaunchContextFromValues(
     values: LaunchInputFormValues,
 ): LaunchContextBuildResult {
     const launchContext: Record<string, unknown> = {}
-    const errors: string[] = []
+    const errors: Record<string, string> = {}
 
     for (const entry of entries) {
         const rawValue = values[entry.key] ?? ''
@@ -209,7 +210,7 @@ export function buildLaunchContextFromValues(
         if (entry.type === 'string') {
             if (!trimmedValue) {
                 if (entry.required) {
-                    errors.push(`${label} is required.`)
+                    errors[entry.key] = `${label} is required.`
                 }
                 continue
             }
@@ -224,7 +225,7 @@ export function buildLaunchContextFromValues(
                 .filter((item) => item.length > 0)
             if (items.length === 0) {
                 if (entry.required) {
-                    errors.push(`${label} is required.`)
+                    errors[entry.key] = `${label} is required.`
                 }
                 continue
             }
@@ -235,12 +236,12 @@ export function buildLaunchContextFromValues(
         if (entry.type === 'boolean') {
             if (trimmedValue === '') {
                 if (entry.required) {
-                    errors.push(`${label} is required.`)
+                    errors[entry.key] = `${label} is required.`
                 }
                 continue
             }
             if (trimmedValue !== 'true' && trimmedValue !== 'false') {
-                errors.push(`${label} must be true or false.`)
+                errors[entry.key] = `${label} must be true or false.`
                 continue
             }
             launchContext[entry.key] = trimmedValue === 'true'
@@ -250,13 +251,13 @@ export function buildLaunchContextFromValues(
         if (entry.type === 'number') {
             if (trimmedValue === '') {
                 if (entry.required) {
-                    errors.push(`${label} is required.`)
+                    errors[entry.key] = `${label} is required.`
                 }
                 continue
             }
             const numericValue = Number(trimmedValue)
             if (!Number.isFinite(numericValue)) {
-                errors.push(`${label} must be a valid number.`)
+                errors[entry.key] = `${label} must be a valid number.`
                 continue
             }
             launchContext[entry.key] = numericValue
@@ -266,14 +267,14 @@ export function buildLaunchContextFromValues(
         if (entry.type === 'json') {
             if (trimmedValue === '') {
                 if (entry.required) {
-                    errors.push(`${label} is required.`)
+                    errors[entry.key] = `${label} is required.`
                 }
                 continue
             }
             try {
                 launchContext[entry.key] = JSON.parse(trimmedValue)
             } catch {
-                errors.push(`${label} must be valid JSON.`)
+                errors[entry.key] = `${label} must be valid JSON.`
             }
         }
     }

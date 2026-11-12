@@ -14,7 +14,7 @@ import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration, formatTimestamp, runRecordTone } from '../model/shared'
-import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runTitle } from '../model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runStatusKind, runTitle, type RunStatusKind } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -45,6 +45,25 @@ interface RunListProps {
     summaryLabel: string
     /** Name each row's project; off when the list is already filtered to one project. */
     showProject?: boolean
+    /** Show only runs in this state; null shows all. */
+    statusFilter?: RunStatusKind | null
+    onStatusFilterChange?: (statusFilter: RunStatusKind | null) => void
+}
+
+// The states a run list can be narrowed to, in the order the list groups them.
+const STATUS_FILTERS: Array<{ kind: RunStatusKind; label: string; className?: string }> = [
+    { kind: 'waiting', label: 'Needs input', className: 'text-warning' },
+    { kind: 'running', label: 'Running' },
+    { kind: 'failed', label: 'Failed', className: 'text-destructive' },
+    { kind: 'completed', label: 'Completed' },
+    { kind: 'ended', label: 'Stopped' },
+]
+const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
+    waiting: 'needs input waiting',
+    running: 'running queued',
+    failed: 'failed',
+    completed: 'completed',
+    ended: 'stopped canceled cancelled',
 }
 
 export function RunList({
@@ -55,6 +74,8 @@ export function RunList({
     selectedRunId,
     summaryLabel,
     showProject = true,
+    statusFilter = null,
+    onStatusFilterChange,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const projectRegistry = useStore((state) => state.projectRegistry)
@@ -63,12 +84,24 @@ export function RunList({
     // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
     const now = Date.now()
     const query = searchQuery.trim().toLowerCase()
+    const statusCounts = runs.reduce<Partial<Record<RunStatusKind, number>>>((counts, run) => {
+        const kind = runStatusKind(run.status, false)
+        counts[kind] = (counts[kind] ?? 0) + 1
+        return counts
+    }, {})
+    // A search matches a run's title, its flow, or its state ("failed", "needs input").
     const matchesSearch = (run: RunRecord) => (
-        !query
-        || runTitle(run).toLowerCase().includes(query)
-        || flowTitle(run.flow_name).toLowerCase().includes(query)
-        || run.flow_name.toLowerCase().includes(query)
+        (!statusFilter || runStatusKind(run.status, false) === statusFilter)
+        && (
+            !query
+            || runTitle(run).toLowerCase().includes(query)
+            || flowTitle(run.flow_name).toLowerCase().includes(query)
+            || run.flow_name.toLowerCase().includes(query)
+            // Word starts only, so "fail" finds failed runs but "in" doesn't find every waiting one.
+            || ` ${STATUS_SEARCH_WORDS[runStatusKind(run.status, false)]}`.includes(` ${query}`)
+        )
     )
+    const filtering = Boolean(query) || Boolean(statusFilter)
     const queuedLockGroups = runs.reduce<Array<{ identity: string; label: string; runs: RunRecord[] }>>((groups, run) => {
         const executionLock = run.execution_lock
         if (run.status !== 'queued' || !executionLock?.identity) {
@@ -145,8 +178,8 @@ export function RunList({
         const allChildRuns = childRunsByParent.get(run.run_id) ?? []
         // Searching opens the path to matching descendants; a matching parent
         // keeps all of its children available.
-        const revealsMatch = Boolean(query) && descendantMatches(run)
-        const childRuns = query && !matchesSearch(run)
+        const revealsMatch = filtering && descendantMatches(run)
+        const childRuns = filtering && !matchesSearch(run)
             ? allChildRuns.filter((child) => matchesSearch(child) || descendantMatches(child))
             : allChildRuns
         const childrenExpanded = revealsMatch || expandedParents.has(run.run_id)
@@ -256,11 +289,37 @@ export function RunList({
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
                         placeholder={`Search ${summaryLabel}`}
-                        aria-label="Search runs by title or flow"
+                        aria-label="Search runs by title, flow or state"
                         data-testid="run-list-search-input"
                         className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                     />
                 </label>
+                {onStatusFilterChange && runs.length > 0 ? (
+                    <div role="group" aria-label="Show runs that are" data-testid="run-list-status-filter" className="flex flex-wrap gap-1">
+                        {[{ kind: null, label: 'All', className: undefined }, ...STATUS_FILTERS].map(({ kind, label, className }) => {
+                            const count = kind ? statusCounts[kind] ?? 0 : runs.length
+                            // A state with no runs has nothing to show, unless it is the one chosen.
+                            if (kind && count === 0 && statusFilter !== kind) return null
+                            const pressed = statusFilter === kind
+                            return (
+                                <button
+                                    key={kind ?? 'all'}
+                                    type="button"
+                                    aria-pressed={pressed}
+                                    data-testid={`run-list-status-filter-${kind ?? 'all'}`}
+                                    onClick={() => onStatusFilterChange(kind)}
+                                    className={cn(
+                                        'flex h-6 items-center gap-1 rounded-full border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring',
+                                        pressed ? 'border-foreground/30 bg-muted font-medium text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
+                                    )}
+                                >
+                                    <span className={kind && count > 0 ? className : undefined}>{label}</span>
+                                    <span className="tabular-nums text-muted-foreground">{count}</span>
+                                </button>
+                            )
+                        })}
+                    </div>
+                ) : null}
                 {error ? (
                     <InlineError>{error}</InlineError>
                 ) : null}
@@ -296,9 +355,12 @@ export function RunList({
                             ))}
                         </section>
                     ) : null}
-                    {query && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
+                    {filtering && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
                         <p data-testid="run-list-search-empty" className="px-3 text-xs text-muted-foreground">
-                            No runs match the search.
+                            {query ? 'No runs match the search.' : 'No runs in this state.'}
+                            {statusFilter && onStatusFilterChange ? (
+                                <button type="button" onClick={() => onStatusFilterChange(null)} className="ml-1 underline underline-offset-4 hover:text-foreground">Show all runs</button>
+                            ) : null}
                         </p>
                     ) : null}
                 </div>

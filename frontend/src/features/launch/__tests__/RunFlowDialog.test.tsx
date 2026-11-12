@@ -20,6 +20,14 @@ vi.mock('@/lib/api/flowsApi', async (original) => ({
         .map((flow) => ({ ...flow, execution_lock: null, graph_label: flow.title, graph_goal: '' }))),
 }))
 
+// alpha has a flow of its own; the rest are bundled.
+vi.mock('@/features/roles/rolesModel', async (original) => ({
+    ...await original<typeof import('@/features/roles/rolesModel')>(),
+    fetchDefinitions: vi.fn(async (project: string) => ({
+        items: project === '/tmp/alpha' ? [{ kind: 'flow', name: 'nightly', layer: 'project', path: '' }] : [],
+    })),
+}))
+
 beforeEach(() => {
     useStore.setState(useStore.getInitialState(), true)
     useStore.setState({
@@ -30,14 +38,21 @@ beforeEach(() => {
     })
 })
 
-it('groups flows by folder and matches every search word against title, description and name', () => {
+it('puts the project\'s own flows first, groups the rest by folder, and matches every search word against title, description and name', () => {
     const flows = flowsByProject['/tmp/alpha'].map((flow) => ({ ...flow, execution_lock: null, graph_label: '', graph_goal: '' }))
-    expect(groupFlows(flows, '').map((group) => [group.label, group.items.map((flow) => flow.name)])).toEqual([
+    const names = (groups: ReturnType<typeof groupFlows>) => [
+        groups.own.map((flow) => flow.name),
+        groups.folders.map((group) => [group.label, group.items.map((flow) => flow.name)]),
+    ]
+    expect(names(groupFlows(flows, ''))).toEqual([[], [
         ['Software development', ['software-development/implement-change', 'software-development/review-change']],
         ['Other flows', ['nightly']],
-    ])
-    expect(groupFlows(flows, 'change diff').flatMap((group) => group.items.map((flow) => flow.name))).toEqual(['software-development/review-change'])
-    expect(groupFlows(flows, 'nothing-like-this')).toEqual([])
+    ]])
+    expect(names(groupFlows(flows, '', new Set(['nightly'])))).toEqual([['nightly'], [
+        ['Software development', ['software-development/implement-change', 'software-development/review-change']],
+    ]])
+    expect(names(groupFlows(flows, 'change diff'))).toEqual([[], [['Software development', ['software-development/review-change']]]])
+    expect(names(groupFlows(flows, 'nothing-like-this'))).toEqual([[], []])
 })
 
 it('lists the chosen project\'s flows by title and opens the chosen flow\'s run form', async () => {
@@ -49,6 +64,12 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
     expect(within(dialog).getByRole('heading', { name: 'Run a flow' })).toBeVisible()
     expect(await within(dialog).findByText('Nightly audit')).toBeVisible()
     expect(within(dialog).getAllByTestId('run-flow-option')).toHaveLength(3)
+    // The project's own flows lead, then Spark's bundled ones.
+    expect(await within(dialog).findByRole('heading', { name: 'alpha’s flows' })).toBeVisible()
+    expect(within(dialog).getAllByTestId('run-flow-option').map((option) => option.dataset.flowName)).toEqual([
+        'nightly', 'software-development/implement-change', 'software-development/review-change',
+    ])
+    expect(within(dialog).getByRole('heading', { name: 'Bundled with Spark' })).toBeVisible()
 
     await user.type(within(dialog).getByTestId('run-flow-search'), 'review')
     expect(within(dialog).getAllByTestId('run-flow-option').map((option) => option.dataset.flowName)).toEqual(['software-development/review-change'])
@@ -62,4 +83,18 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
     expect(await screen.findByTestId('run-flow-back')).toBeVisible()
     await user.click(screen.getByTestId('run-flow-back'))
     expect(await screen.findByTestId('run-flow-search')).toBeVisible()
+})
+
+it('opens in the project of the latest run when that is more recent than the last project used', async () => {
+    useStore.setState((state) => ({
+        runsListSession: {
+            ...state.runsListSession,
+            runs: [{ run_id: 'run-1', flow_name: 'beta-only', status: 'completed', working_directory: '/tmp/beta', project_path: '/tmp/beta', model: '', started_at: '2026-10-01T09:00:00Z' }],
+        },
+    }))
+    render(<RunFlowDialog />)
+    act(() => openRunFlowDialog())
+    const dialog = await screen.findByTestId('run-flow-dialog')
+    expect(within(dialog).getByTestId<HTMLSelectElement>('run-flow-project-select').value).toBe('/tmp/beta')
+    expect(await within(dialog).findByText('Beta only')).toBeVisible()
 })

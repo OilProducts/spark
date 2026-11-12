@@ -120,10 +120,13 @@ pub fn schedule_due_at(
                 .source
                 .get("interval_seconds")
                 .and_then(|value| value.as_i64())?;
-            let Some(last_fired_at) = last_fired_at else {
+            // A new trigger first falls due one interval after it was created.
+            let Some(base) =
+                last_fired_at.or_else(|| parse_iso_datetime(Some(&definition.created_at)))
+            else {
                 return Some(now);
             };
-            let next_due = last_fired_at + Duration::seconds(interval);
+            let next_due = base + Duration::seconds(interval);
             (now >= next_due).then_some(next_due)
         }
         "weekly" => {
@@ -218,7 +221,9 @@ fn compute_schedule_next_run_at(
                 .source
                 .get("interval_seconds")
                 .and_then(|value| value.as_i64())?;
-            let base = parse_iso_datetime(state.last_fired_at.as_deref()).unwrap_or(now);
+            let base = parse_iso_datetime(state.last_fired_at.as_deref())
+                .or_else(|| parse_iso_datetime(Some(&definition.created_at)))
+                .unwrap_or(now);
             Some(datetime_to_iso(base + Duration::seconds(interval)))
         }
         "weekly" => weekly_next_run_at(definition, now),

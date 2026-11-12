@@ -11,7 +11,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
-import { defaultProjectChoice, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
+import { defaultProjectChoice, lastUsedProjectPath, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
+import { fetchDefinitions } from '@/features/roles/rolesModel'
 import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 
 import { useFlowSummaries } from '../hooks/useFlowSummaries'
@@ -30,20 +31,84 @@ const folderLabel = (name: string) => {
     return folder ? folder.charAt(0).toUpperCase() + folder.slice(1).replace(/[-_]+/g, ' ') : 'Other flows'
 }
 
-/** Flows matching every word of `query` in their title, description or name, grouped by top folder. */
-export function groupFlows(flows: WorkspaceFlowResponse[], query: string) {
+const byTitle = (left: WorkspaceFlowResponse, right: WorkspaceFlowResponse) => (left.title || left.name).localeCompare(right.title || right.name)
+
+/**
+ * Flows matching every word of `query` in their title, description or name: the project's own
+ * flows (`ownFlows`, when known) first, then the rest grouped by top folder.
+ */
+export function groupFlows(flows: WorkspaceFlowResponse[], query: string, ownFlows: ReadonlySet<string> | null = null) {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+    const own: WorkspaceFlowResponse[] = []
     const groups = new Map<string, WorkspaceFlowResponse[]>()
     for (const flow of flows) {
         const text = `${flow.title} ${flow.description} ${flow.name}`.toLowerCase()
         if (!words.every((word) => text.includes(word))) continue
+        if (ownFlows?.has(flow.name)) {
+            own.push(flow)
+            continue
+        }
         const label = folderLabel(flow.name)
         groups.set(label, [...(groups.get(label) ?? []), flow])
     }
-    return [...groups.entries()].map(([label, items]) => ({
-        label,
-        items: items.sort((left, right) => (left.title || left.name).localeCompare(right.title || right.name)),
-    }))
+    return {
+        own: own.sort(byTitle),
+        // Named folders first, alphabetically; loose flows last.
+        folders: [...groups.entries()]
+            .sort(([left], [right]) => Number(left === 'Other flows') - Number(right === 'Other flows') || left.localeCompare(right))
+            .map(([label, items]) => ({ label, items: items.sort(byTitle) })),
+    }
+}
+
+/** The names of a project's own flows, its copies of bundled ones included; null while loading or when unknown. */
+function useOwnFlows(projectPath: string | null) {
+    const [own, setOwn] = useState<{ projectPath: string; names: ReadonlySet<string> | null } | null>(null)
+    useEffect(() => {
+        if (!projectPath) return
+        let cancelled = false
+        fetchDefinitions(projectPath).then(
+            (list) => {
+                if (!cancelled) setOwn({ projectPath, names: new Set(list.items.filter((item) => item.kind === 'flow' && item.layer !== 'bundled').map((item) => item.name)) })
+            },
+            // Without the list, flows group by folder alone.
+            () => { if (!cancelled) setOwn({ projectPath, names: null }) },
+        )
+        return () => { cancelled = true }
+    }, [projectPath])
+    return own?.projectPath === projectPath ? own.names : null
+}
+
+function FlowOption({ flow, onChoose }: { flow: WorkspaceFlowResponse; onChoose: (flowName: string) => void }) {
+    return (
+        <li>
+            <button
+                type="button"
+                data-testid="run-flow-option"
+                data-flow-name={flow.name}
+                onClick={() => onChoose(flow.name)}
+                className="flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+            >
+                <span className="flex w-full min-w-0 flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="min-w-0 text-sm font-medium">{flow.title || flow.name}</span>
+                    <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{flow.name}</span>
+                </span>
+                {flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
+            </button>
+        </li>
+    )
+}
+
+/** The project worked in most recently: the last one used, or where the latest run started when that was later. */
+function recentProjectPath(): string | null {
+    const { projectRegistry: registry, runsListSession } = useStore.getState()
+    const used = lastUsedProjectPath(registry)
+    const usedAt = Date.parse(used ? registry[used]?.lastAccessedAt ?? '' : '') || 0
+    let latest: { projectPath: string; at: number } | null = null
+    for (const run of runsListSession.runs) {
+        const at = Date.parse(run.started_at ?? '') || 0
+        if (run.project_path && registry[run.project_path] && at > (latest?.at ?? 0)) latest = { projectPath: run.project_path, at }
+    }
+    return latest && latest.at > usedAt ? latest.projectPath : used
 }
 
 function FlowChooser({ projectPath, onProjectChange, onChoose }: {
@@ -54,7 +119,9 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
     const registry = useStore((state) => state.projectRegistry)
     const [query, setQuery] = useState('')
     const summaries = useFlowSummaries(projectPath)
-    const groups = useMemo(() => groupFlows(summaries?.flows ?? [], query), [summaries, query])
+    const ownFlows = useOwnFlows(projectPath)
+    const { own, folders } = useMemo(() => groupFlows(summaries?.flows ?? [], query, ownFlows), [summaries, query, ownFlows])
+    const projectName = projectLabel(registry, projectPath)
     return (
         <div className="flex min-h-0 flex-1 flex-col gap-4">
             <div className="space-y-1">
@@ -99,32 +166,28 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
             <div data-testid="run-flow-list" className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2" aria-busy={summaries === null}>
                 {summaries === null ? <p className="py-6 text-center text-sm text-muted-foreground">Loading flows…</p> : null}
                 {summaries?.error ? <InlineError>{summaries.error}</InlineError> : null}
-                {summaries && !summaries.error && groups.length === 0 ? (
+                {summaries && !summaries.error && own.length === 0 && folders.length === 0 ? (
                     <p className="py-6 text-center text-sm text-muted-foreground">
                         {query ? 'No flow matches that search.' : 'This project has no flows yet.'}
                     </p>
                 ) : null}
-                {groups.map((group) => (
-                    <section key={group.label} aria-label={group.label} className="pb-3">
-                        <ListGroupLabel><h3>{group.label}</h3></ListGroupLabel>
+                {/* The project's own flows lead, as in the Flows view; Spark's bundled flows follow by folder. */}
+                {own.length > 0 ? (
+                    <section data-testid="run-flow-group-own" aria-label={`${projectName}'s flows`} className="pb-3">
+                        <h3 className="px-3 pb-1 pt-2 text-sm font-semibold text-foreground">{projectName}&rsquo;s flows</h3>
                         <ul className="space-y-0.5">
-                            {group.items.map((flow) => (
-                                <li key={flow.name}>
-                                    <button
-                                        type="button"
-                                        data-testid="run-flow-option"
-                                        data-flow-name={flow.name}
-                                        onClick={() => onChoose(flow.name)}
-                                        className="flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                                    >
-                                        <span className="flex w-full min-w-0 flex-wrap items-baseline justify-between gap-x-3">
-                                            <span className="min-w-0 text-sm font-medium">{flow.title || flow.name}</span>
-                                            <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{flow.name}</span>
-                                        </span>
-                                        {flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
-                                    </button>
-                                </li>
-                            ))}
+                            {own.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} />)}
+                        </ul>
+                    </section>
+                ) : null}
+                {folders.length > 0 && ownFlows ? (
+                    <h3 data-testid="run-flow-group-bundled" className="px-3 pb-1 pt-2 text-sm font-semibold text-foreground">Bundled with Spark</h3>
+                ) : null}
+                {folders.map((group) => (
+                    <section key={group.label} aria-label={ownFlows ? `Bundled with Spark: ${group.label}` : group.label} className="pb-3">
+                        <ListGroupLabel>{ownFlows ? <h4>{group.label}</h4> : <h3>{group.label}</h3>}</ListGroupLabel>
+                        <ul className="space-y-0.5">
+                            {group.items.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} />)}
                         </ul>
                     </section>
                 ))}
@@ -142,7 +205,7 @@ export function RunFlowDialog() {
         const onOpen = (event: Event) => {
             const detail = (event as CustomEvent<{ projectPath?: string | null; flowName?: string | null }>).detail ?? {}
             const registry = useStore.getState().projectRegistry
-            setRequest({ projectPath: defaultProjectChoice(registry, detail.projectPath), flowName: detail.flowName ?? null })
+            setRequest({ projectPath: defaultProjectChoice(registry, detail.projectPath ?? recentProjectPath()), flowName: detail.flowName ?? null })
         }
         window.addEventListener(RUN_FLOW_EVENT, onOpen)
         return () => window.removeEventListener(RUN_FLOW_EVENT, onOpen)

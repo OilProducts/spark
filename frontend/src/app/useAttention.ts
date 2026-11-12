@@ -29,6 +29,8 @@ export function attentionTitle(item: AttentionItem, runs: Pick<RunRecord, 'run_i
 
 // One shared list for every view that shows it, so the Inbox and the Overview never disagree.
 let attentionItems: AttentionItem[] | null = null
+// Whether the latest check failed: an empty list is then unknown, not an all-clear.
+let attentionFailed = false
 const attentionListeners = new Set<() => void>()
 let attentionRequest = 0
 
@@ -39,10 +41,14 @@ export function refreshAttention() {
         .then((next) => {
             if (request !== attentionRequest) return
             attentionItems = next
+            attentionFailed = false
             attentionListeners.forEach((listener) => listener())
         })
         .catch(() => {
-            // Transient poll failures keep the last known items.
+            // A failed check keeps the last known items and says it failed.
+            if (request !== attentionRequest || attentionFailed) return
+            attentionFailed = true
+            attentionListeners.forEach((listener) => listener())
         })
 }
 
@@ -79,6 +85,11 @@ export function useAttentionItems() {
         if (runStatuses !== firstStatuses.current) refreshAttention()
     }, [runStatuses])
     return items
+}
+
+/** Whether the latest check for pending attention failed; views say so instead of "nothing is waiting". */
+export function useAttentionFailed() {
+    return useSyncExternalStore(subscribeAttention, () => attentionFailed)
 }
 
 /** Opens a chat in the Chats view; leaving a project page asks first, so a cancelled leave keeps the shown chat. */

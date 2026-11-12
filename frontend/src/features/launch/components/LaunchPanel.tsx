@@ -63,6 +63,7 @@ export function LaunchPanel({
     } = useLaunchPreview(target.previewSource, projectPath)
 
     const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>(initialInputValues ?? {})
+    const [inputErrors, setInputErrors] = useState<Record<string, string>>({})
     const [launchInputsCollapsed, setLaunchInputsCollapsed] = useState(false)
     const [workingDirectory, setWorkingDirectory] = useState(initialWorkingDirectory)
     const [model, setModel] = useState(initialModel ?? '')
@@ -129,9 +130,7 @@ export function LaunchPanel({
     const flowDescription = lockMetadata?.description?.trim() || null
     const optionsSummary = [
         projectPath ? projectLabel(projectRegistry, projectPath) : 'no project',
-        placement.selectedProfileId
-            ? placement.effectiveProfile?.label || placement.selectedProfileId
-            : placement.defaultProfileLabel,
+        placement.effectiveProfileSummary,
         workingDirectory.trim() && workingDirectory.trim() !== projectPath ? `in ${workingDirectory.trim()}` : null,
         model.trim() || null,
     ].filter(Boolean).join(' · ')
@@ -156,8 +155,14 @@ export function LaunchPanel({
                 parsedLaunchInputs.entries,
                 launchInputValues,
             )
-            if (launchContextErrors.length > 0) {
-                setRunStartError(launchContextErrors.join(' '))
+            setInputErrors(launchContextErrors)
+            const firstInvalid = parsedLaunchInputs.entries.find((entry) => launchContextErrors[entry.key])
+            if (firstInvalid) {
+                // Each problem shows under its field; focus goes to the first so it can be fixed at once.
+                setLaunchInputsCollapsed(false)
+                window.requestAnimationFrame(() => {
+                    panelRef.current?.querySelector<HTMLElement>(`[data-testid="execution-launch-input-${CSS.escape(firstInvalid.key)}"]`)?.focus()
+                })
                 return
             }
 
@@ -213,9 +218,10 @@ export function LaunchPanel({
             }}
         >
             <div className="space-y-1">
+                {/* The title wraps rather than give way, and the close button keeps its corner at any width. */}
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                        <h3 data-testid="launch-panel-title" className="text-lg font-semibold leading-tight text-foreground">{panelTitle}</h3>
+                        <h3 data-testid="launch-panel-title" className="break-words text-lg font-semibold leading-tight text-foreground">{panelTitle}</h3>
                         {target.flowName ? (
                             <span
                                 data-testid="launch-panel-flow-name"
@@ -226,35 +232,20 @@ export function LaunchPanel({
                             </span>
                         ) : null}
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                        <Button
-                            type="button"
-                            data-testid="launch-panel-start-button"
-                            onClick={() => {
-                                void requestStart()
-                            }}
-                            disabled={!canRun}
-                            title={canRun ? undefined : executeDisabledReason}
-                        >
-                            {executeLabel}
-                        </Button>
-                        <Button
-                            type="button"
-                            data-testid="launch-panel-close-button"
-                            variant="ghost"
-                            size="icon-xs"
-                            aria-label="Close launch panel"
-                            onClick={onClose}
-                        >
-                            <X className="h-3.5 w-3.5" />
-                        </Button>
-                    </div>
+                    <Button
+                        type="button"
+                        data-testid="launch-panel-close-button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="Close launch panel"
+                        onClick={onClose}
+                        className="shrink-0"
+                    >
+                        <X className="h-3.5 w-3.5" />
+                    </Button>
                 </div>
                 {flowDescription ? (
                     <p data-testid="launch-panel-description" className="text-sm text-muted-foreground">{flowDescription}</p>
-                ) : null}
-                {!canRun && executeDisabledReason && !isLoadingPreview && !isLaunching ? (
-                    <p data-testid="launch-panel-disabled-reason" className="text-xs text-muted-foreground">{executeDisabledReason}</p>
                 ) : null}
             </div>
 
@@ -299,6 +290,7 @@ export function LaunchPanel({
                     flowName={target.flowName}
                     parsedLaunchInputs={parsedLaunchInputs}
                     launchInputValues={launchInputValues}
+                    errors={inputErrors}
                     launchInputsCollapsed={launchInputsCollapsed}
                     onToggleCollapsed={() => setLaunchInputsCollapsed((collapsed) => !collapsed)}
                     onInputChange={(entry, value) => {
@@ -306,6 +298,11 @@ export function LaunchPanel({
                             ...previous,
                             [entry.key]: value,
                         }))
+                        setInputErrors((previous) => {
+                            if (!previous[entry.key]) return previous
+                            const { [entry.key]: _fixed, ...rest } = previous
+                            return rest
+                        })
                     }}
                 />
             </Well> : !isLoadingPreview && !previewLoadError ? (
@@ -392,6 +389,24 @@ export function LaunchPanel({
                 </Well>
             ) : null}
 
+            {/* Fill in the form, then run: the button sits under it and stays in view while the form scrolls. */}
+            <div className="sticky bottom-0 -mb-px mt-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-t border-border bg-background pt-3">
+                {!canRun && executeDisabledReason && !isLoadingPreview && !isLaunching ? (
+                    <p data-testid="launch-panel-disabled-reason" className="min-w-0 flex-1 text-xs text-muted-foreground">{executeDisabledReason}</p>
+                ) : null}
+                <Button
+                    type="button"
+                    data-testid="launch-panel-start-button"
+                    onClick={() => {
+                        void requestStart()
+                    }}
+                    disabled={!canRun}
+                    title={canRun ? executeLabel : executeDisabledReason}
+                    className="min-w-0 max-w-full"
+                >
+                    <span className="truncate">{isLaunching ? 'Starting…' : executeLabel}</span>
+                </Button>
+            </div>
         </div>
     )
 }

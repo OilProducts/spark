@@ -74,11 +74,14 @@ it('retains invalid metadata through live changes and failed discard, with navig
 
 it('keeps container drafts across mode changes and blocks all deletes for another profile’s invalid JSON', async () => {
     vi.mocked(profileSettingsRequest).mockResolvedValue({ ...execution, stored: { ...execution.stored, profiles: [
-        execution.stored.profiles[0], { ...execution.stored.profiles[0], id: 'container', label: 'Container', mode: 'local_container', image: 'worker:old', metadata: { 'container.mounts': ['/tmp:/work'] } },
+        execution.stored.profiles[0], { ...execution.stored.profiles[0], id: 'container', label: 'Container', mode: 'local_container', enabled: false, image: 'worker:old', metadata: { 'container.mounts': ['/tmp:/work'] } },
     ] } })
     const user = userEvent.setup()
     render(<DialogProvider><ExecutionProfilesEditor /></DialogProvider>)
     const summary = await screen.findByText(/Container ·/)
+    // Summaries say where each profile runs, in plain words.
+    expect(summary).toHaveTextContent(/^Container · In a local container · Off$/)
+    expect(screen.getByText(/Native ·/)).toHaveTextContent(/^Native · On this computer$/)
     expect(summary.closest('details')).not.toHaveAttribute('open')
     await user.click(summary)
     const image = screen.getAllByLabelText('Container image')[1]
@@ -101,4 +104,5 @@ it('keeps container drafts across mode changes and blocks all deletes for anothe
     for (const button of screen.getAllByRole('button', { name: /Delete execution profile/ })) expect(button).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Add execution profile' }))
     expect(screen.getByText(/Execution profile 3/).closest('details')).toHaveAttribute('open')
+    expect(screen.getByText(/Execution profile 3/)).toHaveTextContent(/^Execution profile 3 · On this computer · Not saved yet$/)
 })

@@ -2,7 +2,7 @@ import type { ConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { Mission } from '@/features/missions/MissionsPanel'
 import { missionTime } from '@/features/missions/model/missionModel'
-import { runStatusKind } from '@/features/runs/model/runOverviewModel'
+import { runStatusKind, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
 // What the Overview shows: the chat you were last in with what it started,
@@ -89,15 +89,42 @@ export function finishedSince(runs: RunRecord[], missions: Mission[], watermark:
 /**
  * What the Overview lists as finished: the last day, reaching back to the last look when that was
  * earlier, so a result stays listed after a glance and nothing is skipped after a weekend away.
- * `isNew` marks what finished after the last look.
+ * `isNew` marks what finished after the last look; before a first look there is nothing to compare
+ * with, so nothing is marked.
  */
 export function recentlyFinished(runs: RunRecord[], missions: Mission[], watermark: number | null, now: number) {
     const after = Math.min(watermark ?? now, now - DAY_MS)
-    const newAfter = watermark ?? now - DAY_MS
     return {
         sinceLastLook: watermark !== null && watermark < now - DAY_MS,
-        items: finishedSince(runs, missions, after, now).map((item) => ({ ...item, isNew: item.at > newAfter })),
+        items: finishedSince(runs, missions, after, now).map((item) => ({ ...item, isNew: watermark !== null && item.at > watermark })),
     }
+}
+
+export type FinishedItem = Started & { isNew: boolean }
+/** One row of the Finished list: a run or mission, or repeats of one run folded together. */
+export type FinishedRow = { key: string; latest: FinishedItem; count: number; isNew: boolean }
+
+/**
+ * Finished items as rows, failures first and otherwise newest first. Runs with the same title in
+ * the same project and the same outcome (a trigger's routine runs) fold into one row under the
+ * latest, so a busy schedule can't push everything else off the Overview.
+ */
+export function finishedRows(items: FinishedItem[]): FinishedRow[] {
+    const rows = new Map<string, FinishedRow>()
+    for (const item of items) {
+        const key = item.kind === 'run'
+            ? `run:${item.run.project_path ?? ''}:${runTitle(item.run)}:${item.mark}`
+            : `mission:${item.id}`
+        const row = rows.get(key)
+        if (row) {
+            row.count += 1
+            row.isNew ||= item.isNew
+        } else {
+            rows.set(key, { key, latest: item, count: 1, isNew: item.isNew })
+        }
+    }
+    const ordered = [...rows.values()]
+    return [...ordered.filter((row) => row.latest.mark === 'failed'), ...ordered.filter((row) => row.latest.mark !== 'failed')]
 }
 
 /** Top-level runs and missions still working, and chats with a turn in flight, newest start first. */

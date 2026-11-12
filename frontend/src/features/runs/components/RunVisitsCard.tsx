@@ -135,6 +135,7 @@ export function RunVisitsCard({
     const [contextFocusKey, setContextFocusKey] = useState<string | null>(null)
     const [showJournal, setShowJournal] = useState(false)
     const listRef = useRef<HTMLDivElement | null>(null)
+    const detailsRef = useRef<HTMLDivElement | null>(null)
 
     // The node selection drives what the actions act on, so a picked visit only
     // shows while its node is selected; a graph node alone shows its latest
@@ -154,6 +155,11 @@ export function RunVisitsCard({
         setContextFocusKey(null)
         setShowJournal(false)
         onSelectNode(typeof item === 'string' ? null : item.nodeId)
+    }
+    // On a phone the details sit above the rail, so a tapped row brings them into view.
+    const pick = (item: RunVisit | ItemKey) => {
+        select(item)
+        if (isNarrowViewport) detailsRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
     }
     const openContextKey = (key: string) => {
         select('context')
@@ -206,7 +212,10 @@ export function RunVisitsCard({
                                 key: 'journal',
                                 label: 'Journal',
                                 pressed: showJournal,
-                                onPress: () => setShowJournal((current) => !current),
+                                onPress: () => {
+                                    setShowJournal((current) => !current)
+                                    if (isNarrowViewport && !showJournal) detailsRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+                                },
                                 'data-testid': 'run-journal-toggle',
                             },
                         ]}
@@ -254,7 +263,7 @@ export function RunVisitsCard({
                             tabIndex={selected === item ? 0 : -1}
                             data-testid={`run-visit-item-${item}`}
                             data-visit-key={item}
-                            onClick={() => select(item)}
+                            onClick={() => pick(item)}
                             className={cn(railRowClass(!showJournal && selected === item), 'h-8.5')}
                         >
                             <span className="flex w-3.5 shrink-0 justify-center">
@@ -301,7 +310,7 @@ export function RunVisitsCard({
                                 data-node-id={visit.nodeId}
                                 data-outcome={visit.outcome}
                                 data-node-selected={visit.nodeId === selectedNodeId || undefined}
-                                onClick={() => select(visit)}
+                                onClick={() => pick(visit)}
                                 className={cn(
                                     railRowClass(isSelected),
                                     sentBackTo ? 'items-start py-1.5' : 'min-h-8 py-1',
@@ -347,7 +356,8 @@ export function RunVisitsCard({
                     })}
                 </div>
             </Well>
-            <div className={cn('min-w-0 flex-1', isNarrowViewport ? undefined : 'min-h-0 overflow-y-auto')}>
+            {/* On a phone the details lead (a question to answer, a result, why it failed); the steps follow. */}
+            <div ref={detailsRef} data-testid="run-visit-details" className={cn('min-w-0 flex-1', isNarrowViewport ? 'order-first scroll-mt-16' : 'min-h-0 overflow-y-auto')}>
                 {showJournal ? (
                     <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
                 ) : selected === 'status' ? (

@@ -1,11 +1,11 @@
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
-import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
+import { LaunchPanel, useExecutionPlacement, type LaunchPanelProps } from '@/features/launch'
 
 const TEST_FLOW = 'test-linear.yaml'
 const TEST_PROJECT = '/tmp/project'
@@ -176,20 +176,29 @@ useStore.getState().setRunsSelectedRunId(null);
     expect(selectSelectedRunSession(useStore.getState())?.record).toBeNull()
   })
 
-  it('blocks launching when a required input is missing', async () => {
+  it('blocks launching when a required input is missing, saying so under the field and focusing it', async () => {
     installLaunchFetchMock({
       inputs: [{ key: 'context.topic', label: 'Topic', type: 'string', required: true }],
     })
     const user = userEvent.setup()
     const { onLaunched } = renderLaunchPanel()
 
-    await screen.findByTestId('execution-launch-input-context.topic')
+    const input = await screen.findByTestId('execution-launch-input-context.topic')
     const startButton = screen.getByTestId('launch-panel-start-button')
     await waitFor(() => expect(startButton).toBeEnabled())
     await user.click(startButton)
 
-    await screen.findByTestId('run-start-error-banner')
+    const error = await screen.findByTestId('execution-launch-input-error-context.topic')
+    expect(error).toHaveTextContent('Topic is required.')
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input.getAttribute('aria-describedby')).toContain(error.id)
+    await waitFor(() => expect(input).toHaveFocus())
+    expect(screen.queryByTestId('run-start-error-banner')).toBeNull()
     expect(onLaunched).not.toHaveBeenCalled()
+
+    // Typing clears the field's error.
+    await user.type(input, 'Billing')
+    expect(screen.queryByTestId('execution-launch-input-error-context.topic')).toBeNull()
   })
 
   it('closes on Escape from inside the panel', async () => {
@@ -213,6 +222,35 @@ useStore.getState().setRunsSelectedRunId(null);
     const startButton = await screen.findByTestId('launch-panel-start-button')
     expect(startButton).toBeDisabled()
     expect(startButton).toHaveAttribute('title', 'Choose a project before running.')
+  })
+
+  it('lists each execution profile once, says where it runs, and summarizes the chosen one', async () => {
+    const launchFetch = installLaunchFetchMock()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/workspace/api/settings')
+      ? jsonResponse({ execution_placement: {
+        execution_modes: ['native', 'local_container'],
+        config: { filename: 'execution-profiles.toml', path: '/tmp/config/execution-profiles.toml', exists: true, loaded: true, synthesized_native_default: false },
+        default_execution_profile_id: 'native',
+        profiles: [
+          { id: 'native', label: 'Native', mode: 'native', enabled: true, image: null, capabilities: {}, metadata: {} },
+          { id: 'gpu', label: 'GPU box', mode: 'local_container', enabled: true, image: 'gpu:1', capabilities: {}, metadata: {} },
+        ],
+        validation_errors: [],
+      } })
+      : launchFetch(input, init)))
+    renderLaunchPanel()
+
+    const select = await screen.findByTestId<HTMLSelectElement>('execution-profile-override-select')
+    await waitFor(() => expect(Array.from(select.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['', 'Native — on this computer (project default)'],
+      ['gpu', 'GPU box — in a container'],
+    ]))
+    expect(screen.getByTestId('launch-panel-options-summary')).toHaveTextContent(/ · on this computer$/)
+
+    const { result } = renderHook(() => useExecutionPlacement(true, TEST_PROJECT))
+    await waitFor(() => expect(result.current.effectiveProfileSummary).toBe('on this computer'))
+    act(() => result.current.setSelectedProfileId('gpu'))
+    expect(result.current.effectiveProfileSummary).toBe('in a container: GPU box')
   })
 
   it('asks for confirmation when the git policy gate cannot verify project state', async () => {

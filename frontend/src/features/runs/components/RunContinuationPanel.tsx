@@ -261,13 +261,13 @@ export function RunContinuationPanel({
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label htmlFor="run-continuation-model">Model override</Label>
+                        <Label htmlFor="run-continuation-model">Model</Label>
                         <Input
                             id="run-continuation-model"
                             data-testid="run-continuation-model-input"
                             value={draft.model}
                             onChange={(event) => onDraftChange({ model: event.target.value })}
-                            placeholder="Use server default"
+                            placeholder="The flow's own choice"
                         />
                     </div>
                 </div>

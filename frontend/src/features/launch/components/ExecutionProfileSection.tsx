@@ -1,7 +1,7 @@
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
-import type { ExecutionPlacementState } from '../hooks/useExecutionPlacement'
+import { EXECUTION_MODE_PLACES, type ExecutionPlacementState } from '../hooks/useExecutionPlacement'
 
 interface ExecutionProfileSectionProps {
     placement: ExecutionPlacementState
@@ -12,6 +12,7 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
     const {
         selectedProfileId,
         setSelectedProfileId,
+        defaultProfileId,
         defaultProfileLabel,
         enabledProfiles,
         validationMessage,
@@ -35,12 +36,15 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                 size="sm"
                 className="w-full text-sm"
             >
-                <NativeSelectOption value="">
-                    Project default ({defaultProfileLabel})
-                </NativeSelectOption>
+                {/* The default keeps value '' so the run follows the project's default. */}
+                {enabledProfiles.some((profile) => profile.id === defaultProfileId) ? null : (
+                    <NativeSelectOption value="">
+                        Project default ({defaultProfileLabel})
+                    </NativeSelectOption>
+                )}
                 {enabledProfiles.map((profile) => (
-                    <NativeSelectOption key={profile.id} value={profile.id || ''}>
-                        {profile.label || profile.id}
+                    <NativeSelectOption key={profile.id} value={profile.id === defaultProfileId ? '' : profile.id || ''}>
+                        {`${profile.label || profile.id} — ${EXECUTION_MODE_PLACES[profile.mode]}${profile.id === defaultProfileId ? ' (project default)' : ''}`}
                     </NativeSelectOption>
                 ))}
             </NativeSelect>

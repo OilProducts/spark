@@ -7,7 +7,7 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, openChat, openMission, openRun, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -16,6 +16,7 @@ import { formatDuration } from '@/features/runs/model/shared'
 import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
 import {
+    finishedRows,
     inProgress,
     lastChat,
     markAttentionSeen,
@@ -79,6 +80,16 @@ function EmptyWell({ children, check = true, ...props }: ComponentProps<'div'> &
 }
 
 const listPanelClass = 'divide-y divide-border overflow-hidden rounded-xl border border-border'
+// Rows the Finished list shows before "Show more"; failures come first, so they are never the ones hidden.
+const FINISHED_LIMIT = 8
+// Rows Needs you shows before "Show more"; the Inbox lists every one.
+const NEEDS_YOU_LIMIT = 6
+
+/** Opens the Runs view showing only failed runs, from every project. */
+function openFailedRuns() {
+    useStore.getState().updateRunsListSession({ statusFilter: 'failed', projectFilter: null })
+    useStore.getState().setViewMode('runs')
+}
 
 /**
  * A row title that opens its run or mission: navigation in the foreground colour, underlined on
@@ -123,6 +134,7 @@ const itemDuration = (item: Started) => (item.kind === 'run'
 export function OverviewPanel() {
     // ponytail: polls beside the activity bar's own poll while open; share one store-held list if the endpoint gets costly.
     const loadedAttention = useAttentionItems()
+    const attentionFailed = useAttentionFailed()
     const attention = loadedAttention ?? []
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
@@ -132,6 +144,8 @@ export function OverviewPanel() {
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [finishedWatermark] = useState(readFinishedWatermark)
     const [showRuns, setShowRuns] = useState(false)
+    const [showAllFinished, setShowAllFinished] = useState(false)
+    const [showAllNeedsYou, setShowAllNeedsYou] = useState(false)
     useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
     useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
@@ -141,6 +155,8 @@ export function OverviewPanel() {
     const counts = last ? tally(last.started) : {}
     const { items: finished, sinceLastLook } = recentlyFinished(runs, missions, finishedWatermark, now)
     const failures = finished.filter((item) => item.mark === 'failed').length
+    const rows = finishedRows(finished)
+    const shownRows = showAllFinished ? rows : rows.slice(0, FINISHED_LIMIT)
     const running = inProgress(runs, missions, chats)
 
     return (
@@ -177,12 +193,21 @@ export function OverviewPanel() {
                     </div>
                 </header>
 
-                <Section testId="overview-needs-you" heading="Needs you" count={attention.length}>
-                    {attention.length === 0 ? (
-                        <EmptyWell data-testid="overview-needs-you-empty">Nothing is waiting on you.</EmptyWell>
+                <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length : undefined}>
+                    {/* A failed check is not an all-clear: say so, and keep what was last known. */}
+                    {attentionFailed ? (
+                        <Well data-testid="overview-needs-you-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            {loadedAttention ? 'Couldn’t refresh what is waiting on you; this may be out of date.' : 'Couldn’t check what is waiting on you.'}
+                            <Button type="button" size="sm" variant="outline" onClick={refreshAttention}>Try again</Button>
+                        </Well>
+                    ) : null}
+                    {!loadedAttention ? (
+                        attentionFailed ? null : <Well className="py-3.5 text-sm text-muted-foreground">Checking what is waiting on you…</Well>
+                    ) : attention.length === 0 ? (
+                        attentionFailed ? null : <EmptyWell data-testid="overview-needs-you-empty">Nothing is waiting on you.</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
-                            {attention.map((item) => (
+                            {(showAllNeedsYou ? attention : attention.slice(0, NEEDS_YOU_LIMIT)).map((item) => (
                                 <li key={`${item.kind}:${item.id}`}>
                                     <button
                                         type="button"
@@ -206,6 +231,11 @@ export function OverviewPanel() {
                             ))}
                         </ul>
                     )}
+                    {attention.length > NEEDS_YOU_LIMIT ? (
+                        <Button type="button" variant="ghost" size="sm" data-testid="overview-needs-you-show-all" aria-expanded={showAllNeedsYou} onClick={() => setShowAllNeedsYou((value) => !value)} className="self-start">
+                            {showAllNeedsYou ? 'Show fewer' : `Show ${attention.length - NEEDS_YOU_LIMIT} more`}
+                        </Button>
+                    ) : null}
                 </Section>
 
                 <Section testId="overview-running" heading="Running now" count={running.length}>
@@ -290,32 +320,49 @@ export function OverviewPanel() {
                 <Section
                     testId="overview-finished"
                     heading={`Finished ${sinceLastLook ? 'since you last looked' : 'in the last day'}`}
-                    count={<>{finished.length}{failures ? <span data-testid="overview-failure-count" className="text-destructive"> · {failures} failed</span> : null}</>}
+                    count={finished.length}
                 >
+                    {failures ? (
+                        <p className="-mt-1 text-sm">
+                            <Button type="button" variant="link" data-testid="overview-failure-count" onClick={openFailedRuns} title="See every failed run in Runs" className="h-auto p-0 text-sm font-medium text-destructive underline underline-offset-4">
+                                {failures} failed
+                            </Button>
+                            <span className="text-muted-foreground"> · listed first</span>
+                        </p>
+                    ) : null}
                     {finished.length === 0 ? (
                         <EmptyWell>{sinceLastLook ? 'Nothing has finished since you last looked.' : 'Nothing has finished in the last day.'}</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
-                            {finished.map((item) => (
-                                <li key={`${item.kind}:${item.id}`} data-testid="overview-finished-item" data-item-id={item.id} className="relative flex items-center gap-3 px-4 py-3">
+                            {shownRows.map(({ key, latest: item, count, isNew }) => (
+                                <li key={key} data-testid="overview-finished-item" data-item-id={item.id} data-count={count} className="relative flex items-center gap-3 px-4 py-3">
                                     <MarkDot mark={item.mark} />
                                     <span className="flex min-w-0 flex-1 flex-col gap-px">
                                         <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                         <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
                                             <span className="truncate">
-                                                {[item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null, projectLabel(registry, itemProject(item))].filter(Boolean).join(' · ')}
+                                                {[
+                                                    count > 1 ? `${count} runs, latest shown` : item.kind === 'run' ? 'Run' : 'Mission',
+                                                    item.kind === 'run' ? distinctFlowTitle(item) : null,
+                                                    projectLabel(registry, itemProject(item)),
+                                                ].filter(Boolean).join(' · ')}
                                             </span>
-                                            <SourceLink source={sourceOf(item, chats, missions)} />
+                                            {count > 1 ? null : <SourceLink source={sourceOf(item, chats, missions)} />}
                                             <ExceptionWord mark={item.mark} />
                                         </span>
                                     </span>
-                                    {item.isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
-                                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{itemDuration(item)}</span>
+                                    {isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
+                                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground max-sm:hidden">{itemDuration(item)}</span>
                                     <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>
                             ))}
                         </ul>
                     )}
+                    {rows.length > FINISHED_LIMIT ? (
+                        <Button type="button" variant="ghost" size="sm" data-testid="overview-finished-show-all" aria-expanded={showAllFinished} onClick={() => setShowAllFinished((value) => !value)} className="self-start">
+                            {showAllFinished ? 'Show fewer' : `Show ${rows.length - FINISHED_LIMIT} more`}
+                        </Button>
+                    ) : null}
                 </Section>
             </div>
         </div>

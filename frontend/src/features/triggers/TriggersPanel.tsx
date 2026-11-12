@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { TriggerEditor } from "./components/TriggerEditor"
 import {
   createEmptyTriggerForm,
+  formatTriggerResult,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
   triggerProjectSummary,
@@ -316,7 +317,7 @@ export function TriggersPanel() {
                     <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last triggered: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
-                    <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>
+                    <div className="text-muted-foreground">Last result: {formatTriggerResult(selectedTrigger.state.last_result)}</div>
                     {selectedTrigger.state.last_error ? (
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}
@@ -326,7 +327,7 @@ export function TriggersPanel() {
                     <div className="mt-2 space-y-2">
                       {selectedTrigger.state.recent_history.slice(0, 5).map((entry) => (
                         <div key={`${entry.timestamp}-${entry.status}`}>
-                          <div className="text-xs text-foreground">{entry.status}</div>
+                          <div className="text-xs text-foreground">{formatTriggerResult(entry.status)}</div>
                           <div className="text-xs text-muted-foreground">{formatTriggerTimestamp(entry.timestamp)}</div>
                           <div className="text-xs text-muted-foreground">{entry.message}</div>
                         </div>

@@ -68,11 +68,31 @@ export const createEmptyTriggerForm = (projectPath: string | null): TriggerFormS
 
 export const SHARED_WEBHOOK_ENDPOINT = '/workspace/api/webhooks'
 
-export function formatTriggerTimestamp(value?: string | null): string {
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const DAY_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+const DAY_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+const NEARBY_DAYS = new Map([[-1, 'Yesterday'], [0, 'Today'], [1, 'Tomorrow']])
+const localMidnight = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+
+/** "Today at 8:13 PM", "Tomorrow at 9:00 AM", "Mon, Nov 16 at 8:13 PM"; the year only when it isn't this year. */
+export function formatTriggerTimestamp(value?: string | null, now = Date.now()): string {
     if (!value) return 'Never'
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) return value
-    return parsed.toLocaleString()
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    const today = new Date(now)
+    // Rounded: a day with a daylight-saving change is 23 or 25 hours long.
+    const days = Math.round((localMidnight(date) - localMidnight(today)) / 86_400_000)
+    const day = NEARBY_DAYS.get(days) ?? (date.getFullYear() === today.getFullYear() ? DAY_FORMAT : DAY_YEAR_FORMAT).format(date)
+    return `${day} at ${TIME_FORMAT.format(date)}`
+}
+
+/** A trigger result in a word: "Succeeded", "Failed", else the status capitalized. */
+export function formatTriggerResult(status?: string | null): string {
+    if (!status) return 'Never'
+    if (status === 'success') return 'Succeeded'
+    if (status === 'failure' || status === 'failed') return 'Failed'
+    const text = status.replace(/_/g, ' ')
+    return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 /** Units for entering an interval, in seconds, largest first. */
@@ -95,10 +115,22 @@ export function intervalSeconds(value: string, unit: number): number | null {
     return Number.isFinite(seconds) && seconds > 0 ? seconds : null
 }
 
-function describeInterval(seconds: number): string {
+/** "1 day", "5 minutes". */
+function intervalText(seconds: number): string {
     const { value, unit } = splitInterval(seconds)
     const label = INTERVAL_UNITS.find((entry) => entry.seconds === unit)?.label ?? 'seconds'
-    return value === '1' ? `Every ${label.slice(0, -1)}` : `Every ${value} ${label}`
+    return `${value} ${value === '1' ? label.slice(0, -1) : label}`
+}
+
+/** "Every day", "Every 5 minutes". */
+const describeInterval = (seconds: number) => `Every ${intervalText(seconds).replace(/^1 /, '')}`
+
+/** A new interval trigger first runs one interval after it is saved. */
+export function firstIntervalRunHint(seconds: number, now = Date.now()): string {
+    const at = new Date(now + seconds * 1000)
+    // A huge interval runs past the last date a Date can hold.
+    const first = Number.isNaN(at.getTime()) ? '' : ` (${formatTriggerTimestamp(at.toISOString(), now)})`
+    return `First run in ${intervalText(seconds)}${first}, then ${describeInterval(seconds).toLowerCase()}.`
 }
 
 /** When the trigger starts, in a few plain words. */
