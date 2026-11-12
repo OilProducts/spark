@@ -63,23 +63,6 @@ fn spark_exit_role() {
                 });
             }
         }
-        // Starts a child, and a grandchild of its own, that both outlast TERM,
-        // then stops it as a timeout or a cancellation does.
-        #[cfg(unix)]
-        "stopping-spark" => {
-            let mut child = Command::new("sh");
-            child.current_dir(&dir).args([
-                "-c",
-                "trap '' TERM; sleep 60 & echo $$ $! > pids.tmp; mv pids.tmp pids; wait",
-            ]);
-            configure_process_group(&mut child);
-            let child = spawn_process_group(child).unwrap();
-            while !dir.join("pids").exists() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            std::fs::write(dir.join("stopping"), "").unwrap();
-            terminate_process_group(child.id(), None);
-        }
         "launched" => {
             std::fs::write(dir.join(format!("launched-{}", std::process::id())), "").unwrap();
         }
@@ -133,26 +116,6 @@ fn running(pid: u32) -> bool {
         CloseHandle(process);
         queried && code == STILL_ACTIVE as u32
     }
-}
-
-/// The live processes that show `dir` among their arguments.
-#[cfg(unix)]
-fn in_role(dir: &Path) -> Vec<u32> {
-    let output = Command::new("ps")
-        .args(["-A", "-ww", "-o", "pid=,stat=,command="])
-        .output()
-        .unwrap();
-    let dir = dir.to_str().unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.contains(dir))
-        .filter_map(
-            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-                [pid, stat, ..] if !stat.starts_with('Z') => pid.parse().ok(),
-                _ => None,
-            },
-        )
-        .collect()
 }
 
 /// The live processes `spark` started, on windows, where a process keeps its
@@ -257,9 +220,10 @@ fn what_outlives_the_process_spark_started_stops_when_spark_is_killed() {
     );
 }
 
-/// Killed at any point of a start, Spark leaves nothing behind: on unix
-/// nothing runs before its group's lifeline does, and on windows everything
-/// starts in Spark's job.
+/// Killed at any point of a start, Spark leaves nothing behind, since
+/// everything starts in Spark's job. Unix leaves a start's first milliseconds
+/// untied; see `spawn_with_lifeline`.
+#[cfg(windows)]
 #[test]
 fn nothing_spark_was_starting_survives_its_kill() {
     let dir = tempfile::tempdir().unwrap();
@@ -280,68 +244,10 @@ fn nothing_spark_was_starting_survives_its_kill() {
     let mut left = Vec::new();
     assert!(
         wait_until(|| {
-            #[cfg(unix)]
-            {
-                left = in_role(dir.path());
-            }
-            #[cfg(windows)]
-            {
-                left = children_of(spark.id());
-            }
+            left = children_of(spark.id());
             left.is_empty()
         }),
         "{left:?} outlived Spark"
-    );
-}
-
-/// As when Spark has run out of file descriptors: no lifeline, no start.
-#[cfg(unix)]
-#[test]
-fn a_process_that_cannot_be_tied_to_spark_does_not_start() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut spark = role("spark", dir.path())
-        .env("PATH", dir.path().join("no-shell-here"))
-        .spawn()
-        .unwrap();
-    let mut outcome = String::new();
-    assert!(
-        wait_until(|| {
-            outcome = std::fs::read_to_string(dir.path().join("outcome")).unwrap_or_default();
-            !outcome.is_empty()
-        }),
-        "the start never returned"
-    );
-    let left = in_role(dir.path());
-    spark.kill().unwrap();
-    spark.wait().unwrap();
-    assert!(outcome.starts_with("Err"), "it started: {outcome}");
-    assert_eq!(left, [spark.id()], "a process started untied");
-}
-
-/// A timeout or cancellation sends TERM and KILLs what outlasts it after a
-/// grace period. If Spark is killed meanwhile, what outlasts TERM still goes.
-#[cfg(unix)]
-#[test]
-fn what_spark_was_stopping_stops_when_spark_is_killed_midway() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut spark = role("stopping-spark", dir.path()).spawn().unwrap();
-    let pids = started_pids(dir.path());
-    assert!(
-        wait_until(|| dir.path().join("stopping").exists()),
-        "Spark never stopped it"
-    );
-
-    // Well within the grace period.
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        pids.iter().all(|pid| running(*pid)),
-        "{pids:?} did not outlast TERM"
-    );
-    spark.kill().unwrap();
-    spark.wait().unwrap();
-    assert!(
-        wait_until(|| !pids.iter().any(|pid| running(*pid))),
-        "{pids:?} outlived Spark"
     );
 }
 
@@ -360,8 +266,8 @@ fn a_stop_still_ends_the_group_as_soon_as_its_processes_go() {
     assert!(took < Duration::from_secs(1), "the stop took {took:?}");
 }
 
-/// The lifeline goes once nothing else is left in the group, so nothing of
-/// the group stays behind.
+/// The lifeline goes once what Spark started, and what that started, has gone,
+/// so nothing of the group stays behind.
 #[cfg(unix)]
 #[test]
 fn nothing_stays_behind_once_what_spark_started_has_ended() {

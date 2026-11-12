@@ -703,36 +703,16 @@ pub fn configure_process_group(command: &mut Command) {
 /// Starts `command`, set up by `configure_process_group`, tied to this process:
 /// once this process ends, however it ends, the command and everything it
 /// started stop within a few seconds. Until then nothing changes. If it cannot
-/// be tied, it does not start.
-#[allow(unsafe_code)]
-pub fn spawn_process_group(mut command: Command) -> std::io::Result<Child> {
+/// be tied, it is stopped and the start fails.
+pub fn spawn_process_group(command: Command) -> std::io::Result<Child> {
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-
-        let lifeline = match LIFELINE.get() {
-            Some(lifeline) => lifeline,
-            None => {
-                let pipe = std::io::pipe()?;
-                LIFELINE.get_or_init(move || pipe)
-            }
-        };
-        let input = lifeline.0.try_clone()?;
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-        theirs.set_read_timeout(Some(Duration::from_millis(100)))?;
-        let spark = rustix::process::getpid();
-        // SAFETY: between fork and exec it only makes system calls.
-        unsafe {
-            command.pre_exec(move || await_lifeline(&theirs, spark));
-        }
-        thread::Builder::new()
-            .name("spark-lifeline".to_string())
-            .spawn(move || guard_group(ours, input))?;
-        command.spawn()
+        spawn_with_lifeline(command)
     }
 
     #[cfg(windows)]
     {
+        let mut command = command;
         join_spark_job()?;
         command.spawn()
     }
@@ -741,196 +721,80 @@ pub fn spawn_process_group(mut command: Command) -> std::io::Result<Child> {
 /// A pipe whose close-on-exec write end only this process holds, so its read
 /// end sees end of input once this process has ended, however it ended.
 #[cfg(unix)]
-static LIFELINE: std::sync::OnceLock<(std::io::PipeReader, std::io::PipeWriter)> =
+static SPARK_ALIVE: std::sync::OnceLock<(std::io::PipeReader, std::io::PipeWriter)> =
     std::sync::OnceLock::new();
 
-/// Stops its process group, `$1`, once Spark's pipe on its stdin reaches end of
-/// input: TERM, then KILL after a grace period. It outlasts a TERM to the
-/// group, Spark's own stop, still watching the pipe meanwhile, and goes once
-/// nothing is left of the group but itself and `$2`, a leader that goes by
-/// itself. Its first reader says when it is ready, once a TERM would end it.
+/// Runs in the started process's group, with Spark's pipe on stdin and the read
+/// end of the started process's own pipe on stdout. It forks a watcher and
+/// returns at once. Once Spark's pipe closes, the watcher TERMs the group, then
+/// KILLs it. Once every holder of the started process's pipe has gone (the
+/// process and whatever it started that kept its descriptors), it goes too.
+/// A TERM to the group ends it with the rest.
 #[cfg(unix)]
-const LIFELINE_SCRIPT: &str = "trap 'stop=1' TERM; exec 3<&0; group=$1 skip=$2; \
-    others() { ps -A -o pgid=,ppid=,pid=,stat= | awk -v g=\"$group\" -v me=$$ -v skip=\"$skip\" \
-    '$1 == g && $2 != me && $3 != me && $3 != skip && $4 !~ /^Z/ { f = 1 } END { exit !f }'; }; \
-    ( echo; exec >/dev/null; read _ <&3 ) & exec >/dev/null; wait $!; \
-    while [ \"$stop\" ]; do \
-    stop=; ( read _ <&3 ) & reader=$!; n=0; \
-    while [ $n -lt 40 ] && kill -0 $reader 2>/dev/null; do \
-    others || { kill -KILL $reader; exit 0; }; sleep 0.05; n=$((n + 1)); done; \
-    wait $reader; done; \
-    kill -TERM 0; sleep 2; kill -KILL 0";
+const LIFELINE_SCRIPT: &str = "exec 3<&0 4<&1 </dev/null >/dev/null 2>&1; \
+    { { read _ <&3; trap '' TERM; kill -TERM 0; sleep 2; kill -KILL 0; } & \
+    read _ <&4; kill $!; } &";
 
-/// Runs in the started process between fork and exec, so its program runs
-/// only once its process group has a lifeline: it tells `guard_group` its
-/// group and itself and waits for the answer, giving up if Spark is gone
-/// meanwhile.
+// ponytail: Spark killed in the few milliseconds between a start and its
+// lifeline, or midway through its own stop of a group (which ends the
+// lifeline), leaves that group running; and a descendant that closes every
+// inherited descriptor outlives its lifeline. Close these if they ever matter.
 #[cfg(unix)]
-fn await_lifeline(
-    socket: &std::os::unix::net::UnixStream,
-    spark: rustix::process::Pid,
-) -> std::io::Result<()> {
-    use rustix::io::{read, write, Errno};
-    use rustix::process::{getpgrp, getpid, getppid};
-
-    let mut ids = [0; 8];
-    ids[..4].copy_from_slice(&getpgrp().as_raw_pid().to_ne_bytes());
-    ids[4..].copy_from_slice(&getpid().as_raw_pid().to_ne_bytes());
-    write(socket, &ids)?;
-    let mut answer = [0; 4];
-    loop {
-        match read(socket, &mut answer) {
-            Ok(4) if answer == [0; 4] => return Ok(()),
-            Ok(4) => {
-                return Err(std::io::Error::from_raw_os_error(i32::from_ne_bytes(
-                    answer,
-                )))
-            }
-            Ok(_) => return Err(Errno::CANCELED.into()),
-            Err(Errno::AGAIN | Errno::INTR) if getppid() == Some(spark) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-/// Puts a lifeline, reading Spark's pipe, into the group of the process
-/// `await_lifeline` holds back, and answers it with the outcome. Being in the
-/// group keeps the group's ID from being reused, so it never signals anything
-/// Spark did not start. Once nothing else is left in the group, the group goes.
-#[cfg(unix)]
-fn guard_group(mut socket: std::os::unix::net::UnixStream, input: std::io::PipeReader) {
-    use std::io::Write;
-
-    let mut ids = [0; 8];
-    if socket.read_exact(&mut ids).is_err() {
-        return; // It never got that far.
-    }
-    let [group, pid] =
-        [0, 4].map(|at| i32::from_ne_bytes([ids[at], ids[at + 1], ids[at + 2], ids[at + 3]]));
-    let lifeline = if group == rustix::process::getpgrp().as_raw_pid() {
-        Err(std::io::Error::other("it shares Spark's process group"))
-    } else {
-        // A leader it joined goes by itself once the rest of the group has.
-        start_lifeline(group, if group == pid { 0 } else { group }, input)
-    };
-    let answer = match &lifeline {
-        Ok(_) => 0,
-        Err(error) => error
-            .raw_os_error()
-            .unwrap_or(rustix::io::Errno::CANCELED.raw_os_error()),
-    };
-    let _ = socket.write_all(&i32::to_ne_bytes(answer));
-    drop(socket);
-    let (Ok(lifeline), Some(leader)) = (lifeline, rustix::process::Pid::from_raw(group)) else {
-        return;
-    };
-    let mut guarded = GUARDED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guarded.push((leader, lifeline, 0));
-    // The first to arrive while no group is guarded watches them all, until
-    // none are left.
-    if guarded.len() == 1 {
-        drop(guarded);
-        retire_lifelines();
-    }
-}
-
-/// The lifelines of groups that may still have more in them: the group's
-/// leader, its lifeline, and how many times in a row it was found alone.
-#[cfg(unix)]
-static GUARDED: Mutex<Vec<(rustix::process::Pid, Child, u8)>> = Mutex::new(Vec::new());
-
-/// Once a second, ends each guarded group that nothing but its lifeline is left
-/// in, with one `ps` for them all, until no group is left to guard.
-#[cfg(unix)]
-fn retire_lifelines() {
-    use rustix::process::{kill_process_group, test_kill_process, Signal};
-
-    loop {
-        thread::sleep(Duration::from_secs(1));
-        let mut guarded = GUARDED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A lifeline goes by itself after a stop.
-        guarded.retain_mut(|(_, lifeline, _)| matches!(lifeline.try_wait(), Ok(None)));
-        let mut listing = None;
-        for (leader, lifeline, alone) in guarded.iter_mut() {
-            let others = test_kill_process(*leader).is_ok()
-                || has_other_members(
-                    listing.get_or_insert_with(list_processes),
-                    leader.as_raw_pid(),
-                    lifeline.id(),
-                );
-            *alone = if others { 0 } else { *alone + 1 };
-        }
-        // Twice in a row, since `ps` takes no snapshot.
-        guarded.retain_mut(|(leader, lifeline, alone)| {
-            if *alone < 2 {
-                return true;
-            }
-            // Not yet reaped, it still holds the group's ID.
-            let _ = kill_process_group(*leader, Signal::KILL);
-            let _ = lifeline.wait();
-            false
-        });
-        if guarded.is_empty() {
-            return;
-        }
-    }
-}
-
-#[cfg(unix)]
-fn start_lifeline(group: i32, skip: i32, input: std::io::PipeReader) -> std::io::Result<Child> {
+#[allow(unsafe_code)]
+fn spawn_with_lifeline(mut command: Command) -> std::io::Result<Child> {
     use std::os::unix::process::CommandExt;
 
-    let mut lifeline = Command::new("sh")
-        .args(["-c", LIFELINE_SCRIPT, "lifeline"])
-        .args([group.to_string(), skip.to_string()])
-        .process_group(group)
-        .current_dir("/")
-        .stdin(input)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let ready = lifeline
-        .stdout
-        .take()
-        .map(|mut ready| ready.read_exact(&mut [0]));
-    if let Some(Ok(())) = ready {
-        return Ok(lifeline);
-    }
-    let _ = lifeline.kill();
-    let _ = lifeline.wait();
-    Err(std::io::Error::other("Spark's lifeline did not start"))
-}
-
-/// Every process, as `ps` lists it, if it can.
-#[cfg(unix)]
-fn list_processes() -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,pgid=,stat="])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Whether a live process other than `lifeline` and its own is in `group`, or
-/// `listing` cannot tell.
-#[cfg(unix)]
-fn has_other_members(listing: &Option<String>, group: i32, lifeline: u32) -> bool {
-    let Some(listing) = listing else {
-        return true;
+    let spark_alive = match SPARK_ALIVE.get() {
+        Some(pipe) => pipe,
+        None => {
+            let pipe = std::io::pipe()?;
+            SPARK_ALIVE.get_or_init(move || pipe)
+        }
     };
-    let (group, lifeline) = (group.to_string(), lifeline.to_string());
-    listing.lines().any(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        matches!(fields[..], [pid, parent, pgid, stat, ..]
-            if pid != lifeline && parent != lifeline && pgid == group && !stat.starts_with('Z'))
-    })
+    let (alive, holder) = std::io::pipe()?;
+    // SAFETY: between fork and exec it only makes one system call. It leaves
+    // the holder open across exec, so the program and what it starts hold it.
+    unsafe {
+        command.pre_exec(move || {
+            rustix::io::fcntl_setfd(&holder, rustix::io::FdFlags::empty())?;
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    // Spark's copy of the holder goes with the command.
+    drop(command);
+    let group = rustix::process::Pid::from_raw(child.id() as i32)
+        .ok_or_else(|| std::io::Error::other("no process ID"))
+        .and_then(|pid| Ok(rustix::process::getpgid(Some(pid))?));
+    let tied = group.and_then(|group| {
+        if group == rustix::process::getpgrp() {
+            return Err(std::io::Error::other("it shares Spark's process group"));
+        }
+        let status = Command::new("/bin/sh")
+            .args(["-c", LIFELINE_SCRIPT])
+            .process_group(group.as_raw_pid())
+            .current_dir("/")
+            .stdin(spark_alive.0.try_clone()?)
+            .stdout(alive)
+            .stderr(Stdio::null())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "its lifeline failed: {status}"
+            )))
+        }
+    });
+    match tied {
+        Ok(()) => Ok(child),
+        // Gone already, with nothing to tie.
+        Err(_) if matches!(child.try_wait(), Ok(Some(_))) => Ok(child),
+        Err(error) => {
+            terminate_process_group(child.id(), Some(&mut child));
+            Err(error)
+        }
+    }
 }
 
 /// Puts this process, once, into a job that ends every process in it when its
@@ -995,14 +859,6 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
         let deadline = Instant::now() + TERMINATION_GRACE_PERIOD;
         while Instant::now() < deadline {
             let _ = child.as_deref_mut().and_then(|child| child.try_wait().ok());
-            // Where a zombie still counts as a member, the group lasts until
-            // its lifeline, gone once nothing else is left, is reaped.
-            GUARDED
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retain_mut(|(leader, lifeline, _)| {
-                    *leader != pid || matches!(lifeline.try_wait(), Ok(None))
-                });
             if test_kill_process_group(pid).is_err() {
                 return;
             }
