@@ -22,9 +22,12 @@ export type TriggerFormState = {
     /** A count of `scheduleIntervalUnit`s; see `intervalSeconds`. */
     scheduleInterval: string
     scheduleIntervalUnit: number
-    scheduleWeekdays: string
-    scheduleHour: string
-    scheduleMinute: string
+    /** Keys from `WEEKDAYS`, in week order. */
+    scheduleWeekdays: string[]
+    /** A `time` input value, "HH:MM", in `scheduleTimezone`. */
+    scheduleTime: string
+    /** The IANA time zone of the weekly days and time; a new trigger takes the browser's. */
+    scheduleTimezone: string
     pollUrl: string
     pollInterval: string
     pollIntervalUnit: number
@@ -35,7 +38,7 @@ export type TriggerFormState = {
     flowEventStatuses: string
 }
 
-const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath'> = {
+const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath' | 'scheduleTimezone'> = {
     name: '',
     enabled: true,
     sourceType: 'schedule',
@@ -48,9 +51,8 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath'> = {
     scheduleRunAt: '',
     scheduleInterval: '5',
     scheduleIntervalUnit: 60,
-    scheduleWeekdays: 'mon,fri',
-    scheduleHour: '9',
-    scheduleMinute: '0',
+    scheduleWeekdays: ['mon', 'fri'],
+    scheduleTime: '09:00',
     pollUrl: 'https://example.com/data.json',
     pollInterval: '5',
     pollIntervalUnit: 60,
@@ -61,10 +63,17 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath'> = {
     flowEventStatuses: 'completed,failed',
 }
 
+export const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
+
 export const createEmptyTriggerForm = (projectPath: string | null): TriggerFormState => ({
     ...BASE_TRIGGER_FORM,
     projectPath: projectPath || '',
+    scheduleTimezone: browserTimeZone(),
 })
+
+const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+/** Each day of the week: its key as the server stores it ("mon"), short label and full name. */
+export const WEEKDAYS = WEEKDAY_NAMES.map((name) => ({ key: name.slice(0, 3).toLowerCase(), label: name.slice(0, 3), name }))
 
 export const SHARED_WEBHOOK_ENDPOINT = '/workspace/api/webhooks'
 
@@ -133,12 +142,23 @@ export function firstIntervalRunHint(seconds: number, now = Date.now()): string 
     return `First run in ${intervalText(seconds)}${first}, then ${describeInterval(seconds).toLowerCase()}.`
 }
 
+/** "Mon, Wed, Fri at 9:00 AM", naming the time zone when it isn't the browser's. */
+function describeWeekly(source: Record<string, unknown>): string {
+    const { weekdays, hour, minute, timezone = 'UTC' } = source
+    if (!Array.isArray(weekdays) || typeof hour !== 'number' || typeof minute !== 'number') return 'Weekly'
+    const days = weekdays.length === WEEKDAYS.length
+        ? 'Every day'
+        : WEEKDAYS.filter((day) => weekdays.includes(day.key)).map((day) => day.label).join(', ')
+    const zone = timezone === browserTimeZone() ? '' : ` (${String(timezone)})`
+    return `${days} at ${TIME_FORMAT.format(new Date(2000, 0, 1, hour, minute))}${zone}`
+}
+
 /** When the trigger starts, in a few plain words. */
 export function triggerSourceSummary(trigger: TriggerResponse): string {
     const { source } = trigger
     if (trigger.source_type === 'schedule') {
         if (source.kind === 'interval' && typeof source.interval_seconds === 'number') return describeInterval(source.interval_seconds)
-        if (source.kind === 'weekly') return 'Weekly'
+        if (source.kind === 'weekly') return describeWeekly(source)
         return source.kind === 'once' ? 'Once' : 'Schedule'
     }
     if (trigger.source_type === 'poll') {
@@ -166,7 +186,6 @@ export function toLocalDateTimeInput(iso: string): string {
     return Number.isNaN(time) ? '' : new Date(time - new Date(time).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
 
-const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const splitList = (text: string) => text.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean)
 const parseJsonObject = (text: string): Record<string, unknown> | null => {
     if (!text.trim()) return {}
@@ -177,7 +196,7 @@ const parseJsonObject = (text: string): Record<string, unknown> | null => {
         return null
     }
 }
-const isWholeNumberUpTo = (text: string, max: number) => /^\d+$/.test(text.trim()) && Number(text) <= max
+const TIME_INPUT = /^([01]\d|2[0-3]):[0-5]\d$/
 
 export type TriggerFieldErrors = Partial<Record<keyof TriggerFormState, string>>
 
@@ -202,10 +221,8 @@ export function validateTriggerForm(form: TriggerFormState, protectedTrigger = f
         errors.scheduleRunAt = 'Pick a date and time.'
     }
     if (form.sourceType === 'schedule' && form.scheduleKind === 'weekly') {
-        const days = splitList(form.scheduleWeekdays)
-        if (!days.length || days.some((day) => !WEEKDAYS.includes(day))) errors.scheduleWeekdays = 'List days as mon, tue, wed, thu, fri, sat or sun, separated by commas.'
-        if (!isWholeNumberUpTo(form.scheduleHour, 23)) errors.scheduleHour = 'Enter an hour from 0 to 23.'
-        if (!isWholeNumberUpTo(form.scheduleMinute, 59)) errors.scheduleMinute = 'Enter a minute from 0 to 59.'
+        if (!form.scheduleWeekdays.length) errors.scheduleWeekdays = 'Pick at least one day.'
+        if (!TIME_INPUT.test(form.scheduleTime)) errors.scheduleTime = 'Pick a time.'
     }
     if (form.sourceType === 'poll') {
         if (!/^https?:\/\/\S+$/.test(form.pollUrl.trim())) errors.pollUrl = 'Enter a web address starting with http:// or https://.'
@@ -234,9 +251,10 @@ export function buildTriggerSourcePayload(form: TriggerFormState): Record<string
         }
         return {
             kind: 'weekly',
-            weekdays: splitList(form.scheduleWeekdays),
-            hour: parseInt(form.scheduleHour, 10),
-            minute: parseInt(form.scheduleMinute, 10),
+            weekdays: form.scheduleWeekdays,
+            hour: Number(form.scheduleTime.slice(0, 2)),
+            minute: Number(form.scheduleTime.slice(3, 5)),
+            timezone: form.scheduleTimezone,
         }
     }
     if (form.sourceType === 'poll') {
@@ -267,6 +285,7 @@ export function buildTriggerActionPayload(form: TriggerFormState): Record<string
     }
 }
 
+const pad = (value: number) => String(value).padStart(2, '0')
 const jsonText = (value: unknown) => value && typeof value === 'object' && Object.keys(value).length ? JSON.stringify(value, null, 2) : ''
 
 export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
@@ -286,9 +305,10 @@ export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
         scheduleRunAt: typeof source.run_at === 'string' ? toLocalDateTimeInput(source.run_at) : '',
         scheduleInterval: interval.value,
         scheduleIntervalUnit: interval.unit,
-        scheduleWeekdays: Array.isArray(source.weekdays) ? source.weekdays.map((entry) => String(entry)).join(',') : 'mon,fri',
-        scheduleHour: `${typeof source.hour === 'number' ? source.hour : 9}`,
-        scheduleMinute: `${typeof source.minute === 'number' ? source.minute : 0}`,
+        scheduleWeekdays: Array.isArray(source.weekdays) ? source.weekdays.map((entry) => String(entry)) : ['mon', 'fri'],
+        scheduleTime: typeof source.hour === 'number' && typeof source.minute === 'number' ? `${pad(source.hour)}:${pad(source.minute)}` : '09:00',
+        // A weekly trigger saved without a zone runs in UTC.
+        scheduleTimezone: typeof source.timezone === 'string' ? source.timezone : source.kind === 'weekly' ? 'UTC' : browserTimeZone(),
         pollUrl: typeof source.url === 'string' ? source.url : 'https://example.com/data.json',
         pollInterval: interval.value,
         pollIntervalUnit: interval.unit,

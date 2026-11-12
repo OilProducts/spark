@@ -290,24 +290,6 @@ export function LaunchPanel({
                 }}
             />
 
-            {/* Runs of one flow otherwise share its name; a name here tells this one apart everywhere it is listed. */}
-            <div className="space-y-1.5">
-                <Label htmlFor="launch-panel-run-name" className="text-sm">
-                    Run name <span className="font-normal text-muted-foreground">(optional)</span>
-                </Label>
-                <Input
-                    id="launch-panel-run-name"
-                    data-testid="launch-panel-run-name-input"
-                    value={runName}
-                    maxLength={120}
-                    onChange={(event) => setRunName(event.target.value)}
-                    placeholder={panelTitle}
-                    aria-describedby="launch-panel-run-name-hint"
-                    className="h-8 text-sm"
-                />
-                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Shown in Runs, Needs you and the Inbox in place of the flow's name.</p>
-            </div>
-
             {parsedLaunchInputs.entries.length > 0 || parsedLaunchInputs.error ? <Well>
                 <LaunchInputsForm
                     flowName={target.flowName}
@@ -332,17 +314,41 @@ export function LaunchPanel({
                 <p data-testid="launch-panel-no-inputs" className="text-sm text-muted-foreground">This flow needs no inputs to start.</p>
             ) : null}
 
+            {/* Runs of one flow otherwise share its name; a name here tells this one apart everywhere it is listed.
+                Optional, so it follows what the flow needs. */}
+            <div className="space-y-1.5">
+                <Label htmlFor="launch-panel-run-name" className="text-sm">
+                    Run name <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                    id="launch-panel-run-name"
+                    data-testid="launch-panel-run-name-input"
+                    value={runName}
+                    maxLength={120}
+                    onChange={(event) => setRunName(event.target.value)}
+                    aria-describedby="launch-panel-run-name-hint"
+                    className="h-8 text-sm"
+                />
+                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is listed as {panelTitle}.</p>
+            </div>
+
             {/* Where and how it runs: rarely changed, so folded under one line that says what it will use. */}
             <details
                 data-testid="launch-panel-options"
                 open={optionsOpen}
-                onToggle={(event) => setOptionsOpen(event.currentTarget.open)}
-                className="group rounded-lg border border-border"
+                onToggle={(event) => {
+                    const details = event.currentTarget
+                    setOptionsOpen(details.open)
+                    // Opened at the foot of a short dialog, the options scroll into view above the Run button.
+                    if (details.open) details.scrollIntoView?.({ block: 'nearest' })
+                }}
+                className="group scroll-mb-20 rounded-lg border border-border"
             >
-                <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                {/* On a phone the summary takes a line of its own rather than being cut short. */}
+                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                     <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
                     <span className="shrink-0 whitespace-nowrap font-medium">Run options</span>
-                    <span data-testid="launch-panel-options-summary" className="min-w-0 truncate text-muted-foreground">{optionsSummary}</span>
+                    <span data-testid="launch-panel-options-summary" className="min-w-0 truncate text-muted-foreground max-sm:basis-full max-sm:whitespace-normal max-sm:pl-5.5">{optionsSummary}</span>
                 </summary>
                 <div className="space-y-3 border-t border-border px-3 py-3">
                     {/* The project folder shows once, as the working directory's placeholder. */}

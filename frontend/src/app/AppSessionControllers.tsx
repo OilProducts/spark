@@ -24,7 +24,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { parsePlaceHash, placeHash, placeKey, placeOf, type Place } from './runsRouting'
+import { addsEntry, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
 
@@ -566,17 +566,30 @@ function applyPlace(place: Place): boolean {
     if (place.projectPagePath !== undefined && state.projectPagePath !== place.projectPagePath) {
         state.openProjectPage(place.projectPagePath)
     }
+    if (place.projectPath !== undefined && state.activeProjectPath !== place.projectPath) {
+        state.setActiveProjectPath(place.projectPath)
+    }
+    // A flow's name only names it within its project, so the flow opens once its project has.
+    const { activeProjectPath, activeFlow } = useStore.getState()
+    if (place.flow !== undefined && activeFlow !== place.flow
+        && (place.projectPath === undefined || activeProjectPath === place.projectPath)) {
+        state.setActiveFlow(place.flow)
+    }
+    if (place.triggerId !== undefined && state.triggersSession.selectedTriggerId !== place.triggerId) {
+        state.updateTriggersSession({ selectedTriggerId: place.triggerId, createFormOpen: false })
+    }
     if (placeOf(useStore.getState()).view !== place.view) {
         state.setViewMode(place.view)
     }
     // Unsaved settings or project edits can hold the move behind a confirmation.
     const reached = placeOf(useStore.getState())
-    return reached.view === place.view && (place.projectPagePath === undefined || reached.projectPagePath === place.projectPagePath)
+    return (Object.keys(place) as (keyof Place)[])
+        .every((field) => place[field] === undefined || reached[field] === place[field])
 }
 
 /**
- * Keeps the browser's Back and Forward in step with the app: opening a view, a run or a
- * project page adds a history entry, and the URL hash names it so a link reopens it.
+ * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
+ * page, a flow or a trigger adds a history entry, and the URL hash names it so a link reopens it.
  */
 export function HistoryRoutingController() {
     useEffect(() => {
@@ -590,7 +603,7 @@ export function HistoryRoutingController() {
         const record = () => {
             scheduled = false
             const next = placeOf(useStore.getState())
-            if (placeKey(next) !== placeKey(current)) {
+            if (addsEntry(useStore.getState(), current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {
                 window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
@@ -604,17 +617,15 @@ export function HistoryRoutingController() {
         })
 
         // Back, Forward, or a followed link: the entry's place, or else the one its hash names.
+        // A link that names no place, or one it can't reach now, leaves the app where it is,
+        // and the link's entry then says where.
         const onNavigate = () => {
-            const place = (window.history.state?.sparkPlace as Place | undefined) ?? parsePlaceHash(window.location.hash)
-            if (!place) return
-            if (!applyPlace(place)) {
-                // Still where it was: put that entry back, so the URL and Back stay true.
-                current = placeOf(useStore.getState())
-                window.history.pushState({ sparkPlace: current }, '', placeHash(current))
-            } else {
-                current = placeOf(useStore.getState())
-                window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
-            }
+            const entry = window.history.state?.sparkPlace as Place | undefined
+            const place = entry ?? parsePlaceHash(window.location.hash)
+            const held = place !== null && !applyPlace(place)
+            current = placeOf(useStore.getState())
+            // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
+            window.history[held && entry ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
         }
         window.addEventListener('popstate', onNavigate)
         window.addEventListener('hashchange', onNavigate)

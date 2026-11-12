@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { parseTriggerResponse } from '@/lib/workspaceClient'
 
 import {
+    browserTimeZone,
     buildTriggerActionPayload,
     buildTriggerSourcePayload,
     createEmptyTriggerForm,
@@ -11,6 +12,7 @@ import {
     formatTriggerTimestamp,
     intervalSeconds,
     splitInterval,
+    triggerSourceSummary,
     triggerToFormState,
     validateTriggerForm,
 } from '../triggerForm'
@@ -63,6 +65,32 @@ describe('trigger form intervals', () => {
     })
 })
 
+describe('trigger form weekly schedules', () => {
+    const here = browserTimeZone()
+    const elsewhere = here === 'Asia/Tokyo' ? 'Europe/Paris' : 'Asia/Tokyo'
+    const weekly = (source: Record<string, unknown>) => trigger({ kind: 'weekly', weekdays: ['fri'], hour: 18, minute: 30, ...source })
+
+    it('saves a new trigger\'s days and time in the browser\'s time zone', () => {
+        const form = { ...createEmptyTriggerForm('/project'), scheduleKind: 'weekly' as const, scheduleWeekdays: ['mon', 'wed'], scheduleTime: '07:05' }
+        expect(form.scheduleTimezone).toBe(here)
+        expect(buildTriggerSourcePayload(form)).toEqual({ kind: 'weekly', weekdays: ['mon', 'wed'], hour: 7, minute: 5, timezone: here })
+    })
+
+    it('keeps a saved trigger in its own zone, and reads one saved without a zone as UTC', () => {
+        const saved = triggerToFormState(weekly({ timezone: elsewhere }))
+        expect([saved.scheduleWeekdays, saved.scheduleTime, saved.scheduleTimezone]).toEqual([['fri'], '18:30', elsewhere])
+        expect(buildTriggerSourcePayload(saved)).toEqual({ kind: 'weekly', weekdays: ['fri'], hour: 18, minute: 30, timezone: elsewhere })
+        expect(triggerToFormState(weekly({})).scheduleTimezone).toBe('UTC')
+        expect(triggerToFormState(trigger({ kind: 'interval', interval_seconds: 60 })).scheduleTimezone).toBe(here)
+    })
+
+    it('summarizes the days and time, naming the zone only when it is not the browser\'s', () => {
+        const summary = (source: Record<string, unknown>) => triggerSourceSummary(weekly(source)).replace(/\s/g, ' ')
+        expect(summary({ weekdays: ['mon', 'wed', 'fri'], hour: 9, minute: 0, timezone: here })).toBe('Mon, Wed, Fri at 9:00 AM')
+        expect(summary({ weekdays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], timezone: elsewhere })).toBe(`Every day at 6:30 PM (${elsewhere})`)
+    })
+})
+
 describe('trigger status wording', () => {
     // A Wednesday. Times print with a narrow space before AM/PM on newer ICU.
     const now = Date.parse('2026-11-11T20:13:47')
@@ -109,8 +137,8 @@ describe('trigger form validation', () => {
             expect(validateTriggerForm({ ...valid, staticContextText }).staticContextText).toMatch(/^This isn't a valid JSON object\./)
         }
         expect(validateTriggerForm({ ...valid, name: ' ', flowName: '' })).toEqual({ name: 'Give the trigger a name.', flowName: 'Choose the flow to start.' })
-        expect(Object.keys(validateTriggerForm({ ...valid, scheduleKind: 'weekly', scheduleWeekdays: 'monday', scheduleHour: '24', scheduleMinute: '5' })))
-            .toEqual(['scheduleWeekdays', 'scheduleHour'])
+        expect(validateTriggerForm({ ...valid, scheduleKind: 'weekly', scheduleWeekdays: [], scheduleTime: '' }))
+            .toEqual({ scheduleWeekdays: 'Pick at least one day.', scheduleTime: 'Pick a time.' })
         expect(Object.keys(validateTriggerForm({ ...valid, sourceType: 'poll', pollUrl: 'example.com', pollHeadersText: '{', pollInterval: '0' })))
             .toEqual(['pollUrl', 'pollInterval', 'pollHeadersText'])
     })

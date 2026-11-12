@@ -4214,6 +4214,7 @@ version = "0.1.0"
 dependencies = [
  "attractor-dsl",
  "fs2",
+ "jiff",
  "rand 0.8.8",
  "rusqlite",
  "serde",
@@ -4231,6 +4232,7 @@ dependencies = [
 name = "spark-triggers"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",

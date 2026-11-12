@@ -60,6 +60,18 @@ describe('Overview needs you', () => {
         expect(plain).toHaveTextContent('Run waiting for input · app')
         expect(screen.getAllByTestId('overview-needs-you-time')[0]).toHaveTextContent(/^Oct 2/)
     })
+
+    it('names a gate by its flow\'s title before runs load, and names the flow beside a named run', async () => {
+        pending = [
+            { ...gate('run-a', 'gate-1'), title: 'release-check', flow_name: 'release-check' },
+            { ...gate('run-b', 'gate-1'), title: 'Hotfix approval', flow_name: 'release-check' },
+        ]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(rows()).toEqual(['Release Check', 'Hotfix approval']))
+        const [unnamed, named] = screen.getAllByTestId('overview-needs-you-item')
+        expect(unnamed).toHaveTextContent('Run waiting for input · app')
+        expect(named).toHaveTextContent('Run waiting for input · Release Check · app')
+    })
 })
 
 describe('Overview needs you, when the check fails', () => {

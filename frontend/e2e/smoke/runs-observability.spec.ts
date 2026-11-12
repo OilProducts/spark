@@ -734,7 +734,7 @@ test('a failed run shows its failure, the visit it stopped in, and that visit\'s
   // The visit's files open in the artifact viewer, which reports a missing file.
   await page.getByTestId('run-visit-file').click()
   await expect(page.getByTestId('run-artifact-viewer-error')).toContainText(
-    'Artifact preview unavailable because the file was not found for this run.',
+    'This file is no longer there.',
   )
   await page.getByTestId('run-artifact-viewer').screenshot({ path: screenshotPath('08o-runs-panel-artifact-missing-partial.png') })
 })

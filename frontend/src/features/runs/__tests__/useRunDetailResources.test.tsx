@@ -48,6 +48,18 @@ it.each([
     expect(latest.result.current.artifactViewerError).toBeNull()
 })
 
+it('opens an empty file as an empty preview, not a connection error', async () => {
+    const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run', manageSync: false }))
+    let opened!: Promise<void>
+    act(() => { opened = result.current.viewArtifact({ path: 'result.md', viewable: true }) })
+    await act(async () => {
+        pending[0].resolve(new Response('\n'))
+        await opened
+    })
+    expect(result.current.artifactViewerStatus).toBe('ready')
+    expect(result.current.artifactViewerError).toBeNull()
+})
+
 it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
     'reconciles dropped parent/child questions and answers on %s, and removes terminal orphans without losing history',
     async (signal) => {

@@ -275,4 +275,70 @@ describe('RunList', () => {
         expect(titles()).toEqual(['Parent work'])
         expect(screen.getByTestId('run-history-children-toggle')).toHaveAttribute('title', '2 child runs')
     })
+    it('folds a day\'s repeats of one run into a row that opens, and keeps the rest in order', () => {
+        const done = (id: string, at: string, overrides: Partial<RunRecord> = {}) => makeRun({
+            run_id: id, flow_name: 'format-code.yaml', status: 'completed', started_at: at, ended_at: at, ...overrides,
+        })
+        const runs = [
+            done('f1', '2026-03-22T09:00:00Z'),
+            done('n1', '2026-03-22T08:30:00Z', { flow_name: 'nightly.yaml', status: 'failed' }),
+            done('f2', '2026-03-22T08:00:00Z'),
+            done('f3', '2026-03-22T07:00:00Z'),
+            done('b1', '2026-03-22T06:00:00Z', { flow_name: 'fix-bug.yaml' }),
+            done('b2', '2026-03-22T05:00:00Z', { flow_name: 'fix-bug.yaml' }),
+        ]
+        const { rerender } = render(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={null} status="ready" summaryLabel="6 runs" />)
+        const listed = () => [...screen.getByTestId('run-list-group-recent').querySelectorAll('[data-testid="run-history-row"], [data-testid="run-history-repeats"]')]
+            .map((row) => (row as HTMLElement).dataset.runId ?? row.textContent)
+
+        // Two repeats stay rows; three fold into one row at the latest one's place.
+        expect(listed()).toEqual([expect.stringContaining('Format Code3 runs'), 'n1', 'b1', 'b2'])
+        const repeats = screen.getByTestId('run-history-repeats')
+        expect(repeats).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(repeats)
+        expect(listed()).toEqual([expect.stringContaining('Format Code3 runs'), 'f1', 'f2', 'f3', 'n1', 'b1', 'b2'])
+        fireEvent.click(repeats)
+        expect(listed()).toHaveLength(4)
+
+        // A run opened from elsewhere is shown inside its fold.
+        rerender(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId="f3" status="ready" summaryLabel="6 runs" />)
+        expect(screen.getByTestId('run-history-repeats')).toHaveAttribute('aria-expanded', 'true')
+        expect(listed()).toContain('f3')
+    })
+
+    it('clears a search that would hide a run opened from elsewhere, and opens its parent', () => {
+        const runs = [
+            makeRun({ run_id: 'launch', title: 'November customer launch', status: 'completed' }),
+            makeRun({ run_id: 'hotfix', title: 'Hotfix approval', status: 'waiting' }),
+            makeRun({ run_id: 'parent', title: 'Release train', status: 'completed' }),
+            makeRun({ run_id: 'child', flow_name: 'child-step.yaml', parent_run_id: 'parent', status: 'completed' }),
+        ]
+        const list = (selectedRunId: string | null) => (
+            <RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={selectedRunId} status="ready" summaryLabel="4 runs" />
+        )
+        const ids = () => screen.queryAllByTestId('run-history-row').map((row) => row.dataset.runId)
+        const { rerender } = render(list(null))
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'November' } })
+        expect(ids()).toEqual(['launch'])
+
+        rerender(list('launch'))
+        expect(screen.getByTestId('run-list-search-input')).toHaveValue('November')
+
+        rerender(list('hotfix'))
+        expect(screen.getByTestId('run-list-search-input')).toHaveValue('')
+        expect(ids()).toContain('hotfix')
+
+        rerender(list('child'))
+        expect(ids()).toContain('child')
+    })
+
+    it('says a failed refresh may leave the list out of date, and leaves a failed first load to the main pane', () => {
+        const { rerender } = render(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[makeRun()]} selectedRunId={null} status="error" summaryLabel="1 run" />)
+        expect(screen.getByTestId('run-list-error')).toHaveTextContent('Couldn’t refresh your runs; this list may be out of date.Try again')
+
+        rerender(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[]} selectedRunId={null} status="error" summaryLabel="0 runs" />)
+        expect(screen.queryByTestId('run-list-error')).toBeNull()
+        expect(screen.queryByText('No runs yet.')).toBeNull()
+        expect(screen.queryByTestId('run-list-loading')).toBeNull()
+    })
 })

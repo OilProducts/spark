@@ -29,8 +29,7 @@ const RUNTIME_STAGE_STATUS_MAP: Record<string, 'running' | 'success' | 'failed'>
     StageFailed: 'failed',
 }
 
-const SELECTED_RUN_STATUS_DEGRADED_MESSAGE =
-    'Selected run live updates are unavailable. Reconnect to restore the selected run stream.'
+const SELECTED_RUN_STATUS_DEGRADED_MESSAGE = 'Live updates for this run stopped; what you see may be out of date.'
 
 interface RuntimeStageCursor {
     stageIndex: number

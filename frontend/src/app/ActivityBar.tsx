@@ -5,7 +5,7 @@ import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
-import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
@@ -167,9 +167,7 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                                 {attentionTitle(item, runs)}
                             </span>
                             <span className="w-full truncate text-xs text-muted-foreground">
-                                {item.question ? `${item.question} · ` : ''}
-                                {projectLabel(registry, item.project_path)}
-                                {item.conversation_handle ? ` · ${item.conversation_handle}` : ''}
+                                {[item.question, attentionFlow(item, runs), projectLabel(registry, item.project_path)].filter(Boolean).join(' · ')}
                             </span>
                         </button>
                     ))}
@@ -201,6 +199,7 @@ export function ActivityBar() {
         overview: overviewUnread ? 'unread' as const : null,
     }
 
+    // Arrow keys only move focus along the bar; Enter, Space or a click opens the view.
     const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, mode: ViewMode) => {
         const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key]
         if (!step) {
@@ -209,7 +208,6 @@ export function ActivityBar() {
         event.preventDefault()
         const index = Math.max(0, ACTIVITY_ORDER.indexOf(mode))
         const next = ACTIVITY_ORDER[(index + step + ACTIVITY_ORDER.length) % ACTIVITY_ORDER.length]
-        setViewMode(next)
         document.querySelector<HTMLButtonElement>(`[data-activity-mode="${next}"]`)?.focus()
     }
 

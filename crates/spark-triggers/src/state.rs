@@ -1,5 +1,9 @@
+use std::ops::RangeInclusive;
+
+use jiff::tz::TimeZone;
+use jiff::{civil, Span, Timestamp};
 use time::format_description::well_known::Rfc3339;
-use time::{Duration, OffsetDateTime, UtcOffset, Weekday};
+use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::models::{
     TriggerDefinition, TriggerState, TriggerStateHistoryEntry, SOURCE_POLL, SOURCE_SCHEDULE,
@@ -239,68 +243,62 @@ fn weekly_scheduled_time(
     definition: &TriggerDefinition,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    let weekdays = definition
-        .source
-        .get("weekdays")
-        .and_then(|value| value.as_array())?
-        .iter()
-        .filter_map(|value| value.as_str())
-        .collect::<Vec<_>>();
-    let hour = definition.source.get("hour")?.as_i64()? as u8;
-    let minute = definition.source.get("minute")?.as_i64()? as u8;
-    for offset in 0..8 {
-        let candidate = now + Duration::days(offset);
-        let weekday = weekday_name(candidate.weekday());
-        if !weekdays.contains(&weekday) {
-            continue;
-        }
-        let scheduled = candidate.replace_time(time::Time::from_hms(hour, minute, 0).ok()?);
-        let scheduled = scheduled.replace_nanosecond(0).ok()?;
-        if offset > 0 || scheduled >= now.replace_nanosecond(0).ok()? {
-            return Some(scheduled);
-        }
-    }
-    None
+    let now = now.replace_nanosecond(0).ok()?;
+    weekly_slots(definition, now, 0..=7)?
+        .into_iter()
+        .find(|slot| *slot >= now)
 }
 
 fn weekly_most_recent_scheduled_time(
     definition: &TriggerDefinition,
     now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    let weekdays = definition
-        .source
-        .get("weekdays")
-        .and_then(|value| value.as_array())?
+    weekly_slots(definition, now, -7..=0)?
+        .into_iter()
+        .rev()
+        .find(|slot| *slot <= now)
+}
+
+/// The trigger's slots on the given days from `now`'s date, earliest first. Days and time
+/// are in the source's IANA `timezone`, else UTC. A time a daylight-saving change skips
+/// runs after the gap; one it repeats runs at the first of the two.
+fn weekly_slots(
+    definition: &TriggerDefinition,
+    now: OffsetDateTime,
+    days: RangeInclusive<i64>,
+) -> Option<Vec<OffsetDateTime>> {
+    let source = &definition.source;
+    let weekdays = source
+        .get("weekdays")?
+        .as_array()?
         .iter()
         .filter_map(|value| value.as_str())
         .collect::<Vec<_>>();
-    let hour = definition.source.get("hour")?.as_i64()? as u8;
-    let minute = definition.source.get("minute")?.as_i64()? as u8;
-    for offset in 0..8 {
-        let candidate = now - Duration::days(offset);
-        let weekday = weekday_name(candidate.weekday());
-        if !weekdays.contains(&weekday) {
+    let time = civil::Time::new(
+        i8::try_from(source.get("hour")?.as_i64()?).ok()?,
+        i8::try_from(source.get("minute")?.as_i64()?).ok()?,
+        0,
+        0,
+    )
+    .ok()?;
+    let zone = match source.get("timezone").and_then(|value| value.as_str()) {
+        Some(name) => TimeZone::get(name).ok()?,
+        None => TimeZone::UTC,
+    };
+    let today = Timestamp::from_second(now.unix_timestamp())
+        .ok()?
+        .to_zoned(zone.clone())
+        .date();
+    let mut slots = Vec::new();
+    for offset in days {
+        let day = today.checked_add(Span::new().days(offset)).ok()?;
+        if !weekdays.contains(&WEEKDAYS[day.weekday().to_monday_zero_offset() as usize]) {
             continue;
         }
-        let scheduled = candidate.replace_time(time::Time::from_hms(hour, minute, 0).ok()?);
-        let scheduled = scheduled.replace_nanosecond(0).ok()?;
-        if scheduled <= now {
-            return Some(scheduled);
-        }
+        let slot = day.to_datetime(time).to_zoned(zone.clone()).ok()?;
+        slots.push(OffsetDateTime::from_unix_timestamp(slot.timestamp().as_second()).ok()?);
     }
-    None
-}
-
-fn weekday_name(value: Weekday) -> &'static str {
-    match value {
-        Weekday::Monday => WEEKDAYS[0],
-        Weekday::Tuesday => WEEKDAYS[1],
-        Weekday::Wednesday => WEEKDAYS[2],
-        Weekday::Thursday => WEEKDAYS[3],
-        Weekday::Friday => WEEKDAYS[4],
-        Weekday::Saturday => WEEKDAYS[5],
-        Weekday::Sunday => WEEKDAYS[6],
-    }
+    Some(slots)
 }
 
 pub fn parse_iso_datetime(value: Option<&str>) -> Option<OffsetDateTime> {

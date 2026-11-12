@@ -1,9 +1,9 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
-import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { browserTimeZone, createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { triggerKey } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -358,6 +358,86 @@ describe('TriggersPanel', () => {
     })
   })
 
+  it('saves weekly days from toggles and a time in the browser\'s zone, and refuses a week with no day', async () => {
+    const posts: Array<Record<string, unknown>> = []
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return jsonResponse(makeTrigger({ id: 'created' }))
+      }
+      return jsonResponse(posts.length ? [makeTrigger({ id: 'created' })] : [])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Standup')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Test planning' }))
+    await user.selectOptions(form.getByLabelText('Repeats'), 'weekly')
+    const days = form.getByRole('group', { name: 'Days' })
+    expect(within(days).getAllByRole('button').map((day) => day.textContent)).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+    expect(within(days).getByRole('button', { name: 'Monday' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(days).getByRole('button', { name: 'Wednesday' })).toHaveAttribute('aria-pressed', 'false')
+    expect(form.getByLabelText('Time')).toHaveAccessibleDescription('In your time zone.')
+
+    // Every day off: refused, and focus moves to the days.
+    await user.click(within(days).getByRole('button', { name: 'Monday' }))
+    await user.click(within(days).getByRole('button', { name: 'Friday' }))
+    await user.click(screen.getByTestId('trigger-create-button'))
+    expect(posts).toHaveLength(0)
+    expect(days).toHaveFocus()
+    expect(days).toHaveAccessibleDescription('Pick at least one day.')
+
+    await user.click(within(days).getByRole('button', { name: 'Friday' }))
+    await user.click(within(days).getByRole('button', { name: 'Wednesday' }))
+    fireEvent.change(form.getByLabelText('Time'), { target: { value: '07:30' } })
+    expect(days).not.toHaveAttribute('aria-invalid')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0].source).toEqual({ kind: 'weekly', weekdays: ['wed', 'fri'], hour: 7, minute: 30, timezone: browserTimeZone() })
+  })
+
+  it('says which zone a saved weekly trigger runs in when it is not the browser\'s, and lists its days and time', async () => {
+    const zone = browserTimeZone() === 'Asia/Tokyo' ? 'Europe/Paris' : 'Asia/Tokyo'
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([makeTrigger({ id: 'weekly', source: { kind: 'weekly', weekdays: ['mon', 'thu'], hour: 9, minute: 0, timezone: zone } })]))
+    renderTriggersPanel()
+    expect((await screen.findByTestId('trigger-row-weekly')).textContent?.replace(/\s/g, ' ')).toContain(`Mon, Thu at 9:00 AM (${zone})`)
+    const time = await screen.findByLabelText('Time')
+    expect(time).toHaveValue('09:00')
+    expect(time).toHaveAccessibleDescription(`In ${zone}, not your time zone.`)
+  })
+
+  it('opens on the list on a phone; a picked trigger shows its form until All triggers returns to its row', async () => {
+    window.innerWidth = 390
+    try {
+      vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+        ? jsonResponse(PROJECT_FLOWS)
+        : jsonResponse([makeTrigger({ id: 'first', name: 'First' }), makeTrigger({ id: 'second', name: 'Second' })]))
+      const user = userEvent.setup()
+      renderTriggersPanel()
+      const second = await screen.findByTestId('trigger-row-second')
+      await waitFor(() => expect(useStore.getState().triggersSession.status).toBe('ready'))
+      expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
+      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(screen.getByText('No trigger selected')).toBeVisible()
+      // No protected triggers, so no System section.
+      expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
+
+      await user.click(second)
+      expect(await screen.findByDisplayValue('Second')).toBeVisible()
+      await user.click(screen.getByRole('button', { name: 'All triggers' }))
+      expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
+      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(second).toHaveFocus()
+    } finally {
+      window.innerWidth = 1024
+    }
+  })
+
   it('creates triggers in a registered project, defaulting to the one worked in most recently, as Run a flow does', async () => {
     const postPayloads: Array<Record<string, unknown>> = []
     const createdTriggers: Array<ReturnType<typeof makeTrigger>> = []
@@ -520,6 +600,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     await user.click(await screen.findByTestId('trigger-row-trigger-protected'))
+    expect(screen.getByRole('heading', { name: 'System' })).toBeVisible()
     const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)

@@ -971,6 +971,25 @@ fn normalize_schedule_source(
                     path,
                 )?),
             );
+            // An IANA time zone for the days and time; without one they are UTC.
+            match payload.get("timezone") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(name)) if jiff::tz::TimeZone::get(name.trim()).is_ok() => {
+                    source.insert(
+                        "timezone".to_string(),
+                        Value::String(name.trim().to_string()),
+                    );
+                }
+                Some(other) => {
+                    return Err(invalid_trigger(
+                        path,
+                        format!(
+                            "Unknown time zone: {}. Use a name such as America/New_York.",
+                            json_value_to_python_string(other)
+                        ),
+                    ))
+                }
+            }
         }
         _ => {}
     }

@@ -52,8 +52,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {}});
 useStore.getState().setRunsSelectedRunId(null);
@@ -2838,9 +2836,9 @@ describe('RunsPanel', () => {
     const initialPipelineSource = latestSourceMatching(liveEventsUrl)
 
     act(() => {
-      useStore.getState().updateRunsListSession({
-        streamStatus: 'degraded',
-        streamError: 'Run history transport is unavailable. Reconnect to retry.',
+      useStore.getState().updateRunDetailSession('run-reconnect', {
+        statusSync: 'degraded',
+        statusError: 'Live updates for this run stopped; what you see may be out of date.',
       })
     })
 
@@ -3585,5 +3583,26 @@ describe('RunsPanel', () => {
       oldestSequence: 1,
       newestSequence: 4,
     })
+  })
+  it('says once, with a way to retry, when the run history can\'t load', async () => {
+    let available = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/attractor/runs')) {
+        return available ? jsonResponse({ runs: [] }) : new Response('', { status: 503 })
+      }
+      return jsonResponse({})
+    }))
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    expect(await screen.findByTestId('runs-load-error')).toHaveTextContent('Couldn’t load your runs')
+    expect(screen.queryByText('No runs yet')).toBeNull()
+    expect(screen.queryByTestId('runs-transport-reconnect-banner')).toBeNull()
+
+    available = true
+    await user.click(within(screen.getByTestId('runs-load-error')).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('No runs yet')).toBeVisible()
+    expect(screen.queryByTestId('runs-load-error')).toBeNull()
   })
 })

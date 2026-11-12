@@ -1,5 +1,5 @@
-import { Plus, RefreshCw, Zap } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { ArrowLeft, Plus, RefreshCw, Zap } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
 import {
@@ -14,6 +14,7 @@ import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
+import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { triggerKey } from "@/lib/workspaceClient"
 import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/api/triggersApi"
 import { defaultProjectChoice, isUnregisteredTarget, recentProjectPath } from "@/features/projects/model/projectChoices"
@@ -30,6 +31,7 @@ export function TriggersPanel() {
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
   const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
   const revealedWebhookSecrets = triggersSession.revealedWebhookSecrets
+  const isNarrowViewport = useNarrowViewport()
   const {
     customTriggers,
     error,
@@ -102,11 +104,12 @@ export function TriggersPanel() {
     if (selectedTriggerId && visibleTriggers.some((trigger) => triggerKey(trigger) === selectedTriggerId)) {
       return
     }
-    const firstVisibleTriggerId = visibleTriggers[0] ? triggerKey(visibleTriggers[0]) : null
-    if (firstVisibleTriggerId !== selectedTriggerId) {
-      setSelectedTriggerId(firstVisibleTriggerId)
+    // A desktop shows the first trigger beside the list; a phone opens on the list.
+    const fallbackTriggerId = !isNarrowViewport && visibleTriggers[0] ? triggerKey(visibleTriggers[0]) : null
+    if (fallbackTriggerId !== selectedTriggerId) {
+      setSelectedTriggerId(fallbackTriggerId)
     }
-  }, [selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
+  }, [isNarrowViewport, selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
 
   const createFormOpen = triggersSession.createFormOpen
   const openCreateForm = () => {
@@ -116,21 +119,33 @@ export function TriggersPanel() {
     }
     updateTriggersSession({ createFormOpen: true })
   }
+  // On a phone the form sits below the whole list: going back clears the pick and
+  // focuses where it was opened from, which scrolls the list back into view.
+  const listRef = useRef<HTMLDivElement>(null)
+  const newButtonRef = useRef<HTMLButtonElement>(null)
+  const backToList = () => {
+    const openedFrom = createFormOpen ? null : selectedTriggerId
+    updateTriggersSession({ createFormOpen: false, selectedTriggerId: null })
+    const row = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-trigger-key]') ?? [])
+      .find((entry) => entry.dataset.triggerKey === openedFrom)
+    ;(row ?? newButtonRef.current)?.focus()
+  }
   const triggerGroups = [
-    { title: 'Custom', note: null, triggers: customTriggers, loadingTestId: 'triggers-custom-list-loading', emptyText: 'No custom triggers yet.' },
-    { title: 'System', note: 'Built in: they route approvals and reviews, and cannot be deleted.', triggers: systemTriggers, loadingTestId: 'triggers-system-list-loading', emptyText: 'No protected triggers.' },
+    // System triggers show only when there are any, so loading and an empty list are said once, here.
+    { title: 'Custom', note: null, triggers: customTriggers },
+    ...(systemTriggers.length ? [{ title: 'System', note: 'Built in: they route approvals and reviews, and cannot be deleted.', triggers: systemTriggers }] : []),
   ]
 
   const panel = (
-    <div className="space-y-4">
+    <div ref={listRef} className="space-y-4">
       {triggerGroups.map((group) => (
         <div key={group.title} className="space-y-0.5">
           <ListGroupLabel>
             <h3>{group.title}</h3>
             {group.note ? <p className="font-normal">{group.note}</p> : null}
           </ListGroupLabel>
-          {status !== 'ready' && status !== 'error' ? (
-            <p data-testid={group.loadingTestId} className="px-3 py-1 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
+          {status !== 'ready' && status !== 'error' && group.title === 'Custom' ? (
+            <p data-testid="triggers-custom-list-loading" className="px-3 py-1 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
@@ -139,6 +154,7 @@ export function TriggersPanel() {
               <SidePanelRow
                 key={triggerKey(trigger)}
                 data-testid={`trigger-row-${trigger.id}`}
+                data-trigger-key={triggerKey(trigger)}
                 data-unregistered-target={unregistered ? 'true' : undefined}
                 selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
@@ -169,7 +185,7 @@ export function TriggersPanel() {
             )
           })}
           {status === 'ready' && group.triggers.length === 0 ? (
-            <p className="px-3 py-1 text-sm text-muted-foreground">{group.emptyText}</p>
+            <p className="px-3 py-1 text-sm text-muted-foreground">No custom triggers yet.</p>
           ) : null}
         </div>
       ))}
@@ -185,7 +201,7 @@ export function TriggersPanel() {
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh triggers" title="Refresh triggers" onClick={() => void refreshTriggers()}>
             <RefreshCw aria-hidden="true" className={loading ? "animate-spin" : undefined} />
           </Button>
-          <Button type="button" data-testid="trigger-new-button" variant="outline" size="sm" aria-label="New trigger" onClick={openCreateForm}>
+          <Button ref={newButtonRef} type="button" data-testid="trigger-new-button" variant="outline" size="sm" aria-label="New trigger" onClick={openCreateForm}>
             <Plus aria-hidden="true" />
             New
           </Button>
@@ -243,7 +259,7 @@ export function TriggersPanel() {
                     variant="ghost"
                     size="sm"
                     disabled={pending}
-                    onClick={() => updateTriggersSession({ createFormOpen: false })}
+                    onClick={() => isNarrowViewport ? backToList() : updateTriggersSession({ createFormOpen: false })}
                   >
                     Close
                   </Button>
@@ -252,6 +268,12 @@ export function TriggersPanel() {
             </Card>
           ) : selectedTrigger && editTriggerForm ? (
             <Card className="gap-6 border-t-0 py-0">
+              {isNarrowViewport ? (
+                <Button type="button" variant="link" size="sm" className="h-auto self-start p-0 text-muted-foreground" onClick={backToList}>
+                  <ArrowLeft aria-hidden="true" />
+                  All triggers
+                </Button>
+              ) : null}
               <CardHeader className="flex flex-row items-start justify-between gap-2 px-0">
                 <div className="min-w-0">
                   <CardTitle role="heading" aria-level={1} className="truncate text-xl leading-snug font-semibold tracking-tight">{selectedTrigger.name}</CardTitle>

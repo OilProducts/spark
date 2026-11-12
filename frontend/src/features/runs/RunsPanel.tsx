@@ -32,7 +32,7 @@ import type { StatusTone } from '@/components/app/status'
 import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Play, Plus } from 'lucide-react'
+import { Play, Plus, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import { openRun } from '@/features/missions/MissionTranscript'
@@ -74,7 +74,7 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             }}
             runs={runs}
             selectedRunId={selectedRunId}
-            summaryLabel={`${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
+            summaryLabel={runs.length === 0 ? 'runs' : `${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
             // The filter already names the project; rows repeat it only across all projects.
             showProject={!projectFilter}
             statusFilter={statusFilter}
@@ -106,10 +106,8 @@ function RunsProjectFilter() {
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
-    const { status, streamError, streamStatus, hasRuns } = useStore(useShallow((state) => ({
+    const { status, hasRuns } = useStore(useShallow((state) => ({
         status: state.runsListSession.status,
-        streamError: state.runsListSession.streamError,
-        streamStatus: state.runsListSession.streamStatus,
         hasRuns: state.runsListSession.runs.length > 0,
     })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
@@ -194,22 +192,12 @@ export function RunsPanel() {
     const degradedRunPanels = timelineError
         ? [...degradedDetailPanels, 'run journal']
         : degradedDetailPanels
-    const showRunSelectionEmptyState =
-        status === 'ready'
-        && !selectedRunId
-        && hasRuns
-        && !selectedRun
+    const showRunSelectionEmptyState = !selectedRunId && hasRuns && !selectedRun
     const showRunDetailsRestoringState =
         Boolean(selectedRunId)
         && !selectedRun
         && status !== 'ready'
         && status !== 'error'
-    const degradedTransportLabels = [
-        ...(streamStatus === 'degraded' ? ['run list'] : []),
-        ...(selectedRunStatusSync === 'degraded' ? ['selected run'] : []),
-    ]
-    const showRunsTransportReconnectNotice = degradedTransportLabels.length > 0
-    const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
     const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
@@ -506,14 +494,13 @@ export function RunsPanel() {
                 </div>
             )}
             <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
-                {showRunsTransportReconnectNotice ? (
+                {selectedRunStatusSync === 'degraded' ? (
                     <Alert
                         data-testid="runs-transport-reconnect-banner"
                         className="border-0 border-l border-warning px-3 py-2 text-warning"
                     >
                         <AlertDescription className="text-inherit">
-                            Live run transport degraded for {degradedTransportLabels.join(' and ')}.
-                            {runsTransportError ? ` ${runsTransportError}` : ''}
+                            {selectedRunStatusError}
                             <button
                                 type="button"
                                 data-testid="runs-transport-reconnect-button"
@@ -566,7 +553,20 @@ export function RunsPanel() {
                         </span>
                     </div>
                 )}
-                {!selectedRun && !hasRuns && (
+                {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
+                {!selectedRun && !hasRuns && status === 'error' && (
+                    <SheetEmpty
+                        data-testid="runs-load-error"
+                        role="alert"
+                        icon={TriangleAlert}
+                        title="Couldn’t load your runs"
+                        className="flex-1"
+                        action={<Button type="button" variant="outline" size="sm" onClick={requestRunsTransportReconnect}>Try again</Button>}
+                    >
+                        Spark didn’t answer when asked for your run history. Check that it is still running, then try again.
+                    </SheetEmpty>
+                )}
+                {!selectedRun && !hasRuns && status === 'ready' && (
                     <SheetEmpty icon={Play} title="No runs yet" className="flex-1" action={runFlowAction}>
                         Start a flow to see its progress and results here.
                     </SheetEmpty>

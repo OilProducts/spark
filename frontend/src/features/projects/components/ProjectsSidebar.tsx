@@ -164,7 +164,7 @@ export function ProjectsSidebar({
                                         && conversation.conversation_id === activeConversationId
                                     const isDeletingConversation = pendingDeleteConversationId === conversation.conversation_id
                                     return (
-                                        <li key={conversation.conversation_id} className="group/thread relative" title={conversation.conversation_handle ?? conversation.title}>
+                                        <li key={conversation.conversation_id} className="group/thread relative" title={conversation.title}>
                                             <SidePanelRow
                                                 data-testid="chats-chat-row"
                                                 data-conversation-id={conversation.conversation_id}
@@ -173,7 +173,6 @@ export function ProjectsSidebar({
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
                                                 title={conversation.title}
-                                                meta={conversation.conversation_handle ? <span className="font-mono">{conversation.conversation_handle}</span> : null}
                                                 trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : (
                                                     <span className="transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
                                                         {formatConversationAgeShort(conversation.updated_at)}

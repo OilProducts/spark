@@ -48,6 +48,8 @@ export function RunArtifactViewer({
                     <p data-testid="run-artifact-viewer-loading" className="text-xs text-muted-foreground">Loading…</p>
                 ) : error ? (
                     <p data-testid="run-artifact-viewer-error" className="text-xs text-destructive">{error}</p>
+                ) : !payload?.trim() ? (
+                    <p data-testid="run-artifact-viewer-empty" className="text-xs text-muted-foreground">This file is empty.</p>
                 ) : (
                     <pre
                         data-testid="run-artifact-viewer-payload"

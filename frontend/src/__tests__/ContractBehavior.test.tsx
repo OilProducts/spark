@@ -146,8 +146,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {},
 clientRunPresentation: {},
@@ -736,10 +734,7 @@ describe('Frontend contract behavior', () => {
     })
 
     expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
-      'Live run transport degraded for selected run.',
-    )
-    expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
-      'Selected run live updates are unavailable. Reconnect to restore the selected run stream.',
+      'Live updates for this run stopped; what you see may be out of date.',
     )
     expect(screen.queryByTestId('global-save-state-indicator')).not.toBeInTheDocument()
   })
@@ -1286,17 +1281,23 @@ describe('Frontend contract behavior', () => {
     expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [screen.getByTestId('activity-roles'), 'roles'], [settingsTab, 'settings'], [screen.getByTestId('activity-overview'), 'overview'], [chatsTab, 'home']] as const) {
+    // Arrow keys only move focus, so passing over a view does not open it.
+    for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
       await user.keyboard('{ArrowDown}')
       expect(tab).toHaveFocus()
-      expect(useStore.getState().viewMode).toBe(mode)
+      expect(useStore.getState().viewMode).toBe('projects')
     }
 
     await user.keyboard('{ArrowUp}')
-    expect(useStore.getState().viewMode).toBe('overview')
+    expect(screen.getByTestId('activity-overview')).toHaveFocus()
     await user.keyboard('{ArrowUp}')
     expect(settingsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('projects')
+    await user.keyboard('{Enter}')
     expect(useStore.getState().viewMode).toBe('settings')
+    await user.keyboard('{ArrowUp}')
+    await user.keyboard(' ')
+    expect(useStore.getState().viewMode).toBe('roles')
   })
 
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 attractor-dsl = { path = "../attractor-dsl" }
 fs2 = "0.4"
+jiff = "0.2"
 rand = "0.8"
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }

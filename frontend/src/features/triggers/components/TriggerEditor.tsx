@@ -4,6 +4,7 @@ import { orderProjects, projectLabel } from '@/features/projects/model/projectCh
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 
+import { SegmentedControl } from '@/components/app/segmented-control'
 import { Well } from '@/components/app/well'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -16,6 +17,8 @@ import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 import {
     INTERVAL_UNITS,
     SHARED_WEBHOOK_ENDPOINT,
+    WEEKDAYS,
+    browserTimeZone,
     firstIntervalRunHint,
     intervalSeconds,
     type TriggerFieldErrors,
@@ -206,7 +209,9 @@ export function TriggerEditor({
         error: errors[key],
     })
 
-    const weekdaysHint = 'Separate days with commas: mon, tue, wed, thu, fri, sat, sun.'
+    const daysId = fieldId('scheduleWeekdays')
+    // Said, not converted: a saved trigger keeps the zone its time was set in.
+    const timeHint = form.scheduleTimezone === browserTimeZone() ? 'In your time zone.' : `In ${form.scheduleTimezone}, not your time zone.`
     const itemsHint = 'Where the list is in the response, such as items or data.results.'
     const itemIdHint = 'What identifies each item, such as id. Each new one starts the action.'
     const headersHint = <>A JSON object, such as <code>{'{"Authorization": "Bearer …"}'}</code>.</>
@@ -214,7 +219,7 @@ export function TriggerEditor({
     // Editing: the status card shows the next run instead.
     const scheduleSeconds = intervalSeconds(form.scheduleInterval, form.scheduleIntervalUnit)
     const intervalHint = mode === 'create' && scheduleSeconds ? firstIntervalRunHint(scheduleSeconds) : undefined
-    const contextHint = <>A JSON object the flow reads as <code>context.trigger_static</code>, such as <code>{'{"branch": "main"}'}</code>.</>
+    const contextHint = <>Values the flow can read when this trigger starts it, written as JSON, such as <code>{'{"branch": "main"}'}</code>.</>
 
     return (
         // One two-column grid for every field; selects fill their cell like inputs.
@@ -315,17 +320,33 @@ export function TriggerEditor({
                     ) : null}
                     {form.scheduleKind === 'weekly' ? (
                         <>
-                            <TriggerField {...field('scheduleWeekdays', 'Days', weekdaysHint)} className="text-sm">
-                                <Input {...text('scheduleWeekdays', weekdaysHint)} disabled={sourceConfigurationDisabled} className="text-sm" placeholder="mon,wed,fri" />
+                            <Field className="content-start text-sm">
+                                <FieldLabel id={`${daysId}-label`}>Days</FieldLabel>
+                                {/* Focusable, so a refused save can move to it. */}
+                                <SegmentedControl
+                                    id={daysId}
+                                    tabIndex={-1}
+                                    aria-labelledby={`${daysId}-label`}
+                                    {...describedBy(daysId, errors.scheduleWeekdays)}
+                                    options={WEEKDAYS.map((day) => {
+                                        const pressed = form.scheduleWeekdays.includes(day.key)
+                                        // Kept in week order, as the server stores them.
+                                        const next = WEEKDAYS.map((entry) => entry.key).filter((key) => (key === day.key ? !pressed : form.scheduleWeekdays.includes(key)))
+                                        return {
+                                            key: day.key,
+                                            label: day.label,
+                                            'aria-label': day.name,
+                                            pressed,
+                                            disabled: sourceConfigurationDisabled,
+                                            onPress: () => onChange({ ...form, scheduleWeekdays: next }),
+                                        }
+                                    })}
+                                />
+                                {errors.scheduleWeekdays ? <FieldError id={`${daysId}-error`}>{errors.scheduleWeekdays}</FieldError> : null}
+                            </Field>
+                            <TriggerField {...field('scheduleTime', 'Time', timeHint)} className="text-sm">
+                                <Input {...text('scheduleTime', timeHint)} type="time" disabled={sourceConfigurationDisabled} className="text-sm" />
                             </TriggerField>
-                            <div className="grid grid-cols-2 gap-4">
-                                <TriggerField {...field('scheduleHour', 'Hour (UTC)')} className="text-sm">
-                                    <Input {...text('scheduleHour')} inputMode="numeric" disabled={sourceConfigurationDisabled} className="text-sm" />
-                                </TriggerField>
-                                <TriggerField {...field('scheduleMinute', 'Minute')} className="text-sm">
-                                    <Input {...text('scheduleMinute')} inputMode="numeric" disabled={sourceConfigurationDisabled} className="text-sm" />
-                                </TriggerField>
-                            </div>
                         </>
                     ) : null}
                 </>

@@ -40,9 +40,10 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
             const currentSession = useStore.getState().triggersSession
             updateTriggersSession({
                 triggers: payload,
+                // The Triggers view picks a fallback, which on a phone is none.
                 selectedTriggerId: currentSelectedTriggerId && nextTriggerIds.has(currentSelectedTriggerId)
                     ? currentSelectedTriggerId
-                    : payload[0] ? triggerKey(payload[0]) : null,
+                    : null,
                 revealedWebhookSecrets: Object.fromEntries(
                     Object.entries(currentSession.revealedWebhookSecrets).filter(([triggerId]) => nextTriggerIds.has(triggerId)),
                 ),
@@ -102,7 +103,7 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
                 updateTriggersSession({
                     triggers: nextTriggers,
                     selectedTriggerId: useStore.getState().triggersSession.selectedTriggerId === key
-                        ? (nextTriggers[0] ? triggerKey(nextTriggers[0]) : null)
+                        ? null
                         : useStore.getState().triggersSession.selectedTriggerId,
                     error: null,
                     status: 'ready',

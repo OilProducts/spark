@@ -7,7 +7,7 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -228,7 +228,7 @@ export function OverviewPanel() {
                                                 A long question gives way; the project stays readable. On a phone the question gets two lines of its own. */}
                                             <span className="flex min-w-0 text-xs text-muted-foreground max-sm:flex-col">
                                                 <span className="min-w-0 truncate max-sm:line-clamp-2 max-sm:whitespace-normal">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
-                                                <span className="shrink-0 whitespace-pre"><span className="max-sm:hidden"> · </span>{projectLabel(registry, item.project_path)}</span>
+                                                <span className="shrink-0 whitespace-pre"><span className="max-sm:hidden"> · </span>{[attentionFlow(item, runs), projectLabel(registry, item.project_path)].filter(Boolean).join(' · ')}</span>
                                             </span>
                                         </span>
                                         <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
@@ -244,7 +244,8 @@ export function OverviewPanel() {
                     ) : null}
                 </Section>
 
-                <Section testId="overview-running" heading="Running now" count={running.length}>
+                {/* Until the runs load, a count would say nothing is running. */}
+                <Section testId="overview-running" heading="Running now" count={runsFetched ? running.length : undefined}>
                     {runsFailed ? (
                         <Well data-testid="overview-runs-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
                             {runsFetched ? 'Couldn’t refresh your runs; what is shown here may be out of date.' : 'Couldn’t load your runs, so what is running and what finished can’t be shown.'}
@@ -334,7 +335,7 @@ export function OverviewPanel() {
                 <Section
                     testId="overview-finished"
                     heading={`Finished ${sinceLastLook ? 'since you last looked' : 'in the last day'}`}
-                    count={finished.length}
+                    count={runsFetched ? finished.length : undefined}
                 >
                     {failures ? (
                         <p className="-mt-1 text-sm">

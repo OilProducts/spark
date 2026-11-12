@@ -48,8 +48,6 @@ export interface RunsListSessionState {
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]
-    streamStatus: 'idle' | 'loading' | 'ready' | 'degraded'
-    streamError: string | null
     /** Whether a full list fetch has succeeded; live upserts alone don't count. */
     fetched?: boolean
 }

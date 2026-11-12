@@ -1739,14 +1739,22 @@ impl RuntimeHandlerRunner {
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
         // Always write the note key so a note from an earlier gate cannot
         // leak past a later gate answered without one.
+        let note = note.trim();
         let context_updates = ContextMap::from([
             ("human.gate.selected".to_string(), json!(selected.decision)),
             ("human.gate.label".to_string(), json!(selected.label)),
-            ("human.gate.note".to_string(), json!(note.trim())),
+            ("human.gate.note".to_string(), json!(note)),
         ]);
+        // The gate's response is the answer, so a result read from it says what was chosen.
+        let raw_response_text = if note.is_empty() {
+            selected.label.clone()
+        } else {
+            format!("{}\n\n{note}", selected.label)
+        };
         Ok(Outcome {
             context_updates,
-            notes: note.trim().to_string(),
+            notes: note.to_string(),
+            raw_response_text,
             ..Outcome::completed(selected.decision)
         })
     }

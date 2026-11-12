@@ -894,6 +894,8 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
         .find(|item| item["kind"] == "run_gate")
         .expect("gate item");
     assert_eq!(gate["run_id"], "run-attention-gate");
+    assert_eq!(gate["title"], "software-development/run-retrospective");
+    assert_eq!(gate["flow_name"], "software-development/run-retrospective");
     assert!(
         !items
             .iter()
@@ -920,6 +922,9 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
     for run_id in ["run-a", "run-b"] {
         let mut waiting = attractor_core::RunRecord::new(run_id, project_path.to_string_lossy());
         waiting.status = "waiting".to_string();
+        if run_id == "run-b" {
+            waiting.title = Some("Hotfix approval".to_string());
+        }
         store
             .create_run(attractor_runtime::CreateRunRequest {
                 record: waiting,
@@ -985,6 +990,14 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
             .filter(|item| item["kind"] == "run_gate")
             .all(|item| item["question"] == "Proceed?"),
         "a gate's item carries what it asks: {items:?}"
+    );
+    let named = items
+        .iter()
+        .find(|item| item["kind"] == "run_gate" && item["run_id"] == "run-b")
+        .expect("named run's gate");
+    assert_eq!(
+        named["title"], "Hotfix approval",
+        "a run named at launch goes by its name"
     );
 
     store

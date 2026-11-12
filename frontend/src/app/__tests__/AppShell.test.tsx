@@ -115,8 +115,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {},
 clientRunPresentation: {},
@@ -573,7 +571,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('projects-panel')).toBeVisible()
   })
 
-  it('opens Missions and Flows from the activity bar and moves between views with the arrow keys', async () => {
+  it('opens Missions and Flows from the activity bar; arrow keys move focus and Enter opens the view', async () => {
     const user = userEvent.setup()
     render(<App />)
 
@@ -588,11 +586,13 @@ describe('App shell behavior', () => {
 
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('roles')
+    expect(screen.getByTestId('activity-roles')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByTestId('activity-overview')).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('editor')
+    await user.keyboard('{Enter}')
     expect(useStore.getState().viewMode).toBe('overview')
   })
 
@@ -1796,7 +1796,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('activity-triggers'))
     await waitFor(() => {
-      expect(screen.getByText('Custom route')).toBeVisible()
+      expect(screen.getByTestId('trigger-row-trigger-custom')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('trigger-row-trigger-custom'))
@@ -1949,12 +1949,13 @@ describe('App shell behavior', () => {
     })
 
     await user.click(screen.getByTestId('activity-triggers'))
-    expect(await screen.findByTestId('triggers-system-list-loading')).toBeVisible()
+    expect(await screen.findByTestId('triggers-custom-list-loading')).toBeVisible()
     triggersDeferred.resolve(jsonResponse([]))
     await waitFor(() => {
-      expect(screen.getByText('No protected triggers.')).toBeVisible()
       expect(screen.getByText('No custom triggers yet.')).toBeVisible()
     })
+    // With no protected triggers there is no System section.
+    expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
   })
 
   it('preserves the run project filter and selected run across view switches', async () => {

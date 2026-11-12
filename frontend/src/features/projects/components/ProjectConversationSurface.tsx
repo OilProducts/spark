@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { Folder } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Check, Folder, Hash } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -78,6 +78,30 @@ const MODEL_SOURCES = {
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
+// The chat's ID is how flows and the spark command's --conversation option reach it: kept a click away, not in the title line.
+function CopyChatId({ handle }: { handle: string }) {
+    const [copied, setCopied] = useState(false)
+    return (
+        <button
+            type="button"
+            data-testid="chat-handle"
+            data-handle={handle}
+            aria-label={copied ? 'Chat ID copied' : `Copy chat ID ${handle}`}
+            title={`Copy this chat’s ID (${handle}). Flows and the spark command’s --conversation option use it to reach this chat.`}
+            onClick={() => {
+                void navigator.clipboard?.writeText(handle).then(() => {
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1500)
+                })
+            }}
+            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+            {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Hash aria-hidden="true" className="size-3.5" />}
+            <span className="text-xs">{copied ? 'Copied' : 'Copy ID'}</span>
+        </button>
+    )
+}
+
 export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
@@ -132,19 +156,6 @@ export function ProjectConversationSurface({
                     </h1>
                     {hasProject ? (
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
-                            {activeConversationHandle ? (
-                                <>
-                                    {/* The handle is how flows and the spark command address this chat; say so where it shows. */}
-                                    <span
-                                        data-testid="chat-handle"
-                                        title="This chat's ID. Runs it starts, and the spark command's --conversation option, use it to reach this chat."
-                                        className="shrink-0"
-                                    >
-                                        Chat ID <span className="font-mono">{activeConversationHandle}</span>
-                                    </span>
-                                    <span aria-hidden="true">·</span>
-                                </>
-                            ) : null}
                             <button
                                 type="button"
                                 data-testid="chat-project-link"
@@ -162,6 +173,7 @@ export function ProjectConversationSurface({
                                     </span>
                                 </>
                             ) : null}
+                            {activeConversationHandle ? <CopyChatId handle={activeConversationHandle} /> : null}
                         </p>
                     ) : null}
                 </div>

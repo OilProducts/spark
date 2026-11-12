@@ -16,6 +16,8 @@ export interface AttentionItem {
     title: string
     /** What a run's gate asks. */
     question?: string
+    /** The flow a run gate's run belongs to. */
+    flow_name?: string
     project_path: string
     run_id?: string
     conversation_id?: string
@@ -39,6 +41,7 @@ function parseAttentionItems(payload: unknown, endpoint: string): AttentionItem[
             id: expectString(item.id, 'id', endpoint),
             title: asOptionalString(item.title) ?? '',
             question: asOptionalString(item.question),
+            flow_name: asOptionalString(item.flow_name),
             project_path: asOptionalString(item.project_path) ?? '',
             run_id: asOptionalString(item.run_id),
             conversation_id: asOptionalString(item.conversation_id),

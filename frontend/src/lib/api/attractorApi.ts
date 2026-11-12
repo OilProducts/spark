@@ -1192,7 +1192,11 @@ function encodeArtifactPathSegments(artifactPath: string): string {
 export async function fetchPipelineArtifactPreviewValidated(pipelineId: string, artifactPath: string): Promise<string> {
     const encodedPath = encodeArtifactPathSegments(artifactPath)
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/artifacts/${encodedPath}`)
-    return fetchTextWithValidation(url, undefined, '/pipelines/{id}/artifacts/{artifact_path}', parsePipelineGraphResponse)
+    // A file may be empty; the viewer says so.
+    return fetchTextWithValidation(url, undefined, '/pipelines/{id}/artifacts/{artifact_path}', (payload, endpoint) => {
+        if (typeof payload !== 'string') throw new ApiSchemaError(endpoint, 'Expected a text response body.')
+        return payload
+    })
 }
 
 export function pipelineArtifactHref(pipelineId: string, artifactPath: string, download = false): string {

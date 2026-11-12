@@ -329,6 +329,21 @@ fn blocking_gate_waits_for_journaled_answer_and_selects_its_decision() {
         gate_status["context_updates"]["human.gate.note"],
         "Looks right, but double-check the lock cleanup."
     );
+
+    // The gate's response, which a run result can be read from, is the answer and its note.
+    let execution = store
+        .list_node_executions(&paths)
+        .expect("execution inventory")
+        .into_iter()
+        .find(|execution| execution.node_id == "review")
+        .expect("review execution");
+    let root = store
+        .node_execution_root(&paths, "review", execution.stage_index, execution.attempt)
+        .expect("execution root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("response.md")).expect("response artifact"),
+        "Approve\n\nLooks right, but double-check the lock cleanup.\n"
+    );
 }
 
 #[test]

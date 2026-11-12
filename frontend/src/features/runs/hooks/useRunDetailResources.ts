@@ -370,7 +370,7 @@ export function useRunDetailResources({
         if (!entry.viewable) {
             updateRunDetailSession(selectedRunId, {
                 artifactViewerStatus: 'error',
-                artifactViewerError: 'Preview unavailable for this artifact type. Use download action.',
+                artifactViewerError: 'This kind of file can’t be shown here. Use Download to open it.',
             })
             return
         }
@@ -392,7 +392,7 @@ export function useRunDetailResources({
                 artifactViewerStatus: 'error',
                 artifactViewerError: error instanceof ApiHttpError
                     ? artifactPreviewErrorFromResponse(error.status, error.detail)
-                    : 'Unable to load artifact preview. Check your network/backend connection and retry.',
+                    : 'Couldn’t open this file. Check that Spark is still running, then try again.',
             })
         }
     }, [selectedRunId, updateRunDetailSession])

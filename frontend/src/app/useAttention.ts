@@ -3,7 +3,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
-import { runTitle } from '@/features/runs/model/runOverviewModel'
+import { flowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
 const ATTENTION_POLL_MS = 15_000
@@ -15,16 +15,28 @@ export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     mission: 'Mission needs you',
 }
 
+type AttentionRun = Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>
+
 /**
- * What an item is called: a run waiting at a gate is titled by its flow's name, so it
- * takes the title the Runs list gives that run.
+ * What an item is called: a run waiting at a gate takes the title the Runs list gives it,
+ * and a run not loaded yet goes by its name or its flow's title, never the flow's file name.
  */
-export function attentionTitle(item: AttentionItem, runs: Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>[]): string {
+export function attentionTitle(item: AttentionItem, runs: AttentionRun[]): string {
     const run = item.kind === 'run_gate' ? runs.find((candidate) => candidate.run_id === item.run_id) : undefined
-    if (run && item.title === run.flow_name) {
+    if (run && (item.title === run.flow_name || item.title === run.title)) {
         return runTitle(run)
     }
+    if (item.kind === 'run_gate' && item.flow_name && item.title === item.flow_name) {
+        return flowTitle(item.flow_name)
+    }
     return item.title || item.run_id || item.id
+}
+
+/** A run gate's flow, when the item's title doesn't already say it. */
+export function attentionFlow(item: AttentionItem, runs: AttentionRun[]): string | null {
+    if (item.kind !== 'run_gate' || !item.flow_name) return null
+    const flow = flowTitle(item.flow_name)
+    return flow.toLowerCase() === attentionTitle(item, runs).toLowerCase() ? null : flow
 }
 
 // One shared list for every view that shows it, so the Inbox and the Overview never disagree.

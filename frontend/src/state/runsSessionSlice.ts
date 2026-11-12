@@ -14,8 +14,6 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
     status: 'idle',
     error: null,
     runs: [],
-    streamStatus: 'idle',
-    streamError: null,
 }
 
 function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
