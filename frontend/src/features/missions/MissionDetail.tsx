@@ -139,7 +139,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             title: cancel ? 'Cancel mission?' : 'Close mission as done?',
             description: [
                 cancel ? 'Its agent stops and its unfinished runs are canceled.' : 'Its agent stops; runs already going finish on their own.',
-                live ? `${live === 1 ? 'The trigger' : `The ${live} triggers`} aimed at it turn off.` : '',
+                live ? `${live === 1 ? 'The trigger aimed at it turns' : `The ${live} triggers aimed at it turn`} off.` : '',
                 'A closed mission can’t be reopened.',
             ].filter(Boolean).join(' '),
             confirmLabel: cancel ? 'Cancel mission' : 'Close mission',
@@ -221,7 +221,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         </Well>}
                         {status === 'draft'
                             ? <Empty><EmptyDescription>No conversation yet. Start the mission and its agent picks up the objective.</EmptyDescription></Empty>
-                            : <MissionTranscript conversation={conversation} project={project} runs={runsById} />}
+                            : <MissionTranscript conversation={conversation} project={project} runs={runsById} closed={closed} />}
                         {question && <Well role="region" aria-label="Waiting on you" className="flex flex-col gap-2">
                             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>Waiting on you{question.runId && <> · from <RunLink runId={question.runId} className="text-foreground">{runsById.get(question.runId)?.title || flowTitle(question.flowName)}</RunLink></>}</p>
                             <p className="font-medium whitespace-pre-wrap break-words">{question.prompt}</p>

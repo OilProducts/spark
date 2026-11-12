@@ -217,6 +217,16 @@ it('closes the open mission when the selection clears, as Back does, and says wh
     expect(await screen.findByText('Mission not found')).toBeInTheDocument()
 })
 
+it('replaces the open mission with not found when a link names a mission that is gone', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    expect(detail().getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
+    act(() => useStore.getState().setSelectedMission({ projectPath: '/project', id: 'gone' }))
+    expect(await screen.findByText('Mission not found')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument()
+})
+
 it('asks before closing or canceling a mission, and does nothing when kept open', async () => {
     task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
     vi.mocked(window.confirm).mockReturnValue(false)

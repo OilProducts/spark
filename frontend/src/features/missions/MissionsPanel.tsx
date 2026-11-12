@@ -197,7 +197,9 @@ export function MissionsPanel({ active }: { active: boolean }) {
         // An open editor or new-mission draft is kept, as when picking from the list.
         if (mission && editing !== undefined && mode === 'edit') open(mission, origin.current)
         else if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
-    }, [missions, selectedMission, editing, mode, busy])
+        // A link to a missing mission closes the one open to read, so the page says it's not found.
+        else if (loaded && editing && mode === 'read') setEditing(undefined)
+    }, [missions, selectedMission, editing, mode, busy, loaded])
     // A removed project takes its open mission and unsaved drafts with it.
     useEffect(() => {
         if (!Object.keys(registry).length) return

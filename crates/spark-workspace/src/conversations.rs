@@ -1781,6 +1781,12 @@ impl WorkspaceConversationService {
         turn_id: &str,
     ) -> WorkspaceResult<(PreparedConversationTurn, TurnAcceptance)> {
         let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
+        // A closed mission's agent stays stopped.
+        if self.mission_closed(&project_path, conversation_id) {
+            return Err(WorkspaceError::Conflict(
+                "The mission is closed, so its agent can't be restarted.".to_string(),
+            ));
+        }
         let repository = self.repository();
         let failed = repository
             .read_turn(conversation_id, turn_id)?

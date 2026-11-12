@@ -286,3 +286,7 @@ export const settingsRevisionOf = (row: Json): string => String(row.payload.sett
 /** A Page's turn payloads in page order (oldest first); empty for an error body. */
 export const pageTurns = (page: Json): Json[] => (page.turn_ids ?? [])
   .map((id: string) => page.rows.find((row: Json) => row.kind === 'turn' && row.id === id)?.payload)
+
+/** A flow's row in the Flows list. Its Delete button's name also contains the flow's name, so that button is left out. */
+export const flowRow = (page: Page, flowName: string) =>
+    page.getByRole('button', { name: flowName }).and(page.locator(':not([aria-label^="Delete "])'))

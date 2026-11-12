@@ -832,6 +832,76 @@ fn a_person_closing_a_mission_stops_its_agent_and_the_agent_closing_it_does_not(
     }
 }
 
+/// A person's close announces the triggers it turned off only once the closed
+/// mission is saved, so a client refetching on that event sees it closed; and
+/// a closed mission's agent can't be restarted by retrying a turn.
+#[test]
+fn a_closed_mission_is_saved_before_its_triggers_are_announced_and_stays_stopped() {
+    use spark_triggers::TriggerCreateRequest;
+    let h = Harness::new();
+    let mission = h.create(json!({"title": "Watched"}));
+    h.missions.start(&h.project, &mission.id).unwrap();
+    h.wait_turns(1);
+    h.agent.release(1);
+    h.wait_idle(&mission.id);
+    crate::triggers(h.settings.clone())
+        .create_trigger(TriggerCreateRequest {
+            project_path: h.project.clone(),
+            message: None,
+            name: "watcher".into(),
+            enabled: true,
+            source_type: "webhook".into(),
+            action: json!({"mode": "mission", "mission_id": mission.id})
+                .as_object()
+                .unwrap()
+                .clone(),
+            source: Default::default(),
+        })
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (record, settings, project, id) = (
+        seen.clone(),
+        h.settings.clone(),
+        h.project.clone(),
+        mission.id.clone(),
+    );
+    install_runtime(
+        &h.settings,
+        InboxRuntime {
+            agent_turn_backend: h.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(move |event| {
+                if event.event_type == "trigger.upsert" {
+                    let closed = crate::missions(settings.clone())
+                        .get(&project, &id)
+                        .unwrap()
+                        .closed
+                        .is_some();
+                    record.lock().unwrap().push(closed);
+                }
+            }),
+        },
+    );
+    let closed = h
+        .missions
+        .close(
+            &h.project,
+            &mission.id,
+            serde_json::from_value(json!({"actor": "human"})).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![true]);
+    let retried = crate::conversations(h.settings.clone()).retry_turn(
+        closed.conversation_id.as_deref().unwrap(),
+        &h.project,
+        "any-turn",
+    );
+    assert!(
+        matches!(retried, Err(WorkspaceError::Conflict(_))),
+        "{retried:?}"
+    );
+}
+
 #[test]
 fn the_agent_closes_the_mission_and_the_close_joins_the_transcript() {
     let harness = Harness::new();
