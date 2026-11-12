@@ -124,14 +124,16 @@ test('every activity-bar view opens its panel with items from more than one proj
     }
 })
 
-test('starting a chat in a project places it under that project and its composer names it', async ({ page }, testInfo) => {
+test('a new chat in a project opens empty there and its composer names it', async ({ page }, testInfo) => {
     const { alpha } = await seedProjects(page, testInfo)
     await page.goto('/')
     await page.getByTestId('activity-chats').click()
     const alphaGroup = group(page, alpha)
     await alphaGroup.hover()
     await alphaGroup.getByTestId('chats-project-new-chat').click()
-    await expect(alphaGroup.getByRole('button', { name: 'Open thread New thread' })).toHaveAttribute('aria-current', 'true')
+    // It opens empty, as a chat in an empty project does; nothing is saved until its first message.
+    await expect(page.getByText('New chat in alpha-project')).toBeVisible()
+    await expect(alphaGroup.getByTestId('chats-chat-row')).toHaveCount(0)
     await expect(page.getByTestId('chat-composer-project')).toHaveText('Runs and missions started here go to alpha-project')
     await expect(page.getByTestId('chat-project-link')).toHaveText('alpha-project')
 

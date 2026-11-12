@@ -4556,187 +4556,47 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  describe('creating empty threads', () => {
+  describe('New chat', () => {
     const projectPath = '/tmp/empty-thread-project'
-    const snapshotFor = (conversationId: string, title: string, snapshotProjectPath = projectPath) => conversationFixture({
+    const snapshotFor = (conversationId: string, title: string) => conversationFixture({
       conversation_id: conversationId,
-      project_path: snapshotProjectPath,
+      project_path: projectPath,
       title,
       created_at: '2026-09-29T10:00:00Z',
       updated_at: '2026-09-29T10:00:00Z',
       turns: [],
       segments: [],
     })
-    // Fake workspace server: threads exist only once persisted through its routes.
-    const stubThreadServer = (persisted: Record<string, ReturnType<typeof snapshotFor>> = {}) => {
-      const server = {
-        persisted,
-        settingsRequests: [] as Array<{ conversationId: string; body: Record<string, unknown> }>,
-        settingsGate: Promise.resolve(),
-        failSettings: false,
-      }
+
+    it('opens an empty chat without saving one, leaving the open chat listed', async () => {
+      const user = userEvent.setup()
+      const settingsRequests: string[] = []
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
-        const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-          status,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
         if (url.includes('/workspace/api/projects/conversations')) {
-          const listedProjectPath = new URL(url, 'http://localhost').searchParams.get('project_path') ?? projectPath
-          return json(summarySnapshot(Object.values(server.persisted).filter((snapshot) => snapshot.project_path === listedProjectPath), {
-            project_path: listedProjectPath,
-          }))
+          return json(summarySnapshot([snapshotFor('conversation-existing', 'Existing thread')], { project_path: projectPath }))
         }
-        const conversationId = decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
-        if (conversationId && init?.method === 'PUT' && url.includes('/settings')) {
-          server.settingsRequests.push({ conversationId, body: JSON.parse(String(init.body)) })
-          await server.settingsGate
-          if (server.failSettings) return json({ detail: 'Disk is read-only.' }, 500)
-          server.persisted[conversationId] = snapshotFor(conversationId, 'New thread', String(server.settingsRequests.at(-1)?.body.project_path))
-          return json(conversationMutationAck(server.persisted[conversationId]))
-        }
-        if (conversationId && init?.method === 'DELETE') {
-          delete server.persisted[conversationId]
-          return json({ status: 'deleted', conversation_id: conversationId, project_path: projectPath })
-        }
-        if (conversationId && !url.includes('/turns')) {
-          const snapshot = server.persisted[conversationId]
-          return snapshot ? json(conversationPage(snapshot)) : json({ detail: 'Unknown conversation' }, 404)
-        }
+        if (init?.method === 'PUT' && url.includes('/settings')) settingsRequests.push(url)
+        if (url.includes('/api/conversations/conversation-existing')) return json(conversationPage(snapshotFor('conversation-existing', 'Existing thread')))
         return json({})
       }))
-      return server
-    }
-    const openProject = (conversationId: string | null = null) => {
       act(() => {
         useStore.getState().registerProject(projectPath)
         useStore.getState().setActiveProjectPath(projectPath)
-        selectActiveConversation(conversationId)
+        selectActiveConversation('conversation-existing')
       })
-    }
-    const projectGroup = () => screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === projectPath)!
-    const newChatInProject = (user: ReturnType<typeof userEvent.setup>) => user.click(within(projectGroup()).getByTestId('chats-project-new-chat'))
-    const noChatsYet = () => waitFor(() => expect(projectGroup()).toHaveTextContent('No chats yet.'))
-    const selectedConversationId = () => useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
-
-    it('persists the thread before adding or selecting it', async () => {
-      const user = userEvent.setup()
-      const server = stubThreadServer()
-      let releaseSettings!: () => void
-      server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
-      openProject()
       renderProjectsPanel()
-      await noChatsYet()
+      const projectGroup = () => screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === projectPath)!
+      await within(projectGroup()).findByRole('button', { name: 'Open thread Existing thread' })
 
-      await newChatInProject(user)
-      await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
-      expect(server.settingsRequests[0]?.body).toMatchObject({ project_path: projectPath, expected_revision: '0' })
-      expect(projectGroup()).toHaveTextContent('No chats yet.')
-      expect(selectedConversationId()).toBeNull()
+      await user.click(within(projectGroup()).getByTestId('chats-project-new-chat'))
 
-      await act(async () => releaseSettings())
-      const thread = await screen.findByRole('button', { name: 'Open thread New thread' })
-      expect(thread).toHaveAttribute('aria-current', 'true')
-      expect(selectedConversationId()).toBe(server.settingsRequests[0]?.conversationId)
-    })
-
-    it('leaves another project untouched when creation finishes after switching to it', async () => {
-      const user = userEvent.setup()
-      const otherProjectPath = '/tmp/empty-thread-other-project'
-      const server = stubThreadServer({
-        'conversation-other': snapshotFor('conversation-other', 'Other thread', otherProjectPath),
-      })
-      let releaseSettings!: () => void
-      server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
-      openProject()
-      renderProjectsPanel()
-      await noChatsYet()
-      await newChatInProject(user)
-      await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
-      const createdConversationId = server.settingsRequests[0]!.conversationId
-
-      act(() => {
-        useStore.getState().registerProject(otherProjectPath)
-        useStore.getState().setActiveProjectPath(otherProjectPath)
-        selectActiveConversation('conversation-other')
-      })
-      await screen.findByRole('button', { name: 'Open thread Other thread' })
-      await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft in B')
-
-      await act(async () => releaseSettings())
-      await waitFor(() => {
-        expect(useStore.getState().homeConversationCache.summariesByProjectPath[projectPath]?.map((entry) => entry.conversation_id))
-          .toContain(createdConversationId)
-      })
-      expect(useStore.getState().projectSessionsByPath[otherProjectPath]?.conversationId).toBe('conversation-other')
-      expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Draft in B')
-      // The new chat joins its own project's group without being opened.
-      expect(within(projectGroup()).getByRole('button', { name: 'Open thread New thread' })).not.toHaveAttribute('aria-current')
-
-      act(() => useStore.getState().setActiveProjectPath(projectPath))
-      await screen.findByRole('button', { name: 'Open thread New thread' })
-    })
-
-    it('keeps another selected thread and its draft when creation finishes after selecting it', async () => {
-      const user = userEvent.setup()
-      const server = stubThreadServer({
-        'conversation-first': snapshotFor('conversation-first', 'First thread'),
-        'conversation-second': snapshotFor('conversation-second', 'Second thread'),
-      })
-      let releaseSettings!: () => void
-      server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
-      openProject('conversation-first')
-      renderProjectsPanel()
-      const secondThread = await screen.findByRole('button', { name: 'Open thread Second thread' })
-      await newChatInProject(user)
-      await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
-
-      await user.click(secondThread)
-      await waitFor(() => expect(selectedConversationId()).toBe('conversation-second'))
-      await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft here')
-
-      await act(async () => releaseSettings())
-      await screen.findByRole('button', { name: 'Open thread New thread' })
-      expect(selectedConversationId()).toBe('conversation-second')
-      expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Draft here')
-    })
-
-    it('shows an error and keeps the selection when creation fails', async () => {
-      const user = userEvent.setup()
-      const server = stubThreadServer({ 'conversation-existing': snapshotFor('conversation-existing', 'Existing thread') })
-      server.failSettings = true
-      openProject('conversation-existing')
-      renderProjectsPanel()
-      await screen.findByRole('button', { name: 'Open thread Existing thread' })
-
-      await newChatInProject(user)
-
-      expect(await screen.findByText('Disk is read-only.')).toBeInTheDocument()
-      expect(within(screen.getByTestId('project-thread-list')).getAllByRole('button', { name: /^Open thread/ })).toHaveLength(1)
-      expect(screen.queryByRole('button', { name: 'Open thread New thread' })).not.toBeInTheDocument()
-      expect(selectedConversationId()).toBe('conversation-existing')
-    })
-
-    it('keeps an empty thread across reload and deletes it before any message', async () => {
-      const user = userEvent.setup()
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
-      const server = stubThreadServer()
-      openProject()
-      const { unmount } = renderProjectsPanel()
-      await noChatsYet()
-      await newChatInProject(user)
-      await screen.findByRole('button', { name: 'Open thread New thread' })
-      const [conversationId] = Object.keys(server.persisted)
-
-      unmount()
-      resetProjectScopeState()
-      openProject()
-      renderProjectsPanel()
-      await screen.findByRole('button', { name: 'Open thread New thread' })
-
-      await user.click(screen.getByTestId(`project-thread-delete-${conversationId}`))
-      await noChatsYet()
-      expect(server.persisted).toEqual({})
+      expect(useStore.getState().projectSessionsByPath[projectPath]?.conversationId).toBeNull()
+      expect(screen.getByTestId('chat-title')).toHaveTextContent('New chat')
+      expect(screen.getByText('New chat in empty-thread-project')).toBeVisible()
+      expect(within(projectGroup()).getAllByRole('button', { name: /^Open thread/ })).toHaveLength(1)
+      expect(settingsRequests).toEqual([])
     })
   })
 

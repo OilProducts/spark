@@ -316,7 +316,6 @@ export function useProjectsHomeController() {
         onSelectConversationThread,
     } = useProjectThreadActions({
         activateConversationThread,
-        applyConversationBatch,
         updateProjectSessionState,
         clearHomeConversationSession,
         setPanelError,

@@ -129,15 +129,19 @@ it('marks a project whose folder is missing and offers no new chat there', () =>
     expect(within(group(HOME)).queryByTestId('chats-project-missing')).not.toBeInTheDocument()
 })
 
-it('starts a chat in the project whose "+" was used and names that project in the composer', async () => {
+it('opens a new chat in the project whose "+" was used, saving nothing until its first message', async () => {
     const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: HOME, projectSessionsByPath: { [HOME]: { conversationId: 'home-1' } as never } })
     renderChats()
     await user.click(within(group('/work/busy')).getByRole('button', { name: 'New chat in busy' }))
-    await waitFor(() => expect(settingsWrites).toHaveLength(1))
-    expect(settingsWrites[0].body).toMatchObject({ project_path: '/work/busy', expected_revision: '0' })
-    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
-    expect(within(group('/work/busy')).getByRole('button', { name: 'Open thread New thread' })).toHaveAttribute('aria-current', 'true')
+    expect(useStore.getState().activeProjectPath).toBe('/work/busy')
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
+    expect(screen.getByText('New chat in busy')).toBeVisible()
     expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to busy')
+    // Its list loading later doesn't open its newest chat over the new one.
+    await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(5))
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
+    expect(settingsWrites).toEqual([])
 })
 
 it('asks which project "+ New" starts a chat in, Home first then recent projects', async () => {
@@ -147,8 +151,9 @@ it('asks which project "+ New" starts a chat in, Home first then recent projects
     const items = await screen.findAllByTestId('project-picker-item')
     expect(items.map((item) => item.dataset.projectPath)).toEqual([HOME, '/work/gone', '/work/busy'])
     expect(items[1]).toHaveAttribute('data-disabled')
-    await user.click(items[0])
-    await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME }))
+    await user.click(items[2])
+    expect(useStore.getState().activeProjectPath).toBe('/work/busy')
+    expect(screen.getByText('New chat in busy')).toBeVisible()
 })
 
 it('names the open thread in the header and switches its mode from the compact control', async () => {
