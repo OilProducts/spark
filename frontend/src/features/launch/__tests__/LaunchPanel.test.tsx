@@ -155,6 +155,7 @@ useStore.getState().setRunsSelectedRunId(null);
 
     const topicInput = await screen.findByTestId('execution-launch-input-context.topic')
     await user.type(topicInput, 'quarterly report')
+    await user.type(screen.getByLabelText(/Run name/), '  Q3 report  ')
 
     const startButton = screen.getByTestId('launch-panel-start-button')
     await waitFor(() => expect(startButton).toBeEnabled())
@@ -171,6 +172,7 @@ useStore.getState().setRunsSelectedRunId(null);
       flow_name: TEST_FLOW,
       working_directory: TEST_PROJECT,
       launch_context: { 'context.topic': 'quarterly report' },
+      title: 'Q3 report',
     })
     expect(selectSelectedRunId(useStore.getState())).toBe('run-123')
     expect(selectSelectedRunSession(useStore.getState())?.record).toBeNull()

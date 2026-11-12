@@ -67,6 +67,8 @@ const setViewportWidth = (width: number) => {
 }
 
 const resetAppShellState = () => {
+  // The app records each view in the URL; start every test from a clean location.
+  window.history.replaceState(null, '', window.location.pathname + window.location.search)
   useRunJournalStore.setState({ byRunId: {} })
   {
 useStore.setState({...useStore.getState(),
@@ -1082,7 +1084,7 @@ describe('App shell behavior', () => {
     expect(screen.getByText('Thread one')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-triggers'))
-    expect(await screen.findByTestId('trigger-row-trigger-one')).toHaveTextContent('Project · project-one')
+    expect(await screen.findByTestId('trigger-row-trigger-one')).toHaveTextContent('project-one')
     expect(screen.getByTestId('trigger-row-trigger-gone')).toHaveAttribute('data-unregistered-target', 'true')
 
     await user.click(screen.getByTestId('activity-runs'))

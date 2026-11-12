@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react"
 import { Bell, GitBranch, House, MessageSquare, Network, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
 
 import { useStore, type ViewMode } from "@/store"
@@ -60,6 +60,8 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
     const runs = useStore((state) => state.runsListSession.runs)
     const [open, setOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement | null>(null)
+    const buttonRef = useRef<HTMLButtonElement | null>(null)
+    const listId = useId()
 
     useEffect(() => {
         if (!open) {
@@ -70,8 +72,18 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                 setOpen(false)
             }
         }
+        // Escape closes the list from anywhere, and returns focus to the bell if it was inside.
+        const onKeyDown = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return
+            if (containerRef.current?.contains(document.activeElement)) buttonRef.current?.focus()
+            setOpen(false)
+        }
         window.addEventListener('pointerdown', onPointerDown)
-        return () => window.removeEventListener('pointerdown', onPointerDown)
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+            window.removeEventListener('pointerdown', onPointerDown)
+            window.removeEventListener('keydown', onKeyDown)
+        }
     }, [open])
 
     const openItem = (item: AttentionItem) => {
@@ -85,8 +97,11 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
         // Narrow, the list hangs from the top row's right edge (the sticky nav), not from the bell, so it stays on screen.
         <div ref={containerRef} className={cn('max-sm:flex max-sm:min-w-6 max-sm:flex-1', !narrow && 'relative')}>
             <button
+                ref={buttonRef}
                 type="button"
                 data-testid="attention-bell"
+                aria-expanded={open}
+                aria-controls={open ? listId : undefined}
                 aria-label={items.length > 0
                     ? `Inbox: ${items.length} ${items.length === 1 ? 'item' : 'items'} waiting on you`
                     : failed ? 'Inbox: could not check what is waiting on you' : loadedItems ? 'Inbox: nothing waiting on you' : 'Inbox'}
@@ -117,6 +132,7 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
             </button>
             {open && (
                 <div
+                    id={listId}
                     data-testid="attention-bell-list"
                     className={cn(
                         // A long list scrolls inside the viewport instead of running off it.

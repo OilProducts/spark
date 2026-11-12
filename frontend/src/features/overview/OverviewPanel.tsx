@@ -85,6 +85,8 @@ const FINISHED_LIMIT = 8
 // Rows Needs you shows before "Show more"; the Inbox lists every one.
 const NEEDS_YOU_LIMIT = 6
 
+const retryRuns = () => window.dispatchEvent(new Event('spark:runs-overview-resync-required'))
+
 /** Opens the Runs view showing only failed runs, from every project. */
 function openFailedRuns() {
     useStore.getState().updateRunsListSession({ statusFilter: 'failed', projectFilter: null })
@@ -140,6 +142,10 @@ export function OverviewPanel() {
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
     const listsLoaded = useStore((state) => Boolean(state.runsListSession.fetched) && state.missionBoardLoaded)
+    // Until the run history loads, an empty list says nothing about what ran.
+    const runsFetched = useStore((state) => Boolean(state.runsListSession.fetched))
+    const runsFailed = useStore((state) => state.runsListSession.status === 'error')
+    const runsLoading = !runsFetched && !runsFailed
     const { chats, loaded } = useOverviewChats()
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [finishedWatermark] = useState(readFinishedWatermark)
@@ -219,10 +225,10 @@ export function OverviewPanel() {
                                         <span className="flex min-w-0 flex-1 flex-col gap-px">
                                             <span className="truncate text-sm font-medium">{attentionTitle(item, runs)}</span>
                                             {/* A gate's question says what this run waits on, where the kind alone reads the same for every run of a flow.
-                                                A long question gives way; the project stays readable. */}
-                                            <span className="flex min-w-0 text-xs text-muted-foreground">
-                                                <span className="min-w-0 truncate">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
-                                                <span className="shrink-0 whitespace-pre"> · {projectLabel(registry, item.project_path)}</span>
+                                                A long question gives way; the project stays readable. On a phone the question gets two lines of its own. */}
+                                            <span className="flex min-w-0 text-xs text-muted-foreground max-sm:flex-col">
+                                                <span className="min-w-0 truncate max-sm:line-clamp-2 max-sm:whitespace-normal">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
+                                                <span className="shrink-0 whitespace-pre"><span className="max-sm:hidden"> · </span>{projectLabel(registry, item.project_path)}</span>
                                             </span>
                                         </span>
                                         <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
@@ -239,8 +245,16 @@ export function OverviewPanel() {
                 </Section>
 
                 <Section testId="overview-running" heading="Running now" count={running.length}>
+                    {runsFailed ? (
+                        <Well data-testid="overview-runs-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            {runsFetched ? 'Couldn’t refresh your runs; what is shown here may be out of date.' : 'Couldn’t load your runs, so what is running and what finished can’t be shown.'}
+                            <Button type="button" size="sm" variant="outline" onClick={retryRuns}>Try again</Button>
+                        </Well>
+                    ) : null}
                     {running.length === 0 ? (
-                        <EmptyWell check={false} data-testid="overview-running-empty">Nothing is running.</EmptyWell>
+                        runsFailed ? null : runsLoading ? (
+                            <Well className="py-3.5 text-sm text-muted-foreground">Loading runs…</Well>
+                        ) : <EmptyWell check={false} data-testid="overview-running-empty">Nothing is running.</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
                             {running.map((item) => (
@@ -331,7 +345,11 @@ export function OverviewPanel() {
                         </p>
                     ) : null}
                     {finished.length === 0 ? (
-                        <EmptyWell>{sinceLastLook ? 'Nothing has finished since you last looked.' : 'Nothing has finished in the last day.'}</EmptyWell>
+                        runsFailed ? (
+                            <EmptyWell check={false} data-testid="overview-finished-unavailable">Finished runs can’t be shown until your runs load.</EmptyWell>
+                        ) : runsLoading ? (
+                            <Well className="py-3.5 text-sm text-muted-foreground">Loading runs…</Well>
+                        ) : <EmptyWell>{sinceLastLook ? 'Nothing has finished since you last looked.' : 'Nothing has finished in the last day.'}</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
                             {shownRows.map(({ key, latest: item, count, isNew }) => (

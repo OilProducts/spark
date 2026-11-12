@@ -16,7 +16,7 @@ import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegenerati
 import { useStore } from "@/store"
 import { triggerKey } from "@/lib/workspaceClient"
 import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/api/triggersApi"
-import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
+import { defaultProjectChoice, isUnregisteredTarget, recentProjectPath } from "@/features/projects/model/projectChoices"
 import { SheetEmpty, ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
 import { SectionHeading } from "@/components/app/section-heading"
@@ -26,7 +26,6 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
-  const activeProjectPath = useStore((state) => state.activeProjectPath)
   const triggersSession = useStore((state) => state.triggersSession)
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
   const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
@@ -111,9 +110,9 @@ export function TriggersPanel() {
 
   const createFormOpen = triggersSession.createFormOpen
   const openCreateForm = () => {
-    // An untouched draft starts in the active project, else the last-used one.
+    // An untouched draft starts in the project worked in most recently, as Run a flow does.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
-      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry, activeProjectPath)) })
+      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry, recentProjectPath(projectRegistry, useStore.getState().runsListSession.runs))) })
     }
     updateTriggersSession({ createFormOpen: true })
   }
@@ -314,7 +313,10 @@ export function TriggersPanel() {
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <Well className="text-sm">
                     <SectionHeading>Status</SectionHeading>
-                    <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
+                    {/* The Project field names a registered project; only a lost one needs saying here. */}
+                    {isUnregisteredTarget(projectRegistry, selectedTrigger.project_path) ? (
+                      <div className="mt-2 text-warning">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
+                    ) : null}
                     <div className="mt-2 text-muted-foreground">Last triggered: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {formatTriggerResult(selectedTrigger.state.last_result)}</div>

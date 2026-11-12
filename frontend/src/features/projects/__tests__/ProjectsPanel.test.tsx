@@ -5328,8 +5328,8 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default:')
-      expect(screen.getByText('Provider default: gpt-5.4')).toBeVisible()
+      // The model button alone names the default the chat inherits.
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/^Default: GPT-5\.4/i)
     })
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.queryByText('The saved Codex model is no longer available. Select another model.')).toBeNull()
@@ -5531,7 +5531,7 @@ describe('ProjectsPanel', () => {
       selectActiveConversation('codex-thread')
     })
     renderProjectsPanel()
-    await screen.findByText('Provider default: gpt-5.4')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/^Default: GPT-5\.4/i))
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
     await chooseEffort(user, 'High')

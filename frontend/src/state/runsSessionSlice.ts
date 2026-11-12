@@ -1,3 +1,4 @@
+import { runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
 import type { AppState } from './store-types'
@@ -15,6 +16,14 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
     runs: [],
     streamStatus: 'idle',
     streamError: null,
+}
+
+function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
+    const run = session.runs.find((candidate) => candidate.run_id === runId)
+    return {
+        ...session.statusFilter && (!run || runStatusKind(run.status, false) !== session.statusFilter) ? { statusFilter: null } : {},
+        ...session.projectFilter && run?.project_path !== session.projectFilter ? { projectFilter: null } : {},
+    }
 }
 
 const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
@@ -181,18 +190,25 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
         }
     },
     setRunsSelectedRunId: (runId) =>
-        set((state) => state.runsListSession.selectedRunId === runId ? state : ({
-            ...(runId ? { runDetailSessionsByRunId: {
-                ...state.runDetailSessionsByRunId,
-                [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
-                    record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
-                    questionsStatus: 'idle' as const,
-                    // A run opens on its status item, not on a node picked last time.
-                    selectedNodeId: null,
-                },
-            } } : {}),
-            runsListSession: { ...state.runsListSession, selectedRunId: runId },
-        })),
+        set((state) => {
+            // Opening a run the list's filters would hide drops those filters, so the open run is always listed.
+            const unfiltered = runId ? filtersHiding(state.runsListSession, runId) : {}
+            if (state.runsListSession.selectedRunId === runId) {
+                return Object.keys(unfiltered).length > 0 ? { runsListSession: { ...state.runsListSession, ...unfiltered } } : state
+            }
+            return {
+                ...(runId ? { runDetailSessionsByRunId: {
+                    ...state.runDetailSessionsByRunId,
+                    [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
+                        record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
+                        questionsStatus: 'idle' as const,
+                        // A run opens on its status item, not on a node picked last time.
+                        selectedNodeId: null,
+                    },
+                } } : {}),
+                runsListSession: { ...state.runsListSession, selectedRunId: runId, ...unfiltered },
+            }
+        }),
     updateRunDetailSession: (runId, patch) =>
         set((state) => !state.runDetailSessionsByRunId[runId] ? state : ({
             runDetailSessionsByRunId: {

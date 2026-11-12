@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 
 import { useStore } from '@/store'
+import { cn } from '@/lib/utils'
 import { openRun } from '@/app/useAttention'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel } from '@/components/app/side-panel-row'
@@ -11,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
-import { defaultProjectChoice, lastUsedProjectPath, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
+import { defaultProjectChoice, orderProjects, projectLabel, recentProjectPath } from '@/features/projects/model/projectChoices'
 import { fetchDefinitions } from '@/features/roles/rolesModel'
 import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 
@@ -61,18 +62,18 @@ export function groupFlows(flows: WorkspaceFlowResponse[], query: string, ownFlo
 }
 
 /** The names of a project's own flows, its copies of bundled ones included; null while loading or when unknown. */
-function useOwnFlows(projectPath: string | null) {
+export function useOwnFlows(projectPath: string | null) {
     const [own, setOwn] = useState<{ projectPath: string; names: ReadonlySet<string> | null } | null>(null)
     useEffect(() => {
         if (!projectPath) return
         let cancelled = false
-        fetchDefinitions(projectPath).then(
-            (list) => {
-                if (!cancelled) setOwn({ projectPath, names: new Set(list.items.filter((item) => item.kind === 'flow' && item.layer !== 'bundled').map((item) => item.name)) })
-            },
-            // Without the list, flows group by folder alone.
-            () => { if (!cancelled) setOwn({ projectPath, names: null }) },
-        )
+        fetchDefinitions(projectPath)
+            .then((list) => new Set(list.items.filter((item) => item.kind === 'flow' && item.layer !== 'bundled').map((item) => item.name)))
+            .then(
+                (names) => { if (!cancelled) setOwn({ projectPath, names }) },
+                // Without the list, flows group by folder alone.
+                () => { if (!cancelled) setOwn({ projectPath, names: null }) },
+            )
         return () => { cancelled = true }
     }, [projectPath])
     return own?.projectPath === projectPath ? own.names : null
@@ -96,19 +97,6 @@ function FlowOption({ flow, onChoose }: { flow: WorkspaceFlowResponse; onChoose:
             </button>
         </li>
     )
-}
-
-/** The project worked in most recently: the last one used, or where the latest run started when that was later. */
-function recentProjectPath(): string | null {
-    const { projectRegistry: registry, runsListSession } = useStore.getState()
-    const used = lastUsedProjectPath(registry)
-    const usedAt = Date.parse(used ? registry[used]?.lastAccessedAt ?? '' : '') || 0
-    let latest: { projectPath: string; at: number } | null = null
-    for (const run of runsListSession.runs) {
-        const at = Date.parse(run.started_at ?? '') || 0
-        if (run.project_path && registry[run.project_path] && at > (latest?.at ?? 0)) latest = { projectPath: run.project_path, at }
-    }
-    return latest && latest.at > usedAt ? latest.projectPath : used
 }
 
 function FlowChooser({ projectPath, onProjectChange, onChoose }: {
@@ -205,7 +193,7 @@ export function RunFlowDialog() {
         const onOpen = (event: Event) => {
             const detail = (event as CustomEvent<{ projectPath?: string | null; flowName?: string | null }>).detail ?? {}
             const registry = useStore.getState().projectRegistry
-            setRequest({ projectPath: defaultProjectChoice(registry, detail.projectPath ?? recentProjectPath()), flowName: detail.flowName ?? null })
+            setRequest({ projectPath: defaultProjectChoice(registry, detail.projectPath ?? recentProjectPath(registry, useStore.getState().runsListSession.runs)), flowName: detail.flowName ?? null })
         }
         window.addEventListener(RUN_FLOW_EVENT, onOpen)
         return () => window.removeEventListener(RUN_FLOW_EVENT, onOpen)
@@ -216,10 +204,10 @@ export function RunFlowDialog() {
 
     return (
         <Dialog open={request !== null} onOpenChange={(open) => { if (!open) close() }}>
+            {/* Both steps close the same way; the flow list keeps one height as it filters, the form fits its fields. */}
             <DialogContent
                 data-testid="run-flow-dialog"
-                className="flex h-[min(85vh,44rem)] flex-col overflow-hidden sm:max-w-2xl"
-                showCloseButton={!request?.flowName}
+                className={cn('flex flex-col overflow-hidden sm:max-w-2xl', request?.flowName ? 'max-h-[min(85vh,44rem)]' : 'h-[min(85vh,44rem)]')}
             >
                 {request?.flowName ? (
                     <>
@@ -246,7 +234,6 @@ export function RunFlowDialog() {
                                 if (runId) openRun(runId)
                                 else useStore.getState().setViewMode('runs')
                             }}
-                            onClose={close}
                         />
                     </>
                 ) : request ? (

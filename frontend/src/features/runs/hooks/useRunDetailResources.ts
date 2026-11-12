@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import {
     ApiHttpError,
@@ -13,6 +13,8 @@ import {
 import { useStore } from '@/store'
 
 import { useRunsTransportReconnectSignal } from '../services/runsTransportReconnect'
+import { useRunJournalStore } from '../state/runJournalStore'
+import { mergePendingInterviewGatesWithSnapshots } from '../model/timelineModel'
 
 import type {
     ArtifactErrorState,
@@ -42,6 +44,9 @@ let nextResourceRequestId = 0
 // An ended run writes its result after its final event, possibly after a
 // summary-model call, so an unavailable result is retried with backoff.
 const RESULT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000, 60000, 60000, 60000, 60000, 60000]
+// The journal can show a gate before the questions list has it, and its answers stay disabled
+// until the list confirms it; with no later event to prompt a check, these retries make one.
+const QUESTION_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000, 30000, 60000]
 
 function beginResourceRequest(runId: string, resource: string) {
     const state = useStore.getState()
@@ -73,6 +78,7 @@ const DEFAULT_RUN_DETAIL_SESSION = {
     artifactViewerError: null as string | null,
     questionsStatus: 'idle' as const,
     pendingQuestionSnapshots: [] as PendingQuestionSnapshot[],
+    answeredGateIds: {} as Record<string, boolean>,
 }
 
 export function useRunDetailResources({
@@ -252,6 +258,28 @@ export function useRunDetailResources({
         }
     }, [selectedRunId, updateRunDetailSession])
 
+    const hasUnconfirmedGate = useRunJournalStore((state) => {
+        const journalGates = manageSync && selectedRunId ? state.byRunId[selectedRunId]?.pendingInterviewGates : undefined
+        if (!journalGates?.length) return false
+        const listed = new Set(session.pendingQuestionSnapshots.map((question) => question.questionId))
+        return mergePendingInterviewGatesWithSnapshots(journalGates, session.pendingQuestionSnapshots)
+            .some((gate) => !gate.questionId || (!listed.has(gate.questionId) && !session.answeredGateIds[gate.questionId]))
+    })
+    const questionRetryAttempt = useRef(0)
+    useEffect(() => {
+        questionRetryAttempt.current = 0
+    }, [selectedRunId, hasUnconfirmedGate])
+    useEffect(() => {
+        if (!hasUnconfirmedGate || session.questionsStatus === 'loading') return
+        const delay = QUESTION_RETRY_DELAYS_MS[questionRetryAttempt.current]
+        if (delay === undefined) return
+        const timer = setTimeout(() => {
+            questionRetryAttempt.current += 1
+            void fetchPendingQuestions()
+        }, delay)
+        return () => clearTimeout(timer)
+    }, [fetchPendingQuestions, hasUnconfirmedGate, session.pendingQuestionSnapshots, session.questionsStatus])
+
     useEffect(() => {
         if (!manageSync || !selectedRunId) {
             return
@@ -275,8 +303,9 @@ export function useRunDetailResources({
         const reconcileTerminalQuestions = (event: Event) => {
             const run = event instanceof CustomEvent ? event.detail?.run : null
             // Only this run and its descendants: the live stream replays every listed run on reconnect.
+        // A run that starts waiting has a new question.
             const related = run?.run_id === selectedRunId || run?.root_run_id === selectedRunId || run?.parent_run_id === selectedRunId
-            if (related && ['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(run?.status)) {
+            if (related && ['waiting', 'completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(run?.status)) {
                 void fetchPendingQuestions()
             }
         }

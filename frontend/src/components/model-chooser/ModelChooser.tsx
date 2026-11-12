@@ -17,13 +17,17 @@ interface ModelChooserProps {
     layout?: 'fields' | 'compact'
     disabled?: boolean
     invalidModel?: boolean
+    /** What an inherited choice is called on the button, such as "Project default". */
+    defaultPrefix?: string
+    /** Says where the model comes from and where to change it. */
+    title?: string
 }
 
 const effortLabel = (effort: string) => effort === 'xhigh' ? 'XHigh' : effort.charAt(0).toUpperCase() + effort.slice(1)
 const providerLabel = (provider: string) => provider === 'codex' ? 'Codex' : provider === 'claude-code' ? 'Claude Code' : provider
 const empty: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 
-export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false }: ModelChooserProps) {
+export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false, defaultPrefix = 'Default', title }: ModelChooserProps) {
     const id = useId()
     const profiles = useLlmProfiles()
     const discovery = useModelOptions(projectPath)
@@ -95,10 +99,10 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
         {layout === 'fields' && <FieldLabel htmlFor={id}>Model</FieldLabel>}
         <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1) }}>
             <Popover.Trigger asChild>
-                <Button id={id} type="button" variant="outline" disabled={disabled} aria-label={`Model: ${value.model ? describe(resolved) : `Default: ${describe(resolved)}`}`}
+                <Button id={id} type="button" variant="outline" disabled={disabled} title={title} aria-label={`Model: ${value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}`}
                     aria-invalid={invalidModel} aria-describedby={invalidModel ? `${id}-error` : undefined}
                     className={`min-w-0 max-w-full justify-between border border-input text-foreground hover:bg-transparent focus-visible:border-ring ${layout === 'fields' ? 'w-full' : ''} ${!value.model ? 'text-muted-foreground' : ''}`}>
-                    <span className="truncate">{value.model ? describe(resolved) : `Default: ${describe(resolved)}`}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-50" />
+                    <span className="truncate">{value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-50" />
                 </Button>
             </Popover.Trigger>
             <Popover.Portal><Popover.Content align="start" sideOffset={6} collisionPadding={8} aria-label="Choose model"

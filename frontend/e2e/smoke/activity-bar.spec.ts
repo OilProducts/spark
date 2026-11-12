@@ -99,8 +99,8 @@ test('every activity-bar view opens its panel with items from more than one proj
         const triggers = page.getByTestId('triggers-view').getByTestId('side-panel')
         const alphaRow = triggers.getByRole('button', { name: new RegExp(`Alpha target ${stamp}`) })
         const betaRow = triggers.getByRole('button', { name: new RegExp(`Beta target ${stamp}`) })
-        await expect(alphaRow).toContainText('Project · alpha-project')
-        await expect(betaRow).toContainText('Project · beta-project')
+        await expect(alphaRow).toContainText('alpha-project')
+        await expect(betaRow).toContainText('beta-project')
         // The selected trigger survives a reload, whichever row it is.
         for (const row of [betaRow, alphaRow]) {
             await row.click()

@@ -367,6 +367,9 @@ pub struct NodeOverride {
     pub reasoning_effort: Option<String>,
 }
 
+/// A launch-given run name is kept to a line's length.
+const RUN_TITLE_MAX_CHARS: usize = 120;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineStartRequest {
     #[serde(default)]
@@ -392,6 +395,9 @@ pub struct PipelineStartRequest {
     pub flow_name: Option<String>,
     #[serde(default)]
     pub goal: Option<String>,
+    /// A name for the run given at launch; it stands in for a generated title.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub launch_context: Option<ContextMap>,
     /// Per-node execution selections keyed by exact node id.
@@ -420,6 +426,7 @@ impl Default for PipelineStartRequest {
             execution_profile_id: None,
             flow_name: None,
             goal: None,
+            title: None,
             launch_context: None,
             node_overrides: None,
             spec_id: None,
@@ -1935,6 +1942,8 @@ impl AttractorApiService {
         record.plan_id = trimmed_option(request.plan_id.as_deref());
         record.root_run_id = Some(run_id.clone());
         record.launch_context = Some(launch_context.values().clone());
+        record.title = trimmed_option(request.title.as_deref())
+            .map(|title| title.chars().take(RUN_TITLE_MAX_CHARS).collect());
         record.execution_lock = execution_lock.clone();
         record.effective_flow_hash = Some(format!(
             "{:x}",

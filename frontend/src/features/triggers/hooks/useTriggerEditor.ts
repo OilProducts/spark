@@ -17,7 +17,6 @@ import {
 } from '../model/triggerForm'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { useDialogController } from '@/components/app/dialog-controller'
-import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 type UseTriggerEditorArgs = {
     refreshTriggers: () => Promise<void>
     selectedTrigger: TriggerResponse | null
@@ -88,7 +87,7 @@ export function useTriggerEditor({
                 revealWebhookSecret(triggerKey(created), created.webhook_secret)
             }
             setTriggersSessionNewDraft({
-                form: createEmptyTriggerForm(defaultProjectChoice(useStore.getState().projectRegistry, useStore.getState().activeProjectPath)),
+                form: createEmptyTriggerForm(newTriggerForm.projectPath),
             })
             setErrorsShownFor(null)
             await refreshTriggers()

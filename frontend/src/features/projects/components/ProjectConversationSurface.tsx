@@ -69,12 +69,12 @@ interface ProjectConversationSurfaceProps {
     onUseModelDefaults?: () => void
 }
 
-// Where the chat's model comes from, and where to change it.
+// Where the chat's model comes from, named on the model button, and where to change it.
 const MODEL_SOURCES = {
-    conversation: { label: 'Model: set for this chat', title: 'Chosen for this chat with the model picker.' },
-    role: { label: 'Model: role default', title: "Set by this chat's role. Pick a model to use another one in this chat." },
-    project: { label: 'Model: project default', title: "Change it in this project's settings, or pick a model for this chat." },
-    workspace: { label: 'Model: workspace default', title: 'Change it in Settings, or pick a model for this chat.' },
+    conversation: { prefix: 'Default', title: 'Chosen for this chat with the model picker.' },
+    role: { prefix: 'Role default', title: "Set by this chat's role. Pick a model to use another one in this chat." },
+    project: { prefix: 'Project default', title: "Change it in this project's settings, or pick a model for this chat." },
+    workspace: { prefix: 'Default', title: 'Change it in Settings, or pick a model for this chat.' },
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
@@ -134,7 +134,14 @@ export function ProjectConversationSurface({
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
                             {activeConversationHandle ? (
                                 <>
-                                    <span data-testid="chat-handle" className="font-mono">{activeConversationHandle}</span>
+                                    {/* The handle is how flows and the spark command address this chat; say so where it shows. */}
+                                    <span
+                                        data-testid="chat-handle"
+                                        title="This chat's ID. Runs it starts, and the spark command's --conversation option, use it to reach this chat."
+                                        className="shrink-0"
+                                    >
+                                        Chat ID <span className="font-mono">{activeConversationHandle}</span>
+                                    </span>
                                     <span aria-hidden="true">·</span>
                                 </>
                             ) : null}
@@ -209,8 +216,6 @@ export function ProjectConversationSurface({
                                         <Folder aria-hidden="true" className="size-3.5 shrink-0" />
                                         <span className="truncate">Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span></span>
                                     </p>
-                                    {modelSettingsSource ? <span className="text-xs text-muted-foreground" title={MODEL_SOURCES[modelSettingsSource].title}>{MODEL_SOURCES[modelSettingsSource].label}</span> : null}
-                                    {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
                                     <ContextMeter usage={contextUsage} />
                                 </>
                             ),
@@ -235,8 +240,11 @@ export function ProjectConversationSurface({
                                             <NativeSelectOption value="plan">Plan mode</NativeSelectOption>
                                         </NativeSelect>
                                     ) : null}
+                                    {/* One label for the model: the button names it and, when inherited, where from. */}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
-                                        projectPath={activeProjectPath} inheritLabel="Provider default"
+                                        projectPath={activeProjectPath} inheritLabel={defaultModel || 'Provider default'}
+                                        defaultPrefix={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].prefix : undefined}
+                                        title={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].title : undefined}
                                         layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
                                 </>
                             ),

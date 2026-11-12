@@ -1,5 +1,5 @@
 export { LaunchPanel, type LaunchPanelProps } from './components/LaunchPanel'
-export { RunFlowDialog, openRunFlowDialog } from './components/RunFlowDialog'
+export { RunFlowDialog, groupFlows, openRunFlowDialog, useOwnFlows } from './components/RunFlowDialog'
 export { LaunchInputsForm } from './components/LaunchInputsForm'
 export { LaunchNoticeStack } from './components/LaunchNoticeStack'
 export { ExecutionProfileSection } from './components/ExecutionProfileSection'

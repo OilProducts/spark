@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { useFlowSummaries } from '@/features/launch'
+import { groupFlows, useFlowSummaries, useOwnFlows } from '@/features/launch'
 import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 import {
     INTERVAL_UNITS,
@@ -23,7 +23,8 @@ import {
     type TriggerSourceType,
 } from '../model/triggerForm'
 
-type ProjectFlows = { status: 'loading' | 'ready' | 'error'; flows: WorkspaceFlowResponse[] }
+/** A project's flows, and which of them are its own rather than bundled with Spark (null while unknown). */
+type ProjectFlows = { status: 'loading' | 'ready' | 'error'; flows: WorkspaceFlowResponse[]; own: ReadonlySet<string> | null; name: string }
 
 /** A label, the control, then its hint and error, which the control names with `describedBy`. */
 function TriggerField({
@@ -83,6 +84,11 @@ function FlowSelect({
     disabled?: boolean
 }) {
     const flow = project.flows.find((entry) => entry.name === value)
+    // As in Run a flow: the project's own flows first, then Spark's bundled flows by folder.
+    const { own, folders } = groupFlows(project.flows, '', project.own)
+    const option = (entry: WorkspaceFlowResponse) => (
+        <option key={entry.name} value={entry.name} title={entry.description || undefined}>{entry.title}</option>
+    )
     const missing = Boolean(value) && project.status === 'ready' && !flow
     const note = missing
         ? <span className="text-destructive">This flow isn't in the project. Choose another.</span>
@@ -95,8 +101,9 @@ function FlowSelect({
                 <NativeSelect id={id} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className="text-sm" {...describedBy(id, error, note)}>
                     <option value="">{project.status === 'loading' ? 'Loading flows…' : emptyLabel}</option>
                     {value && !flow ? <option value={value}>{missing ? `${value} (not found)` : value}</option> : null}
-                    {project.flows.map((entry) => (
-                        <option key={entry.name} value={entry.name} title={entry.description || undefined}>{entry.title}</option>
+                    {own.length > 0 ? <optgroup label={`${project.name}'s flows`}>{own.map(option)}</optgroup> : null}
+                    {folders.map((group) => (
+                        <optgroup key={group.label} label={project.own ? `Bundled with Spark: ${group.label}` : group.label}>{group.items.map(option)}</optgroup>
                     ))}
                 </NativeSelect>
             )}
@@ -172,9 +179,11 @@ export function TriggerEditor({
         return () => { disposed = true }
     }, [form.actionMode, form.projectPath])
     const summaries = useFlowSummaries(form.projectPath || null)
-    const projectFlows: ProjectFlows = !summaries ? { status: 'loading', flows: [] }
-        : summaries.error ? { status: 'error', flows: [] }
-        : { status: 'ready', flows: summaries.flows }
+    const ownFlows = useOwnFlows(form.projectPath || null)
+    const projectName = projectLabel(projectRegistry, form.projectPath)
+    const projectFlows: ProjectFlows = !summaries ? { status: 'loading', flows: [], own: null, name: projectName }
+        : summaries.error ? { status: 'error', flows: [], own: null, name: projectName }
+        : { status: 'ready', flows: summaries.flows, own: ownFlows, name: projectName }
     // When a refused save first shows errors, move to the first field to fix.
     const rootRef = useRef<HTMLDivElement>(null)
     const hasErrors = Object.keys(errors).length > 0

@@ -358,7 +358,7 @@ describe('TriggersPanel', () => {
     })
   })
 
-  it('creates triggers in a registered project, defaulting to the active project', async () => {
+  it('creates triggers in a registered project, defaulting to the one worked in most recently, as Run a flow does', async () => {
     const postPayloads: Array<Record<string, unknown>> = []
     const createdTriggers: Array<ReturnType<typeof makeTrigger>> = []
     const fetchMock = vi.mocked(global.fetch)
@@ -403,12 +403,12 @@ describe('TriggersPanel', () => {
     // No execution target or free-form path: only a registered project.
     expect(createScope.queryByLabelText('Execution target')).not.toBeInTheDocument()
     expect(createScope.queryByLabelText('Project path')).not.toBeInTheDocument()
-    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/active-project')
-    await user.type(createScope.getByLabelText('Name'), 'Active project trigger')
+    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/last-used-project')
+    await user.type(createScope.getByLabelText('Name'), 'Last used project trigger')
     await user.selectOptions(createScope.getByLabelText('Flow to start'), await createScope.findByRole('option', { name: 'Test planning' }))
     await user.click(screen.getByTestId('trigger-create-button'))
     await waitFor(() => expect(postPayloads).toHaveLength(1))
-    expect(postPayloads[0]).toMatchObject({ project_path: '/tmp/active-project' })
+    expect(postPayloads[0]).toMatchObject({ project_path: '/tmp/last-used-project' })
     expect(postPayloads[0]?.action).not.toHaveProperty('project_path')
 
     await waitFor(() => expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument())
@@ -460,7 +460,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     const registeredRow = await screen.findByTestId('trigger-row-trigger-registered-project')
-    expect(registeredRow).toHaveTextContent('Project · registered-project')
+    expect(screen.getByTestId('trigger-row-trigger-registered-project').querySelector('[data-testid="trigger-row-project"]')).toHaveTextContent(/^registered-project$/)
     expect(registeredRow).not.toHaveTextContent('Disabled')
     expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
     const otherRow = screen.getByTestId('trigger-row-trigger-other-project')
@@ -475,7 +475,6 @@ describe('TriggersPanel', () => {
       expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
     })
     expect(selectedTriggerScope.getByLabelText('Project')).toBeDisabled()
-    expect(selectedTriggerScope.getByText('Project · registered-project')).toBeVisible()
   })
 
   it('keeps protected trigger target and source settings locked while saving only allowed edits', async () => {

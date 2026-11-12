@@ -1348,6 +1348,16 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
 
     expect(screen.getByTestId('activity-chats').className).toContain('focus-visible')
     expect(screen.getByTestId('attention-bell').className).toContain('focus-visible')
+    // The Inbox is a disclosure: it says whether its list is open, and Escape closes it back to the bell.
+    const bell = screen.getByTestId('attention-bell')
+    expect(bell).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(bell)
+    expect(bell).toHaveAttribute('aria-expanded', 'true')
+    expect(bell.getAttribute('aria-controls')).toBe(screen.getByTestId('attention-bell-list').id)
+    screen.getByTestId('attention-bell-list').focus()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('attention-bell-list')).toBeNull()
+    expect(bell).toHaveAttribute('aria-expanded', 'false')
 
     cleanup()
     act(() => {

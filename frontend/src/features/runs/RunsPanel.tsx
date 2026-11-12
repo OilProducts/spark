@@ -61,6 +61,9 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     return (
+        // The project filter heads the list at full width, where a project's name has room.
+        <div className="flex h-full min-h-0 flex-col gap-2 [&>[data-slot=native-select-wrapper]]:w-full">
+        <RunsProjectFilter />
         <RunList
             error={error}
             status={status}
@@ -77,6 +80,7 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             statusFilter={statusFilter}
             onStatusFilterChange={(next) => useStore.getState().updateRunsListSession({ statusFilter: next })}
         />
+        </div>
     )
 }
 
@@ -90,7 +94,7 @@ function RunsProjectFilter() {
             aria-label="Show runs from project"
             value={projectFilter ?? ''}
             onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="max-w-36 truncate bg-background pl-2.5 pr-8"
+            className="truncate bg-background pl-2.5 pr-8"
         >
             <NativeSelectOption value="">All projects</NativeSelectOption>
             {orderProjects(registry).map((project) => (
@@ -456,7 +460,6 @@ export function RunsPanel() {
             title="Runs"
             actions={(
                 <>
-                    <RunsProjectFilter />
                     <Button
                         type="button"
                         variant="ghost"

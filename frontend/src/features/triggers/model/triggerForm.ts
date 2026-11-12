@@ -152,12 +152,12 @@ export function triggerSourceSummary(trigger: TriggerResponse): string {
 
 type Registry = Record<string, RegisteredProject>
 
-/** The project the trigger belongs to. */
+/** The project the trigger belongs to, by name; one no longer registered says so. */
 export function triggerProjectSummary(trigger: TriggerResponse, registry: Registry): string {
     const label = projectLabel(registry, normalizeProjectPath(trigger.project_path))
     return isUnregisteredTarget(registry, trigger.project_path)
         ? `Unregistered project · ${label}`
-        : `Project · ${label}`
+        : label
 }
 
 /** A `datetime-local` value for an ISO timestamp, in the browser's time zone. */

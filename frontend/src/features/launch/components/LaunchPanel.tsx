@@ -36,7 +36,8 @@ export interface LaunchPanelProps {
     initialModel?: string
     infoNotice?: string | null
     onLaunched: (runId: string | null, queued: boolean) => void
-    onClose: () => void
+    /** Omitted where the panel's container closes it, as a dialog does with its own button and Escape. */
+    onClose?: () => void
 }
 
 export function LaunchPanel({
@@ -67,6 +68,7 @@ export function LaunchPanel({
     const [launchInputsCollapsed, setLaunchInputsCollapsed] = useState(false)
     const [workingDirectory, setWorkingDirectory] = useState(initialWorkingDirectory)
     const [model, setModel] = useState(initialModel ?? '')
+    const [runName, setRunName] = useState('')
     const [isLaunching, setIsLaunching] = useState(false)
     const [runStartError, setRunStartError] = useState<string | null>(null)
     const [gitPolicyWarning, setGitPolicyWarning] = useState<string | null>(null)
@@ -182,6 +184,7 @@ export function LaunchPanel({
                     reasoningEffort: selectedReasoningEffort,
                     launchContext,
                     executionProfileId: placement.selectedProfileId || null,
+                    title: runName,
                 },
                 { onGitPolicyWarning: setGitPolicyWarning },
             )
@@ -211,7 +214,7 @@ export function LaunchPanel({
             data-testid="launch-panel"
             className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto outline-none"
             onKeyDown={(event) => {
-                if (event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+                if (onClose && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
                     event.stopPropagation()
                     onClose()
                 }
@@ -232,17 +235,19 @@ export function LaunchPanel({
                             </span>
                         ) : null}
                     </div>
-                    <Button
-                        type="button"
-                        data-testid="launch-panel-close-button"
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label="Close launch panel"
-                        onClick={onClose}
-                        className="shrink-0"
-                    >
-                        <X className="h-3.5 w-3.5" />
-                    </Button>
+                    {onClose ? (
+                        <Button
+                            type="button"
+                            data-testid="launch-panel-close-button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label="Close launch panel"
+                            onClick={onClose}
+                            className="shrink-0"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </Button>
+                    ) : null}
                 </div>
                 {flowDescription ? (
                     <p data-testid="launch-panel-description" className="text-sm text-muted-foreground">{flowDescription}</p>
@@ -285,6 +290,24 @@ export function LaunchPanel({
                 }}
             />
 
+            {/* Runs of one flow otherwise share its name; a name here tells this one apart everywhere it is listed. */}
+            <div className="space-y-1.5">
+                <Label htmlFor="launch-panel-run-name" className="text-sm">
+                    Run name <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                    id="launch-panel-run-name"
+                    data-testid="launch-panel-run-name-input"
+                    value={runName}
+                    maxLength={120}
+                    onChange={(event) => setRunName(event.target.value)}
+                    placeholder={panelTitle}
+                    aria-describedby="launch-panel-run-name-hint"
+                    className="h-8 text-sm"
+                />
+                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Shown in Runs, Needs you and the Inbox in place of the flow's name.</p>
+            </div>
+
             {parsedLaunchInputs.entries.length > 0 || parsedLaunchInputs.error ? <Well>
                 <LaunchInputsForm
                     flowName={target.flowName}
@@ -318,19 +341,14 @@ export function LaunchPanel({
             >
                 <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                     <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-                    <span className="font-medium">Run options</span>
+                    <span className="shrink-0 whitespace-nowrap font-medium">Run options</span>
                     <span data-testid="launch-panel-options-summary" className="min-w-0 truncate text-muted-foreground">{optionsSummary}</span>
                 </summary>
                 <div className="space-y-3 border-t border-border px-3 py-3">
-                    {/* Paths wrap after a slash, not mid-word. */}
-                    <p
-                        data-testid="launch-panel-target-copy"
-                        className="break-words text-xs leading-5 text-muted-foreground"
-                    >
-                        {projectPath
-                            ? <>Project folder: {projectPath.split('/').map((part, index) => <span key={index}>{index > 0 ? <>/<wbr /></> : null}{part}</span>)}</>
-                            : 'Choose a project to enable launching.'}
-                    </p>
+                    {/* The project folder shows once, as the working directory's placeholder. */}
+                    {projectPath ? null : (
+                        <p data-testid="launch-panel-target-copy" className="text-xs leading-5 text-muted-foreground">Choose a project to enable launching.</p>
+                    )}
                     <ExecutionProfileSection placement={placement} />
                     <div className="space-y-1.5">
                         <Label htmlFor="launch-panel-working-directory" className="text-sm">

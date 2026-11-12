@@ -1,8 +1,8 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { RunsHashRoutingController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController } from '@/app/AppSessionControllers'
 import { buildRunsHash, isRunsHash, parseRunsHash } from '@/app/runsRouting'
 import { useStore } from '@/store'
 
@@ -32,24 +32,22 @@ describe('runsRouting helpers', () => {
     })
 })
 
-describe('RunsHashRoutingController', () => {
+describe('HistoryRoutingController', () => {
     beforeEach(() => {
         resetHash()
-        {
-useStore.setState({viewMode: 'home',
-runDetailSessionsByRunId: {}});
-useStore.getState().setRunsSelectedRunId(null);
-}
+        useStore.setState({ viewMode: 'home', projectPagePath: null, runDetailSessionsByRunId: {} })
+        useStore.getState().setRunsSelectedRunId(null)
     })
 
     afterEach(() => {
+        cleanup()
         resetHash()
     })
 
     it('applies a deep link hash to the store on mount', async () => {
         window.history.replaceState(null, '', buildRunsHash('run-deep-link', 'deploy'))
 
-        render(<RunsHashRoutingController />)
+        render(<HistoryRoutingController />)
 
         await waitFor(() => {
             expect(useStore.getState().viewMode).toBe('runs')
@@ -61,7 +59,7 @@ useStore.getState().setRunsSelectedRunId(null);
     })
 
     it('applies hashchange navigation to the store', async () => {
-        render(<RunsHashRoutingController />)
+        render(<HistoryRoutingController />)
 
         act(() => {
             window.location.hash = buildRunsHash('run-live', 'verify')
@@ -77,8 +75,21 @@ useStore.getState().setRunsSelectedRunId(null);
         ).toBe('verify')
     })
 
+    it('opens a view named by a bare hash link', async () => {
+        render(<HistoryRoutingController />)
+
+        act(() => {
+            window.location.hash = '#/triggers'
+            window.dispatchEvent(new HashChangeEvent('hashchange'))
+        })
+
+        await waitFor(() => {
+            expect(useStore.getState().viewMode).toBe('triggers')
+        })
+    })
+
     it('reflects store selection into the hash while on the runs tab', async () => {
-        render(<RunsHashRoutingController />)
+        render(<HistoryRoutingController />)
 
         act(() => {
             const state = useStore.getState()
@@ -92,8 +103,8 @@ useStore.getState().setRunsSelectedRunId(null);
         })
     })
 
-    it('clears a stale runs hash when leaving the runs tab', async () => {
-        render(<RunsHashRoutingController />)
+    it('names the view in the hash after leaving the runs tab', async () => {
+        render(<HistoryRoutingController />)
 
         act(() => {
             const state = useStore.getState()
@@ -109,7 +120,43 @@ useStore.getState().setRunsSelectedRunId(null);
         })
 
         await waitFor(() => {
-            expect(isRunsHash(window.location.hash)).toBe(false)
+            expect(window.location.hash).toBe('#/home')
         })
+    })
+
+    it('adds one history entry per place, so Back returns to the view a run was opened from', async () => {
+        useStore.setState({ viewMode: 'overview' })
+        render(<HistoryRoutingController />)
+        const start = window.history.length
+
+        // The view and its run change in separate updates, as when a run opens from the Overview.
+        await act(async () => {
+            useStore.getState().setRunsSelectedRunId('run-opened')
+            useStore.getState().setViewMode('runs')
+        })
+        expect(window.history.length).toBe(start + 1)
+        // Picking a node rewrites the entry rather than adding one.
+        await act(async () => {
+            useStore.getState().updateRunDetailSession('run-opened', { selectedNodeId: 'build' })
+        })
+        expect(window.history.length).toBe(start + 1)
+        expect(window.location.hash).toBe(buildRunsHash('run-opened', 'build'))
+
+        act(() => {
+            window.history.back()
+        })
+        await waitFor(() => {
+            expect(useStore.getState().viewMode).toBe('overview')
+        })
+        expect(window.location.hash).toBe('#/overview')
+
+        act(() => {
+            window.history.forward()
+        })
+        await waitFor(() => {
+            expect(useStore.getState().viewMode).toBe('runs')
+        })
+        expect(selectSelectedRunId(useStore.getState())).toBe('run-opened')
+        expect(useStore.getState().runDetailSessionsByRunId['run-opened']?.selectedNodeId).toBe('build')
     })
 })
