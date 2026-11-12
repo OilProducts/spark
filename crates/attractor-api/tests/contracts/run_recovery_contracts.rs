@@ -776,6 +776,7 @@ const ORPHAN_RUN: &str = "run-orphan-processes";
 const ORPHAN_LIFE_ENV: &str = "SPARK_RECOVERY_ORPHAN_LIFE";
 const ORPHAN_ROOT_ENV: &str = "SPARK_RECOVERY_ORPHAN_ROOT";
 const ORPHAN_CHILD_ENV: &str = "SPARK_RECOVERY_ORPHAN_CHILD";
+const NEW_GROUP_ENV: &str = "SPARK_RECOVERY_NEW_GROUP";
 const BOUNDARY_EXIT_ENV: &str = "SPARK_RECOVERY_BOUNDARY_EXIT";
 const TOLERATE_ENV: &str = "SPARK_RECOVERY_TOLERATE";
 const ORPHAN_CRASH_CODE: i32 = 7;
@@ -792,17 +793,45 @@ fn orphan_wait(mut condition: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// Child process entry point: execs the arguments after `--` as the leader of
+/// a new process group. A no-op in the ordinary test run.
+#[cfg(unix)]
+#[test]
+fn exec_in_new_group() {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os(NEW_GROUP_ENV).is_none() {
+        return;
+    }
+    let args = std::env::args_os()
+        .skip_while(|arg| arg != "--")
+        .skip(1)
+        .collect::<Vec<_>>();
+    let error = std::process::Command::new(&args[0])
+        .args(&args[1..])
+        .process_group(0)
+        .exec();
+    panic!("{args:?}: {error}");
+}
+
 /// A tool that announces itself and holds, surviving TERM so that only a KILL
 /// ends it: a cancellation that dies after telling it to stop leaves it running.
+/// It holds in a process group of its own, with the record and output it
+/// inherited, since the executor's death stops the tool's own group.
 fn orphan_tool(root: &Path, signal: &str, next: &str) -> Value {
     let p = |name: &str| root.join(name).display().to_string();
+    let holder = format!(
+        "exec 2>/dev/null; trap \"touch '{term}'\" TERM; ps -o pgid= -p $$ | tr -d ' ' >> '{pids}'; \
+         touch '{signal}'; i=0; while [ $i -lt 2400 ]; do sleep 0.05; i=$((i+1)); done",
+        term = p("term-seen"),
+        pids = p("pids"),
+        signal = p(signal),
+    );
     json!({"kind": "tool", "config": {"kind": "tool", "exit_codes": {"0": "done"},
         "command": format!(
-            "exec 2>/dev/null; trap \"touch '{term}'\" TERM; ps -o pgid= -p $$ | tr -d ' ' >> '{pids}'; \
-             touch '{signal}'; i=0; while [ $i -lt 2400 ]; do sleep 0.05; i=$((i+1)); done",
-            term = p("term-seen"),
-            pids = p("pids"),
-            signal = p(signal),
+            "{NEW_GROUP_ENV}=1 '{exe}' --exact run_recovery_contracts::exec_in_new_group \
+             -- sh -c '{holder}' & wait",
+            exe = std::env::current_exe().unwrap().display(),
+            holder = holder.replace('\'', r"'\''"),
         )},
         "routes": {"done": {"to": next, "description": "Continue."}}})
 }

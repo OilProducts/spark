@@ -433,8 +433,7 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
             return Err(EnvironmentError::Other("Stopped.".to_string()));
         }
         let start = Instant::now();
-        let mut child = command_builder
-            .spawn()
+        let mut child = spawn_process_group(command_builder)
             .map_err(|error| EnvironmentError::CommandStart(error.to_string()))?;
         let process_group_id = child.id();
         self.register_process_group(process_group_id);
@@ -686,6 +685,8 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+/// Makes `command` lead its own process group, which `terminate_process_group`
+/// stops as a whole. Start it with `spawn_process_group`.
 pub fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     {
@@ -697,6 +698,151 @@ pub fn configure_process_group(command: &mut Command) {
     {
         let _ = command;
     }
+}
+
+/// Starts `command`, set up by `configure_process_group`, tied to this process:
+/// once this process ends, however it ends, the command and everything it
+/// started stop within a few seconds. Until then nothing changes. If it cannot
+/// be tied, it is stopped and the start fails.
+pub fn spawn_process_group(command: Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        spawn_with_lifeline(command)
+    }
+
+    #[cfg(windows)]
+    {
+        let mut command = command;
+        join_spark_job()?;
+        command.spawn()
+    }
+}
+
+/// A pipe whose close-on-exec write end only this process holds, so its read
+/// end sees end of input once this process has ended, however it ended.
+#[cfg(unix)]
+static SPARK_ALIVE: std::sync::OnceLock<(std::io::PipeReader, std::io::PipeWriter)> =
+    std::sync::OnceLock::new();
+
+/// Runs in the started process's group, with Spark's pipe on stdin and the read
+/// end of the started process's own pipe on stdout. It forks a watcher and
+/// returns at once. Once Spark's pipe closes, the watcher TERMs the group, then
+/// KILLs it. Once every holder of the started process's pipe has gone (the
+/// process and whatever it started that kept its descriptors), it goes too.
+/// A TERM to the group ends it with the rest.
+#[cfg(unix)]
+const LIFELINE_SCRIPT: &str = "exec 3<&0 4<&1 </dev/null >/dev/null 2>&1; \
+    { { read _ <&3; trap '' TERM; kill -TERM 0; sleep 2; kill -KILL 0; } & \
+    read _ <&4; kill $!; } &";
+
+// ponytail: Spark killed in the few milliseconds between a start and its
+// lifeline, or midway through its own stop of a group (which ends the
+// lifeline), leaves that group running; and a descendant that closes every
+// inherited descriptor outlives its lifeline. Close these if they ever matter.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn spawn_with_lifeline(mut command: Command) -> std::io::Result<Child> {
+    use std::os::unix::process::CommandExt;
+
+    let spark_alive = match SPARK_ALIVE.get() {
+        Some(pipe) => pipe,
+        None => {
+            let pipe = std::io::pipe()?;
+            SPARK_ALIVE.get_or_init(move || pipe)
+        }
+    };
+    let (alive, holder) = std::io::pipe()?;
+    // SAFETY: between fork and exec it only makes one system call. It leaves
+    // the holder open across exec, so the program and what it starts hold it.
+    unsafe {
+        command.pre_exec(move || {
+            rustix::io::fcntl_setfd(&holder, rustix::io::FdFlags::empty())?;
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    // Spark's copy of the holder goes with the command.
+    drop(command);
+    let group = rustix::process::Pid::from_raw(child.id() as i32)
+        .ok_or_else(|| std::io::Error::other("no process ID"))
+        .and_then(|pid| Ok(rustix::process::getpgid(Some(pid))?));
+    let tied = group.and_then(|group| {
+        if group == rustix::process::getpgrp() {
+            return Err(std::io::Error::other("it shares Spark's process group"));
+        }
+        let status = Command::new("/bin/sh")
+            .args(["-c", LIFELINE_SCRIPT])
+            .process_group(group.as_raw_pid())
+            .current_dir("/")
+            .stdin(spark_alive.0.try_clone()?)
+            .stdout(alive)
+            .stderr(Stdio::null())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "its lifeline failed: {status}"
+            )))
+        }
+    });
+    match tied {
+        Ok(()) => Ok(child),
+        // Gone already, with nothing to tie.
+        Err(_) if matches!(child.try_wait(), Ok(Some(_))) => Ok(child),
+        Err(error) => {
+            terminate_process_group(child.id(), Some(&mut child));
+            Err(error)
+        }
+    }
+}
+
+/// Puts this process, once, into a job that ends every process in it when its
+/// handle closes. Only this process holds that handle, so that happens once
+/// this process ends, however it ends. What it starts from then on begins in
+/// the job, with no moment outside it.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn join_spark_job() -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    static JOINED: Mutex<bool> = Mutex::new(false);
+    let mut joined = JOINED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *joined {
+        return Ok(());
+    }
+    // SAFETY: Win32 calls on a job handle made here, which stays open for the
+    // life of this process once this process is in the job.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let in_job = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::from_ref(&limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        ) != 0
+            && AssignProcessToJobObject(job, GetCurrentProcess()) != 0;
+        if !in_job {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(error);
+        }
+    }
+    *joined = true;
+    Ok(())
 }
 
 /// Terminates a process group started with `configure_process_group`: TERM,

@@ -2085,6 +2085,52 @@ fn isolated_tool_run() {
     .unwrap();
 }
 
+/// What a tool leaves running in the background runs on while the run moves to
+/// its next tool, and stops within seconds of the executor's process being
+/// killed without warning.
+#[cfg(unix)]
+#[test]
+fn a_tools_background_process_stops_when_the_executor_is_killed() {
+    let (_temp, signals) = in_new_case_dir(ISOLATED_CASE);
+    let background = signals.path("background");
+    let flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("first")}},
+        "first": tool(format!("sleep 60 >/dev/null 2>&1 & echo $! > '{}'", background.display()), "second"),
+        "second": tool(format!("touch '{}'; sleep 60", signals.path("second").display()), "done"),
+        "done": exit("completed", "success"),
+    }));
+    std::fs::write(
+        signals.path("flow.json"),
+        serde_json::to_vec(&flow).unwrap(),
+    )
+    .unwrap();
+    let mut run = isolated_run_command(&signals).spawn().unwrap();
+    let running = |pid: &str| {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&output.stdout);
+        !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+    };
+    let reached = wait_for(|| signals.raised("second"));
+    let pid = std::fs::read_to_string(&background).unwrap_or_default();
+    let pid = pid.trim();
+    // Longer than the runtime takes to let go of a tool's group once nothing
+    // is left in it.
+    std::thread::sleep(Duration::from_secs(3));
+    let ran_on = running(pid);
+    let _ = run.kill();
+    let _ = run.wait();
+    assert!(reached, "the run never reached its second tool");
+    assert!(ran_on, "{pid} stopped while the executor ran");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while running(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!running(pid), "{pid} outlived the executor");
+}
+
 /// A tool with no durable owner never starts: whichever step of registration
 /// fails, the invocation fails to launch and leaves no anchor behind.
 #[test]

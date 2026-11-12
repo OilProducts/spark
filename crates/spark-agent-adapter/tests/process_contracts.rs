@@ -14,6 +14,8 @@ mod local_environment_contracts;
 mod native_interaction_contracts;
 #[path = "process_contracts/runtime_contracts.rs"]
 mod runtime_contracts;
+#[path = "process_contracts/spark_exit_contracts.rs"]
+mod spark_exit_contracts;
 #[path = "process_contracts/test_support.rs"]
 mod test_support;
 #[path = "process_contracts/tool_dispatch_contracts.rs"]

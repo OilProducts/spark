@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)]
+// Only where the platform offers no safe call, each allowed where it is used.
+#![deny(unsafe_code)]
 
 //! Rust-owned adapter contracts for Spark agent and codergen migration.
 
