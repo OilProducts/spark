@@ -99,8 +99,8 @@ test('every activity-bar view opens its panel with items from more than one proj
         const triggers = page.getByTestId('triggers-view').getByTestId('side-panel')
         const alphaRow = triggers.getByRole('button', { name: new RegExp(`Alpha target ${stamp}`) })
         const betaRow = triggers.getByRole('button', { name: new RegExp(`Beta target ${stamp}`) })
-        await expect(alphaRow).toContainText('Project · alpha-project')
-        await expect(betaRow).toContainText('Project · beta-project')
+        await expect(alphaRow).toContainText('alpha-project')
+        await expect(betaRow).toContainText('beta-project')
         // The selected trigger survives a reload, whichever row it is.
         for (const row of [betaRow, alphaRow]) {
             await row.click()
@@ -124,16 +124,18 @@ test('every activity-bar view opens its panel with items from more than one proj
     }
 })
 
-test('starting a chat in a project places it under that project and its composer names it', async ({ page }, testInfo) => {
+test('a new chat in a project opens empty there and its composer names it', async ({ page }, testInfo) => {
     const { alpha } = await seedProjects(page, testInfo)
     await page.goto('/')
     await page.getByTestId('activity-chats').click()
     const alphaGroup = group(page, alpha)
     await alphaGroup.hover()
     await alphaGroup.getByTestId('chats-project-new-chat').click()
-    await expect(alphaGroup.getByRole('button', { name: 'Open thread New thread' })).toHaveAttribute('aria-current', 'true')
+    // It opens empty, as a chat in an empty project does; nothing is saved until its first message.
+    await expect(page.getByText('New chat in alpha-project')).toBeVisible()
+    await expect(alphaGroup.getByTestId('chats-chat-row')).toHaveCount(0)
     await expect(page.getByTestId('chat-composer-project')).toHaveText('Runs and missions started here go to alpha-project')
-    await expect(page.getByTestId('chat-project-link')).toHaveText('alpha-project')
+    await expect(page.getByTestId('new-chat-project-button')).toHaveText(/^in\s*alpha-project$/)
 
     // "+ New" asks which project, Home first then recent projects.
     await page.getByTestId('project-thread-new-button').click()
@@ -194,7 +196,7 @@ test('each chat keeps its unsent draft across chats in other projects, and a new
     // A new chat in another project starts empty; the shown chat's draft is untouched.
     await group(page, beta).hover()
     await group(page, beta).getByTestId('chats-project-new-chat').click()
-    await expect(page.getByTestId('chat-project-link')).toHaveText('beta-project')
+    await expect(page.getByTestId('new-chat-project-button')).toHaveText(/^in\s*beta-project$/)
     await expect(composer).toHaveValue('')
     await openChat(alpha, `conversation-alpha-${stamp}`)
     await expect(composer).toHaveValue('alpha draft')
@@ -326,7 +328,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await expect(group(page, beta)).toHaveAttribute('data-folder-missing', 'true')
     await expect(group(page, beta).getByTestId('chats-project-missing')).toHaveText('folder missing')
 
-    await group(page, alpha).getByTestId('chats-project-name').click()
+    await group(page, alpha).getByTestId('chats-project-settings').click()
     const projectPage = page.getByTestId('project-page')
     await expect(projectPage.getByTestId('project-page-path')).toHaveText(alpha)
     await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(1)
@@ -338,7 +340,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await expect(page.getByRole('heading', { name: 'Project model defaults' })).toHaveCount(0)
 
     await page.getByTestId('activity-chats').click()
-    await group(page, home).getByTestId('chats-project-name').click()
+    await group(page, home).getByTestId('chats-project-settings').click()
     await expect(projectPage.getByTestId('project-page-title')).toHaveText('Home')
     await expect(projectPage.getByTestId('project-page-remove')).toBeDisabled()
     await expect(projectPage.getByTestId('project-page-remove-refused')).toHaveText("Home is Spark's default project and can't be removed.")
@@ -348,7 +350,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
 
     // Removing an ordinary project works from its page.
     await page.getByTestId('activity-chats').click()
-    await group(page, beta).getByTestId('chats-project-name').click()
+    await group(page, beta).getByTestId('chats-project-settings').click()
     await projectPage.getByTestId('project-page-remove').click()
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(group(page, beta)).toHaveCount(0)
@@ -434,7 +436,7 @@ test('removing a project while one of its missions is selected drops it from Mis
     await expect(missions.getByRole('button', { name: `Alpha mission ${stamp}` })).toHaveAttribute('aria-current', 'true')
 
     await page.getByTestId('activity-chats').click()
-    await group(page, alpha).getByTestId('chats-project-name').click()
+    await group(page, alpha).getByTestId('chats-project-settings').click()
     await page.getByTestId('project-page').getByTestId('project-page-remove').click()
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(group(page, alpha)).toHaveCount(0)

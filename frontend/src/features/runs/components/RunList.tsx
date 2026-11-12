@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, Layers, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, Layers, Search } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -13,8 +13,9 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration, runRecordTone } from '../model/shared'
-import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runTitle } from '../model/runOverviewModel'
+import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runRecordTone } from '../model/shared'
+import { requestRunsTransportReconnect } from '../services/runsTransportReconnect'
+import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runKind, runMatchesSearch, runTitle, type RunStatusKind } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -34,6 +35,10 @@ const ATTENTION: Record<string, { label: string; className: string }> = {
     running: { label: 'Running', className: 'text-info' },
     queued: { label: 'Queued', className: 'text-muted-foreground' },
 }
+// A run that completed at a failure exit says which exit ("Changes requested"), as its header does.
+const attentionOf = (run: RunRecord) => (isCompletedFailure(run)
+    ? { label: formatRunStatusLabel(run), className: 'text-destructive' }
+    : ATTENTION[run.status])
 
 interface RunListProps {
     error: string | null
@@ -43,9 +48,28 @@ interface RunListProps {
     selectedRunId: string | null
     /** Fills the search placeholder: "Search 233 runs". */
     summaryLabel: string
+    /** The search as typed; held by the caller, so opening a run it would hide can clear it. */
+    searchQuery?: string
+    onSearchQueryChange?: (searchQuery: string) => void
     /** Name each row's project; off when the list is already filtered to one project. */
     showProject?: boolean
+    /** Show only runs in this state; null shows all. */
+    statusFilter?: RunStatusKind | null
+    onStatusFilterChange?: (statusFilter: RunStatusKind | null) => void
 }
+
+// The states a run list can be narrowed to, in the order the list groups them.
+const STATUS_FILTERS: Array<{ kind: RunStatusKind; label: string; className?: string }> = [
+    { kind: 'waiting', label: 'Needs input', className: 'text-warning' },
+    { kind: 'running', label: 'Running' },
+    { kind: 'failed', label: 'Failed', className: 'text-destructive' },
+    { kind: 'completed', label: 'Completed' },
+    { kind: 'ended', label: 'Canceled' },
+]
+// A day's repeats of one run (same title, flow, project and outcome) fold into one row from this many on.
+const REPEATS_FOLDED_FROM = 3
+// An open fold lists this many of its runs at a time.
+const REPEATS_PAGE = 10
 
 export function RunList({
     error,
@@ -54,21 +78,31 @@ export function RunList({
     runs,
     selectedRunId,
     summaryLabel,
+    searchQuery: heldSearchQuery,
+    onSearchQueryChange,
     showProject = true,
+    statusFilter = null,
+    onStatusFilterChange,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const projectRegistry = useStore((state) => state.projectRegistry)
-    const [searchQuery, setSearchQuery] = useState('')
+    const [ownSearchQuery, setOwnSearchQuery] = useState('')
+    const searchQuery = heldSearchQuery ?? ownSearchQuery
+    const setSearchQuery = onSearchQueryChange ?? setOwnSearchQuery
     const [expandedParents, setExpandedParents] = useState<Set<string>>(() => new Set())
+    // How many runs each open fold lists, by fold key; REPEATS_PAGE when absent.
+    const [foldShown, setFoldShown] = useState<Record<string, number>>({})
     // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
     const now = Date.now()
     const query = searchQuery.trim().toLowerCase()
-    const matchesSearch = (run: RunRecord) => (
-        !query
-        || runTitle(run).toLowerCase().includes(query)
-        || flowTitle(run.flow_name).toLowerCase().includes(query)
-        || run.flow_name.toLowerCase().includes(query)
-    )
+    const statusCounts = runs.reduce<Partial<Record<RunStatusKind, number>>>((counts, run) => {
+        const kind = runKind(run)
+        counts[kind] = (counts[kind] ?? 0) + 1
+        return counts
+    }, {})
+    // A search matches a run's title, its flow, or its state ("failed", "needs input").
+    const matchesSearch = (run: RunRecord) => (!statusFilter || runKind(run) === statusFilter) && runMatchesSearch(run, query)
+    const filtering = Boolean(query) || Boolean(statusFilter)
     const queuedLockGroups = runs.reduce<Array<{ identity: string; label: string; runs: RunRecord[] }>>((groups, run) => {
         const executionLock = run.execution_lock
         if (run.status !== 'queued' || !executionLock?.identity) {
@@ -110,6 +144,15 @@ export function RunList({
         )
     }
     const topLevelRuns = rootRuns.filter((run) => matchesSearch(run) || descendantMatches(run))
+    const runsById = new Map(runs.map((run) => [run.run_id, run]))
+    // A run opened from elsewhere (the Overview, the Inbox) is listed: its parents open.
+    // (Opening it also clears a search that would hide it; see setRunsSelectedRunId.)
+    const selectedAncestors = new Set<string>()
+    let ancestor = selectedRunId ? runsById.get(selectedRunId)?.parent_run_id : undefined
+    while (ancestor && runsById.has(ancestor) && !selectedAncestors.has(ancestor)) {
+        selectedAncestors.add(ancestor)
+        ancestor = runsById.get(ancestor)?.parent_run_id
+    }
     const needsInputRuns = topLevelRuns.filter((run) => run.status === 'waiting')
     const runningRuns = topLevelRuns.filter((run) => ACTIVE_LIST_STATUSES.has(run.status))
     const recentRuns = topLevelRuns.filter(
@@ -129,7 +172,7 @@ export function RunList({
         { depth = 0, underDay = false, stated }: { depth?: number; underDay?: boolean; stated?: string } = {},
     ) => {
         const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
-        const attention = ATTENTION[run.status]?.label === stated ? null : ATTENTION[run.status]
+        const attention = attentionOf(run)?.label === stated ? null : attentionOf(run)
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const flowPart = title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name)
         const metaParts = [
@@ -145,11 +188,12 @@ export function RunList({
         const allChildRuns = childRunsByParent.get(run.run_id) ?? []
         // Searching opens the path to matching descendants; a matching parent
         // keeps all of its children available.
-        const revealsMatch = Boolean(query) && descendantMatches(run)
-        const childRuns = query && !matchesSearch(run)
+        const revealsMatch = filtering && descendantMatches(run)
+        const childRuns = filtering && !matchesSearch(run)
             ? allChildRuns.filter((child) => matchesSearch(child) || descendantMatches(child))
             : allChildRuns
-        const childrenExpanded = revealsMatch || expandedParents.has(run.run_id)
+        // Open by default when it holds the open run; the toggle flips the default.
+        const childrenExpanded = revealsMatch || selectedAncestors.has(run.run_id) !== expandedParents.has(run.run_id)
         const selected = selectedRunId === run.run_id
 
         return (
@@ -168,7 +212,7 @@ export function RunList({
                             // The time, duration and status word lead and always show; the project
                             // and flow follow and give way at the line's end when it is short.
                             <span data-testid="run-history-row-meta" className="flex min-w-0">
-                                <span className="shrink-0 whitespace-pre">
+                                <span className="shrink-0 whitespace-pre" title={run.started_at ? `Started ${formatTimestamp(run.started_at)}` : undefined}>
                                     {metaParts.join(' · ')}
                                     {attention ? (
                                         <span data-testid="run-history-row-status" className={attention.className}>
@@ -203,15 +247,7 @@ export function RunList({
                             aria-expanded={childrenExpanded}
                             aria-label={`${childrenExpanded ? 'Hide' : 'Show'} ${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
                             title={`${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
-                            onClick={() => {
-                                setExpandedParents((current) => {
-                                    const next = new Set(current)
-                                    if (!next.delete(run.run_id)) {
-                                        next.add(run.run_id)
-                                    }
-                                    return next
-                                })
-                            }}
+                            onClick={() => toggleExpanded(run.run_id)}
                             className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-sm text-xs tabular-nums text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                         >
                             {childrenExpanded ? <ChevronDown className="size-3.5" /> : <Layers className="size-3.5" />}
@@ -222,6 +258,89 @@ export function RunList({
                 {childRuns.length > 0 && childrenExpanded ? (
                     <div data-testid="run-history-children" className="ml-3 space-y-0.5">
                         {childRuns.map((child) => renderRunRow(child, { depth: depth + 1, underDay, stated }))}
+                    </div>
+                ) : null}
+            </div>
+        )
+    }
+
+    const toggleExpanded = (key: string) => setExpandedParents((current) => {
+        const next = new Set(current)
+        if (!next.delete(key)) next.add(key)
+        return next
+    })
+
+    // A day's repeats fold into one row at the latest one's place; the rest keep their order.
+    const renderDayRuns = (day: string, dayRuns: RunRecord[]) => {
+        const keyOf = (run: RunRecord) => (childRunsByParent.has(run.run_id)
+            ? run.run_id
+            : [runTitle(run), run.flow_name, run.project_path, runKind(run), attentionOf(run)?.label].join('\n'))
+        const repeats = new Map<string, RunRecord[]>()
+        for (const run of dayRuns) repeats.set(keyOf(run), [...(repeats.get(keyOf(run)) ?? []), run])
+        return dayRuns.map((run) => {
+            const same = repeats.get(keyOf(run)) ?? [run]
+            if (same.length < REPEATS_FOLDED_FROM) return renderRunRow(run, { underDay: true })
+            return same[0] === run ? renderRepeats(`${day}\n${keyOf(run)}`, same) : null
+        })
+    }
+
+    // A fold's runs differ only in when they ran, so each lists as its start time, to the second.
+    const renderRepeats = (key: string, repeatRuns: RunRecord[]) => {
+        const latest = repeatRuns[0]
+        const selectedIndex = repeatRuns.findIndex((run) => run.run_id === selectedRunId)
+        const open = (selectedIndex >= 0) !== expandedParents.has(key)
+        const attention = attentionOf(latest)
+        const runProject = showProject && latest.project_path ? projectLabel(projectRegistry, latest.project_path) : null
+        const flowPart = runTitle(latest) === flowTitle(latest.flow_name) ? null : flowTitle(latest.flow_name)
+        const shown = Math.max(foldShown[key] ?? REPEATS_PAGE, selectedIndex + 1)
+        const more = repeatRuns.length - shown
+        return (
+            <div key={key} className="space-y-0.5">
+                <SidePanelRow
+                    data-testid="run-history-repeats"
+                    aria-expanded={open}
+                    tone={runRecordTone(latest)}
+                    onClick={() => toggleExpanded(key)}
+                    title={runTitle(latest)}
+                    meta={(
+                        // The count and status word lead and always show; the project and flow give way.
+                        <span className="flex min-w-0">
+                            <span className="shrink-0 whitespace-pre" title={`Latest started ${formatTimestamp(latest.started_at)}`}>
+                                {repeatRuns.length} runs
+                                {attention ? <span className={attention.className}> · {attention.label}</span> : null}
+                                {' · '}{formatRunTime(latest.started_at)}
+                            </span>
+                            {runProject || flowPart ? (
+                                <span className="min-w-0 truncate whitespace-pre"> · {[runProject, flowPart].filter(Boolean).join(' · ')}</span>
+                            ) : null}
+                        </span>
+                    )}
+                    trailing={open ? <ChevronDown aria-hidden="true" className="size-3.5" /> : <ChevronRight aria-hidden="true" className="size-3.5" />}
+                />
+                {open ? (
+                    <div data-testid="run-history-repeats-runs" className="ml-4 space-y-0.5">
+                        {repeatRuns.slice(0, shown).map((run) => (
+                            <SidePanelRow
+                                key={run.run_id}
+                                data-testid="run-history-row"
+                                data-run-id={run.run_id}
+                                selected={selectedRunId === run.run_id}
+                                tone={runRecordTone(run)}
+                                onClick={() => onSelectRun(run)}
+                                title={<span data-testid="run-history-row-title" title={`${runTitle(run)} · ${run.run_id}`}>{formatRunTime(run.started_at, true) || runTitle(run)}</span>}
+                                meta={<span data-testid="run-history-row-meta">{formatDuration(run.started_at, run.ended_at, run.status, now)}</span>}
+                            />
+                        ))}
+                        {more > 0 ? (
+                            <button
+                                type="button"
+                                data-testid="run-history-repeats-more"
+                                onClick={() => setFoldShown((current) => ({ ...current, [key]: shown + REPEATS_PAGE * 5 }))}
+                                className="px-3 py-1 text-xs text-muted-foreground underline underline-offset-4 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                Show {Math.min(more, REPEATS_PAGE * 5)} more of {repeatRuns.length}
+                            </button>
+                        ) : null}
                     </div>
                 ) : null}
             </div>
@@ -256,23 +375,55 @@ export function RunList({
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
                         placeholder={`Search ${summaryLabel}`}
-                        aria-label="Search runs by title or flow"
+                        aria-label="Search runs by title, flow or state"
                         data-testid="run-list-search-input"
                         className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                     />
                 </label>
-                {error ? (
-                    <InlineError>{error}</InlineError>
+                {onStatusFilterChange && runs.length > 0 ? (
+                    <div role="group" aria-label="Show runs that are" data-testid="run-list-status-filter" className="flex flex-wrap gap-1">
+                        {[{ kind: null, label: 'All', className: undefined }, ...STATUS_FILTERS].map(({ kind, label, className }) => {
+                            const count = kind ? statusCounts[kind] ?? 0 : runs.length
+                            // A state with no runs has nothing to show, unless it is the one chosen.
+                            if (kind && count === 0 && statusFilter !== kind) return null
+                            const pressed = statusFilter === kind
+                            return (
+                                <button
+                                    key={kind ?? 'all'}
+                                    type="button"
+                                    aria-pressed={pressed}
+                                    data-testid={`run-list-status-filter-${kind ?? 'all'}`}
+                                    onClick={() => onStatusFilterChange(kind)}
+                                    className={cn(
+                                        'flex h-6 items-center gap-1 rounded-full border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring',
+                                        pressed ? 'border-foreground/30 bg-muted font-medium text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
+                                    )}
+                                >
+                                    <span className={kind && count > 0 ? className : undefined}>{label}</span>
+                                    <span className="tabular-nums text-muted-foreground">{count}</span>
+                                </button>
+                            )
+                        })}
+                    </div>
+                ) : null}
+                {/* With no runs to show, the view's main pane says the load failed. */}
+                {error && runs.length > 0 ? (
+                    <InlineError dense data-testid="run-list-error">
+                        Couldn’t refresh your runs; this list may be out of date.
+                        <button type="button" onClick={requestRunsTransportReconnect} className="ml-1 font-medium underline underline-offset-4">Try again</button>
+                    </InlineError>
                 ) : null}
             </div>
-            {status !== 'ready' && status !== 'error' && runs.length === 0 ? (
-                <p data-testid="run-list-loading" className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring run history…</p>
-            ) : runs.length === 0 ? (
-                <Empty className="py-4 text-xs">
-                    <EmptyHeader>
-                        <EmptyDescription>No runs yet.</EmptyDescription>
-                    </EmptyHeader>
-                </Empty>
+            {runs.length === 0 ? (
+                status === 'ready' ? (
+                    <Empty className="py-4 text-xs">
+                        <EmptyHeader>
+                            <EmptyDescription>No runs yet.</EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
+                ) : status === 'error' ? null : (
+                    <p data-testid="run-list-loading" className="px-3 text-sm text-muted-foreground" aria-live="polite">Loading runs…</p>
+                )
             ) : (
                 <div
                     data-testid="run-list-scroll-region"
@@ -291,14 +442,17 @@ export function RunList({
                             {[...dayGroups].map(([label, groupRuns]) => (
                                 <div key={label} data-testid="run-list-day-group" className="space-y-0.5">
                                     <ListGroupLabel>{label}</ListGroupLabel>
-                                    {groupRuns.map((run) => renderRunRow(run, { underDay: true }))}
+                                    {renderDayRuns(label, groupRuns)}
                                 </div>
                             ))}
                         </section>
                     ) : null}
-                    {query && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
+                    {filtering && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
                         <p data-testid="run-list-search-empty" className="px-3 text-xs text-muted-foreground">
-                            No runs match the search.
+                            {query ? 'No runs match the search.' : 'No runs in this state.'}
+                            {statusFilter && onStatusFilterChange ? (
+                                <button type="button" onClick={() => onStatusFilterChange(null)} className="ml-1 underline underline-offset-4 hover:text-foreground">Show all runs</button>
+                            ) : null}
                         </p>
                     ) : null}
                 </div>

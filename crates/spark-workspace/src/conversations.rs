@@ -629,7 +629,8 @@ impl WorkspaceConversationService {
                         );
                         items.push(json!({
                             "kind": "run_gate", "id": gate_id, "run_id": run_id,
-                            "title": question["prompt"], "project_path": run["project_path"],
+                            "title": question["prompt"], "flow_name": run["flow_name"],
+                            "project_path": run["project_path"],
                             "updated_at": question["asked_at"],
                         }));
                     }
@@ -647,7 +648,14 @@ impl WorkspaceConversationService {
                     "kind": "run_gate",
                     "id": gate_id,
                     "run_id": run_id,
-                    "title": run.get("flow_name").cloned().unwrap_or_default(),
+                    // A run named at launch goes by its name; the flow is said beside it.
+                    "title": run
+                        .get("title")
+                        .filter(|title| title.as_str().is_some_and(|title| !title.trim().is_empty()))
+                        .or_else(|| run.get("flow_name"))
+                        .cloned()
+                        .unwrap_or_default(),
+                    "flow_name": run.get("flow_name").cloned().unwrap_or_default(),
                     // What the gate asks, so runs of one flow read apart.
                     "question": question.map_or(&Value::Null, |question| &question["prompt"]),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
@@ -1773,6 +1781,12 @@ impl WorkspaceConversationService {
         turn_id: &str,
     ) -> WorkspaceResult<(PreparedConversationTurn, TurnAcceptance)> {
         let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
+        // A closed mission's agent stays stopped.
+        if self.mission_closed(&project_path, conversation_id) {
+            return Err(WorkspaceError::Conflict(
+                "The mission is closed, so its agent can't be restarted.".to_string(),
+            ));
+        }
         let repository = self.repository();
         let failed = repository
             .read_turn(conversation_id, turn_id)?
@@ -2987,11 +3001,14 @@ impl WorkspaceConversationService {
         &self,
         request: TriggerActivationRequest,
     ) -> WorkspaceResult<String> {
-        let trigger_id = request.trigger_id.clone();
         let flow_name = request.action.flow_name.clone();
         // The run's project and working directory are the trigger's project.
         let working_directory = request.project_path.clone();
         ensure_flow_exists(&self.settings, Some(&working_directory), &flow_name)?;
+        let summary = format!(
+            "The trigger “{}” started {flow_name}.",
+            request.trigger_name
+        );
         let launch_context = Value::Object(Map::from_iter([
             (
                 "context.trigger_static".to_string(),
@@ -3010,9 +3027,11 @@ impl WorkspaceConversationService {
                 }),
             ),
         ]));
+        // A trigger's runs are named after it, so they read as its runs in run lists.
         let artifact = json!({
             "flow_name": flow_name.clone(),
-            "summary": format!("Trigger {trigger_id} fired {flow_name}."),
+            "title": request.trigger_name,
+            "summary": summary,
             "project_path": working_directory.clone(),
             "launch_context": launch_context,
             "execution_profile_id": request.action.execution_profile_id,
@@ -3702,6 +3721,10 @@ impl WorkspaceConversationService {
                     .and_then(non_empty_string),
                 launch_context: Some(launch_context.into_iter().collect()),
                 node_overrides,
+                title: artifact
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .and_then(non_empty_string),
                 ..PipelineStartRequest::default()
             });
         if let Ok(outcome) = flow_start_outcome_from_response(&response) {

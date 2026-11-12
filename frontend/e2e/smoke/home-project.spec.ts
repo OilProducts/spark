@@ -1,10 +1,12 @@
 import { expect, test } from '@playwright/test'
 import { conversationRowOf } from '../fixtures/smoke-helpers'
 
-test('a fresh session chats in the Home project without choosing one', async ({ page }) => {
+test('a fresh session chats in the project used last, here Home, without choosing one', async ({ page }) => {
     const projects = await (await page.request.get('/workspace/api/projects')).json()
     const home = projects.find((project: { is_default: boolean }) => project.is_default)
     expect(home.display_name).toBe('Home')
+    // Earlier specs use other projects; a fresh session reopens whichever was used last.
+    expect((await page.request.patch('/workspace/api/projects/state', { data: { project_path: home.project_path, last_accessed_at: new Date().toISOString() } })).ok()).toBe(true)
 
     await page.goto('/')
     await page.getByTestId('activity-chats').click()

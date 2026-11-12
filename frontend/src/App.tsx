@@ -12,6 +12,7 @@ import { Sheet } from "@/components/app/view-layout"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
 import { OverviewPanel } from "@/features/overview/OverviewPanel"
 import { RolesPanel } from "@/features/roles/RolesPanel"
+import { RunFlowDialog } from "@/features/launch"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isNarrowViewport = useNarrowViewport()
@@ -25,6 +26,7 @@ function App() {
     <DialogProvider>
       <AppSessionControllers />
       <RunStream />
+      <RunFlowDialog />
       <div
         data-testid="app-shell"
         data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}

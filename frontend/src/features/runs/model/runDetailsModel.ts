@@ -202,14 +202,14 @@ const artifactErrorFromResponse = (status: number, detail: string | null): Artif
 const artifactPreviewErrorFromResponse = (status: number, detail: string | null): string => {
     const normalizedDetail = detail?.toLowerCase()
     if (status === 404 && normalizedDetail === 'artifact not found') {
-        return 'Artifact preview unavailable because the file was not found for this run. This run may be partial or artifacts may have been pruned.'
+        return 'This file is no longer there. The run may have stopped early, or its files were cleaned up.'
     }
     if (status === 404 && normalizedDetail === 'unknown pipeline') {
-        return 'Artifact preview unavailable because this run is no longer available. Refresh run history and pick a different run.'
+        return 'This run is no longer available, so its files can’t be opened.'
     }
     return detail
-        ? `Unable to load artifact preview (HTTP ${status}): ${detail}.`
-        : `Unable to load artifact preview (HTTP ${status}).`
+        ? `Couldn’t open this file (HTTP ${status}): ${detail}.`
+        : `Couldn’t open this file (HTTP ${status}).`
 }
 
 const formatContextValue = (value: unknown): FormattedContextValue => {

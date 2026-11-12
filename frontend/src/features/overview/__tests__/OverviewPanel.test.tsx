@@ -1,5 +1,5 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { Mission } from '@/features/missions/MissionsPanel'
@@ -10,8 +10,13 @@ import { useOverviewUnread } from '../hooks/useOverviewUnread'
 import { hasUnread, markAttentionSeen, readFinishedWatermark, type Chat } from '../model/overviewModel'
 
 let pending: AttentionItem[] = []
-vi.mock('@/lib/api/attentionApi', () => ({ fetchPendingAttention: () => Promise.resolve(pending) }))
+let attentionDown = false
+vi.mock('@/lib/api/attentionApi', async (original) => ({
+    ...await original<typeof import('@/lib/api/attentionApi')>(),
+    fetchPendingAttention: () => (attentionDown ? Promise.reject(new Error('503')) : Promise.resolve(pending)),
+}))
 let chats: Chat[] = []
+let chatsDown = false
 // The project path of each thread-list request; the Overview asks once for every project.
 let chatListRequests: (string | null)[] = []
 vi.mock('@/lib/workspaceClient', async (original) => {
@@ -21,6 +26,7 @@ vi.mock('@/lib/workspaceClient', async (original) => {
         ...client,
         fetchProjectConversationListValidated: (projectPath: string | null) => {
             chatListRequests.push(projectPath)
+            if (chatsDown) return Promise.reject(new Error('503'))
             return Promise.resolve(client.parseConversationSummarySnapshotResponse(summarySnapshot(chats)))
         },
     }
@@ -56,6 +62,57 @@ describe('Overview needs you', () => {
         expect(plain).toHaveTextContent('Run waiting for input · app')
         expect(screen.getAllByTestId('overview-needs-you-time')[0]).toHaveTextContent(/^Oct 2/)
     })
+
+    it('names a gate by its flow\'s title before runs load, and names the flow beside a named run', async () => {
+        pending = [
+            { ...gate('run-a', 'gate-1'), title: 'release-check', flow_name: 'release-check' },
+            { ...gate('run-b', 'gate-1'), title: 'Hotfix approval', flow_name: 'release-check' },
+        ]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(rows()).toEqual(['Release Check', 'Hotfix approval']))
+        const [unnamed, named] = screen.getAllByTestId('overview-needs-you-item')
+        expect(unnamed).toHaveTextContent('Run waiting for input · app')
+        expect(named).toHaveTextContent('Run waiting for input · Release Check · app')
+    })
+})
+
+describe('Overview needs you, when the check fails', () => {
+    it('says it could not check instead of saying nothing is waiting, and recovers on Try again', async () => {
+        pending = [gate('run-a', 'gate-1')]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(rows()).toEqual(['run-a']))
+
+        attentionDown = true
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        expect(await screen.findByTestId('overview-needs-you-error')).toHaveTextContent('Couldn’t refresh')
+        expect(rows()).toEqual(['run-a']) // the last known item stays
+        expect(screen.queryByTestId('overview-needs-you-empty')).toBeNull()
+
+        attentionDown = false
+        pending = []
+        fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+        await waitFor(() => expect(screen.queryByTestId('overview-needs-you-error')).toBeNull())
+        expect(screen.getByTestId('overview-needs-you-empty')).toHaveTextContent('Nothing is waiting on you.')
+    })
+})
+
+describe('Overview last chat', () => {
+    it('says the chats could not load instead of "No chats yet", and loads them on Try again', async () => {
+        reset()
+        const initialCache = useStore.getState().homeConversationCache
+        onTestFinished(() => useStore.setState({ homeConversationCache: initialCache }))
+        chatsDown = true
+        act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
+        render(<OverviewPanel />)
+        expect(await screen.findByTestId('overview-chats-error')).toHaveTextContent('Couldn’t load your chats.')
+        expect(screen.queryByText('No chats yet.')).toBeNull()
+
+        chatsDown = false
+        chats = [{ conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date().toISOString(), revision: 1, launched_run_ids: [] }]
+        fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+        await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+        expect(screen.queryByTestId('overview-chats-error')).toBeNull()
+    })
 })
 
 describe('Overview needs you seen', () => {
@@ -81,8 +138,9 @@ describe('Overview dot', () => {
     })
 })
 
+// Each run has its own title; runs sharing one fold into a row.
 const finishedRun = (id: string, hoursAgo: number): RunRecord => ({
-    run_id: id, flow_name: 'review.yaml', status: 'completed', working_directory: '/work/app', project_path: '/work/app', model: 'gpt',
+    run_id: id, title: id, flow_name: 'review.yaml', status: 'completed', working_directory: '/work/app', project_path: '/work/app', model: 'gpt',
     started_at: new Date(Date.now() - (hoursAgo + 1) * 3_600_000).toISOString(), ended_at: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
 })
 const closedMission = (id: string, hoursAgo: number): Mission => ({
@@ -110,16 +168,36 @@ describe('Overview finished since', () => {
         const first = render(<OverviewPanel />)
         expect(screen.getByTestId('overview-finished').textContent).toContain('in the last day')
         expect(finished()).toEqual(['run-hour'])
+        // A first look has nothing to compare with, so nothing is marked new.
+        expect(screen.queryAllByTestId('overview-finished-new')).toHaveLength(0)
         setRuns([finishedRun('run-week', 24 * 7), finishedRun('run-hour', 1), finishedRun('run-live', 0)])
         expect(finished()).toEqual(['run-live', 'run-hour'])
         first.unmount()
         const runs = useStore.getState().runsListSession.runs
         expect(readFinishedWatermark()).toBe(Date.parse(runs[2].ended_at!))
 
+        // A later look keeps the last day listed, marking only what finished since as new.
         setRuns([...runs, finishedRun('run-after', 0)])
+        const second = render(<OverviewPanel />)
+        expect(screen.getByTestId('overview-finished').textContent).toContain('in the last day')
+        expect(finished()).toEqual(['run-after', 'run-live', 'run-hour'])
+        expect(screen.getAllByTestId('overview-finished-new')).toHaveLength(1)
+        second.unmount()
+
+        // After a long time away, the list reaches back to the last look.
+        window.localStorage.setItem('spark.overview_finished_watermark', String(Date.now() - 24 * 8 * 3_600_000))
         render(<OverviewPanel />)
         expect(screen.getByTestId('overview-finished').textContent).toContain('since you last looked')
-        expect(finished()).toEqual(['run-after'])
+        expect(finished()).toEqual(['run-after', 'run-live', 'run-hour', 'run-week'])
+    })
+
+    it('lists running runs, missions and chats under Running now, and not as finished', () => {
+        reset()
+        setRuns([{ ...finishedRun('run-going', 0), status: 'running', ended_at: null }, { ...finishedRun('run-child', 0), status: 'running', ended_at: null, parent_run_id: 'run-going' }])
+        setMissions([{ ...closedMission('mission-going', 0), status: 'running', closed: undefined }])
+        render(<OverviewPanel />)
+        expect(screen.getAllByTestId('overview-running-item').map((row) => row.dataset.itemId).sort()).toEqual(['mission-going', 'run-going'])
+        expect(finished()).toEqual([])
     })
 
     it('records nothing while missions are loading, so an earlier mission that loads later is still new', () => {
@@ -138,14 +216,16 @@ describe('Overview finished since', () => {
         const chat: Chat = { conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date(Date.now() - 3 * 3_600_000).toISOString(), revision: 1, launched_run_ids: ['run-done', 'run-failed'] }
         chats = [chat]
         act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
-        setRuns([finishedRun('run-done', 1), { ...finishedRun('run-failed', 2), status: 'failed' }])
+        // Titled by their flow; a completed and a failed run of one flow keep their own rows.
+        setRuns([{ ...finishedRun('run-done', 1), title: null }, { ...finishedRun('run-failed', 2), status: 'failed', title: null }])
         setMissions([])
         render(<OverviewPanel />)
         await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
         expect(chatListRequests).toEqual([null])
 
-        expect(finished()).toEqual(['run-done', 'run-failed'])
-        const [done, failed] = screen.getAllByTestId('overview-finished-item')
+        // Failures lead.
+        expect(finished()).toEqual(['run-failed', 'run-done'])
+        const [failed, done] = screen.getAllByTestId('overview-finished-item')
         expect(done.textContent).toContain('1h 00m')
         expect(done.textContent).toContain('Completed') // the dot's name for assistive tech
         expect(done.textContent).not.toContain('Failed')
@@ -154,13 +234,39 @@ describe('Overview finished since', () => {
         expect(failed.textContent).toContain('Run · app') // the title already names the flow
         expect(failed.textContent).toContain('Failed')
         expect(failed.querySelector('[data-testid="overview-source-link"]')?.textContent).toBe('Ship the fix')
-        expect(screen.getByTestId('overview-finished').textContent).toContain('2 · 1 failed')
+        expect(screen.getByTestId('overview-finished').textContent).toContain('in the last day2')
+        expect(screen.getByTestId('overview-failure-count')).toHaveTextContent('1 failed')
 
         expect(screen.getAllByTestId('overview-tally').map((tally) => tally.textContent)).toEqual([' · 1 completed', ' · 1 failed'])
         fireEvent.click(screen.getByTestId('overview-show-runs'))
         const started = screen.getAllByTestId('overview-started-item').map((row) => row.textContent)
         expect(started).toHaveLength(2)
         expect(started[1]).toContain('Failed')
+    })
+
+    it('folds a routine run\'s repeats into one row, keeps failures first, shows the rest on request, and links failures to Runs', () => {
+        reset()
+        const routine = (id: string, hoursAgo: number, status = 'completed'): RunRecord => ({ ...finishedRun(id, hoursAgo), title: 'Nightly sync', status })
+        setRuns([
+            ...Array.from({ length: 30 }, (_, index) => routine(`sync-${index}`, 1 + index / 2)),
+            routine('sync-failed', 20, 'failed'),
+            ...Array.from({ length: 9 }, (_, index) => finishedRun(`other-${index}`, 2 + index)),
+        ])
+        setMissions([])
+        act(() => { useStore.getState().setViewMode('overview') })
+        render(<OverviewPanel />)
+        const rows = screen.getAllByTestId('overview-finished-item')
+        expect(rows).toHaveLength(8)
+        expect(rows[0].dataset.itemId).toBe('sync-failed')
+        expect(rows[1].dataset.itemId).toBe('sync-0')
+        expect(rows[1].dataset.count).toBe('30')
+        expect(rows[1].textContent).toContain('30 runs, latest shown')
+        fireEvent.click(screen.getByTestId('overview-finished-show-all'))
+        expect(screen.getAllByTestId('overview-finished-item')).toHaveLength(11)
+
+        fireEvent.click(screen.getByTestId('overview-failure-count'))
+        expect(useStore.getState().viewMode).toBe('runs')
+        expect(useStore.getState().runsListSession.statusFilter).toBe('failed')
     })
 
     it('records nothing for live completions before the initial fetches finish', () => {
@@ -179,5 +285,26 @@ describe('Overview finished since', () => {
         setRuns([run])
         render(<OverviewPanel />).unmount()
         expect(readFinishedWatermark()).toBe(Date.parse(run.ended_at!))
+    })
+
+    it('says runs could not load instead of reporting nothing running or finished, and retries on request', () => {
+        reset()
+        setMissions([])
+        act(() => { useStore.setState((state) => ({ runsListSession: { ...state.runsListSession, runs: [], status: 'error', fetched: false } })) })
+        const retry = vi.fn()
+        window.addEventListener('spark:runs-overview-resync-required', retry)
+        render(<OverviewPanel />)
+        expect(screen.getByTestId('overview-runs-error')).toHaveTextContent('Couldn’t load your runs')
+        expect(screen.queryByTestId('overview-running-empty')).toBeNull()
+        expect(screen.getByTestId('overview-finished-unavailable')).toBeInTheDocument()
+        expect(screen.getByTestId('overview-finished').textContent).not.toContain('Nothing has finished')
+        fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+        expect(retry).toHaveBeenCalledTimes(1)
+        window.removeEventListener('spark:runs-overview-resync-required', retry)
+
+        setRuns([])
+        expect(screen.queryByTestId('overview-runs-error')).toBeNull()
+        expect(screen.getByTestId('overview-running-empty')).toBeInTheDocument()
+        expect(screen.getByTestId('overview-finished').textContent).toContain('Nothing has finished')
     })
 })

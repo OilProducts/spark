@@ -1,8 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { RunHeaderBar } from '../RunHeaderBar'
 import type { RunRecord } from '../../model/shared'
+import { useStore } from '@/store'
+import { triggerKey } from '@/lib/api/triggersApi'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     run_id: 'run-1',
@@ -50,10 +52,18 @@ const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) 
 )
 
 describe('RunHeaderBar', () => {
-    it('names a completed run that reached a failure exit by its result, in a warning tone', () => {
+    it('names the trigger that started a run and opens it', () => {
+        renderHeader(makeRun({ title: 'Tests sweep', launch_context: { 'context.spark_trigger': { trigger_id: 'trigger-1', trigger_name: 'Tests sweep', source_type: 'schedule' } } }))
+        expect(screen.getByTestId('run-header-trigger')).toHaveTextContent('started by trigger Tests sweep')
+        fireEvent.click(screen.getByRole('button', { name: 'Tests sweep' }))
+        expect(useStore.getState().viewMode).toBe('triggers')
+        expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/tmp/project', id: 'trigger-1' }))
+    })
+
+    it('names a completed run that reached a failure exit by its result, as a failure', () => {
         renderHeader(makeRun({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked' }))
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Blocked')
-        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'destructive')
     })
 
     it('shows the run title under its flow, a status pill, and one line of facts', () => {
@@ -98,19 +108,31 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
         // With no visit selected, Continue asks for the node to start from.
         expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from…')
+        // The actions explain themselves without hovering, naming only the ones shown.
+        expect(screen.getByTestId('run-header-actions-help')).toHaveTextContent(
+            'Continue from… starts a new run from a step you pick, keeping results so far. Re-run starts over with the same inputs.',
+        )
         unmount()
 
         const failed = renderHeader(makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' }), 'Transform')
         expect(screen.getByTestId('run-summary-retry-button')).toBeVisible()
         expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from here')
-        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform')
+        // Each recovery action says how it differs from the others.
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('title', expect.stringContaining('from the step where it failed, with the same flow'))
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform, reusing this run’s results so far')
+        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAttribute('title', expect.stringContaining('from the beginning, with the same inputs'))
+        // Focus reads each button's own sentence from the visible line.
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAccessibleDescription('Retry picks up from the failed step.')
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAccessibleDescription('Continue from here starts a new run from Transform, keeping results so far.')
+        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAccessibleDescription('Re-run starts over with the same inputs.')
         failed.unmount()
 
         renderHeader(makeRun({ status: 'waiting', ended_at: null }))
         expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
         expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
         expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('run-header-actions-help')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Needs input')
         expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
         // A waiting run states its start like a finished one, then how long it has been going.

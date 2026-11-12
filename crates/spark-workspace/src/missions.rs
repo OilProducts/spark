@@ -631,26 +631,22 @@ impl WorkspaceMissionService {
         })
     }
     pub fn cancel(&self, project: &str, id: &str) -> WorkspaceResult<MissionRecord> {
+        let mut disabled = Vec::new();
         let mission = self.with_mission(project, id, |_, mission| {
             let runtime = attractor_api::AttractorApiService::new(self.settings.clone());
             for run in mission.inbox.runs.iter().filter(|run| run.in_flight()) {
                 runtime.cancel_pipeline_route(&run.run_id);
             }
-            if let (Some(runtime), Some(conversation)) = (
-                inbox::runtime(&self.settings),
-                mission.conversation_id.as_deref(),
-            ) {
-                let _ = inbox::conversations(&self.settings, &self.store, &runtime)
-                    .interrupt_turn(conversation, &mission.project_path);
-            }
+            self.stop_agent(mission);
             self.close_locked(
                 mission,
                 CloseStatus::Canceled,
-                "Canceled by human".into(),
+                String::new(),
                 "human",
+                &mut disabled,
             )
         })?;
-        self.report_close(&mission);
+        self.report_close(&mission, &disabled);
         Ok(mission)
     }
     pub fn close(
@@ -662,25 +658,50 @@ impl WorkspaceMissionService {
         if request.actor != "human" && request.actor != "assistant" {
             return Err(invalid("Actor must be human or assistant"));
         }
+        let mut disabled = Vec::new();
         let mission = self.with_mission(project, id, |_, mission| {
-            let reason = if request.reason.trim().is_empty() {
-                "Closed".to_string()
-            } else {
-                request.reason
-            };
+            // The agent closing its own mission ends its turn itself; a person's
+            // close stops the agent's work, as cancel does.
+            if request.actor == "human" {
+                self.stop_agent(mission);
+            }
             self.close_locked(
                 mission,
                 request.status.unwrap_or(CloseStatus::Done),
-                reason,
+                request.reason.trim().to_string(),
                 &request.actor,
+                &mut disabled,
             )
         })?;
-        self.report_close(&mission);
+        self.report_close(&mission, &disabled);
         Ok(mission)
     }
-    /// A mission opened from a conversation reports its close to it, once
-    /// the mission lock is released. A deleted source gets nothing.
-    fn report_close(&self, mission: &MissionRecord) {
+    /// Interrupts the agent's running turn, if any.
+    fn stop_agent(&self, mission: &MissionRecord) {
+        if let (Some(runtime), Some(conversation)) = (
+            inbox::runtime(&self.settings),
+            mission.conversation_id.as_deref(),
+        ) {
+            let _ = inbox::conversations(&self.settings, &self.store, &runtime)
+                .interrupt_turn(conversation, &mission.project_path);
+        }
+    }
+    /// Once the closed mission is saved and the lock released, publishes the
+    /// triggers its close turned off, so a client refetching on that event
+    /// reads the closed mission. A mission opened from a conversation reports
+    /// its close to it; a deleted source gets nothing.
+    fn report_close(&self, mission: &MissionRecord, disabled: &[String]) {
+        if let Some(runtime) = inbox::runtime(&self.settings) {
+            let triggers = crate::triggers::WorkspaceTriggerService::new(
+                self.settings.clone(),
+                self.store.clone(),
+            );
+            for id in disabled {
+                if let Ok(saved) = triggers.get_trigger(&mission.project_path, id) {
+                    (runtime.publish)(crate::live::trigger_upsert_envelope(&json!(saved)));
+                }
+            }
+        }
         let (Some(closed), Some(source)) = (&mission.closed, &mission.source_conversation_id)
         else {
             return;
@@ -702,6 +723,7 @@ impl WorkspaceMissionService {
         status: CloseStatus,
         reason: String,
         actor: &str,
+        disabled_ids: &mut Vec<String>,
     ) -> WorkspaceResult<()> {
         if mission.closed.is_some() {
             return Ok(());
@@ -712,17 +734,13 @@ impl WorkspaceMissionService {
             .runtime_state(&mission.project_path)?;
         for trigger in self.enabled_targeting_triggers(mission)? {
             states.update_existing(&trigger.id, |state| state.enabled = false)?;
-            if let Some(runtime) = inbox::runtime(&self.settings) {
-                let saved = crate::triggers::WorkspaceTriggerService::new(
-                    self.settings.clone(),
-                    self.store.clone(),
-                )
-                .get_trigger(&mission.project_path, &trigger.id)?;
-                (runtime.publish)(crate::live::trigger_upsert_envelope(&json!(saved)));
-            }
+            disabled_ids.push(trigger.id.clone());
             disabled.push(format!("{} ({})", trigger.name, trigger.id));
         }
-        let mut note = format!("Closed as {}: {reason}", json!(status).as_str().unwrap());
+        let mut note = format!("Closed as {}", json!(status).as_str().unwrap());
+        if !reason.is_empty() {
+            note.push_str(&format!(": {reason}"));
+        }
         if !disabled.is_empty() {
             note.push_str(&format!(
                 ". Disabled targeting triggers: {}",

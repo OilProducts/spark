@@ -77,6 +77,34 @@ it('groups chats by project with Home first and open, others by recent use and c
     expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
 })
 
+it('shows or hides a project\'s chats from its name, and opens its settings only from the gear', async () => {
+    const user = userEvent.setup()
+    renderChats()
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-name'))
+    await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(5))
+    expect(useStore.getState().projectPagePath).toBeNull()
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-name'))
+    expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
+    await user.click(within(group('/work/busy')).getByRole('button', { name: 'Project settings for busy' }))
+    expect(useStore.getState().projectPagePath).toBe('/work/busy')
+})
+
+it('names the project a first message starts a chat in, and opens the group of a chat opened elsewhere', async () => {
+    const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: '/work/busy' })
+    renderChats()
+    expect(screen.getByTestId('chat-title')).toHaveTextContent('New chat')
+    expect(screen.getByText('New chat in busy')).toBeVisible()
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveAttribute('placeholder', 'Start a new chat in busy')
+    // Its newest chat opens once the list loads; collapsing its group then hides it.
+    await waitFor(() => expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId).toBe('busy-6'))
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
+    expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'false')
+    // Another chat opened from outside the list, as the Overview or the Inbox do.
+    act(() => useStore.getState().updateProjectSessionState('/work/busy', { conversationId: 'busy-3' }))
+    await waitFor(() => expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'true'))
+})
+
 it('shows a project\'s recent chats with a "more" link to its project page', async () => {
     const user = userEvent.setup()
     renderChats()
@@ -101,15 +129,19 @@ it('marks a project whose folder is missing and offers no new chat there', () =>
     expect(within(group(HOME)).queryByTestId('chats-project-missing')).not.toBeInTheDocument()
 })
 
-it('starts a chat in the project whose "+" was used and names that project in the composer', async () => {
+it('opens a new chat in the project whose "+" was used, saving nothing until its first message', async () => {
     const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: HOME, projectSessionsByPath: { [HOME]: { conversationId: 'home-1' } as never } })
     renderChats()
     await user.click(within(group('/work/busy')).getByRole('button', { name: 'New chat in busy' }))
-    await waitFor(() => expect(settingsWrites).toHaveLength(1))
-    expect(settingsWrites[0].body).toMatchObject({ project_path: '/work/busy', expected_revision: '0' })
-    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
-    expect(within(group('/work/busy')).getByRole('button', { name: 'Open thread New thread' })).toHaveAttribute('aria-current', 'true')
+    expect(useStore.getState().activeProjectPath).toBe('/work/busy')
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
+    expect(screen.getByText('New chat in busy')).toBeVisible()
     expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to busy')
+    // Its list loading later doesn't open its newest chat over the new one.
+    await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(5))
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
+    expect(settingsWrites).toEqual([])
 })
 
 it('asks which project "+ New" starts a chat in, Home first then recent projects', async () => {
@@ -119,8 +151,9 @@ it('asks which project "+ New" starts a chat in, Home first then recent projects
     const items = await screen.findAllByTestId('project-picker-item')
     expect(items.map((item) => item.dataset.projectPath)).toEqual([HOME, '/work/gone', '/work/busy'])
     expect(items[1]).toHaveAttribute('data-disabled')
-    await user.click(items[0])
-    await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME }))
+    await user.click(items[2])
+    expect(useStore.getState().activeProjectPath).toBe('/work/busy')
+    expect(screen.getByText('New chat in busy')).toBeVisible()
 })
 
 it('names the open thread in the header and switches its mode from the compact control', async () => {
@@ -140,7 +173,7 @@ it('names the open thread in the header and switches its mode from the compact c
 it('opens Home\'s project page without a way to remove it', async () => {
     const user = userEvent.setup()
     renderChats()
-    await user.click(within(group(HOME)).getByTestId('chats-project-name'))
+    await user.click(within(group(HOME)).getByRole('button', { name: 'Project settings for Home' }))
     expect(screen.getByTestId('project-page-title')).toHaveTextContent('Home')
     expect(screen.getByTestId('project-page-remove')).toBeDisabled()
     expect(screen.getByTestId('project-page-remove-refused')).toBeVisible()

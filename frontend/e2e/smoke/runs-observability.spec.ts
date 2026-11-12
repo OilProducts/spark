@@ -341,8 +341,8 @@ test('a completed run opens on its status item with its result, source, what did
   const status = page.getByTestId('run-status-item')
   await expect(page.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('run-result-body')).toContainText('Committed the fix.')
-  await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings, raw output')
-  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review · runtime error: Missing a regression test.')
+  await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings')
+  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review: Missing a regression test.')
   await expect(page.getByTestId('run-output-commit')).toHaveText('fedcba9 on feature/traceability')
   await expect(page.getByTestId('run-output-file')).toHaveText(['result.md', 'flow snapshot'])
 
@@ -722,7 +722,8 @@ test('a failed run shows its failure, the visit it stopped in, and that visit\'s
   await expect(page.getByTestId('run-summary-retry-button')).toBeVisible()
   await expect(page.getByTestId('run-summary-cancel-button')).toHaveCount(0)
 
-  await expect(page.getByTestId('run-status-failure')).toHaveText('codergen backend failed: codex app-server exited unexpectedly')
+  await expect(page.getByTestId('run-status-failure')).toHaveText('The agent could not run.')
+  await expect(page.getByTestId('run-status-failure-detail')).toHaveText('codergen backend failed: codex app-server exited unexpectedly')
   await expect(page.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
   await expect(page.getByTestId('run-status-no-outputs')).toContainText('None: the run ended before it produced a result.')
   const stoppedIn = page.getByTestId('run-status-stopped-in').getByTestId('run-visit-link')
@@ -733,7 +734,7 @@ test('a failed run shows its failure, the visit it stopped in, and that visit\'s
   // The visit's files open in the artifact viewer, which reports a missing file.
   await page.getByTestId('run-visit-file').click()
   await expect(page.getByTestId('run-artifact-viewer-error')).toContainText(
-    'Artifact preview unavailable because the file was not found for this run.',
+    'This file is no longer there.',
   )
   await page.getByTestId('run-artifact-viewer').screenshot({ path: screenshotPath('08o-runs-panel-artifact-missing-partial.png') })
 })

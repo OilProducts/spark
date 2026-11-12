@@ -32,6 +32,8 @@ type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
     activeProjectPath: string | null
+    /** Where a first message starts a chat while none is open. */
+    activeProjectLabel?: string | null
     /** Where sent attachments download from. */
     attachmentUrl?: (attachmentId: string) => string
     isConversationHistoryLoading: boolean
@@ -320,6 +322,7 @@ const PlanRow = memo(function PlanRow({
 export function ProjectConversationHistory({
     activeConversationId,
     activeProjectPath,
+    activeProjectLabel = null,
     attachmentUrl,
     isConversationHistoryLoading,
     activeConversationHistory,
@@ -444,7 +447,9 @@ export function ProjectConversationHistory({
     if (!activeConversationId && !isConversationUnavailable && !isConversationHistoryLoading && activeConversationHistory.length === 0) {
         return (
             <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-1 flex-col">
-                <SheetEmpty icon={MessageSquare} title="No chat open">Create or select a thread to begin chatting.</SheetEmpty>
+                <SheetEmpty icon={MessageSquare} title={activeProjectLabel ? `New chat in ${activeProjectLabel}` : 'No chat open'}>
+                    Your first message starts a new chat. To continue an earlier one, pick it from the list.
+                </SheetEmpty>
             </div>
         )
     }

@@ -3,14 +3,11 @@ import { useCallback } from 'react'
 import {
     deleteConversationValidated,
     fetchProjectConversationListValidated,
-    updateConversationSettingsValidated,
-    type ConversationBatch,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import {
-    buildProjectConversationId,
     applySummarySnapshotToCache,
     extractApiErrorMessage,
     removeConversationFromCache,
@@ -28,13 +25,6 @@ type PersistProjectState = (
 
 type UseProjectThreadActionsArgs = {
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
-    applyConversationBatch: (
-        projectPath: string,
-        conversationId: string,
-        batch: ConversationBatch,
-        kind: 'live' | 'mutation',
-        source?: string,
-    ) => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
     clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
@@ -49,7 +39,6 @@ type UseProjectThreadActionsArgs = {
 
 export function useProjectThreadActions({
     activateConversationThread,
-    applyConversationBatch,
     updateProjectSessionState,
     clearHomeConversationSession,
     setPanelError,
@@ -75,34 +64,22 @@ export function useProjectThreadActions({
         setPanelError,
     ])
 
-    const onCreateConversationThread = useCallback(async (projectPath: string) => {
-        const conversationId = buildProjectConversationId(projectPath)
-        const whereYouWere = () => {
-            const state = useStore.getState()
-            const shownProjectPath = state.activeProjectPath
-            return JSON.stringify([shownProjectPath, state.projectPagePath,
-                shownProjectPath ? state.projectSessionsByPath[shownProjectPath]?.conversationId ?? null : null])
+    // New chat opens an empty chat in the project, as an empty project shows one; the first
+    // message or setting saves it, so New chat leaves no empty chats behind.
+    const onCreateConversationThread = useCallback((projectPath: string) => {
+        const open = () => {
+            useStore.setState({ projectPagePath: null })
+            setPanelError(null)
+            updateProjectSessionState(projectPath, { conversationId: null })
+            void persistProjectState(projectPath, { active_conversation_id: null, last_accessed_at: new Date().toISOString() })
+            useStore.getState().setActiveProjectPath(projectPath)
         }
-        const before = whereYouWere()
-        setPanelError(null)
-        try {
-            // Persist first so an empty thread survives reload and can be deleted.
-            const ack = await updateConversationSettingsValidated(conversationId, {
-                project_path: projectPath,
-                expected_revision: '0',
-            })
-            applyConversationBatch(projectPath, conversationId, ack.changes, 'mutation', 'create-thread')
-            // Only open it if you are still where you were when you asked for it.
-            if (whereYouWere() === before) {
-                onSelectConversationThread(projectPath, conversationId)
-            }
-        } catch (error) {
-            setPanelError(extractApiErrorMessage(error, 'Unable to create the thread.'))
-        }
+        if (useStore.getState().projectPagePath) requestNavigation(open)
+        else open()
     }, [
-        applyConversationBatch,
-        onSelectConversationThread,
+        persistProjectState,
         setPanelError,
+        updateProjectSessionState,
     ])
 
     const onDeleteConversationThread = useCallback(async (projectPath: string, conversationId: string, title: string) => {

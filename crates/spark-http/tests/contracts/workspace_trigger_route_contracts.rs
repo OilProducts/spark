@@ -340,6 +340,116 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
     );
 }
 
+/// A trigger's run uses the server's runner: its gate waits for an answer as
+/// a run launched from the UI does. Once the run ends, the gate lists no
+/// question and takes no answer.
+#[tokio::test]
+async fn a_trigger_run_waits_at_its_gate_until_it_ends() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_dir = project(&settings, "gate-project");
+    let gate_flow = crate::install_flow(
+        &settings,
+        json!({
+            "schema_version": "2",
+            "id": "trigger_gate",
+            "title": "Trigger Gate",
+            "nodes": {
+                "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "review", "description": "Enter the first workflow step."}}},
+                "review": {
+                    "kind": "human_gate",
+                    "config": {"kind": "human_gate", "prompt": "Ship it?"},
+                    "routes": {"approve": {"to": "done", "label": "Approve", "description": "The change is approved."}}
+                },
+                "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+            }
+        }),
+    );
+    let factory: attractor_api::RuntimeHandlerRunnerFactory = std::sync::Arc::new(|| {
+        attractor_runtime::RuntimeHandlerRunner::new().with_blocking_human_gates()
+    });
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory)
+        .expect("app");
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "project_path": project_dir,
+            "name": "Gate webhook",
+            "source_type": "webhook",
+            "action": {"flow_name": gate_flow},
+            "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let trigger_id = created.1["id"].as_str().expect("trigger id").to_string();
+    let fired = fire_webhook(
+        app.clone(),
+        created.1["source"]["webhook_key"].as_str().unwrap(),
+        created.1["webhook_secret"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(fired.0, StatusCode::OK);
+    let run_id = load_state(&settings, &project_dir, &trigger_id).recent_history[0]
+        .run_id
+        .clone()
+        .expect("run id");
+
+    let wait_for = |status: &'static str| {
+        let settings = settings.clone();
+        let run_id = run_id.clone();
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let current = RunStore::for_settings(&settings)
+                    .read_run_bundle(&run_id)
+                    .expect("bundle")
+                    .and_then(|bundle| bundle.record)
+                    .map(|record| record.status);
+                if current.as_deref() == Some(status) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "run never reached {status} (last: {current:?})"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    };
+    wait_for("waiting").await;
+    let questions_path = format!("/attractor/pipelines/{run_id}/questions");
+    let open = request_json(app.clone(), "GET", &questions_path, None).await;
+    assert_eq!(open.0, StatusCode::OK);
+    let question_id = open.1["questions"][0]["question_id"]
+        .as_str()
+        .expect("an open question")
+        .to_string();
+
+    let canceled = request_json(
+        app.clone(),
+        "POST",
+        &format!("/attractor/pipelines/{run_id}/cancel"),
+        None,
+    )
+    .await;
+    assert_eq!(canceled.0, StatusCode::OK);
+    wait_for("canceled").await;
+    let ended = request_json(app.clone(), "GET", &questions_path, None).await;
+    assert_eq!(ended.1["questions"], json!([]));
+    let answered = request_json(
+        app,
+        "POST",
+        &format!("/attractor/pipelines/{run_id}/questions/{question_id}/answer"),
+        Some(json!({"selected_value": "approve"})),
+    )
+    .await;
+    assert_eq!(answered.0, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknown_flow() {
     let temp = tempfile::tempdir().expect("tempdir");

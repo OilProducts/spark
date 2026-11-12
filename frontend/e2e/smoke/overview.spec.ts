@@ -85,7 +85,8 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await expect(page.getByTestId('overview-failure-count')).toContainText('1 failed')
     const doneIndex = await finished.getByTestId('overview-finished-item').evaluateAll((rows, id) => rows.findIndex((row) => row.getAttribute('data-item-id') === id), doneRun)
     const failedIndex = await finished.getByTestId('overview-finished-item').evaluateAll((rows, id) => rows.findIndex((row) => row.getAttribute('data-item-id') === id), failedRun)
-    expect(doneIndex).toBeLessThan(failedIndex)
+    // Failures lead the list, ahead of newer completions.
+    expect(failedIndex).toBeLessThan(doneIndex)
 
     // You were last in: the chat that launched the latest run, with its tally and runs.
     await expect(page.getByTestId('overview-tally')).toContainText('1')

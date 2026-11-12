@@ -316,8 +316,8 @@ export const STATUS_LABELS: Record<string, string> = {
 }
 
 // A completed run that reached a failure exit is not a success: it reads as
-// the exit's declared result name, in a warning tone.
-const isCompletedFailure = (run: Pick<RunRecord, 'status' | 'outcome'>) => run.status === 'completed' && run.outcome === 'failure'
+// the exit's declared result name, and lists count it as failed.
+export const isCompletedFailure = (run: Pick<RunRecord, 'status' | 'outcome'>) => run.status === 'completed' && run.outcome === 'failure'
 
 const humanizeResultName = (name: string) => name.replace(/[_-]+/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase())
 
@@ -327,10 +327,13 @@ export const formatRunStatusLabel = (run: Pick<RunRecord, 'status' | 'outcome' |
         : STATUS_LABELS[run.status] || run.status
 
 export const runRecordTone = (run: Pick<RunRecord, 'status' | 'outcome'>): StatusTone => (
-    isCompletedFailure(run) ? 'warning' : runStatusTone(run.status)
+    isCompletedFailure(run) ? 'destructive' : runStatusTone(run.status)
 )
 
 export const canCancelRun = (status: string) => status === 'running' || status === 'waiting'
+
+/** A run that can no longer change: it takes no answer, steer or cancel. */
+export const runHasEnded = (status: string) => ['completed', 'failed', 'canceled', 'aborted', 'validation_error'].includes(status)
 
 export const canContinueRun = (status: string) => !['queued', 'running', 'waiting', 'cancel_requested', 'abort_requested', 'pause_requested', 'unreadable'].includes(status)
 export const canRetryRun = (status: string) => status === 'failed'

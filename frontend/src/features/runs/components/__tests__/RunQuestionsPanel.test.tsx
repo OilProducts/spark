@@ -14,7 +14,7 @@ it('offers suggested choices and a custom answer for the owning child run', () =
   render(<RunQuestionsPanel
     confirmedQuestionIds={['q']}
     freeformAnswersByGateId={{ q: 'Designers' }} gateNotesByGateId={{}}
-    groupedPendingInterviewGates={[{ key: 'child', heading: 'Child run', gates: [gate] }]}
+    groupedPendingInterviewGates={[{ key: 'child', heading: 'Child run', gates: [gate] }]} now={Date.now()}
     onFreeformAnswerChange={vi.fn()} onGateNoteChange={vi.fn()}
     onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
   />)
@@ -40,7 +40,7 @@ it('labels human gate choices with their display text and answers with the decis
   render(<RunQuestionsPanel
     confirmedQuestionIds={['gate']}
     freeformAnswersByGateId={{}} gateNotesByGateId={{ gate: 'add a test' }}
-    groupedPendingInterviewGates={[{ key: 'root', heading: 'This run', gates: [gate] }]}
+    groupedPendingInterviewGates={[{ key: 'root', heading: 'This run', gates: [gate] }]} now={Date.now()}
     onFreeformAnswerChange={vi.fn()} onGateNoteChange={vi.fn()}
     onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
   />)
@@ -49,11 +49,13 @@ it('labels human gate choices with their display text and answers with the decis
   expect(screen.getByTestId('run-pending-human-gate-option-key-approve')).toHaveTextContent('A')
   expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveAttribute('aria-keyshortcuts', 'A')
   expect(screen.queryByTestId('run-pending-human-gate-option-metadata-approve')).toBeNull()
-  // With focus on an answer, a key picks its answer; other keys do nothing.
+  // With focus on an answer, a key moves focus to its answer without sending it; other keys do nothing.
+  screen.getByRole('button', { name: 'Approve and ship' }).focus()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 'x' })
-  expect(submit).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveFocus()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 's' })
-  expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
+  expect(screen.getByRole('button', { name: 'Send back for changes' })).toHaveFocus()
+  expect(submit).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Send back for changes' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'revise', 'add a test')
   fireEvent.click(screen.getByRole('button', { name: 'Approve and ship' }))

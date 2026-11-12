@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { Plus, RefreshCw } from 'lucide-react'
+import { ChevronDown, Plus, RefreshCw } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
-import { FlowTree } from '@/components/app/flow-tree'
+import { InlineError } from '@/components/app/inline-error'
+import { FlowTree, type FlowLabel } from '@/components/app/flow-tree'
+import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
+import { projectLabel } from '@/features/projects/model/projectChoices'
 import { DefinitionBadges } from '@/features/roles/RolesPanel'
-import { definitionBadges, fetchDefinitions, type DefinitionItem } from '@/features/roles/rolesModel'
+import { fetchDefinitions, type DefinitionItem } from '@/features/roles/rolesModel'
 
-import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
+import { deleteFlowCatalogEntry, loadFlowCatalog, loadFlowSummaries } from './services/flowCatalog'
 
 /** The installed flows, grouped by folder, for the Flows panel. */
 function useFlowCatalogPanel() {
@@ -23,7 +26,12 @@ function useFlowCatalogPanel() {
     // Badge metadata and the project it describes; another project's never shows.
     const [definitions, setDefinitions] = useState<{ project: string | null; flows: Record<string, DefinitionItem> }>({ project: null, flows: {} })
     const flowDefinitions = definitions.project === activeProjectPath ? definitions.flows : {}
+    // Titles and descriptions, a hint like the badges: a project whose list fails shows file names.
+    const [summaries, setSummaries] = useState<{ project: string | null; labels: Record<string, FlowLabel> }>({ project: null, labels: {} })
+    const flowLabels = summaries.project === activeProjectPath ? summaries.labels : {}
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
+    // The last load failed: the list may be empty or stale, not the project's flows.
+    const [loadFailed, setLoadFailed] = useState(false)
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
     const refreshRequestIdRef = useRef(0)
@@ -48,12 +56,23 @@ function useFlowCatalogPanel() {
             )
         }
 
+        const summaryProject = activeProjectPath
+        loadFlowSummaries(summaryProject).then(
+            (list) => {
+                if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                    setSummaries({ project: summaryProject, labels: Object.fromEntries(list.map((flow) => [flow.name, { title: flow.title, description: flow.description }])) })
+                }
+            },
+            () => undefined,
+        )
+
         try {
             const data = await loadFlowCatalog(activeProjectPath)
             if (!isMountedRef.current || requestId !== refreshRequestIdRef.current) {
                 return
             }
             setFlows(data)
+            setLoadFailed(false)
 
             const selectedFlow = activeFlowRef.current
             if (selectedFlow && !data.includes(selectedFlow)) {
@@ -61,6 +80,9 @@ function useFlowCatalogPanel() {
             }
         } catch (error) {
             console.error(error)
+            if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                setLoadFailed(true)
+            }
         } finally {
             if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
                 setIsRefreshingFlows(false)
@@ -123,9 +145,12 @@ function useFlowCatalogPanel() {
 
     const handleDeleteFlow = async (e: MouseEvent, fileName: string) => {
         e.stopPropagation();
+        const copy = flowDefinitions[fileName]?.layer === 'project_copy'
         const confirmed = await confirm({
-            title: 'Delete flow?',
-            description: `Are you sure you want to delete ${fileName}? A project copy of a bundled flow reverts to the bundled flow.`,
+            title: copy ? 'Delete your copy of this flow?' : 'Delete flow?',
+            description: copy
+                ? `${fileName} goes back to the flow bundled with Spark; your changes to it are lost.`
+                : `${fileName} is deleted from the project. This can’t be undone.`,
             confirmLabel: 'Delete',
             cancelLabel: 'Keep flow',
             confirmVariant: 'destructive',
@@ -148,7 +173,7 @@ function useFlowCatalogPanel() {
         await refreshFlows();
     };
 
-    return { activeFlow, setActiveFlow, flows, flowDefinitions, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
+    return { activeProjectPath, activeFlow, setActiveFlow, flows, flowDefinitions, flowLabels, isRefreshingFlows, loadFailed, refreshFlows, createNewFlow, handleDeleteFlow }
 }
 
 export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
@@ -185,20 +210,50 @@ export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useF
 }
 
 export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
+    const registry = useStore((state) => state.projectRegistry)
     const projectFlows = useMemo(
         () => new Set(Object.values(catalog.flowDefinitions).filter((item) => item.layer !== 'bundled').map((item) => item.name)),
         [catalog.flowDefinitions],
     )
+    const project = catalog.activeProjectPath
     return (
-        <div data-testid="flow-browser-panel">
+        <div data-testid="flow-browser-panel" className="space-y-3">
+            {/* Flows resolve per project: its own first, then bundled, so the list says whose it is. */}
+            <div className="flex min-w-0 items-center gap-2 px-3 text-sm text-muted-foreground">
+                <span className="shrink-0">Flows for</span>
+                <ProjectPicker
+                    heading="Show the flows of"
+                    testId="flows-project-picker"
+                    defaultProjectPath={project}
+                    onPick={(path) => useStore.getState().setActiveProjectPath(path)}
+                >
+                    <Button type="button" variant="outline" size="sm" data-testid="flows-project-button" className="min-w-0 max-w-full" title={project ?? undefined} aria-label={`Flows for project ${project ? projectLabel(registry, project) : '(none chosen)'}; change project`}>
+                        <span className="truncate">{project ? projectLabel(registry, project) : 'Choose a project'}</span>
+                        <ChevronDown aria-hidden="true" className="text-muted-foreground" />
+                    </Button>
+                </ProjectPicker>
+            </div>
+            {catalog.loadFailed ? (
+                <div className="px-3">
+                    <InlineError dense data-testid="flow-list-error">
+                        {catalog.flows.length > 0 ? 'Couldn’t refresh the flows; this list may be out of date.' : 'Couldn’t load the flows.'}
+                        <button type="button" onClick={() => void catalog.refreshFlows()} disabled={catalog.isRefreshingFlows} className="ml-1 font-medium underline underline-offset-4">Try again</button>
+                    </InlineError>
+                </div>
+            ) : null}
             <FlowTree
                 dataTestId="editor-flow-tree"
                 flows={catalog.flows}
                 projectFlows={projectFlows}
+                projectLabel={catalog.activeProjectPath ? projectLabel(registry, catalog.activeProjectPath) : undefined}
+                flowLabels={catalog.flowLabels}
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
-                renderFlowIndicator={(flow) => catalog.flowDefinitions[flow] && definitionBadges(catalog.flowDefinitions[flow]).length > 0
+                // Bundled flows can't be deleted; a project's copy of one can, which brings the bundled flow back.
+                canDeleteFlow={(flow) => catalog.flowDefinitions[flow]?.layer !== 'bundled'}
+                // The project heading already says a flow is the project's; only a customized bundled flow needs a mark.
+                renderFlowIndicator={(flow) => catalog.flowDefinitions[flow]?.layer === 'project_copy'
                     && <span className="flex shrink-0 gap-1"><DefinitionBadges item={catalog.flowDefinitions[flow]} /></span>}
             />
         </div>

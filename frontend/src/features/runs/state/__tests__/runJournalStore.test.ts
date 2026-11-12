@@ -48,4 +48,27 @@ describe('runJournalStore', () => {
       flattenRunJournalSegments(runState?.segments ?? []).map(({ sequence }) => sequence),
     ).toEqual(Array.from({ length: 235 }, (_, index) => 235 - index))
   })
+
+  it('keeps a live gate answerable when its human_gate event follows InterviewStarted', () => {
+    const runId = 'run-live-gate'
+    const gateEvent = (sequence: number, type: string, payload: Record<string, unknown>): TimelineEventEntry => ({
+      ...makeTimelineEvent(sequence),
+      type,
+      category: 'interview',
+      nodeId: 'approve',
+      stageIndex: null,
+      payload,
+    })
+    useRunJournalStore.getState().appendLiveEntry(runId, gateEvent(1, 'InterviewStarted', { question: 'Ship it?' }))
+    useRunJournalStore.getState().appendLiveEntry(runId, gateEvent(2, 'human_gate', {
+      question_id: 'q-1',
+      prompt: 'Ship it?',
+      options: [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }],
+    }))
+
+    const gates = useRunJournalStore.getState().byRunId[runId]?.pendingInterviewGates ?? []
+    expect(gates).toHaveLength(1)
+    expect(gates[0]?.questionId).toBe('q-1')
+    expect(gates[0]?.options.map((option) => option.value)).toEqual(['yes', 'no'])
+  })
 })

@@ -67,12 +67,9 @@ export function useRunsList({
             }
             if (activeRequest) liveDuringRequest.set(nextRun.run_id, nextRun)
             useStore.getState().reconcileRunRecord(nextRun.run_id, 'live', nextRun)
+            // One run's update says nothing about the rest of the list: its load state stays.
             updateRunsListSession({
                 runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
-                status: 'ready',
-                error: null,
-                streamStatus: 'ready',
-                streamError: null,
             }, 'live')
         }
 
@@ -85,12 +82,7 @@ export function useRunsList({
             const request = new AbortController()
             activeRequest = request
             liveDuringRequest = new Map()
-            updateRunsListSession({
-                status: 'loading',
-                error: null,
-                streamStatus: 'loading',
-                streamError: null,
-            })
+            updateRunsListSession({ status: 'loading', error: null })
             let succeeded = false
             try {
                 const data = await fetchRunsListValidated(null, request.signal)
@@ -100,19 +92,12 @@ export function useRunsList({
                     fetched: true,
                     status: 'ready',
                     error: null,
-                    streamStatus: 'ready',
-                    streamError: null,
                 })
                 succeeded = true
             } catch (err) {
                 if (activeRequest !== request || request.signal.aborted) return
                 logUnexpectedRunError(err)
-                updateRunsListSession({
-                    error: 'Unable to load runs',
-                    status: 'error',
-                    streamStatus: 'degraded',
-                    streamError: 'Run history transport is unavailable. Reconnect to retry.',
-                })
+                updateRunsListSession({ error: 'Couldn’t load your runs.', status: 'error' })
             } finally {
                 if (activeRequest === request) {
                     activeRequest = null
@@ -180,8 +165,6 @@ export function useRunsList({
         scopedRuns: sort === 'oldest' ? [...displayedRuns].reverse() : displayedRuns,
         selectedRunSummary,
         status: runsListSession.status,
-        streamError: runsListSession.streamError,
-        streamStatus: runsListSession.streamStatus,
         summary,
     }
 }

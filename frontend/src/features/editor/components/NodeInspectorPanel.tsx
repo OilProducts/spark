@@ -149,7 +149,7 @@ export function NodeInspectorPanel({
 
                         {visibility.showPrompt ? (
                             <div className="flex h-48 flex-col space-y-1.5">
-                                <Label htmlFor={`${id}-prompt-instruction`}>Prompt instruction</Label>
+                                <Label htmlFor={`${id}-prompt-instruction`}>{kind === 'human_gate' ? 'Question to ask' : 'Prompt instruction'}</Label>
                                 <Textarea
                                     id={`${id}-prompt-instruction`}
                                     aria-describedby={nodeFieldDiagnostics.prompt?.length ? `${id}-prompt-diagnostics` : undefined}
@@ -157,7 +157,7 @@ export function NodeInspectorPanel({
                                     value={(selectedNode?.data?.prompt as string) || ''}
                                     onChange={(event) => onPropertyChange('prompt', event.target.value)}
                                     className="flex-1 resize-none font-mono text-sm"
-                                    placeholder="Enter system prompt instructions..."
+                                    placeholder={kind === 'human_gate' ? 'What should the person decide? Each route out of this step is one answer.' : 'Enter system prompt instructions...'}
                                 />
                                 {nodeFieldDiagnostics.prompt?.length ? (
                                     <div id={`${id}-prompt-diagnostics`}>

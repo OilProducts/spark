@@ -70,11 +70,14 @@ import {
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
+import { flowLoadFailed, isMissingFlowError } from './model/flowLoadFailure';
 import {
     loadEditorFlowPayload,
     loadEditorPreview,
     type EditorPreviewResponse,
 } from './services/editorPreview';
+import { projectLabel } from '@/features/projects/model/projectChoices';
+import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
 import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './components/FlowFilesView';
@@ -188,7 +191,8 @@ function buildAuthoredFlow(
     }))
 }
 
-export function Editor({ isActive = true }: { isActive?: boolean }) {
+
+export function Editor({ isActive = true, flowList }: { isActive?: boolean; flowList?: { failed: boolean; retry: () => void } }) {
     const selectedNodeId = useStore((state) => state.selectedNodeId);
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
@@ -201,6 +205,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const setEditorMode = useStore((state) => state.setEditorMode);
     // A run defaults to the project of the chat you came from, else the last used.
     const runDefaultProjectPath = useStore((state) => defaultProjectChoice(state.projectRegistry, state.chatOriginProjectPath));
+    const projectRegistry = useStore((state) => state.projectRegistry);
+    const setActiveFlow = useStore((state) => state.setActiveFlow);
     const activeFlow = useStore((state) => state.activeFlow);
     const flowMetadata = useStore((state) => state.flowMetadata);
     const uiDefaults = useStore((state) => state.uiDefaults);
@@ -261,6 +267,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     // The file view's unsaved edits by file name, kept here so a mode switch cannot drop them.
     const [fileDrafts, setFileDrafts] = useState<Record<string, string>>({});
     const [fileSaveError, setFileSaveError] = useState<FlowFilesError | null>(null);
+    // A flow that couldn't load, and why: a link to a renamed or deleted flow says so instead of
+    // opening an empty canvas that could still be run. The inspector hides for it too.
+    const flowLoadFailure = useStore((state) => state.flowLoadFailure);
+    const setFlowLoadFailure = useStore((state) => state.setFlowLoadFailure);
     // Bumped to reload the active flow, e.g. after the file view saves.
     const [flowReloadToken, setFlowReloadToken] = useState(0);
     const reloadRequestedRef = useRef(false);
@@ -831,6 +841,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 });
                 hydratedRef.current = true;
                 setIsHydrated(true);
+                useStore.getState().setFlowLoadFailure(null);
                 hydratedFlowNameRef.current = flowName;
                 hydratedProjectPathRef.current = activeProjectPath;
                 recordFlowLoadDebug('hydrate:complete', flowName, {
@@ -845,6 +856,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     return;
                 }
                 console.error(error);
+                if (isCurrentLoad()) {
+                    useStore.getState().setFlowLoadFailure({ flow: flowName, project: activeProjectPath, missing: isMissingFlowError(error) });
+                }
             }
         };
 
@@ -1369,9 +1383,11 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         setNodes,
     ]);
 
+    const loadFailure = flowLoadFailed(flowLoadFailure, flowName, activeProjectPath) ? flowLoadFailure : null;
+    const flowOpen = Boolean(flowName) && !loadFailure;
     return (
         <div className="flow-surface flex h-full w-full flex-col">
-            {flowName && (
+            {flowOpen && flowName && (
                 <EditorCanvasToolbar
                     mode={editorMode}
                     modeDisabled={!isHydrated}
@@ -1399,7 +1415,21 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             {/* ponytail: phones get the file view alone in Files mode; its list selects files. */}
             <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
                 {
-                    flowName ? (
+                    loadFailure ? (
+                        <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>
+                            <p>
+                                {loadFailure.missing
+                                    ? <>{projectLabel(projectRegistry, activeProjectPath)} has no flow named “{loadFailure.flow}”. It may have been renamed or deleted. Pick a flow from the list.</>
+                                    : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
+                            </p>
+                            <div className="mt-3 flex justify-center gap-2">
+                                {loadFailure.missing ? null : (
+                                    <Button type="button" size="sm" variant="outline" onClick={() => { setFlowLoadFailure(null); reloadFlow(); }}>Try again</Button>
+                                )}
+                                <Button type="button" size="sm" variant="ghost" onClick={() => setActiveFlow(null)}>Close</Button>
+                            </div>
+                        </SheetEmpty>
+                    ) : flowName ? (
                         <ReactFlow
                             className="flow-canvas"
                             style={{ background: 'transparent' }}
@@ -1441,6 +1471,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>
+                    ) : flowList?.failed ? (
+                        <SheetEmpty data-testid="editor-flow-list-failed" icon={GitBranch} title="The flows couldn’t load">
+                            <p>Spark couldn’t list this project’s flows, so there’s nothing to pick yet.</p>
+                            <div className="mt-3 flex justify-center">
+                                <Button type="button" size="sm" variant="outline" onClick={flowList.retry}>Try again</Button>
+                            </div>
+                        </SheetEmpty>
                     ) : (
                         <SheetEmpty data-testid="editor-no-flow-state" icon={GitBranch} title="No flow open">
                             Pick a flow from the list to edit it or run it.
@@ -1448,7 +1485,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     )
                 }
 
-                {flowName && (
+                {flowOpen && (
                     <div className="absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
                         {showPerformanceDebug ? (
                             <>
@@ -1483,9 +1520,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     </div>
                 )}
 
-                {flowName && editorMode === 'structured' && <ValidationPanel />}
+                {flowOpen && editorMode === 'structured' && <ValidationPanel />}
 
-                {flowName && editorMode === 'structured' && isRunPanelOpen ? (
+                {flowOpen && flowName && editorMode === 'structured' && isRunPanelOpen ? (
                     <div
                         data-testid="editor-run-panel"
                         className="absolute bottom-4 right-3 top-2 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background p-4 shadow-lg"
@@ -1518,7 +1555,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     </div>
                 ) : null}
             </div>
-            {flowName && editorMode === 'files' ? (
+            {flowOpen && editorMode === 'files' ? (
                 <FlowFilesView
                     files={flowFiles}
                     drafts={fileDrafts}

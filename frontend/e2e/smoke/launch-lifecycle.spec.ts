@@ -8,6 +8,7 @@ import {
   runFlowInProject,
   screenshotPath,
   stubProjectMetadata,
+  flowRow,
 } from '../fixtures/smoke-helpers'
 
 test.beforeAll(() => {
@@ -78,7 +79,7 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
 
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     const previewRequest = page.waitForRequest(
       (request) =>
@@ -178,13 +179,13 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
       )
 
     const errorPreviewRequest = waitForPreviewToken(errorToken)
-    await page.getByRole('button', { name: errorFlowName }).click()
+    await flowRow(page, errorFlowName).click()
     await errorPreviewRequest
     await expect(page.getByTestId("editor-run-button")).toBeDisabled()
     await expect(page.getByTestId("editor-run-button")).toHaveAttribute("title", "Fix validation errors before running.")
 
     const warningPreviewRequest = waitForPreviewToken(warningToken)
-    await page.getByRole('button', { name: warningFlowName }).click()
+    await flowRow(page, warningFlowName).click()
     await warningPreviewRequest
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
     await runFlowInProject(page, projectPath)
@@ -194,7 +195,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
     await page.screenshot({ path: screenshotPath("17-diagnostic-transition-execute-state.png"), fullPage: true })
 
     const cleanPreviewRequest = waitForPreviewToken(cleanToken)
-    await page.getByRole('button', { name: cleanFlowName }).click()
+    await flowRow(page, cleanFlowName).click()
     await cleanPreviewRequest
     // Switching flows closes the run panel; reopen it for the clean flow.
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
@@ -226,7 +227,7 @@ test("launch failures surface diagnostics and retry affordances for direct runs"
 
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 

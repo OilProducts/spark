@@ -1,3 +1,4 @@
+import { runKind, searchHidesRun } from '@/features/runs/model/runOverviewModel'
 import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
 import type { AppState } from './store-types'
@@ -13,8 +14,15 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
     status: 'idle',
     error: null,
     runs: [],
-    streamStatus: 'idle',
-    streamError: null,
+}
+
+function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
+    const run = session.runs.find((candidate) => candidate.run_id === runId)
+    return {
+        ...session.statusFilter && (!run || runKind(run) !== session.statusFilter) ? { statusFilter: null } : {},
+        ...session.projectFilter && run?.project_path !== session.projectFilter ? { projectFilter: null } : {},
+        ...searchHidesRun(session.runs, runId, session.searchQuery?.trim().toLowerCase() ?? '') ? { searchQuery: '' } : {},
+    }
 }
 
 const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
@@ -181,18 +189,25 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
         }
     },
     setRunsSelectedRunId: (runId) =>
-        set((state) => state.runsListSession.selectedRunId === runId ? state : ({
-            ...(runId ? { runDetailSessionsByRunId: {
-                ...state.runDetailSessionsByRunId,
-                [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
-                    record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
-                    questionsStatus: 'idle' as const,
-                    // A run opens on its status item, not on a node picked last time.
-                    selectedNodeId: null,
-                },
-            } } : {}),
-            runsListSession: { ...state.runsListSession, selectedRunId: runId },
-        })),
+        set((state) => {
+            // Opening a run the list's filters would hide drops those filters, so the open run is always listed.
+            const unfiltered = runId ? filtersHiding(state.runsListSession, runId) : {}
+            if (state.runsListSession.selectedRunId === runId) {
+                return Object.keys(unfiltered).length > 0 ? { runsListSession: { ...state.runsListSession, ...unfiltered } } : state
+            }
+            return {
+                ...(runId ? { runDetailSessionsByRunId: {
+                    ...state.runDetailSessionsByRunId,
+                    [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
+                        record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
+                        questionsStatus: 'idle' as const,
+                        // A run opens on its status item, not on a node picked last time.
+                        selectedNodeId: null,
+                    },
+                } } : {}),
+                runsListSession: { ...state.runsListSession, selectedRunId: runId, missingRunId: null, ...unfiltered },
+            }
+        }),
     updateRunDetailSession: (runId, patch) =>
         set((state) => !state.runDetailSessionsByRunId[runId] ? state : ({
             runDetailSessionsByRunId: {
@@ -209,8 +224,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             delete next[runId]
             return {
                 runDetailSessionsByRunId: next,
-                runsListSession: { ...state.runsListSession,
-                    selectedRunId: state.runsListSession.selectedRunId === runId ? null : state.runsListSession.selectedRunId },
+                // Only the server's "no such run" clears a run's session; an open one is then missing.
+                runsListSession: { ...state.runsListSession, ...(state.runsListSession.selectedRunId === runId ? { selectedRunId: null, missingRunId: runId } : {}) },
             }
         }),
 })

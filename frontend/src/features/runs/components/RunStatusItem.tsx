@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
@@ -7,6 +7,7 @@ import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { Well } from '@/components/app/well'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
+import { cn } from '@/lib/utils'
 import {
     formatDuration,
     formatRunStatusLabel,
@@ -26,7 +27,9 @@ import {
 } from '../model/runSummaryFormat'
 import {
     classifyRunFailure,
+    describeFailure,
     errorVisits,
+    formatRunDate,
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
@@ -63,9 +66,15 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
     )
 }
 
-// Whether a fork may tolerate the error belongs to the visit's own details, not this summary.
-function VisitErrorKind({ visit }: { visit: RunVisit }) {
-    return visit.failureKind ? <span data-testid="run-visit-error-kind" className="text-muted-foreground"> · {visit.failureKind} error</span> : null
+/** The runtime's own words for a failure, muted under the plain ones, for whoever debugs the flow. */
+export function FailureDetail({ className, ...props }: ComponentProps<'span'>) {
+    return <span className={cn('block whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground', className)} {...props} />
+}
+
+/** A clock time or date, with the full timestamp on hover. */
+function RunTime({ timestamp, now }: { timestamp: string | null | undefined; now: number }) {
+    const short = formatRunDate(timestamp, now)
+    return short ? <span title={formatTimestamp(timestamp)}>{short}</span> : <>—</>
 }
 
 // The keys a visit wrote, named without the "context." prefix.
@@ -114,6 +123,7 @@ export function RunStatusItem({
         body = question
     } else if (kind === 'failed') {
         const infrastructure = classifyRunFailure(run) === 'infrastructure'
+        const failure = describeFailure(runFailureMessage(run))
         const stoppedIn = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed') ?? lastVisit
         // The header's badge already says Failed; this section says why.
         heading = 'Why it failed'
@@ -124,9 +134,12 @@ export function RunStatusItem({
         )
         body = (
             <>
-                <p data-testid="run-status-failure" className="whitespace-pre-wrap break-words text-sm text-destructive">
-                    {runFailureMessage(run)}
-                </p>
+                <div>
+                    <p data-testid="run-status-failure" className="whitespace-pre-wrap break-words text-sm text-destructive">
+                        {failure.summary}
+                    </p>
+                    {failure.detail ? <FailureDetail data-testid="run-status-failure-detail" className="mt-1">{failure.detail}</FailureDetail> : null}
+                </div>
                 <p data-testid="run-status-stopped-in" className="text-sm text-muted-foreground">
                     {stoppedIn ? <>Stopped in {link(stoppedIn)} after {duration}.</> : <>Stopped after {duration}.</>}
                     {infrastructure ? ' Retry resumes this run.' : ''}
@@ -161,7 +174,7 @@ export function RunStatusItem({
                                 {flowNodes[source]?.label ?? source}
                             </button>
                         ) : flowNodes[source]?.label ?? source}
-                        {result?.display_mode === 'summary' ? ', summarized' : ', raw output'}
+                        {result?.display_mode === 'summary' ? ', summarized' : null}
                     </span>
                 ) : null}
             </>
@@ -204,26 +217,31 @@ export function RunStatusItem({
                 <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
                     <SectionHeading as="h4" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
                     <ul className="flex flex-col gap-1.5 text-sm">
-                        {didNotPass.map((visit) => (
-                            <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
-                                {link(visit)}
-                                <VisitErrorKind visit={visit} />
-                                {': '}
-                                {visit.reason && visit.reason.trim() === failureMessage
-                                    ? <span className="text-muted-foreground">the same error as above</span>
-                                    : visit.reason
-                                        ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>
-                                        : <span className="text-muted-foreground">no reason recorded</span>}
-                                <VisitWrites visit={visit} />
-                            </li>
-                        ))}
+                        {didNotPass.map((visit) => {
+                            const reason = visit.reason?.trim() || null
+                            const sameAsAbove = reason !== null && reason === failureMessage
+                            const failure = reason && !sameAsAbove ? describeFailure(reason) : null
+                            return (
+                                <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
+                                    {link(visit)}
+                                    {': '}
+                                    {sameAsAbove
+                                        ? <span className="text-muted-foreground">the same error as above</span>
+                                        : failure
+                                            ? <span className="whitespace-pre-wrap break-words text-foreground/90">{failure.summary}</span>
+                                            : <span className="text-muted-foreground">no reason recorded</span>}
+                                    <VisitWrites visit={visit} />
+                                    {failure?.detail ? <FailureDetail>{failure.detail}</FailureDetail> : null}
+                                </li>
+                            )
+                        })}
                     </ul>
                 </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
                 <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
             ) : null}
-            <RunFacts run={run} />
+            <RunFacts run={run} now={now} />
         </article>
     )
 }
@@ -339,7 +357,7 @@ const LOCK_STATES: Record<string, string> = {
     inherited: 'Inherited from parent',
 }
 
-function RunFacts({ run }: { run: RunRecord }) {
+function RunFacts({ run, now }: { run: RunRecord; now: number }) {
     const usage = run.token_usage_breakdown
     const provider = run.llm_provider || run.provider
     const lineage = formatLineage(run)
@@ -371,8 +389,8 @@ function RunFacts({ run }: { run: RunRecord }) {
             run.execution_lock?.conflict_policy && `on conflict ${run.execution_lock.conflict_policy}`,
             typeof run.execution_lock?.queue_position === 'number' && `queue position ${run.execution_lock.queue_position}`,
         ].filter(Boolean).join(' · ')] as [string, string, ReactNode]] : []),
-        ['started', 'Started', formatTimestamp(run.started_at)],
-        ['ended', 'Ended', formatTimestamp(run.ended_at)],
+        ['started', 'Started', <RunTime timestamp={run.started_at} now={now} />],
+        ['ended', 'Ended', <RunTime timestamp={run.ended_at} now={now} />],
         ['run', 'Run', run.run_id],
         ...(lineage ? [['lineage', 'Lineage', lineage] as [string, string, ReactNode]] : []),
     ]

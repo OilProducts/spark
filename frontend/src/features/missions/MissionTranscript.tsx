@@ -46,7 +46,7 @@ type Conversation = {
 }
 
 /** The mission's log in the shared transcript grammar: turn headers, folded commands, run cards and quiet event lines. */
-export function MissionTranscript({ conversation, project, runs }: { conversation: Conversation; project: string; runs: Map<string, MissionRun> }) {
+export function MissionTranscript({ conversation, project, runs, closed = false }: { conversation: Conversation; project: string; runs: Map<string, MissionRun>; closed?: boolean }) {
     const { conversationId, record, loading, error, reload } = conversation
     const [submitting, setSubmitting] = useState<Record<string, boolean>>({})
     const [inputError, setInputError] = useState<string | null>(null)
@@ -63,6 +63,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     }
     // A failed turn resends its delivered prompt as a new turn of the mission's conversation.
     const [retryError, setRetryError] = useState<string | null>(null)
+    // A closed mission's agent stays stopped, so its failed turns offer no Retry.
     function retryTurn(turnId: string) {
         setRetryError(null)
         void retryConversationTurn(conversationId, turnId, project).then(reload)
@@ -155,6 +156,6 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         <OlderMessagesControl testId="mission-load-older-messages" hasOlderMessages={conversation.hasOlderMessages ?? false}
             isLoading={conversation.isLoadingOlderMessages ?? false} error={conversation.olderMessagesError ?? null} onLoad={conversation.loadOlderMessages} />
         <Transcript testIdPrefix="mission" entries={entries} showThinking={showThinking} formatTimestamp={formatTime} loading={loading}
-            conversation={{ id: conversationId, projectPath: project }} onRetryTurn={retryTurn} renderEntry={renderEntry} />
+            conversation={{ id: conversationId, projectPath: project }} onRetryTurn={closed ? undefined : retryTurn} renderEntry={renderEntry} />
     </>
 }

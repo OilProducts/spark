@@ -4,6 +4,8 @@ import { ApiHttpError, fetchPipelineCancelValidated, fetchPipelineRetryValidated
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 
+import { canCancelRun } from '../model/shared'
+
 const logUnexpectedRunError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
         return
@@ -40,12 +42,14 @@ export function useRunActions() {
     const { alert, confirm } = useDialogController()
 
     const requestCancel = useCallback(async (runId: string, currentStatus: string) => {
-        if (currentStatus !== 'running') {
+        if (!canCancelRun(currentStatus)) {
             return
         }
         const confirmed = await confirm({
             title: 'Cancel run?',
-            description: 'It will stop after the active node finishes.',
+            description: currentStatus === 'waiting'
+                ? 'Its question closes unanswered and the run stops.'
+                : 'It will stop after the active node finishes.',
             confirmLabel: 'Cancel run',
             cancelLabel: 'Keep running',
             confirmVariant: 'destructive',
@@ -72,7 +76,7 @@ export function useRunActions() {
         }
         const confirmed = await confirm({
             title: 'Retry run?',
-            description: 'It will resume this run from its checkpoint using the same run id.',
+            description: 'This run picks up again from the step where it failed, with the same flow and the results it has so far.',
             confirmLabel: 'Retry run',
             cancelLabel: 'Keep failed',
         })

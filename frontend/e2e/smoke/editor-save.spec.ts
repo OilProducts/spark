@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
-import { gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
+import { flowRow, gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
 
 // A project's flows and roles live in its definitions.
 const orgDir = (projectPath: string) => path.join(projectPath, '.spark', 'definitions')
@@ -54,7 +54,7 @@ test("editing one role-bearing node rewrites only that node's file", async ({ pa
   try {
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    await page.getByRole("button", { name: flowName }).click()
+    await flowRow(page, flowName).click()
     await page.locator('.react-flow__node[data-id="first"]').click()
     const promptField = page.getByPlaceholder("Enter system prompt instructions...")
     await expect(promptField).toHaveValue("Review A.")

@@ -38,6 +38,8 @@ pub(crate) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 #[derive(Default)]
 pub(crate) struct GatedAgent {
     pub(crate) requests: Mutex<Vec<AgentTurnRequest>>,
+    /// The conversations whose turn Spark asked to stop.
+    pub(crate) interrupts: Mutex<Vec<String>>,
     gate: Mutex<usize>,
     opened: Condvar,
 }
@@ -65,6 +67,13 @@ impl AgentTurnBackend for GatedAgent {
         *gate -= 1;
         Ok(final_answer("Noted."))
     }
+    fn interrupt_turn(&self, _project_path: &str, conversation_id: &str) -> bool {
+        self.interrupts
+            .lock()
+            .unwrap()
+            .push(conversation_id.to_string());
+        true
+    }
 }
 
 struct Harness {
@@ -85,6 +94,8 @@ impl Harness {
             &settings,
             InboxRuntime {
                 agent_turn_backend: agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(|_| {}),
             },
         );
@@ -268,6 +279,7 @@ fn mission_updates_serialize_with_other_writers_and_publish_only_commits() {
         &h.settings,
         InboxRuntime {
             agent_turn_backend: h.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
             publish: Arc::new(move |event| published.lock().unwrap().push(event)),
         },
     );
@@ -787,6 +799,107 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     assert_eq!(mission.status, MissionStatus::Closed);
     // Nothing more is delivered once closed.
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_person_closing_a_mission_stops_its_agent_and_the_agent_closing_it_does_not() {
+    for actor in ["human", "assistant"] {
+        let harness = Harness::new();
+        let mission = harness.create(json!({"title": "Close me"}));
+        harness
+            .missions
+            .start(&harness.project, &mission.id)
+            .unwrap();
+        harness.wait_turns(1);
+        let close = serde_json::from_value(json!({"actor": actor})).unwrap();
+        let closed = harness
+            .missions
+            .close(&harness.project, &mission.id, close)
+            .unwrap();
+        harness.agent.release(1);
+        // Without a reason, none is made up.
+        assert_eq!(closed.closed.as_ref().unwrap().reason, "", "{actor}");
+        let expected = if actor == "human" {
+            vec![closed.conversation_id.clone().unwrap()]
+        } else {
+            vec![]
+        };
+        assert_eq!(
+            *harness.agent.interrupts.lock().unwrap(),
+            expected,
+            "{actor}"
+        );
+    }
+}
+
+/// A person's close announces the triggers it turned off only once the closed
+/// mission is saved, so a client refetching on that event sees it closed; and
+/// a closed mission's agent can't be restarted by retrying a turn.
+#[test]
+fn a_closed_mission_is_saved_before_its_triggers_are_announced_and_stays_stopped() {
+    use spark_triggers::TriggerCreateRequest;
+    let h = Harness::new();
+    let mission = h.create(json!({"title": "Watched"}));
+    h.missions.start(&h.project, &mission.id).unwrap();
+    h.wait_turns(1);
+    h.agent.release(1);
+    h.wait_idle(&mission.id);
+    crate::triggers(h.settings.clone())
+        .create_trigger(TriggerCreateRequest {
+            project_path: h.project.clone(),
+            message: None,
+            name: "watcher".into(),
+            enabled: true,
+            source_type: "webhook".into(),
+            action: json!({"mode": "mission", "mission_id": mission.id})
+                .as_object()
+                .unwrap()
+                .clone(),
+            source: Default::default(),
+        })
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (record, settings, project, id) = (
+        seen.clone(),
+        h.settings.clone(),
+        h.project.clone(),
+        mission.id.clone(),
+    );
+    install_runtime(
+        &h.settings,
+        InboxRuntime {
+            agent_turn_backend: h.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(move |event| {
+                if event.event_type == "trigger.upsert" {
+                    let closed = crate::missions(settings.clone())
+                        .get(&project, &id)
+                        .unwrap()
+                        .closed
+                        .is_some();
+                    record.lock().unwrap().push(closed);
+                }
+            }),
+        },
+    );
+    let closed = h
+        .missions
+        .close(
+            &h.project,
+            &mission.id,
+            serde_json::from_value(json!({"actor": "human"})).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![true]);
+    let retried = crate::conversations(h.settings.clone()).retry_turn(
+        closed.conversation_id.as_deref().unwrap(),
+        &h.project,
+        "any-turn",
+    );
+    assert!(
+        matches!(retried, Err(WorkspaceError::Conflict(_))),
+        "{retried:?}"
+    );
 }
 
 #[test]
@@ -1878,6 +1991,8 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
             &h.settings,
             InboxRuntime {
                 agent_turn_backend: h.agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(move |event| published.lock().unwrap().push(event)),
             },
         );

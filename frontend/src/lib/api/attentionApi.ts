@@ -1,6 +1,13 @@
 import { asOptionalString, expectObjectRecord, expectString } from './shared'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 
+/** Dispatched on window after anything that answers or resolves an attention item. */
+export const ATTENTION_CHANGED_EVENT = 'spark:attention-changed'
+export const notifyAttentionChanged = <T,>(value: T): T => {
+    window.dispatchEvent(new Event(ATTENTION_CHANGED_EVENT))
+    return value
+}
+
 export type AttentionKind = 'run_gate' | 'flow_run_request' | 'proposed_plan' | 'mission'
 
 export interface AttentionItem {
@@ -9,6 +16,8 @@ export interface AttentionItem {
     title: string
     /** What a run's gate asks. */
     question?: string
+    /** The flow a run gate's run belongs to. */
+    flow_name?: string
     project_path: string
     run_id?: string
     conversation_id?: string
@@ -32,6 +41,7 @@ function parseAttentionItems(payload: unknown, endpoint: string): AttentionItem[
             id: expectString(item.id, 'id', endpoint),
             title: asOptionalString(item.title) ?? '',
             question: asOptionalString(item.question),
+            flow_name: asOptionalString(item.flow_name),
             project_path: asOptionalString(item.project_path) ?? '',
             run_id: asOptionalString(item.run_id),
             conversation_id: asOptionalString(item.conversation_id),

@@ -93,7 +93,6 @@ export function ProjectPage({
                                         >
                                             <span className="truncate text-sm font-medium">{chat.title}</span>
                                             <span className="truncate text-xs text-muted-foreground">
-                                                {chat.conversation_handle ? <><span className="font-mono">{chat.conversation_handle}</span> · </> : null}
                                                 {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : formatConversationAgeShort(chat.updated_at)}
                                             </span>
                                         </button>

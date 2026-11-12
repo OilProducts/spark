@@ -27,12 +27,10 @@ export function useClientPreferencesEditor() {
         return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
     }, [saved?.revision, dirty, pending])
     const invalidWidth = draft?.editor_sidebar_width != null && (!Number.isInteger(draft.editor_sidebar_width) || draft.editor_sidebar_width < 256 || draft.editor_sidebar_width > 560)
-    const ratio = draft?.home_sidebar_primary_split_ratio
-    const invalidSplit = ratio != null && (!Number.isFinite(ratio) || ratio < 0 || ratio > 1)
     const graphHeight = draft?.run_presentation?.graph_height
     const invalidGraphHeight = graphHeight != null && (!Number.isInteger(graphHeight) || graphHeight < 280 || graphHeight > 960)
     const save = async () => {
-        if (!saved || !draft || pending || invalidWidth || invalidSplit || invalidGraphHeight) return
+        if (!saved || !draft || pending || invalidWidth || invalidGraphHeight) return
         setPending(true); setError(''); setMessage('')
         try {
             const value = await saveClientPreferences(saved, draft)
@@ -49,5 +47,5 @@ export function useClientPreferencesEditor() {
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to reload settings.') }
         finally { setPending(false) }
     }
-    return { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidWidth, invalidSplit, invalidGraphHeight, save, discard }
+    return { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidWidth, invalidGraphHeight, save, discard }
 }

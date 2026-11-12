@@ -340,8 +340,12 @@ impl TriggerActivationSink for WorkspaceTriggerActivationSink {
             .deliver_trigger(&request)
             .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
         }
-        let mut service =
-            WorkspaceConversationService::new(self.settings.clone(), self.store.clone());
+        // The server's runner, so the run's gates wait for an answer as a
+        // launch from the UI's do; without a server, the default runner.
+        let mut service = match crate::inbox::runtime(&self.settings) {
+            Some(runtime) => crate::inbox::conversations(&self.settings, &self.store, &runtime),
+            None => WorkspaceConversationService::new(self.settings.clone(), self.store.clone()),
+        };
         if let Some(observer) = &self.run_event_observer {
             service = service.with_run_event_observer(observer.clone());
         }

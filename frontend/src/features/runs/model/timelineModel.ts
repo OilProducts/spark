@@ -582,6 +582,27 @@ const pendingInterviewGateDedupeKey = (
     ].join('::')
 )
 
+/**
+ * A gate's `InterviewStarted` and `human_gate` events share a prompt; only the latter (or the
+ * pending-question snapshot) carries the question id and options that make it answerable, so a
+ * duplicate fills in what the first copy lacks instead of being dropped.
+ */
+const enrichPendingInterviewGate = (
+    gate: PendingInterviewGate,
+    source: Pick<PendingInterviewGate, 'questionId' | 'questionType' | 'options' | 'runId' | 'origin'>,
+): PendingInterviewGate => (
+    gate.questionId || !source.questionId
+        ? gate
+        : {
+            ...gate,
+            questionId: source.questionId,
+            questionType: source.questionType,
+            options: source.options.length > 0 ? source.options : gate.options,
+            runId: gate.runId ?? source.runId,
+            origin: gate.origin ?? source.origin,
+        }
+)
+
 const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInterviewGate | null => {
     if (event.category !== 'interview') {
         return null
@@ -665,6 +686,14 @@ const buildJournalPendingInterviewGates = (
             gate.prompt,
         )
         if (gate.origin !== 'agent_clarification' && pendingGateKeys.has(dedupeKey)) {
+            const index = pendingGates.findIndex((candidate) => pendingInterviewGateDedupeKey(
+                candidate.sourceScope,
+                candidate.sourceParentNodeId,
+                candidate.sourceFlowName,
+                candidate.nodeId,
+                candidate.prompt,
+            ) === dedupeKey)
+            if (index >= 0) pendingGates[index] = enrichPendingInterviewGate(pendingGates[index], gate)
             continue
         }
         pendingGateKeys.add(dedupeKey)
@@ -703,6 +732,14 @@ const mergePendingInterviewGatesWithSnapshots = (
         }
         const dedupeKey = pendingInterviewGateDedupeKey('root', null, null, question.nodeId, question.prompt)
         if (question.origin !== 'agent_clarification' && pendingGateKeys.has(dedupeKey)) {
+            const index = pendingGates.findIndex((gate) => !gate.questionId && pendingInterviewGateDedupeKey(
+                gate.sourceScope,
+                gate.sourceParentNodeId,
+                gate.sourceFlowName,
+                gate.nodeId,
+                gate.prompt,
+            ) === dedupeKey)
+            if (index >= 0) pendingGates[index] = enrichPendingInterviewGate(pendingGates[index], question)
             continue
         }
         pendingGateKeys.add(dedupeKey)
@@ -793,6 +830,7 @@ export {
     buildPendingInterviewGates,
     buildRetryCorrelationEntityKeys,
     buildTimelineTypeOptions,
+    enrichPendingInterviewGate,
     filterAnsweredPendingInterviewGates,
     journalEntrySummary,
     mergePendingInterviewGatesWithSnapshots,

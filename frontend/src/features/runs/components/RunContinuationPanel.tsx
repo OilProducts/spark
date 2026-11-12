@@ -21,6 +21,8 @@ interface RunContinuationPanelProps {
     draft: ContinuationDraft
     /** The project the source run belongs to. */
     projectPath: string | null
+    /** The chosen start step's label. */
+    startNodeLabel: string | null
     onDraftChange: (patch: Partial<ContinuationDraft>) => void
     onCancel: () => void
     onContinued: (runId: string | null) => void
@@ -29,6 +31,7 @@ interface RunContinuationPanelProps {
 export function RunContinuationPanel({
     draft,
     projectPath,
+    startNodeLabel,
     onDraftChange,
     onCancel,
     onContinued,
@@ -80,17 +83,17 @@ export function RunContinuationPanel({
         && !hydratedGraph.nodes.some((node) => node.id === draft.startNodeId),
     )
     const continueDisabledReason = isLoadingPreview
-        ? 'Loading graph preview for continuation.'
+        ? 'Loading the flow…'
         : hasValidationErrors
-            ? 'Fix validation errors before continuing.'
+            ? 'Fix the flow’s validation errors before continuing.'
             : isInstalledFlowMode && !draft.overrideFlowName
-                ? 'Select an installed flow override or switch back to the source snapshot.'
+                ? 'Pick a flow, or use the flow as this run used it.'
                 : !draft.startNodeId
-                    ? 'Select a restart node in the graph.'
+                    ? 'Pick the step to start from on the graph.'
                     : startNodeMissingFromOverride
-                        ? `Node ${draft.startNodeId} does not exist in the installed flow.`
+                        ? `The flow as it is now has no step ${startNodeLabel ?? draft.startNodeId}.`
                         : isContinuing
-                            ? 'Continuation in progress.'
+                            ? 'Starting the new run…'
                             : undefined
     const canContinue = !continueDisabledReason
     const showValidationWarningBanner = diagnostics.some((diag) => diag.severity === 'warning') && !hasValidationErrors
@@ -150,9 +153,9 @@ export function RunContinuationPanel({
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                    <h2 className="text-base font-semibold text-foreground">Continue run</h2>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                        From run <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span>
+                    <h2 className="text-base font-semibold text-foreground">Continue from a step</h2>
+                    <p data-testid="run-continuation-source-run" title={`From run ${draft.sourceRunId}`} className="text-xs leading-5 text-muted-foreground">
+                        Starts a new run at the step you pick, with this run’s results so far. This run stays as it is.
                     </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -165,7 +168,7 @@ export function RunContinuationPanel({
                         disabled={!canContinue}
                         title={canContinue ? undefined : continueDisabledReason}
                     >
-                        Continue from node
+                        Continue from step
                     </Button>
                     <Button
                         type="button"
@@ -197,22 +200,24 @@ export function RunContinuationPanel({
             <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                     <p className="text-sm font-semibold text-foreground">
-                        Graph source
+                        Use the flow
                     </p>
                     <SegmentedControl
-                        aria-label="Graph source"
+                        aria-label="Use the flow"
                         className="w-fit"
                         options={[
                             {
                                 key: 'snapshot',
-                                label: 'Use source snapshot',
+                                label: 'As this run used it',
+                                className: 'flex-none',
                                 pressed: draft.flowSourceMode === 'snapshot',
                                 'data-testid': 'run-continuation-use-snapshot-button',
                                 onPress: () => onDraftChange({ flowSourceMode: 'snapshot', startNodeId: null }),
                             },
                             {
                                 key: 'flow_name',
-                                label: 'Use installed flow',
+                                label: 'As it is now',
+                                className: 'flex-none',
                                 pressed: isInstalledFlowMode,
                                 'data-testid': 'run-continuation-use-installed-flow-button',
                                 onPress: () => onDraftChange({ flowSourceMode: 'flow_name', startNodeId: null }),
@@ -229,7 +234,7 @@ export function RunContinuationPanel({
                             size="sm"
                             className="w-full text-sm"
                         >
-                            <NativeSelectOption value="">Select an installed flow…</NativeSelectOption>
+                            <NativeSelectOption value="">Pick a flow…</NativeSelectOption>
                             {flowCatalog.map((flow) => (
                                 <NativeSelectOption key={flow} value={flow}>
                                     {flow}
@@ -239,10 +244,10 @@ export function RunContinuationPanel({
                     ) : null}
                     <p data-testid="run-continuation-flow-source-copy" className="text-xs text-muted-foreground">
                         {draft.flowSourceMode === 'snapshot'
-                            ? 'Continuing from the stored source-run graph snapshot.'
+                            ? 'The new run uses the flow exactly as this run did.'
                             : draft.overrideFlowName
-                                ? `Continuing with installed flow override ${draft.overrideFlowName}.`
-                                : 'Select an installed flow to continue with an override.'}
+                                ? `The new run uses ${draft.overrideFlowName} as it is saved now, including any edits since this run started.`
+                                : 'Pick the flow the new run uses.'}
                     </p>
                 </div>
                 <div className="space-y-4">
@@ -256,13 +261,13 @@ export function RunContinuationPanel({
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label htmlFor="run-continuation-model">Model override</Label>
+                        <Label htmlFor="run-continuation-model">Model</Label>
                         <Input
                             id="run-continuation-model"
                             data-testid="run-continuation-model-input"
                             value={draft.model}
                             onChange={(event) => onDraftChange({ model: event.target.value })}
-                            placeholder="Use server default"
+                            placeholder="The flow's own choice"
                         />
                     </div>
                 </div>
@@ -273,10 +278,11 @@ export function RunContinuationPanel({
                 className="text-sm text-muted-foreground"
             >
                 {draft.startNodeId
-                    ? <>Restart node: <span className="font-mono text-foreground">{draft.startNodeId}</span></>
-                    : 'Select a restart node in the run graph.'}
+                    ? <>Starts at <span className="font-medium text-foreground" title={draft.startNodeId}>{startNodeLabel ?? draft.startNodeId}</span></>
+                    : 'Pick the step to start from on the run graph.'}
                 <p className="mt-1 text-xs text-muted-foreground">
-                    The derived run inherits the source checkpoint context; nodes may fail when restarted cold.
+                    The new run gets this run’s saved results, but not what earlier steps kept only in memory, such as an
+                    agent’s conversation. A step that relied on that may fail or redo work.
                 </p>
             </div>
         </Well>

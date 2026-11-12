@@ -15,6 +15,7 @@ import {
     fetchTextWithValidation,
     parseDiagnosticList,
 } from './shared'
+import { notifyAttentionChanged } from './attentionApi'
 
 export const ATTRACTOR_BASE = '/attractor'
 export const ATTRACTOR_API_BASE = `${ATTRACTOR_BASE}/api`
@@ -1101,7 +1102,7 @@ export async function fetchPipelineAnswerValidated(
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',
         parsePipelineAnswerResponse,
-    )
+    ).then(notifyAttentionChanged)
 }
 
 export async function fetchPipelineGraphValidated(pipelineId: string): Promise<PipelineGraphResponse> {
@@ -1191,7 +1192,11 @@ function encodeArtifactPathSegments(artifactPath: string): string {
 export async function fetchPipelineArtifactPreviewValidated(pipelineId: string, artifactPath: string): Promise<string> {
     const encodedPath = encodeArtifactPathSegments(artifactPath)
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/artifacts/${encodedPath}`)
-    return fetchTextWithValidation(url, undefined, '/pipelines/{id}/artifacts/{artifact_path}', parsePipelineGraphResponse)
+    // A file may be empty; the viewer says so.
+    return fetchTextWithValidation(url, undefined, '/pipelines/{id}/artifacts/{artifact_path}', (payload, endpoint) => {
+        if (typeof payload !== 'string') throw new ApiSchemaError(endpoint, 'Expected a text response body.')
+        return payload
+    })
 }
 
 export function pipelineArtifactHref(pipelineId: string, artifactPath: string, download = false): string {

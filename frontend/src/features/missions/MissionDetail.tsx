@@ -7,6 +7,7 @@ import { Check, MoreHorizontal, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription } from '@/components/ui/empty'
 import { InlineError } from '@/components/app/inline-error'
+import { useDialogController } from '@/components/app/dialog-controller'
 import { SectionHeading } from '@/components/app/section-heading'
 import { StatusDot, StatusPill, statusTextClassName } from '@/components/app/status'
 import { Well } from '@/components/app/well'
@@ -130,6 +131,23 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         } finally { setPending(false) }
     }
     const control = (action: string, body: unknown = {}) => act(() => request<Mission>(project, mission.id, body, `/${action}`), true)
+    const { confirm } = useDialogController()
+    // Ending a mission is final, so it asks first and says what stops.
+    async function end(cancel: boolean) {
+        const live = triggers.filter(trigger => trigger.enabled).length
+        const confirmed = await confirm({
+            title: cancel ? 'Cancel mission?' : 'Close mission as done?',
+            description: [
+                cancel ? 'Its agent stops and its unfinished runs are canceled.' : 'Its agent stops; runs already going finish on their own.',
+                live ? `${live === 1 ? 'The trigger aimed at it turns' : `The ${live} triggers aimed at it turn`} off.` : '',
+                'A closed mission can’t be reopened.',
+            ].filter(Boolean).join(' '),
+            confirmLabel: cancel ? 'Cancel mission' : 'Close mission',
+            cancelLabel: 'Keep it open',
+            confirmVariant: cancel ? 'destructive' : 'default',
+        })
+        if (confirmed) await control(cancel ? 'cancel' : 'close', cancel ? {} : { status: 'done' })
+    }
     const send = (message: string, clear = false) => act(async () => {
         const saved = await request<Mission>(project, mission.id, { kind: 'human.message', payload: { message } }, '/events')
         if (clear) setReply('')
@@ -159,8 +177,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex shrink-0 items-center gap-1.5">
                 {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
-                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Close mission" disabled={disabled} onClick={() => void control('close', { status: 'done' })}>Close</Button>
-                    <Button type="button" size="sm" variant="ghost" aria-label="Cancel mission" disabled={disabled} onClick={() => void control('cancel')}>Cancel</Button></>}
+                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Close mission" disabled={disabled} onClick={() => void end(false)}>Close</Button>
+                    <Button type="button" size="sm" variant="ghost" aria-label="Cancel mission" disabled={disabled} onClick={() => void end(true)}>Cancel</Button></>}
                 {closed && <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void archive(!mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
                 <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Mission actions" disabled={disabled}><MoreHorizontal aria-hidden="true" className="size-4" /></Button></DropdownMenu.Trigger>
@@ -203,7 +221,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         </Well>}
                         {status === 'draft'
                             ? <Empty><EmptyDescription>No conversation yet. Start the mission and its agent picks up the objective.</EmptyDescription></Empty>
-                            : <MissionTranscript conversation={conversation} project={project} runs={runsById} />}
+                            : <MissionTranscript conversation={conversation} project={project} runs={runsById} closed={closed} />}
                         {question && <Well role="region" aria-label="Waiting on you" className="flex flex-col gap-2">
                             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>Waiting on you{question.runId && <> · from <RunLink runId={question.runId} className="text-foreground">{runsById.get(question.runId)?.title || flowTitle(question.flowName)}</RunLink></>}</p>
                             <p className="font-medium whitespace-pre-wrap break-words">{question.prompt}</p>

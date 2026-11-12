@@ -190,12 +190,16 @@ export function MissionsPanel({ active }: { active: boolean }) {
     // Reopen the last selected mission, or one chosen elsewhere (such as the bell).
     const selectedMission = useStore(s => s.selectedMission)
     useEffect(() => {
-        if (!selectedMission || busy || (editing && editing.id === selectedMission.id)) return
+        // Back to the list closes the mission open to read; an editor keeps its edits.
+        if (!selectedMission) { if (editing && mode === 'read' && !busy) setEditing(undefined); return }
+        if (busy || (editing && editing.id === selectedMission.id)) return
         const mission = missions.find(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
         // An open editor or new-mission draft is kept, as when picking from the list.
         if (mission && editing !== undefined && mode === 'edit') open(mission, origin.current)
         else if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
-    }, [missions, selectedMission, editing, mode, busy])
+        // A link to a missing mission closes the one open to read, so the page says it's not found.
+        else if (loaded && editing && mode === 'read') setEditing(undefined)
+    }, [missions, selectedMission, editing, mode, busy, loaded])
     // A removed project takes its open mission and unsaved drafts with it.
     useEffect(() => {
         if (!Object.keys(registry).length) return
@@ -229,9 +233,10 @@ export function MissionsPanel({ active }: { active: boolean }) {
                 </li>)}</ul>
             </section>
         })}
+        {/* With no missions at all, the main area's empty state says so once. */}
         {!visible.length && (loaded && !loadError
-            ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions'}</p>
-            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
+            ? (search || missions.length ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions here'}</p> : null)
+            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Missions could not be loaded.' : 'Loading…'}</p>)}
         <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
     return <ViewLayout view="missions" title="Missions" panel={missionsPanel} selected={editing === undefined ? null : editing?.id ?? newKey} actions={<>
@@ -246,7 +251,10 @@ export function MissionsPanel({ active }: { active: boolean }) {
                     ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
                     : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} project={project} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
-                : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
+                : selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
+                    // A link to a mission that is gone says so, instead of reading as nothing picked.
+                    ? <SheetEmpty icon={Target} title="Mission not found">The linked mission isn’t here. It may have been deleted, or its project removed.</SheetEmpty>
+                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
         </section>
     </ViewLayout>
 }

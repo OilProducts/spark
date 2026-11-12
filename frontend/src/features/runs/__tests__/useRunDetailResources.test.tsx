@@ -48,6 +48,18 @@ it.each([
     expect(latest.result.current.artifactViewerError).toBeNull()
 })
 
+it('opens an empty file as an empty preview, not a connection error', async () => {
+    const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run', manageSync: false }))
+    let opened!: Promise<void>
+    act(() => { opened = result.current.viewArtifact({ path: 'result.md', viewable: true }) })
+    await act(async () => {
+        pending[0].resolve(new Response('\n'))
+        await opened
+    })
+    expect(result.current.artifactViewerStatus).toBe('ready')
+    expect(result.current.artifactViewerError).toBeNull()
+})
+
 it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
     'reconciles dropped parent/child questions and answers on %s, and removes terminal orphans without losing history',
     async (signal) => {
@@ -108,6 +120,31 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         expect(restoredHistory()).toEqual(restoredHistoryBefore)
     },
 )
+
+it('keeps checking the questions list until it lists a gate the journal already shows', async () => {
+    const gate = {
+        emitted_at: '2026-09-08T00:00:00Z', question_id: 'review-2', run_id: 'run', node_id: 'review',
+        prompt: 'Approve the plan?', question_type: 'YES_NO', options: [],
+    }
+    let questions: typeof gate[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/questions')
+        ? Promise.resolve(Response.json({ questions }))
+        : new Promise<Response>(() => {})))
+    useRunJournalStore.setState(useRunJournalStore.getInitialState(), true)
+    const { result } = renderHook(() => {
+        const resources = useRunDetailResources({ selectedRunId: 'run' })
+        return useRunTimeline({ pendingQuestionSnapshots: resources.pendingQuestionSnapshots, selectedRunTimelineId: 'run' })
+    })
+    await waitFor(() => expect(useStore.getState().runDetailSessionsByRunId.run.questionsStatus).toBe('ready'))
+    // A fast flow: the journal's first page already holds the gate, and no live event follows it.
+    act(() => useRunJournalStore.getState().mergeLatestPage('run', {
+        entries: [toTimelineEvent({ ...gate, type: 'human_gate', sequence: 1 })!], oldestSequence: 1, newestSequence: 1, hasOlder: false,
+    }))
+    expect(result.current.groupedPendingInterviewGates).toHaveLength(1)
+    expect(result.current.confirmedQuestionIds).toEqual([])
+    questions = [gate]
+    await waitFor(() => expect(result.current.confirmedQuestionIds).toEqual(['review-2']), { timeout: 3000 })
+})
 
 it('refetches files when a stage settles and the result when the run ends', () => {
     const fetchMock = vi.mocked(global.fetch)

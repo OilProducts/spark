@@ -146,8 +146,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {},
 clientRunPresentation: {},
@@ -736,10 +734,7 @@ describe('Frontend contract behavior', () => {
     })
 
     expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
-      'Live run transport degraded for selected run.',
-    )
-    expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
-      'Selected run live updates are unavailable. Reconnect to restore the selected run stream.',
+      'Live updates for this run stopped; what you see may be out of date.',
     )
     expect(screen.queryByTestId('global-save-state-indicator')).not.toBeInTheDocument()
   })
@@ -1286,17 +1281,23 @@ describe('Frontend contract behavior', () => {
     expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [screen.getByTestId('activity-roles'), 'roles'], [settingsTab, 'settings'], [screen.getByTestId('activity-overview'), 'overview'], [chatsTab, 'home']] as const) {
+    // Arrow keys only move focus, so passing over a view does not open it.
+    for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
       await user.keyboard('{ArrowDown}')
       expect(tab).toHaveFocus()
-      expect(useStore.getState().viewMode).toBe(mode)
+      expect(useStore.getState().viewMode).toBe('projects')
     }
 
     await user.keyboard('{ArrowUp}')
-    expect(useStore.getState().viewMode).toBe('overview')
+    expect(screen.getByTestId('activity-overview')).toHaveFocus()
     await user.keyboard('{ArrowUp}')
     expect(settingsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('projects')
+    await user.keyboard('{Enter}')
     expect(useStore.getState().viewMode).toBe('settings')
+    await user.keyboard('{ArrowUp}')
+    await user.keyboard(' ')
+    expect(useStore.getState().viewMode).toBe('roles')
   })
 
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
@@ -1348,6 +1349,16 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
 
     expect(screen.getByTestId('activity-chats').className).toContain('focus-visible')
     expect(screen.getByTestId('attention-bell').className).toContain('focus-visible')
+    // The Inbox is a disclosure: it says whether its list is open, and Escape closes it back to the bell.
+    const bell = screen.getByTestId('attention-bell')
+    expect(bell).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(bell)
+    expect(bell).toHaveAttribute('aria-expanded', 'true')
+    expect(bell.getAttribute('aria-controls')).toBe(screen.getByTestId('attention-bell-list').id)
+    screen.getByTestId('attention-bell-list').focus()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('attention-bell-list')).toBeNull()
+    expect(bell).toHaveAttribute('aria-expanded', 'false')
 
     cleanup()
     act(() => {
@@ -2283,7 +2294,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       }))
     })
 
-    await user.click(await screen.findByRole('button', { name: 'non-git-existing' }))
+    await user.click(await screen.findByRole('button', { name: 'Project settings for non-git-existing' }))
     expect(useStore.getState().projectPagePath).toBe('/tmp/non-git-existing')
     expect(screen.queryByTestId('project-browser-error')).not.toBeInTheDocument()
   })
@@ -4183,20 +4194,20 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(reviewItems[1]).toHaveTextContent('Policy reminder: include rollback evidence.')
     expect(reviewItems[2]).toHaveTextContent('Why this strategy?')
 
+    // The question id stays on hover beside the full received time, out of the reading path.
+    const askedTitle = (audit: HTMLElement) => within(audit).getByText(/^Asked /).getAttribute('title')
     const firstAudit = within(reviewItems[0]).getByTestId('run-pending-human-gate-item-audit')
     expect(firstAudit).toHaveTextContent('Order #1')
-    expect(firstAudit).toHaveTextContent('Question ID: gate-review-1')
-    expect(firstAudit).toHaveTextContent('Received:')
+    expect(firstAudit).not.toHaveTextContent('gate-review-1')
+    expect(askedTitle(firstAudit)).toContain('Question ID: gate-review-1')
 
     const secondAudit = within(reviewItems[1]).getByTestId('run-pending-human-gate-item-audit')
     expect(secondAudit).toHaveTextContent('Order #2')
-    expect(secondAudit).toHaveTextContent('Question ID: —')
-    expect(secondAudit).toHaveTextContent('Received:')
+    expect(askedTitle(secondAudit)).not.toContain('Question ID')
 
     const thirdAudit = within(reviewItems[2]).getByTestId('run-pending-human-gate-item-audit')
     expect(thirdAudit).toHaveTextContent('Order #3')
-    expect(thirdAudit).toHaveTextContent('Question ID: gate-review-2')
-    expect(thirdAudit).toHaveTextContent('Received:')
+    expect(askedTitle(thirdAudit)).toContain('Question ID: gate-review-2')
   })
 
   it('[CID:10.3.02] renders accepted and skipped human-gate provenance in run timeline summaries', async () => {

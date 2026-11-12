@@ -1,8 +1,9 @@
 import { useShallow } from 'zustand/react/shallow'
+import { InlineError } from '@/components/app/inline-error'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
-import { LaunchPanel, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
+import { LaunchPanel, openRunFlowDialog, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -24,7 +25,7 @@ import { RunList } from './components/RunList'
 import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
-import { formatDuration, type RunRecord } from './model/shared'
+import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
@@ -32,7 +33,8 @@ import type { StatusTone } from '@/components/app/status'
 import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Play } from 'lucide-react'
+import { Play, Plus, TriangleAlert } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import { openRun } from '@/features/missions/MissionTranscript'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -57,8 +59,13 @@ const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_reques
 function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
+    const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
+    const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     return (
+        // The project filter heads the list at full width, where a project's name has room.
+        <div className="flex h-full min-h-0 flex-col gap-2 [&>[data-slot=native-select-wrapper]]:w-full">
+        <RunsProjectFilter />
         <RunList
             error={error}
             status={status}
@@ -69,10 +76,15 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             }}
             runs={runs}
             selectedRunId={selectedRunId}
-            summaryLabel={`${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
+            summaryLabel={runs.length === 0 ? 'runs' : `${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
             // The filter already names the project; rows repeat it only across all projects.
             showProject={!projectFilter}
+            statusFilter={statusFilter}
+            onStatusFilterChange={(next) => useStore.getState().updateRunsListSession({ statusFilter: next })}
+            searchQuery={searchQuery}
+            onSearchQueryChange={(next) => useStore.getState().updateRunsListSession({ searchQuery: next })}
         />
+        </div>
     )
 }
 
@@ -86,7 +98,7 @@ function RunsProjectFilter() {
             aria-label="Show runs from project"
             value={projectFilter ?? ''}
             onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="max-w-36 truncate bg-background pl-2.5 pr-8"
+            className="truncate bg-background pl-2.5 pr-8"
         >
             <NativeSelectOption value="">All projects</NativeSelectOption>
             {orderProjects(registry).map((project) => (
@@ -98,15 +110,14 @@ function RunsProjectFilter() {
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
-    const { status, streamError, streamStatus, hasRuns } = useStore(useShallow((state) => ({
+    const { status, hasRuns } = useStore(useShallow((state) => ({
         status: state.runsListSession.status,
-        streamError: state.runsListSession.streamError,
-        streamStatus: state.runsListSession.streamStatus,
         hasRuns: state.runsListSession.runs.length > 0,
     })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const projectRegistry = useStore((state) => state.projectRegistry)
     const selectedRunId = useStore(selectSelectedRunId)
+    const missingRunId = useStore((state) => state.runsListSession.missingRunId ?? null)
     const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
     const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
     const setViewMode = useStore((state) => state.setViewMode)
@@ -179,6 +190,7 @@ export function RunsPanel() {
     } = useRunTimeline({
         pendingQuestionSnapshots,
         selectedRunTimelineId,
+        runEnded: selectedRun ? runHasEnded(selectedRun.status) : false,
     })
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
@@ -186,22 +198,12 @@ export function RunsPanel() {
     const degradedRunPanels = timelineError
         ? [...degradedDetailPanels, 'run journal']
         : degradedDetailPanels
-    const showRunSelectionEmptyState =
-        status === 'ready'
-        && !selectedRunId
-        && hasRuns
-        && !selectedRun
+    const showRunSelectionEmptyState = !selectedRunId && hasRuns && !selectedRun
     const showRunDetailsRestoringState =
         Boolean(selectedRunId)
         && !selectedRun
         && status !== 'ready'
         && status !== 'error'
-    const degradedTransportLabels = [
-        ...(streamStatus === 'degraded' ? ['run list'] : []),
-        ...(selectedRunStatusSync === 'degraded' ? ['selected run'] : []),
-    ]
-    const showRunsTransportReconnectNotice = degradedTransportLabels.length > 0
-    const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
     const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
@@ -440,11 +442,31 @@ export function RunsPanel() {
     // graph still get a readable column each; otherwise it sits above the details.
     const railBeside = runBodyWidth >= RAIL_BESIDE_GRAPH_MIN_WIDTH
 
+    const runFlowAction = (
+        <Button type="button" variant="outline" size="sm" data-testid="runs-empty-run-flow-button" onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}>
+            Run a flow…
+        </Button>
+    )
+
     return (
         <ViewLayout
             view="runs"
             title="Runs"
-            actions={<RunsProjectFilter />}
+            actions={(
+                <>
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        data-testid="runs-run-flow-button"
+                        aria-label="Run a flow"
+                        title="Run a flow"
+                        onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}
+                    >
+                        <Plus aria-hidden="true" />
+                    </Button>
+                </>
+            )}
             // ponytail: the run list mounts only while Runs shows, so live updates behind
             // other views don't regroup it; its search and expansion state resets on leaving.
             panel={isRunsView ? <RunsSidebar selectedRunId={selectedRunId} /> : null}
@@ -478,14 +500,13 @@ export function RunsPanel() {
                 </div>
             )}
             <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
-                {showRunsTransportReconnectNotice ? (
+                {selectedRunStatusSync === 'degraded' ? (
                     <Alert
                         data-testid="runs-transport-reconnect-banner"
                         className="border-0 border-l border-warning px-3 py-2 text-warning"
                     >
                         <AlertDescription className="text-inherit">
-                            Live run transport degraded for {degradedTransportLabels.join(' and ')}.
-                            {runsTransportError ? ` ${runsTransportError}` : ''}
+                            {selectedRunStatusError}
                             <button
                                 type="button"
                                 data-testid="runs-transport-reconnect-button"
@@ -499,9 +520,20 @@ export function RunsPanel() {
                         </AlertDescription>
                     </Alert>
                 ) : null}
+                {!selectedRunId && missingRunId ? (
+                    <InlineError data-testid="run-missing" title="This run isn’t here">
+                        There’s no run with the ID “{missingRunId}”. It may have been deleted, or the link is out of date.
+                    </InlineError>
+                ) : null}
                 {showRunSelectionEmptyState && (
-                    <SheetEmpty data-testid="run-selection-empty-state" icon={Play} title="No run selected" className="flex-1">
-                        Select a run from the sidebar to inspect its details.
+                    <SheetEmpty
+                        data-testid="run-selection-empty-state"
+                        icon={Play}
+                        title="No run selected"
+                        className="flex-1"
+                        action={runFlowAction}
+                    >
+                        Pick a run from the list to see its progress and results, or start a new one.
                     </SheetEmpty>
                 )}
                 {showRunDetailsRestoringState && (
@@ -511,6 +543,9 @@ export function RunsPanel() {
                     <RunContinuationPanel
                         draft={activeContinuationDraft}
                         projectPath={selectedRun.project_path || null}
+                        startNodeLabel={activeContinuationDraft.startNodeId
+                            ? flowNodes[activeContinuationDraft.startNodeId]?.label ?? activeContinuationDraft.startNodeId
+                            : null}
                         onDraftChange={(patch) => {
                             setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
                         }}
@@ -529,9 +564,22 @@ export function RunsPanel() {
                         </span>
                     </div>
                 )}
-                {!selectedRun && !hasRuns && (
-                    <SheetEmpty icon={Play} title="No runs yet" className="flex-1">
-                        No runs have been recorded yet. Start one from Flows or Overview.
+                {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
+                {!selectedRun && !hasRuns && status === 'error' && (
+                    <SheetEmpty
+                        data-testid="runs-load-error"
+                        role="alert"
+                        icon={TriangleAlert}
+                        title="Couldn’t load your runs"
+                        className="flex-1"
+                        action={<Button type="button" variant="outline" size="sm" onClick={requestRunsTransportReconnect}>Try again</Button>}
+                    >
+                        Spark didn’t answer when asked for your run history. Check that it is still running, then try again.
+                    </SheetEmpty>
+                )}
+                {!selectedRun && !hasRuns && status === 'ready' && (
+                    <SheetEmpty icon={Play} title="No runs yet" className="flex-1" action={runFlowAction}>
+                        Start a flow to see its progress and results here.
                     </SheetEmpty>
                 )}
                 {selectedRun && (
@@ -601,6 +649,7 @@ export function RunsPanel() {
                                                 freeformAnswersByGateId={freeformAnswersByGateId}
                                                 gateNotesByGateId={gateNotesByGateId}
                                                 groupedPendingInterviewGates={groupedPendingInterviewGates}
+                                                now={now}
                                                 onFreeformAnswerChange={(questionId, value) => {
                                                     setFreeformAnswersByGateId((previous) => ({
                                                         ...previous,

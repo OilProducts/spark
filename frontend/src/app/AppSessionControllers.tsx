@@ -24,7 +24,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
+import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
 
@@ -553,57 +553,92 @@ export function WorkspaceLiveEventsController() {
     return null
 }
 
-export function RunsHashRoutingController() {
-    const viewMode = useStore((state) => state.viewMode)
-    const selectedRunId = useStore(selectSelectedRunId)
-    const selectedNodeId = useStore((state) => (
-        selectSelectedRunId(state)
-            ? state.runDetailSessionsByRunId[selectSelectedRunId(state)!]?.selectedNodeId ?? null
-            : null
-    ))
+/** Moves the app to a place from a history entry or a link; returns whether it got there now. */
+function applyPlace(place: Place): boolean {
+    const state = useStore.getState()
+    if (place.runId !== undefined && selectSelectedRunId(state) !== place.runId) {
+        state.setRunsSelectedRunId(place.runId)
+    }
+    if (place.runId && place.nodeId !== undefined
+        && useStore.getState().runDetailSessionsByRunId[place.runId]?.selectedNodeId !== place.nodeId) {
+        state.updateRunDetailSession(place.runId, { selectedNodeId: place.nodeId })
+    }
+    if (place.projectPagePath !== undefined && state.projectPagePath !== place.projectPagePath) {
+        state.openProjectPage(place.projectPagePath)
+    }
+    if (place.projectPath !== undefined && state.activeProjectPath !== place.projectPath) {
+        state.setActiveProjectPath(place.projectPath)
+    }
+    // A flow's name only names it within its project, so the flow opens once its project has.
+    const { activeProjectPath, activeFlow } = useStore.getState()
+    if (place.flow !== undefined && activeFlow !== place.flow
+        && (place.projectPath === undefined || activeProjectPath === place.projectPath)) {
+        state.setActiveFlow(place.flow)
+    }
+    if (place.triggerId !== undefined && state.triggersSession.selectedTriggerId !== place.triggerId) {
+        state.updateTriggersSession({ selectedTriggerId: place.triggerId, createFormOpen: false })
+    }
+    if (place.missionId !== undefined && missionKey(state.selectedMission) !== place.missionId) {
+        const [projectPath, id] = place.missionId ? JSON.parse(place.missionId) as [string, string] : [null, null]
+        state.setSelectedMission(projectPath && id ? { projectPath, id } : null)
+    }
+    if (placeOf(useStore.getState()).view !== place.view) {
+        state.setViewMode(place.view)
+    }
+    // Unsaved settings or project edits can hold the move behind a confirmation.
+    const reached = placeOf(useStore.getState())
+    return (Object.keys(place) as (keyof Place)[])
+        .every((field) => place[field] === undefined || reached[field] === place[field])
+}
 
-    // Hash -> store: applies deep links on load and on hashchange. Store -> hash
-    // below uses history.replaceState, which does not fire hashchange, so the
-    // two directions cannot loop.
+/**
+ * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
+ * page, a flow, a trigger or a mission adds a history entry, and the URL hash names it so a link reopens it.
+ */
+export function HistoryRoutingController() {
     useEffect(() => {
-        const applyHash = () => {
-            const route = parseRunsHash(window.location.hash)
-            if (!route) {
-                return
+        const linked = parsePlaceHash(window.location.hash)
+        if (linked) applyPlace(linked)
+        let current = placeOf(useStore.getState())
+        window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+
+        // One click can change the view and its selection in separate updates; they make one entry.
+        let scheduled = false
+        const record = () => {
+            scheduled = false
+            const next = placeOf(useStore.getState())
+            if (addsEntry(useStore.getState(), current, next)) {
+                window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+            } else if (placeHash(next) !== window.location.hash) {
+                window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
             }
-            const state = useStore.getState()
-            if (state.viewMode !== 'runs') {
-                state.setViewMode('runs')
-            }
-            if (selectSelectedRunId(state) !== route.runId) {
-                state.setRunsSelectedRunId(route.runId)
-            }
-            const currentNodeId = state.runDetailSessionsByRunId[route.runId]?.selectedNodeId ?? null
-            if (currentNodeId !== route.nodeId) {
-                state.updateRunDetailSession(route.runId, {
-                    selectedNodeId: route.nodeId,
-                    // A node deep link lands on the node inspector tab.
-                })
-            }
+            current = next
         }
-        applyHash()
-        window.addEventListener('hashchange', applyHash)
+        const unsubscribe = useStore.subscribe(() => {
+            if (scheduled) return
+            scheduled = true
+            queueMicrotask(record)
+        })
+
+        // Back, Forward, or a followed link: the entry's place, or else the one its hash names.
+        // A link that names no place, or one it can't reach now, leaves the app where it is,
+        // and the link's entry then says where.
+        const onNavigate = () => {
+            const entry = window.history.state?.sparkPlace as Place | undefined
+            const place = entry ?? parsePlaceHash(window.location.hash)
+            const held = place !== null && !applyPlace(place)
+            current = placeOf(useStore.getState())
+            // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
+            window.history[held && entry ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
+        }
+        window.addEventListener('popstate', onNavigate)
+        window.addEventListener('hashchange', onNavigate)
         return () => {
-            window.removeEventListener('hashchange', applyHash)
+            unsubscribe()
+            window.removeEventListener('popstate', onNavigate)
+            window.removeEventListener('hashchange', onNavigate)
         }
     }, [])
-
-    // Store -> hash: the runs tab owns the hash; other tabs clear a stale runs hash.
-    useEffect(() => {
-        if (viewMode === 'runs' && selectedRunId) {
-            const nextHash = buildRunsHash(selectedRunId, selectedNodeId)
-            if (window.location.hash !== nextHash) {
-                window.history.replaceState(null, '', nextHash)
-            }
-        } else if (isRunsHash(window.location.hash)) {
-            window.history.replaceState(null, '', window.location.pathname + window.location.search)
-        }
-    }, [viewMode, selectedRunId, selectedNodeId])
 
     return null
 }
@@ -617,7 +652,7 @@ export function AppSessionControllers() {
             <HomeSessionController />
             <RunsSessionController />
             <TriggersSessionController />
-            <RunsHashRoutingController />
+            <HistoryRoutingController />
         </>
     )
 }

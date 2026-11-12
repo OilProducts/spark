@@ -348,6 +348,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     activeFlow: initialWorkspaceEditorState.activeFlow,
     setActiveFlow: (flow) =>
         set({ activeFlow: flow }),
+    flowLoadFailure: null,
+    setFlowLoadFailure: (flowLoadFailure) => set({ flowLoadFailure }),
     updateProjectSessionState: (projectPath, patch) =>
         set((state) => {
             const normalizedProjectPath = normalizeProjectPath(projectPath)

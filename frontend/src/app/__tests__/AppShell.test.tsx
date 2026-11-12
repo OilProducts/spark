@@ -67,6 +67,8 @@ const setViewportWidth = (width: number) => {
 }
 
 const resetAppShellState = () => {
+  // The app records each view in the URL; start every test from a clean location.
+  window.history.replaceState(null, '', window.location.pathname + window.location.search)
   useRunJournalStore.setState({ byRunId: {} })
   {
 useStore.setState({...useStore.getState(),
@@ -113,8 +115,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {},
 clientRunPresentation: {},
@@ -485,7 +485,7 @@ const openProjectPage = async (user: ReturnType<typeof userEvent.setup>, project
     expect(found).toBeDefined()
     return found!
   })
-  await user.click(within(group).getByTestId('chats-project-name'))
+  await user.click(within(group).getByTestId('chats-project-settings'))
 }
 
 describe('App shell behavior', () => {
@@ -571,7 +571,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('projects-panel')).toBeVisible()
   })
 
-  it('opens Missions and Flows from the activity bar and moves between views with the arrow keys', async () => {
+  it('opens Missions and Flows from the activity bar; arrow keys move focus and Enter opens the view', async () => {
     const user = userEvent.setup()
     render(<App />)
 
@@ -586,11 +586,13 @@ describe('App shell behavior', () => {
 
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('roles')
+    expect(screen.getByTestId('activity-roles')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByTestId('activity-overview')).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('editor')
+    await user.keyboard('{Enter}')
     expect(useStore.getState().viewMode).toBe('overview')
   })
 
@@ -1082,7 +1084,7 @@ describe('App shell behavior', () => {
     expect(screen.getByText('Thread one')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-triggers'))
-    expect(await screen.findByTestId('trigger-row-trigger-one')).toHaveTextContent('Project · project-one')
+    expect(await screen.findByTestId('trigger-row-trigger-one')).toHaveTextContent('project-one')
     expect(screen.getByTestId('trigger-row-trigger-gone')).toHaveAttribute('data-unregistered-target', 'true')
 
     await user.click(screen.getByTestId('activity-runs'))
@@ -1794,7 +1796,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('activity-triggers'))
     await waitFor(() => {
-      expect(screen.getByText('Custom route')).toBeVisible()
+      expect(screen.getByTestId('trigger-row-trigger-custom')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('trigger-row-trigger-custom'))
@@ -1947,12 +1949,13 @@ describe('App shell behavior', () => {
     })
 
     await user.click(screen.getByTestId('activity-triggers'))
-    expect(await screen.findByTestId('triggers-system-list-loading')).toBeVisible()
+    expect(await screen.findByTestId('triggers-custom-list-loading')).toBeVisible()
     triggersDeferred.resolve(jsonResponse([]))
     await waitFor(() => {
-      expect(screen.getByText('No protected triggers.')).toBeVisible()
       expect(screen.getByText('No custom triggers yet.')).toBeVisible()
     })
+    // With no protected triggers there is no System section.
+    expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
   })
 
   it('preserves the run project filter and selected run across view switches', async () => {
@@ -2081,11 +2084,17 @@ describe('App shell behavior', () => {
         if (url.endsWith('/attractor/runs')) {
           return jsonResponse({
             runs: [
-              buildRunRecord({
-                flowName: 'review-session.dot',
-                projectPath: '/tmp/project-runs-session',
-                runId: 'run-session',
-              }),
+              // Waiting on its question: an ended run takes no answer.
+              {
+                ...buildRunRecord({
+                  flowName: 'review-session.dot',
+                  projectPath: '/tmp/project-runs-session',
+                  runId: 'run-session',
+                }),
+                status: 'waiting',
+                outcome: null,
+                ended_at: null,
+              },
             ],
           })
         }
@@ -2093,8 +2102,8 @@ describe('App shell behavior', () => {
           return jsonResponse({
             pipeline_id: 'run-session',
             run_id: 'run-session',
-            status: 'completed',
-            outcome: 'success',
+            status: 'waiting',
+            outcome: null,
             outcome_reason_code: null,
             outcome_reason_message: null,
             flow_name: 'review-session.dot',
@@ -2758,8 +2767,8 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-flows'))
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
 
-    expect(within(editorFlowTree).getByText('team')).toBeVisible()
-    expect(within(editorFlowTree).getByText('review')).toBeVisible()
+    expect(within(editorFlowTree).getByText('Team')).toBeVisible()
+    expect(within(editorFlowTree).getByText('Review')).toBeVisible()
 
     await user.click(within(editorFlowTree).getByRole('button', { name: NESTED_LINEAR_FLOW_NAME }))
 

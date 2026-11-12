@@ -13,10 +13,10 @@ import {
     createEmptyTriggerForm,
     type TriggerFormState,
     triggerToFormState,
+    validateTriggerForm,
 } from '../model/triggerForm'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { useDialogController } from '@/components/app/dialog-controller'
-import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 type UseTriggerEditorArgs = {
     refreshTriggers: () => Promise<void>
     selectedTrigger: TriggerResponse | null
@@ -57,11 +57,21 @@ export function useTriggerEditor({
     const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[triggerKey(selectedTrigger)] ?? null : null
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
     const dirty = Boolean(currentEditDraft?.form)
+    // Field errors show once a save is refused ('new' or the trigger's key), then follow the edits.
+    const [errorsShownFor, setErrorsShownFor] = useState<string | null>(null)
+    const newTriggerErrors = errorsShownFor === 'new' ? validateTriggerForm(newTriggerForm) : {}
+    const editTriggerErrors = selectedTrigger && resolvedEditTriggerForm && errorsShownFor === triggerKey(selectedTrigger)
+        ? validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected)
+        : {}
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
     useSettingsNavigationProtection(dirty, pending)
 
     const onCreateTrigger = async () => {
         if (pendingRef.current) return
+        if (Object.keys(validateTriggerForm(newTriggerForm)).length) {
+            setErrorsShownFor('new')
+            return
+        }
         pendingRef.current = true
         setPending(true)
         try {
@@ -77,8 +87,9 @@ export function useTriggerEditor({
                 revealWebhookSecret(triggerKey(created), created.webhook_secret)
             }
             setTriggersSessionNewDraft({
-                form: createEmptyTriggerForm(defaultProjectChoice(useStore.getState().projectRegistry, useStore.getState().activeProjectPath)),
+                form: createEmptyTriggerForm(newTriggerForm.projectPath),
             })
+            setErrorsShownFor(null)
             await refreshTriggers()
             setSelectedTriggerId(triggerKey(created))
             updateTriggersSession({ createFormOpen: false })
@@ -92,6 +103,10 @@ export function useTriggerEditor({
 
     const onSaveSelectedTrigger = async () => {
         if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm) {
+            return
+        }
+        if (Object.keys(validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected)).length) {
+            setErrorsShownFor(triggerKey(selectedTrigger))
             return
         }
         pendingRef.current = true
@@ -110,6 +125,7 @@ export function useTriggerEditor({
                 revealWebhookSecret(triggerKey(selectedTrigger), updated.webhook_secret)
             }
             setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
+            setErrorsShownFor(null)
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to save trigger.')
@@ -156,10 +172,13 @@ export function useTriggerEditor({
         discard: () => {
             if (pendingRef.current || !selectedTrigger) return
             setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
+            setErrorsShownFor(null)
             void refreshTriggers()
         },
         editTriggerForm: resolvedEditTriggerForm,
+        editTriggerErrors,
         newTriggerForm,
+        newTriggerErrors,
         onCreateTrigger,
         onDeleteSelectedTrigger,
         onSaveSelectedTrigger,

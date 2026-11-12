@@ -26,7 +26,6 @@ beforeEach(() => {
   useStore.setState(useStore.getInitialState(), true)
   useStore.setState({ viewMode: 'runs', runsListSession: {
     selectedRunId: null, projectFilter: null, runs: [], status: 'idle', error: null,
-    streamStatus: 'idle', streamError: null,
   } })
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
     pending.push({ url, signal: init?.signal, resolve, reject })
@@ -56,8 +55,7 @@ it('clears pending refresh on failure and retries only when requested', async ()
   notice()
   await act(async () => pending[0].resolve(new Response('', { status: 503 })))
   expect(pending).toHaveLength(1)
-  expect(result.current.error).toBe('Unable to load runs')
-  expect(result.current.streamStatus).toBe('degraded')
+  expect(result.current.error).toBe('Couldn’t load your runs.')
   notice()
   expect(pending).toHaveLength(2)
   await act(async () => pending[1].resolve(new Response('', { status: 503 })))
@@ -66,6 +64,21 @@ it('clears pending refresh on failure and retries only when requested', async ()
   expect(pending).toHaveLength(3)
   await complete(2)
   expect(result.current.error).toBeNull()
+})
+
+it('keeps a failed load failed when one run\'s live update arrives', async () => {
+  const { result } = mount()
+  await act(async () => pending[0].resolve(new Response('', { status: 503 })))
+  act(() => {
+    window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run: {
+      run_id: 'live', project_path: '/one', working_directory: '/one', flow_name: 'flow.yaml',
+      status: 'running', model: '', started_at: '', last_error: '',
+    } } }))
+  })
+  expect(result.current.scopedRuns.map((run) => run.run_id)).toEqual(['live'])
+  expect(result.current.status).toBe('error')
+  expect(result.current.error).toBe('Couldn’t load your runs.')
+  expect(useStore.getState().runsListSession.fetched).toBeFalsy()
 })
 
 it('lists every project\'s runs', async () => {

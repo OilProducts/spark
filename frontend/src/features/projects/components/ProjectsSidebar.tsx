@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, Plus, Settings, Trash2 } from "lucide-react"
 
 import { useStore } from "@/store"
 import { cn } from "@/lib/utils"
@@ -43,6 +43,8 @@ export function StandingRoleChip({ state }: { state: 'idle' | 'working' | 'stopp
 }
 
 const iconButtonClassName = "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+// A project row's actions show on hover or focus, and always on touch screens, which cannot hover.
+const rowActionClassName = cn(iconButtonClassName, "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 pointer-coarse:opacity-100")
 
 /** Chats grouped by project: collapsible project rows, thread rows underneath, a quiet "N more". */
 export function ProjectsSidebar({
@@ -59,13 +61,13 @@ export function ProjectsSidebar({
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projectPagePath = useStore((state) => state.projectPagePath)
     const openProjectPage = useStore((state) => state.openProjectPage)
-    // Home starts open; another project opens once a chat in it is shown, and stays as you leave it.
+    // Home starts open; the open chat's project opens whenever another chat is shown, and stays as you leave it.
     const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({})
     useEffect(() => {
         if (activeProjectPath) {
-            setExpandedByPath((current) => activeProjectPath in current ? current : { ...current, [activeProjectPath]: true })
+            setExpandedByPath((current) => current[activeProjectPath] ? current : { ...current, [activeProjectPath]: true })
         }
-    }, [activeProjectPath])
+    }, [activeProjectPath, activeConversationId])
     const groups = groupChatsByProject(projectRegistry, conversationSummariesByProjectPath)
 
     return (
@@ -98,27 +100,25 @@ export function ProjectsSidebar({
                             "group/project flex h-8 items-center gap-1 rounded-lg border pl-1 pr-1.5",
                             projectPagePath === projectPath ? "border-border bg-background" : "border-transparent",
                         )}>
+                            {/* The project's name shows or hides its chats; its settings are behind the gear. */}
                             <button
                                 type="button"
                                 data-testid="chats-project-toggle"
                                 aria-expanded={expanded}
                                 aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
                                 onClick={() => setExpandedByPath((current) => ({ ...current, [projectPath]: !expanded }))}
-                                className={iconButtonClassName}
+                                className="flex h-full min-w-0 flex-1 items-center gap-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
-                                {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                            </button>
-                            <button
-                                type="button"
-                                data-testid="chats-project-name"
-                                title={missing ? `${projectPath} (folder missing)` : projectPath}
-                                onClick={() => openProjectPage(projectPath)}
-                                className={cn(
-                                    "min-w-0 flex-1 truncate text-left text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring",
-                                    missing ? "text-muted-foreground" : "text-foreground",
-                                )}
-                            >
-                                {label}
+                                <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground">
+                                    {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                                </span>
+                                <span
+                                    data-testid="chats-project-name"
+                                    title={missing ? `${projectPath} (folder missing)` : projectPath}
+                                    className={cn("min-w-0 truncate text-sm font-semibold", missing ? "text-muted-foreground" : "text-foreground")}
+                                >
+                                    {label}
+                                </span>
                             </button>
                             {missing ? (
                                 <span data-testid="chats-project-missing" className="shrink-0 rounded-full bg-warning/10 px-1.5 py-px text-xs font-medium text-warning">folder missing</span>
@@ -127,6 +127,16 @@ export function ProjectsSidebar({
                             ) : chats.length > 0 ? (
                                 <span className="shrink-0 text-xs text-muted-foreground">{chats.length}</span>
                             ) : null}
+                            <button
+                                type="button"
+                                data-testid="chats-project-settings"
+                                aria-label={`Project settings for ${label}`}
+                                title="Project settings"
+                                onClick={() => openProjectPage(projectPath)}
+                                className={rowActionClassName}
+                            >
+                                <Settings className="size-3.5" />
+                            </button>
                             {!missing ? (
                                 <button
                                     type="button"
@@ -134,7 +144,7 @@ export function ProjectsSidebar({
                                     aria-label={`New chat in ${label}`}
                                     title={`New chat in ${label}`}
                                     onClick={() => { void onCreateConversationThread(projectPath) }}
-                                    className={cn(iconButtonClassName, "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100")}
+                                    className={rowActionClassName}
                                 >
                                     <Plus className="size-3.5" />
                                 </button>
@@ -154,7 +164,7 @@ export function ProjectsSidebar({
                                         && conversation.conversation_id === activeConversationId
                                     const isDeletingConversation = pendingDeleteConversationId === conversation.conversation_id
                                     return (
-                                        <li key={conversation.conversation_id} className="group/thread relative" title={conversation.conversation_handle ?? conversation.title}>
+                                        <li key={conversation.conversation_id} className="group/thread relative" title={conversation.title}>
                                             <SidePanelRow
                                                 data-testid="chats-chat-row"
                                                 data-conversation-id={conversation.conversation_id}
@@ -163,7 +173,6 @@ export function ProjectsSidebar({
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
                                                 title={conversation.title}
-                                                meta={conversation.conversation_handle ? <span className="font-mono">{conversation.conversation_handle}</span> : null}
                                                 trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : (
                                                     <span className="transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
                                                         {formatConversationAgeShort(conversation.updated_at)}

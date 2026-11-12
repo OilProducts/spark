@@ -131,8 +131,8 @@ export function GraphRunConfigurationSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Run configuration"
-                description="Editor-scoped runtime defaults used while authoring and previewing this flow."
+                title="Running from the editor"
+                description="What the Run… button starts with. These aren't saved in the flow."
             />
             <div className="space-y-3">
                 <GraphSettingsField label="Model" htmlFor="graph-run-model">
@@ -141,7 +141,7 @@ export function GraphRunConfigurationSection({
                         value={model}
                         onChange={(event) => setModel(event.target.value)}
                         className="h-8 text-sm"
-                        placeholder="codex default"
+                        placeholder="The flow's own choice"
                     />
                 </GraphSettingsField>
                 <GraphSettingsField label="Working directory" htmlFor="graph-run-working-directory">
@@ -170,7 +170,8 @@ export function GraphMetadataSection({
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Flow metadata"
+                title="About this flow"
+                description="How the flow is named and described wherever people pick it."
             />
             <div className="space-y-3">
                 <GraphSettingsField
@@ -199,9 +200,9 @@ export function GraphMetadataSection({
                     />
                 </GraphSettingsField>
                 <GraphSettingsField
-                    label="Execution lock key"
+                    label="One at a time (lock name)"
                     htmlFor="graph-attr-execution-lock-key"
-                    helper="Runs of flows sharing this key queue one at a time per project. Leave empty for no lock."
+                    helper="Flows that share this name never run at the same time in a project; later runs wait their turn. Leave empty to allow overlapping runs."
                 >
                     <Input
                         id="graph-attr-execution-lock-key"

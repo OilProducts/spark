@@ -8,6 +8,8 @@ export interface RunInitiationFormState {
     reasoningEffort?: string | null
     launchContext?: Record<string, unknown> | null
     executionProfileId?: string | null
+    /** A name for the run, shown in place of the flow's. */
+    title?: string | null
 }
 
 export interface PipelineStartPayload {
@@ -20,6 +22,7 @@ export interface PipelineStartPayload {
     execution_profile_id?: string | null
     launch_context?: Record<string, unknown> | null
     flow_name: string
+    title?: string
 }
 
 export type PipelineContinueFlowSourceMode = 'snapshot' | 'flow_name'
@@ -113,6 +116,10 @@ export function buildPipelineStartPayload(
     const executionProfileId = form.executionProfileId?.trim()
     if (executionProfileId) {
         payload.execution_profile_id = executionProfileId
+    }
+    const title = form.title?.trim()
+    if (title) {
+        payload.title = title
     }
     return payload
 }

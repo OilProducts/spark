@@ -316,7 +316,6 @@ export function useProjectsHomeController() {
         onSelectConversationThread,
     } = useProjectThreadActions({
         activateConversationThread,
-        applyConversationBatch,
         updateProjectSessionState,
         clearHomeConversationSession,
         setPanelError,
@@ -424,11 +423,14 @@ export function useProjectsHomeController() {
         }
     }, [activeConversationId, activeProjectPath, applyConversationPage])
 
+    const activeProjectLabel = activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null
+
     return {
         isNarrowViewport,
         historyProps: {
             activeConversationId,
             activeProjectPath,
+            activeProjectLabel,
             attachmentUrl,
             isConversationHistoryLoading,
             hasRenderableConversationHistory,
@@ -473,8 +475,9 @@ export function useProjectsHomeController() {
             formatConversationAgeShort,
         },
         surfaceProps: {
-            activeProjectLabel: activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null,
+            activeProjectLabel,
             activeProjectPath,
+            hasOpenChat: Boolean(activeConversationId),
             activeConversationTitle: activeConversationRecord?.title ?? activeConversationSummary?.title ?? null,
             activeConversationHandle: activeConversationRecord?.conversation_handle || activeConversationSummary?.conversation_handle || null,
             activeConversationUpdatedAt: activeConversationRecord?.updated_at ?? activeConversationSummary?.updated_at ?? null,

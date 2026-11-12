@@ -1,5 +1,6 @@
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
+import { formatRunDate } from '../model/runOverviewModel'
 import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,7 @@ interface RunQuestionsPanelProps {
     freeformAnswersByGateId: Record<string, string>
     gateNotesByGateId: Record<string, string>
     groupedPendingInterviewGates: PendingInterviewGateGroup[]
+    now: number
     onFreeformAnswerChange: (questionId: string, value: string) => void
     onGateNoteChange: (questionId: string, value: string) => void
     onSubmitPendingGateAnswer: (gate: PendingInterviewGate, selectedValue: string, note?: string) => void
@@ -26,6 +28,7 @@ export function RunQuestionsPanel({
     freeformAnswersByGateId,
     gateNotesByGateId,
     groupedPendingInterviewGates,
+    now,
     onFreeformAnswerChange,
     onGateNoteChange,
     onSubmitPendingGateAnswer,
@@ -132,8 +135,9 @@ export function RunQuestionsPanel({
                                                         />
                                                     </div>
                                                 )}
-                                                {/* With focus on an answer, its flow key picks that answer; scoped to the buttons so
-                                                    typing elsewhere never answers a gate. */}
+                                                {/* With focus on an answer, its flow key moves focus to that answer and Enter gives it:
+                                                    an answer can't be taken back, so no single key sends one. Scoped to the
+                                                    buttons, so typing elsewhere never touches a gate. */}
                                                 <div
                                                     role="group"
                                                     aria-label="Answers"
@@ -146,7 +150,7 @@ export function RunQuestionsPanel({
                                                             && option.key?.toLowerCase() === event.key.toLowerCase())
                                                         if (keyed) {
                                                             event.preventDefault()
-                                                            onSubmitPendingGateAnswer(gate, keyed.value, gateNote)
+                                                            event.currentTarget.querySelectorAll('button')[gate.options.indexOf(keyed)]?.focus()
                                                         }
                                                     }}
                                                 >
@@ -176,7 +180,7 @@ export function RunQuestionsPanel({
                                                                         <kbd
                                                                             aria-hidden="true"
                                                                             data-testid={`run-pending-human-gate-option-key-${option.value}`}
-                                                                            className="ml-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-border px-1 font-sans text-xs font-medium leading-none text-muted-foreground"
+                                                                            className="ml-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-border px-1 font-sans text-xs font-medium leading-none text-muted-foreground pointer-coarse:hidden"
                                                                         >
                                                                             {optionKey}
                                                                         </kbd>
@@ -202,9 +206,10 @@ export function RunQuestionsPanel({
                                             className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground"
                                         >
                                             {group.gates.length > 1 ? <><span>Order #{gateIndex + 1}</span><span aria-hidden="true">·</span></> : null}
-                                            <span>Received: {formatTimestamp(gate.receivedAt)}</span>
-                                            <span aria-hidden="true">·</span>
-                                            <span>Question ID: {questionId ?? '—'}</span>
+                                            {/* The question's id, for answering it elsewhere, is on hover. */}
+                                            <span title={[formatTimestamp(gate.receivedAt), questionId ? `Question ID: ${questionId}` : null].filter(Boolean).join('\n')}>
+                                                Asked {formatRunDate(gate.receivedAt, now) || '—'}
+                                            </span>
                                         </div>
                                     </li>
                                 )

@@ -16,6 +16,7 @@ import type {
     RunRecord,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
+import type { RunStatusKind } from '@/features/runs/model/runOverviewModel'
 
 export type ResourceStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -42,11 +43,15 @@ export interface RunsListSessionState {
     selectedRunId: string | null
     /** The project the run list shows, or every project when null. */
     projectFilter: string | null
+    /** The one state the run list shows, or every state when null or absent. */
+    statusFilter?: RunStatusKind | null
+    /** The run list's search, as typed. */
+    searchQuery?: string
+    /** A run that was opened but isn't there (a stale link, a deleted run), until another opens. */
+    missingRunId?: string | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]
-    streamStatus: 'idle' | 'loading' | 'ready' | 'degraded'
-    streamError: string | null
     /** Whether a full list fetch has succeeded; live upserts alone don't count. */
     fetched?: boolean
 }

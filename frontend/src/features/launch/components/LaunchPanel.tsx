@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { ChevronRight, X } from 'lucide-react'
 
 import {
     buildLaunchContextFromValues,
@@ -9,8 +9,8 @@ import {
     type LaunchInputFormValues,
 } from '@/lib/flowContracts'
 import { projectLabel } from '@/features/projects/model/projectChoices'
+import { flowTitle } from '@/features/runs/model/runOverviewModel'
 import { useStore } from '@/store'
-import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
 import { Well } from '@/components/app/well'
@@ -36,7 +36,8 @@ export interface LaunchPanelProps {
     initialModel?: string
     infoNotice?: string | null
     onLaunched: (runId: string | null, queued: boolean) => void
-    onClose: () => void
+    /** Omitted where the panel's container closes it, as a dialog does with its own button and Escape. */
+    onClose?: () => void
 }
 
 export function LaunchPanel({
@@ -50,7 +51,6 @@ export function LaunchPanel({
     onLaunched,
     onClose,
 }: LaunchPanelProps) {
-    const isNarrowViewport = useNarrowViewport()
     const { startFlow, logUnexpectedLaunchError } = useStartPipeline()
     const placement = useExecutionPlacement(true, projectPath)
     const lockMetadata = useFlowLaunchMetadata(target.previewSource.kind === 'flow' ? target.flowName : null, projectPath)
@@ -64,13 +64,16 @@ export function LaunchPanel({
     } = useLaunchPreview(target.previewSource, projectPath)
 
     const [launchInputValues, setLaunchInputValues] = useState<LaunchInputFormValues>(initialInputValues ?? {})
+    const [inputErrors, setInputErrors] = useState<Record<string, string>>({})
     const [launchInputsCollapsed, setLaunchInputsCollapsed] = useState(false)
     const [workingDirectory, setWorkingDirectory] = useState(initialWorkingDirectory)
     const [model, setModel] = useState(initialModel ?? '')
+    const [runName, setRunName] = useState('')
     const [isLaunching, setIsLaunching] = useState(false)
     const [runStartError, setRunStartError] = useState<string | null>(null)
     const [gitPolicyWarning, setGitPolicyWarning] = useState<string | null>(null)
     const [lastLaunchFailure, setLastLaunchFailure] = useState<LaunchFailureDiagnostics | null>(null)
+    const [optionsOpenState, setOptionsOpen] = useState(false)
     const panelRef = useRef<HTMLDivElement>(null)
 
     // Take focus on open so Escape works immediately; hand it back to the opener on close.
@@ -121,6 +124,18 @@ export function LaunchPanel({
                             ? 'Launch in progress.'
                             : undefined
     const canRun = !executeDisabledReason
+    // A placement problem blocks the run, so its controls show without asking.
+    const optionsOpen = optionsOpenState || Boolean(placement.validationMessage)
+    const panelTitle = lockMetadata?.title
+        || (target.previewSource.kind === 'runSnapshot' ? target.previewSource.displayName : null)
+        || (target.flowName ? flowTitle(target.flowName) : 'Run a flow')
+    const flowDescription = lockMetadata?.description?.trim() || null
+    const optionsSummary = [
+        projectPath ? projectLabel(projectRegistry, projectPath) : 'no project',
+        placement.effectiveProfileSummary,
+        workingDirectory.trim() && workingDirectory.trim() !== projectPath ? `in ${workingDirectory.trim()}` : null,
+        model.trim() || null,
+    ].filter(Boolean).join(' · ')
     const canRetryLaunch = Boolean(projectPath) && !hasValidationErrors && !isLaunching
 
     const selectedLlmProvider = typeof graphAttrs.llm_provider === 'string' ? graphAttrs.llm_provider : ''
@@ -142,8 +157,14 @@ export function LaunchPanel({
                 parsedLaunchInputs.entries,
                 launchInputValues,
             )
-            if (launchContextErrors.length > 0) {
-                setRunStartError(launchContextErrors.join(' '))
+            setInputErrors(launchContextErrors)
+            const firstInvalid = parsedLaunchInputs.entries.find((entry) => launchContextErrors[entry.key])
+            if (firstInvalid) {
+                // Each problem shows under its field; focus goes to the first so it can be fixed at once.
+                setLaunchInputsCollapsed(false)
+                window.requestAnimationFrame(() => {
+                    panelRef.current?.querySelector<HTMLElement>(`[data-testid="execution-launch-input-${CSS.escape(firstInvalid.key)}"]`)?.focus()
+                })
                 return
             }
 
@@ -163,6 +184,7 @@ export function LaunchPanel({
                     reasoningEffort: selectedReasoningEffort,
                     launchContext,
                     executionProfileId: placement.selectedProfileId || null,
+                    title: runName,
                 },
                 { onGitPolicyWarning: setGitPolicyWarning },
             )
@@ -192,27 +214,28 @@ export function LaunchPanel({
             data-testid="launch-panel"
             className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto outline-none"
             onKeyDown={(event) => {
-                if (event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+                if (onClose && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
                     event.stopPropagation()
                     onClose()
                 }
             }}
         >
             <div className="space-y-1">
-                <div className="flex items-center justify-between gap-3">
-                    <h3 className="min-w-0 text-lg font-semibold text-foreground">Launch flow</h3>
-                    <div className="flex shrink-0 items-center gap-2">
-                        <Button
-                            type="button"
-                            data-testid="launch-panel-start-button"
-                            onClick={() => {
-                                void requestStart()
-                            }}
-                            disabled={!canRun}
-                            title={canRun ? undefined : executeDisabledReason}
-                        >
-                            {executeLabel}
-                        </Button>
+                {/* The title wraps rather than give way, and the close button keeps its corner at any width. */}
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h3 data-testid="launch-panel-title" className="break-words text-lg font-semibold leading-tight text-foreground">{panelTitle}</h3>
+                        {target.flowName ? (
+                            <span
+                                data-testid="launch-panel-flow-name"
+                                className="mt-0.5 block truncate font-mono text-xs text-muted-foreground"
+                                title={target.flowName}
+                            >
+                                {target.flowName}
+                            </span>
+                        ) : null}
+                    </div>
+                    {onClose ? (
                         <Button
                             type="button"
                             data-testid="launch-panel-close-button"
@@ -220,29 +243,15 @@ export function LaunchPanel({
                             size="icon-xs"
                             aria-label="Close launch panel"
                             onClick={onClose}
+                            className="shrink-0"
                         >
                             <X className="h-3.5 w-3.5" />
                         </Button>
-                    </div>
+                    ) : null}
                 </div>
-                {target.flowName ? (
-                    <span
-                        data-testid="launch-panel-flow-name"
-                        className="block truncate font-mono text-xs text-muted-foreground"
-                        title={target.flowName}
-                    >
-                        {target.flowName}
-                    </span>
+                {flowDescription ? (
+                    <p data-testid="launch-panel-description" className="text-sm text-muted-foreground">{flowDescription}</p>
                 ) : null}
-                {/* Paths wrap after a slash, not mid-word. */}
-                <p
-                    data-testid="launch-panel-target-copy"
-                    className="break-words text-xs leading-5 text-muted-foreground"
-                >
-                    {projectPath
-                        ? <>Runs in {projectPath.split('/').map((part, index) => <span key={index}>{index > 0 ? <>/<wbr /></> : null}{part}</span>)}.</>
-                        : 'Choose a project to enable launching.'}
-                </p>
             </div>
 
             {infoNotice ? (
@@ -254,7 +263,7 @@ export function LaunchPanel({
                 </Alert>
             ) : null}
             {isLoadingPreview ? (
-                <p data-testid="launch-panel-preview-loading" className="text-sm text-muted-foreground" aria-live="polite">Loading flow preview and launch contract…</p>
+                <p data-testid="launch-panel-preview-loading" className="text-sm text-muted-foreground" aria-live="polite">Loading the flow…</p>
             ) : null}
             {previewLoadError ? (
                 <InlineError data-testid="launch-panel-preview-error">{previewLoadError}</InlineError>
@@ -265,7 +274,7 @@ export function LaunchPanel({
                     className="border-warning px-3 py-2 text-warning"
                 >
                     <AlertDescription className="text-inherit">
-                        Execution lock: {lockMetadata.execution_lock.scope} / {lockMetadata.execution_lock.key} / {lockMetadata.execution_lock.conflict_policy}. Runs holding this lock key in the project queue one at a time.
+                        One run of this flow at a time per project: if another is running in this project, this one waits its turn.
                     </AlertDescription>
                 </Alert>
             ) : null}
@@ -281,36 +290,102 @@ export function LaunchPanel({
                 }}
             />
 
-            <ExecutionProfileSection placement={placement} />
+            {parsedLaunchInputs.entries.length > 0 || parsedLaunchInputs.error ? <Well>
+                <LaunchInputsForm
+                    flowName={target.flowName}
+                    parsedLaunchInputs={parsedLaunchInputs}
+                    launchInputValues={launchInputValues}
+                    errors={inputErrors}
+                    launchInputsCollapsed={launchInputsCollapsed}
+                    onToggleCollapsed={() => setLaunchInputsCollapsed((collapsed) => !collapsed)}
+                    onInputChange={(entry, value) => {
+                        setLaunchInputValues((previous) => ({
+                            ...previous,
+                            [entry.key]: value,
+                        }))
+                        setInputErrors((previous) => {
+                            if (!previous[entry.key]) return previous
+                            const { [entry.key]: _fixed, ...rest } = previous
+                            return rest
+                        })
+                    }}
+                />
+            </Well> : !isLoadingPreview && !previewLoadError ? (
+                <p data-testid="launch-panel-no-inputs" className="text-sm text-muted-foreground">This flow needs no inputs to start.</p>
+            ) : null}
 
-            <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1.5">
-                    <Label htmlFor="launch-panel-working-directory" className="text-sm">
-                        Working directory
-                    </Label>
-                    <Input
-                        id="launch-panel-working-directory"
-                        data-testid="launch-panel-working-directory-input"
-                        value={workingDirectory}
-                        onChange={(event) => setWorkingDirectory(event.target.value)}
-                        placeholder={projectPath || undefined}
-                        className="h-8 text-sm"
-                    />
-                </div>
-                <div className="space-y-1.5">
-                    <Label htmlFor="launch-panel-model" className="text-sm">
-                        Model override
-                    </Label>
-                    <Input
-                        id="launch-panel-model"
-                        data-testid="launch-panel-model-input"
-                        value={model}
-                        onChange={(event) => setModel(event.target.value)}
-                        placeholder="Use flow/server default"
-                        className="h-8 text-sm"
-                    />
-                </div>
+            {/* Runs of one flow otherwise share its name; a name here tells this one apart everywhere it is listed.
+                Optional, so it follows what the flow needs. */}
+            <div className="space-y-1.5">
+                <Label htmlFor="launch-panel-run-name" className="text-sm">
+                    Run name <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                    id="launch-panel-run-name"
+                    data-testid="launch-panel-run-name-input"
+                    value={runName}
+                    maxLength={120}
+                    onChange={(event) => setRunName(event.target.value)}
+                    aria-describedby="launch-panel-run-name-hint"
+                    className="h-8 text-sm"
+                />
+                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is listed as {panelTitle}.</p>
             </div>
+
+            {/* Where and how it runs: rarely changed, so folded under one line that says what it will use. */}
+            <details
+                data-testid="launch-panel-options"
+                open={optionsOpen}
+                onToggle={(event) => {
+                    const details = event.currentTarget
+                    setOptionsOpen(details.open)
+                    // Opened at the foot of a short dialog, the options scroll into view above the Run button.
+                    if (details.open) details.scrollIntoView?.({ block: 'nearest' })
+                }}
+                className="group scroll-mb-20 rounded-lg border border-border"
+            >
+                {/* On a phone the summary takes a line of its own rather than being cut short. */}
+                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 rounded-lg px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                    <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                    <span className="shrink-0 whitespace-nowrap font-medium">Run options</span>
+                    <span data-testid="launch-panel-options-summary" className="min-w-0 truncate text-muted-foreground max-sm:basis-full max-sm:whitespace-normal max-sm:pl-5.5">{optionsSummary}</span>
+                </summary>
+                <div className="space-y-3 border-t border-border px-3 py-3">
+                    {/* The project folder shows once, as the working directory's placeholder. */}
+                    {projectPath ? null : (
+                        <p data-testid="launch-panel-target-copy" className="text-xs leading-5 text-muted-foreground">Choose a project to enable launching.</p>
+                    )}
+                    <ExecutionProfileSection placement={placement} />
+                    <div className="space-y-1.5">
+                        <Label htmlFor="launch-panel-working-directory" className="text-sm">
+                            Working directory
+                        </Label>
+                        <Input
+                            id="launch-panel-working-directory"
+                            data-testid="launch-panel-working-directory-input"
+                            value={workingDirectory}
+                            onChange={(event) => setWorkingDirectory(event.target.value)}
+                            placeholder={projectPath || undefined}
+                            aria-describedby="launch-panel-working-directory-hint"
+                            className="h-8 text-sm"
+                        />
+                        <p id="launch-panel-working-directory-hint" className="text-xs text-muted-foreground">The folder the run works in; leave it as the project folder unless the flow should work elsewhere.</p>
+                    </div>
+                    <div className="space-y-1.5">
+                        <Label htmlFor="launch-panel-model" className="text-sm">
+                            Model
+                        </Label>
+                        <Input
+                            id="launch-panel-model"
+                            data-testid="launch-panel-model-input"
+                            value={model}
+                            onChange={(event) => setModel(event.target.value)}
+                            placeholder="The flow's own choice"
+                            className="h-8 text-sm"
+                        />
+                    </div>
+                </div>
+            </details>
 
             {visibleDiagnostics.length > 0 ? (
                 <Well
@@ -318,7 +393,7 @@ export function LaunchPanel({
                     className="space-y-2 p-3"
                 >
                     <p className="text-sm font-semibold text-foreground">
-                        Launch diagnostics
+                        Problems found in this flow
                     </p>
                     <ul className="space-y-2 text-sm">
                         {visibleDiagnostics.map((diagnostic, index) => (
@@ -338,22 +413,24 @@ export function LaunchPanel({
                 </Well>
             ) : null}
 
-            {parsedLaunchInputs.entries.length > 0 || parsedLaunchInputs.error ? <Well>
-                <LaunchInputsForm
-                    isNarrowViewport={isNarrowViewport}
-                    flowName={target.flowName}
-                    parsedLaunchInputs={parsedLaunchInputs}
-                    launchInputValues={launchInputValues}
-                    launchInputsCollapsed={launchInputsCollapsed}
-                    onToggleCollapsed={() => setLaunchInputsCollapsed((collapsed) => !collapsed)}
-                    onInputChange={(entry, value) => {
-                        setLaunchInputValues((previous) => ({
-                            ...previous,
-                            [entry.key]: value,
-                        }))
+            {/* Fill in the form, then run: the button sits under it and stays in view while the form scrolls. */}
+            <div className="sticky bottom-0 -mb-px mt-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-t border-border bg-background pt-3">
+                {!canRun && executeDisabledReason && !isLoadingPreview && !isLaunching ? (
+                    <p data-testid="launch-panel-disabled-reason" className="min-w-0 flex-1 text-xs text-muted-foreground">{executeDisabledReason}</p>
+                ) : null}
+                <Button
+                    type="button"
+                    data-testid="launch-panel-start-button"
+                    onClick={() => {
+                        void requestStart()
                     }}
-                />
-            </Well> : null}
+                    disabled={!canRun}
+                    title={canRun ? executeLabel : executeDisabledReason}
+                    className="min-w-0 max-w-full"
+                >
+                    <span className="truncate">{isLaunching ? 'Starting…' : executeLabel}</span>
+                </Button>
+            </div>
         </div>
     )
 }

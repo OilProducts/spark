@@ -2,7 +2,7 @@ import type { ConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { Mission } from '@/features/missions/MissionsPanel'
 import { missionTime } from '@/features/missions/model/missionModel'
-import { runStatusKind } from '@/features/runs/model/runOverviewModel'
+import { runKind, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
 // What the Overview shows: the chat you were last in with what it started,
@@ -21,8 +21,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** Milliseconds for run and chat ISO times and mission times alike; 0 when missing. */
 export const timeOf = (value: string | null | undefined) => Date.parse(missionTime(value)) || 0
 
+/** A run's mark; one that completed at a failure exit is failed. */
 export function runMark(run: RunRecord): Mark {
-    return runStatusKind(run.status, false)
+    return runKind(run)
 }
 
 export function missionMark(mission: Mission): Mark {
@@ -84,6 +85,59 @@ export function finishedSince(runs: RunRecord[], missions: Mission[], watermark:
     return finished(runs, missions)
         .filter((item) => item.at > after)
         .sort((left, right) => right.at - left.at)
+}
+
+/**
+ * What the Overview lists as finished: the last day, reaching back to the last look when that was
+ * earlier, so a result stays listed after a glance and nothing is skipped after a weekend away.
+ * `isNew` marks what finished after the last look; before a first look there is nothing to compare
+ * with, so nothing is marked.
+ */
+export function recentlyFinished(runs: RunRecord[], missions: Mission[], watermark: number | null, now: number) {
+    const after = Math.min(watermark ?? now, now - DAY_MS)
+    return {
+        sinceLastLook: watermark !== null && watermark < now - DAY_MS,
+        items: finishedSince(runs, missions, after, now).map((item) => ({ ...item, isNew: watermark !== null && item.at > watermark })),
+    }
+}
+
+export type FinishedItem = Started & { isNew: boolean }
+/** One row of the Finished list: a run or mission, or repeats of one run folded together. */
+export type FinishedRow = { key: string; latest: FinishedItem; count: number; isNew: boolean }
+
+/**
+ * Finished items as rows, failures first and otherwise newest first. Runs with the same title in
+ * the same project and the same outcome (a trigger's routine runs) fold into one row under the
+ * latest, so a busy schedule can't push everything else off the Overview.
+ */
+export function finishedRows(items: FinishedItem[]): FinishedRow[] {
+    const rows = new Map<string, FinishedRow>()
+    for (const item of items) {
+        const key = item.kind === 'run'
+            ? `run:${item.run.project_path ?? ''}:${runTitle(item.run)}:${item.mark}:${item.run.outcome_reason_code ?? ''}`
+            : `mission:${item.id}`
+        const row = rows.get(key)
+        if (row) {
+            row.count += 1
+            row.isNew ||= item.isNew
+        } else {
+            rows.set(key, { key, latest: item, count: 1, isNew: item.isNew })
+        }
+    }
+    const ordered = [...rows.values()]
+    return [...ordered.filter((row) => row.latest.mark === 'failed'), ...ordered.filter((row) => row.latest.mark !== 'failed')]
+}
+
+/** Top-level runs and missions still working, and chats with a turn in flight, newest start first. */
+export function inProgress(runs: RunRecord[], missions: Mission[], chats: Chat[]) {
+    return [
+        ...runs.filter((run) => !run.parent_run_id && runMark(run) === 'running')
+            .map((run) => ({ kind: 'run' as const, id: run.run_id, run, mark: 'running' as Mark, at: timeOf(run.started_at) })),
+        ...missions.filter((mission) => mission.status === 'running')
+            .map((mission) => ({ kind: 'mission' as const, id: mission.id, mission, mark: 'running' as Mark, at: timeOf(mission.started_at) || missionAt(mission) })),
+        ...chats.filter((chat) => chat.running)
+            .map((chat) => ({ kind: 'chat' as const, id: chat.conversation_id, chat, mark: 'running' as Mark, at: timeOf(chat.updated_at) })),
+    ].sort((left, right) => right.at - left.at)
 }
 
 const finished = (runs: RunRecord[], missions: Mission[]) => [

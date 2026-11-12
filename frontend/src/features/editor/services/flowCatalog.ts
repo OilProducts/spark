@@ -2,3 +2,5 @@ import { deleteFlowValidated, fetchFlowListValidated } from '@/lib/attractorClie
 
 export const deleteFlowCatalogEntry = deleteFlowValidated
 export const loadFlowCatalog = fetchFlowListValidated
+
+export { fetchWorkspaceFlowListValidated as loadFlowSummaries } from '@/lib/api/flowsApi'

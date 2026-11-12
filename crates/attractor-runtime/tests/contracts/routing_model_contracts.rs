@@ -343,6 +343,26 @@ fn reaching_a_failure_exit_completes_the_run_with_its_declared_result() {
     );
 }
 
+#[test]
+fn a_failure_exit_reason_names_the_choice_in_the_flows_own_labels() {
+    let flow = parse_flow(json!({
+        "start": {"kind": "start", "routes": {"next": route("approve")}},
+        "approve": {
+            "kind": "human_gate", "label": "Approve Release", "config": {"kind": "human_gate", "prompt": "Ship?"},
+            "routes": {"ship": route("done"), "hold": {"to": "held", "label": "Hold release", "description": "Wait."}}
+        },
+        "done": exit("completed", "success"),
+        "held": exit("held", "failure"),
+    }));
+    let outcome =
+        attractor_runtime::exit_terminal_outcome(&flow, "held", Some(("approve", "hold", "")))
+            .expect("an exit result");
+    assert_eq!(
+        outcome.outcome_reason_message.as_deref(),
+        Some("Approve Release chose Hold release")
+    );
+}
+
 fn tool_flow(config: Value, routes: Value) -> FlowDefinition {
     let mut config = config;
     config["kind"] = json!("tool");

@@ -28,6 +28,7 @@ fn start_pipeline_from_a_saved_flow_persists_run_and_returns_launch_metadata() {
         ),
         spec_id: Some("spec-1".to_string()),
         plan_id: Some("plan-1".to_string()),
+        title: Some("  Docs pass for api  ".to_string()),
         ..PipelineStartRequest::default()
     });
 
@@ -70,6 +71,8 @@ fn start_pipeline_from_a_saved_flow_persists_run_and_returns_launch_metadata() {
         metadata_event.payload["flow_definition_path"]
     );
     let record = bundle.record.expect("record");
+    // A name given at launch is the run's title, kept through the run's later record writes.
+    assert_eq!(record.title.as_deref(), Some("Docs pass for api"));
     // The run's flow snapshot is the JSON definition, which the hash covers.
     let flow_dir = bundle.paths.artifacts_dir().join("flow");
     let mut snapshot = fs::read_dir(&flow_dir)

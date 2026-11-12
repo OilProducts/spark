@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import { StatusPill } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import type { RunRecord } from '../model/shared'
@@ -8,9 +10,11 @@ import {
     cancelRunActionLabel,
     formatDuration,
     formatRunStatusLabel,
+    formatTimestamp,
     runRecordTone,
 } from '../model/shared'
-import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
+import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle, runTrigger } from '../model/runOverviewModel'
+import { openTrigger } from '@/app/useAttention'
 
 // The run's masthead: a muted breadcrumb (project · flow), the title with its status
 // pill, one line of facts, and actions. Everything else about the run lives in the
@@ -48,6 +52,8 @@ export function RunHeaderBar({
     onRerunRun,
 }: RunHeaderBarProps) {
     const inactive = canContinueRun(run.status)
+    const retry = canRetryRun(run.status)
+    const helpId = useId()
     const showCancel = canCancelRun(run.status) || CANCELING_STATUSES.has(run.status)
     // Every run reads the same: when it started, then how long it ran or has been going.
     const when = formatRunDate(run.started_at, now)
@@ -65,6 +71,7 @@ export function RunHeaderBar({
     const flow = flowTitle?.trim() || flowTitleFromName(run.flow_name)
     const showFlow = title !== flowTitleFromName(run.flow_name) && flow.toLowerCase() !== title.toLowerCase()
     const tone = runRecordTone(run)
+    const trigger = runTrigger(run)
 
     return (
         <header data-testid="run-summary-panel" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
@@ -89,16 +96,40 @@ export function RunHeaderBar({
                         {formatRunStatusLabel(run)}
                     </StatusPill>
                 </div>
-                <p data-testid="run-header-facts" className="truncate text-sm text-muted-foreground">
+                <p
+                    data-testid="run-header-facts"
+                    className="truncate text-sm text-muted-foreground"
+                    title={run.started_at ? `Started ${formatTimestamp(run.started_at)}` : undefined}
+                >
                     {facts.join(' · ')}
+                    {trigger ? (
+                        <span data-testid="run-header-trigger">
+                            {facts.length > 0 ? ' · ' : ''}started by trigger{' '}
+                            <button type="button" onClick={() => openTrigger(run.project_path || run.working_directory, trigger.id)} className="rounded-sm text-foreground underline decoration-muted-foreground/50 underline-offset-4 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring">{trigger.name}</button>
+                        </span>
+                    ) : null}
                 </p>
+                {/* The recovery buttons' explanations, visible without hovering; each button is described by its sentence. */}
+                {inactive ? (
+                    <p data-testid="run-header-actions-help" className="text-xs text-muted-foreground">
+                        {retry ? <><span id={`${helpId}-retry`}>Retry picks up from the failed step.</span>{' '}</> : null}
+                        <span id={`${helpId}-continue`}>
+                            {selectedVisitLabel
+                                ? `Continue from here starts a new run from ${selectedVisitLabel}, keeping results so far.`
+                                : 'Continue from… starts a new run from a step you pick, keeping results so far.'}
+                        </span>{' '}
+                        <span id={`${helpId}-rerun`}>Re-run starts over with the same inputs.</span>
+                    </p>
+                ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-                {canRetryRun(run.status) ? (
+                {retry ? (
                     <Button
                         type="button"
                         data-testid="run-summary-retry-button"
                         onClick={() => onRequestRetry(run.run_id, run.status)}
+                        aria-describedby={`${helpId}-retry`}
+                        title="Pick this run up again from the step where it failed, with the same flow and its results so far"
                         variant={continuationOpen ? 'outline' : 'default'}
                         size="sm"
                     >
@@ -122,9 +153,10 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-summary-continue-button"
                         onClick={() => onContinueFromRun(run)}
+                        aria-describedby={`${helpId}-continue`}
                         title={selectedVisitLabel
-                            ? `Start a new run from ${selectedVisitLabel}`
-                            : 'Start a new run from a node you pick on the graph'}
+                            ? `Start a new run from ${selectedVisitLabel}, reusing this run’s results so far`
+                            : 'Start a new run from a step you pick on the graph, reusing this run’s results so far'}
                         variant="outline"
                         size="sm"
                     >
@@ -136,7 +168,8 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-summary-rerun-button"
                         onClick={() => onRerunRun(run)}
-                        title="Launch a new run of this flow with the same inputs"
+                        aria-describedby={`${helpId}-rerun`}
+                        title="Start a new run of the flow as it is now, from the beginning, with the same inputs"
                         variant="outline"
                         size="sm"
                     >

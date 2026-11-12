@@ -15,7 +15,7 @@ it('validates fields, saves explicitly, and retains conflicts until Discard', as
     vi.mocked(saveConnectionSettings).mockRejectedValue(new Error('Settings changed elsewhere.'))
     render(<DialogProvider><ConnectionSettingsEditor /></DialogProvider>)
     const user = userEvent.setup()
-    const target = await screen.findByLabelText('Client API target')
+    const target = await screen.findByLabelText('Command-line server URL')
     await user.type(target, 'https://user:secret@example.com')
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
     await user.clear(target)

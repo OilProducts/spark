@@ -7,19 +7,22 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, attentionTitle, openAttentionItem, openChat, openMission, openRun, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { flowTitle, formatRunDate, runTitle } from '@/features/runs/model/runOverviewModel'
-import { formatDuration } from '@/features/runs/model/shared'
+import { formatDuration, formatRunStatusLabel, isCompletedFailure } from '@/features/runs/model/shared'
+import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
 import {
-    finishedSince,
+    finishedRows,
+    inProgress,
     lastChat,
     markAttentionSeen,
     markFinishedSeen,
     readFinishedWatermark,
+    recentlyFinished,
     sourceOf,
     tally,
     type Mark,
@@ -33,7 +36,7 @@ const MARKS: Record<Mark, { label: string; tone: StatusTone; exception?: true }>
     running: { label: 'Running', tone: 'info' },
     completed: { label: 'Completed', tone: 'success' },
     failed: { label: 'Failed', tone: 'destructive', exception: true },
-    ended: { label: 'Stopped', tone: 'neutral' },
+    ended: { label: 'Canceled', tone: 'neutral' },
     draft: { label: 'Draft', tone: 'neutral' },
 }
 const MARK_ORDER: Mark[] = ['waiting', 'running', 'completed', 'failed', 'ended', 'draft']
@@ -51,10 +54,26 @@ function MarkDot({ mark, ...props }: Omit<ComponentProps<typeof StatusDot>, 'ton
     )
 }
 
-/** The word for an exceptional state, in its tone, after a meta line. */
-function ExceptionWord({ mark }: { mark: Mark }) {
-    const { label, tone, exception } = MARKS[mark]
-    return exception ? <span className={`shrink-0 whitespace-pre ${statusTextClassName(tone)}`}> · {label}</span> : null
+/** The word for an exceptional state, in its tone, after a meta line; a run that ended at a failure exit names the exit. */
+function ExceptionWord({ item }: { item: Started }) {
+    const { label, tone, exception } = MARKS[item.mark]
+    const word = item.kind === 'run' && isCompletedFailure(item.run) ? formatRunStatusLabel(item.run) : label
+    return exception ? <span className={`shrink-0 whitespace-pre ${statusTextClassName(tone)}`}> · {word}</span> : null
+}
+
+/**
+ * A row's meta line. What the row is gives way first; the project keeps its name unless it alone
+ * is wider than the line, so a long flow title can't push it out of sight on a phone.
+ */
+function MetaLine({ lead, project, children }: { lead: string; project: string | null; children?: ReactNode }) {
+    return (
+        <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
+            <span className="min-w-0 shrink-[100] truncate whitespace-pre">{lead}</span>
+            {/* The lead gives way first; the project truncates only past the row's whole width. */}
+            {project ? <span data-testid="overview-row-project" className="max-w-full shrink-0 truncate whitespace-pre">{lead ? ' · ' : ''}{project}</span> : null}
+            {children}
+        </span>
+    )
 }
 
 function Section({ heading, count, testId, children }: { heading: ReactNode; count?: ReactNode; testId: string; children: ReactNode }) {
@@ -77,6 +96,18 @@ function EmptyWell({ children, check = true, ...props }: ComponentProps<'div'> &
 }
 
 const listPanelClass = 'divide-y divide-border overflow-hidden rounded-xl border border-border'
+// Rows the Finished list shows before "Show more"; failures come first, so they are never the ones hidden.
+const FINISHED_LIMIT = 8
+// Rows Needs you shows before "Show more"; the Inbox lists every one.
+const NEEDS_YOU_LIMIT = 6
+
+const retryRuns = () => window.dispatchEvent(new Event('spark:runs-overview-resync-required'))
+
+/** Opens the Runs view showing only failed runs, from every project. */
+function openFailedRuns() {
+    useStore.getState().updateRunsListSession({ statusFilter: 'failed', projectFilter: null })
+    useStore.getState().setViewMode('runs')
+}
 
 /**
  * A row title that opens its run or mission: navigation in the foreground colour, underlined on
@@ -121,24 +152,35 @@ const itemDuration = (item: Started) => (item.kind === 'run'
 export function OverviewPanel() {
     // ponytail: polls beside the activity bar's own poll while open; share one store-held list if the endpoint gets costly.
     const loadedAttention = useAttentionItems()
+    const attentionFailed = useAttentionFailed()
     const attention = loadedAttention ?? []
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
     const listsLoaded = useStore((state) => Boolean(state.runsListSession.fetched) && state.missionBoardLoaded)
-    const { chats, loaded } = useOverviewChats()
+    // Until the run history loads, an empty list says nothing about what ran.
+    const runsFetched = useStore((state) => Boolean(state.runsListSession.fetched))
+    const runsFailed = useStore((state) => state.runsListSession.status === 'error')
+    const runsLoading = !runsFetched && !runsFailed
+    const { chats, loaded, failed: chatsFailed, retry: retryChats } = useOverviewChats()
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [finishedWatermark] = useState(readFinishedWatermark)
     const [showRuns, setShowRuns] = useState(false)
+    const [showAllFinished, setShowAllFinished] = useState(false)
+    const [showAllNeedsYou, setShowAllNeedsYou] = useState(false)
     useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
     useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()
+    const attentionTime = attentionTimes(attention, runs, now)
 
     const last = lastChat(chats, runs, missions)
     const counts = last ? tally(last.started) : {}
-    const finished = finishedSince(runs, missions, finishedWatermark, now)
+    const { items: finished, sinceLastLook } = recentlyFinished(runs, missions, finishedWatermark, now)
     const failures = finished.filter((item) => item.mark === 'failed').length
+    const rows = finishedRows(finished)
+    const shownRows = showAllFinished ? rows : rows.slice(0, FINISHED_LIMIT)
+    const running = inProgress(runs, missions, chats)
 
     return (
         <div data-testid="overview-view" className="h-full overflow-y-auto">
@@ -149,7 +191,7 @@ export function OverviewPanel() {
                         <p className="mt-1 text-sm text-muted-foreground">Across all projects</p>
                     </div>
                     <div data-testid="overview-start" className="flex flex-wrap gap-2">
-                        <Button type="button" variant="ghost" data-testid="overview-run-flow" onClick={() => useStore.getState().setViewMode('editor')}>Run a flow…</Button>
+                        <Button type="button" variant="outline" data-testid="overview-run-flow" onClick={() => openRunFlowDialog()}>Run a flow…</Button>
                         <ProjectPicker
                             heading="New mission in"
                             testId="overview-new-mission-picker"
@@ -174,12 +216,21 @@ export function OverviewPanel() {
                     </div>
                 </header>
 
-                <Section testId="overview-needs-you" heading="Needs you" count={attention.length}>
-                    {attention.length === 0 ? (
-                        <EmptyWell data-testid="overview-needs-you-empty">Nothing is waiting on you.</EmptyWell>
+                <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length : undefined}>
+                    {/* A failed check is not an all-clear: say so, and keep what was last known. */}
+                    {attentionFailed ? (
+                        <Well data-testid="overview-needs-you-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            {loadedAttention ? 'Couldn’t refresh what is waiting on you; this may be out of date.' : 'Couldn’t check what is waiting on you.'}
+                            <Button type="button" size="sm" variant="outline" onClick={refreshAttention}>Try again</Button>
+                        </Well>
+                    ) : null}
+                    {!loadedAttention ? (
+                        attentionFailed ? null : <Well className="py-3.5 text-sm text-muted-foreground">Checking what is waiting on you…</Well>
+                    ) : attention.length === 0 ? (
+                        attentionFailed ? null : <EmptyWell data-testid="overview-needs-you-empty">Nothing is waiting on you.</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
-                            {attention.map((item) => (
+                            {(showAllNeedsYou ? attention : attention.slice(0, NEEDS_YOU_LIMIT)).map((item) => (
                                 <li key={`${item.kind}:${item.id}`}>
                                     <button
                                         type="button"
@@ -191,14 +242,64 @@ export function OverviewPanel() {
                                         <span className="flex min-w-0 flex-1 flex-col gap-px">
                                             <span className="truncate text-sm font-medium">{attentionTitle(item, runs)}</span>
                                             {/* A gate's question says what this run waits on, where the kind alone reads the same for every run of a flow.
-                                                A long question gives way; the project stays readable. */}
-                                            <span className="flex min-w-0 text-xs text-muted-foreground">
-                                                <span className="min-w-0 truncate">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
-                                                <span className="shrink-0 whitespace-pre"> · {projectLabel(registry, item.project_path)}</span>
+                                                A long question gives way; the project stays readable. On a phone the question gets two lines of its own. */}
+                                            <span className="flex min-w-0 text-xs text-muted-foreground max-sm:flex-col">
+                                                <span className="min-w-0 truncate max-sm:line-clamp-2 max-sm:whitespace-normal">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
+                                                <span className="flex min-w-0 shrink-0 max-sm:shrink">
+                                                    <span className="whitespace-pre max-sm:hidden"> · </span>
+                                                    {/* On a phone a long flow name gives way before the project. */}
+                                                    <MetaLine lead={attentionFlow(item, runs) ?? ''} project={projectLabel(registry, item.project_path)} />
+                                                </span>
                                             </span>
                                         </span>
-                                        <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
+                                        <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{attentionTime(item)}</span>
                                     </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    {attention.length > NEEDS_YOU_LIMIT ? (
+                        <Button type="button" variant="ghost" size="sm" data-testid="overview-needs-you-show-all" aria-expanded={showAllNeedsYou} onClick={() => setShowAllNeedsYou((value) => !value)} className="self-start">
+                            {showAllNeedsYou ? 'Show fewer' : `Show ${attention.length - NEEDS_YOU_LIMIT} more`}
+                        </Button>
+                    ) : null}
+                </Section>
+
+                {/* Until the runs load, a count would say nothing is running. */}
+                <Section testId="overview-running" heading="Running now" count={runsFetched ? running.length : undefined}>
+                    {runsFailed ? (
+                        <Well data-testid="overview-runs-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            {runsFetched ? 'Couldn’t refresh your runs; what is shown here may be out of date.' : 'Couldn’t load your runs, so what is running and what finished can’t be shown.'}
+                            <Button type="button" size="sm" variant="outline" onClick={retryRuns}>Try again</Button>
+                        </Well>
+                    ) : null}
+                    {running.length === 0 ? (
+                        runsFailed ? null : runsLoading ? (
+                            <Well className="py-3.5 text-sm text-muted-foreground">Loading runs…</Well>
+                        ) : <EmptyWell check={false} data-testid="overview-running-empty">Nothing is running.</EmptyWell>
+                    ) : (
+                        <ul className={listPanelClass}>
+                            {running.map((item) => (
+                                <li key={`${item.kind}:${item.id}`} data-testid="overview-running-item" data-item-id={item.id} className="relative flex items-center gap-3 px-4 py-3">
+                                    <MarkDot mark="running" />
+                                    <span className="flex min-w-0 flex-1 flex-col gap-px">
+                                        {item.kind === 'chat' ? (
+                                            <TitleLink onClick={() => openChat(item.chat.project_path, item.chat.conversation_id)}>{item.chat.title}</TitleLink>
+                                        ) : (
+                                            <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
+                                        )}
+                                        <MetaLine
+                                            lead={(item.kind === 'chat'
+                                                ? ['Chat, replying']
+                                                : [item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null]
+                                            ).filter(Boolean).join(' · ')}
+                                            project={projectLabel(registry, item.kind === 'chat' ? item.chat.project_path : itemProject(item))}
+                                        />
+                                    </span>
+                                    {item.kind === 'run' ? (
+                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now)}</span>
+                                    ) : null}
+                                    <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>
                             ))}
                         </ul>
@@ -239,13 +340,18 @@ export function OverviewPanel() {
                                             <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                             <span className="ml-auto flex shrink-0 items-baseline text-xs text-muted-foreground">
                                                 {item.kind === 'mission' ? 'Mission' : flowTitle(item.run.flow_name)} · {when(item.at, now)}
-                                                <ExceptionWord mark={item.mark} />
+                                                <ExceptionWord item={item} />
                                             </span>
                                         </li>
                                     ))}
                                 </ul>
                             ) : null}
                         </div>
+                    ) : chatsFailed ? (
+                        <Well data-testid="overview-chats-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            Couldn’t load your chats.
+                            <Button type="button" size="sm" variant="outline" onClick={retryChats}>Try again</Button>
+                        </Well>
                     ) : loaded ? (
                         <EmptyWell check={false}>No chats yet.</EmptyWell>
                     ) : (
@@ -255,32 +361,53 @@ export function OverviewPanel() {
 
                 <Section
                     testId="overview-finished"
-                    heading={`Finished ${finishedWatermark === null ? 'in the last day' : 'since you last looked'}`}
-                    count={<>{finished.length}{failures ? <span data-testid="overview-failure-count" className="text-destructive"> · {failures} failed</span> : null}</>}
+                    heading={`Finished ${sinceLastLook ? 'since you last looked' : 'in the last day'}`}
+                    count={runsFetched ? finished.length : undefined}
                 >
+                    {failures ? (
+                        <p className="-mt-1 text-sm">
+                            <Button type="button" variant="link" data-testid="overview-failure-count" onClick={openFailedRuns} title="See every failed run in Runs" className="h-auto p-0 text-sm font-medium text-destructive underline underline-offset-4">
+                                {failures} failed
+                            </Button>
+                            <span className="text-muted-foreground"> · listed first</span>
+                        </p>
+                    ) : null}
                     {finished.length === 0 ? (
-                        <EmptyWell>Nothing has finished since.</EmptyWell>
+                        runsFailed ? (
+                            <EmptyWell check={false} data-testid="overview-finished-unavailable">Finished runs can’t be shown until your runs load.</EmptyWell>
+                        ) : runsLoading ? (
+                            <Well className="py-3.5 text-sm text-muted-foreground">Loading runs…</Well>
+                        ) : <EmptyWell>{sinceLastLook ? 'Nothing has finished since you last looked.' : 'Nothing has finished in the last day.'}</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
-                            {finished.map((item) => (
-                                <li key={`${item.kind}:${item.id}`} data-testid="overview-finished-item" data-item-id={item.id} className="relative flex items-center gap-3 px-4 py-3">
+                            {shownRows.map(({ key, latest: item, count, isNew }) => (
+                                <li key={key} data-testid="overview-finished-item" data-item-id={item.id} data-count={count} className="relative flex items-center gap-3 px-4 py-3">
                                     <MarkDot mark={item.mark} />
                                     <span className="flex min-w-0 flex-1 flex-col gap-px">
                                         <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
-                                        <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
-                                            <span className="truncate">
-                                                {[item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null, projectLabel(registry, itemProject(item))].filter(Boolean).join(' · ')}
-                                            </span>
-                                            <SourceLink source={sourceOf(item, chats, missions)} />
-                                            <ExceptionWord mark={item.mark} />
-                                        </span>
+                                        <MetaLine
+                                            lead={[
+                                                count > 1 ? `${count} runs, latest shown` : item.kind === 'run' ? 'Run' : 'Mission',
+                                                item.kind === 'run' ? distinctFlowTitle(item) : null,
+                                            ].filter(Boolean).join(' · ')}
+                                            project={projectLabel(registry, itemProject(item))}
+                                        >
+                                            {count > 1 ? null : <SourceLink source={sourceOf(item, chats, missions)} />}
+                                            <ExceptionWord item={item} />
+                                        </MetaLine>
                                     </span>
-                                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{itemDuration(item)}</span>
+                                    {isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
+                                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground max-sm:hidden">{itemDuration(item)}</span>
                                     <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>
                             ))}
                         </ul>
                     )}
+                    {rows.length > FINISHED_LIMIT ? (
+                        <Button type="button" variant="ghost" size="sm" data-testid="overview-finished-show-all" aria-expanded={showAllFinished} onClick={() => setShowAllFinished((value) => !value)} className="self-start">
+                            {showAllFinished ? 'Show fewer' : `Show ${rows.length - FINISHED_LIMIT} more`}
+                        </Button>
+                    ) : null}
                 </Section>
             </div>
         </div>

@@ -1,9 +1,9 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
-import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { browserTimeZone, createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { triggerKey } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -13,6 +13,12 @@ const jsonResponse = (payload: unknown) =>
     headers: { 'Content-Type': 'application/json' },
   })
 const TEST_TRIGGER_FLOW = 'test-planning.dot'
+// The flows every test project can run, as /workspace/api/flows lists them.
+const PROJECT_FLOWS = [
+  { name: TEST_TRIGGER_FLOW, title: 'Test planning', description: '' },
+  { name: 'dispatch.dot', title: 'Dispatch', description: '' },
+]
+const isFlowList = (url: string) => url.startsWith('/workspace/api/flows')
 
 const resolveRequestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === 'string') return input
@@ -112,11 +118,23 @@ describe('TriggersPanel', () => {
     await waitFor(() => expect(screen.getByTestId('trigger-row-first')).toHaveAttribute('aria-current', 'true'))
   })
 
-  it('shows why an inactive trigger failed to activate', async () => {
-    const failed = makeTrigger({ id: 'failed', enabled: false })
-    vi.mocked(fetch).mockResolvedValue(jsonResponse([{ ...failed, state: { ...failed.state, activation_error: 'Unknown flow: missing' } }]))
+  it('says where people look that the server left a trigger inactive, and why', async () => {
+    const failed = makeTrigger({ id: 'failed', enabled: false, flow_name: 'missing' })
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([{ ...failed, state: { ...failed.state, activation_error: 'Unknown flow: missing' } }]))
     renderTriggersPanel()
-    expect(await screen.findByText('Not activated: Unknown flow: missing')).toBeInTheDocument()
+    const row = await screen.findByTestId('trigger-row-failed')
+    expect(row).toHaveTextContent(/^TriggerNot running · /)
+    expect(row).not.toHaveTextContent('Disabled')
+    expect(row.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'danger')
+    const alert = await screen.findByTestId('trigger-activation-error')
+    expect(alert).toHaveTextContent("Not running: Spark couldn't turn this trigger on")
+    expect(alert).toHaveTextContent('Unknown flow: missing')
+    // The flow it names is still shown, marked as not found.
+    expect(await screen.findByRole('option', { name: 'missing (not found)' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Flow to start')).toHaveValue('missing')
+    expect(screen.getByLabelText('Flow to start')).toHaveAccessibleDescription("This flow isn't in the project. Choose another.")
   })
 
   it('lists definitions that cannot run beside the triggers', async () => {
@@ -125,7 +143,7 @@ describe('TriggersPanel', () => {
       : jsonResponse([makeTrigger({ id: 'fine' })]))
     renderTriggersPanel()
     const issues = await screen.findByTestId('trigger-issues')
-    expect(issues).toHaveTextContent('Definitions that cannot run')
+    expect(issues).toHaveTextContent("Some triggers can't be loaded")
     expect(issues).toHaveTextContent('broken in /project: Invalid trigger definition')
   })
 
@@ -182,6 +200,7 @@ describe('TriggersPanel', () => {
           : []
         return jsonResponse(payload)
       }
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
       if (url.endsWith('/workspace/api/triggers') && method === 'POST') {
         return jsonResponse({
           id: 'trigger-created',
@@ -206,10 +225,11 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     const createScope = await openCreateTriggerForm(user)
-    expect(within(createScope.getByLabelText('Source type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
+    expect(createScope.getByLabelText('Every')).toHaveAccessibleDescription(/^First run in 5 minutes \((Today|Tomorrow) at .+\), then every 5 minutes\.$/)
+    expect(within(createScope.getByLabelText('Starts when')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
     await user.type(createScope.getByLabelText('Name'), 'Created schedule')
-    await user.clear(createScope.getByLabelText('Target flow'))
-    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
+    await user.selectOptions(createScope.getByLabelText('Flow to start'), await createScope.findByRole('option', { name: 'Test planning' }))
+    expect(createScope.getByText(TEST_TRIGGER_FLOW)).toBeVisible()
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -217,6 +237,43 @@ describe('TriggersPanel', () => {
     })
     expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Created schedule')).toBeVisible()
+  })
+
+  it('words the status card in plain time and result words', async () => {
+    const fired = new Date().toISOString()
+    const trigger = makeTrigger({ id: 'ran' })
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([{ ...trigger, state: { ...trigger.state, last_fired_at: fired, last_result: 'success', recent_history: [{ timestamp: fired, status: 'failed', message: 'Boom' }] } }]))
+    renderTriggersPanel()
+    expect(await screen.findByText(/^Last triggered: Today at \d{1,2}:\d{2}\s[AP]M$/)).toBeVisible()
+    expect(screen.getByText('Last result: Succeeded')).toBeVisible()
+    expect(screen.getByText('Failed')).toBeVisible()
+    // Editing: the status card shows the next run, so the interval has no first-run hint.
+    expect(screen.getByLabelText('Every')).not.toHaveAccessibleDescription()
+  })
+
+  it('reports a firing that started a run by that run\'s state, linked to the run', async () => {
+    const fired = new Date().toISOString()
+    const trigger = makeTrigger({ id: 'sweep', name: 'Tests sweep' })
+    useStore.setState((state) => ({ runsListSession: { ...state.runsListSession, runs: [
+      { run_id: 'run-failed', flow_name: 'nightly-tests.dot', status: 'failed', started_at: fired, working_directory: '/project', model: '' },
+    ] } }))
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([{ ...trigger, state: { ...trigger.state, last_fired_at: fired, last_result: 'success', recent_history: [
+        { timestamp: fired, status: 'success', message: 'Trigger fired successfully.', run_id: 'run-failed' },
+        { timestamp: fired, status: 'success', message: 'Trigger fired successfully.', run_id: 'run-gone' },
+      ] } }]))
+    renderTriggersPanel()
+    expect(await screen.findByTestId('trigger-last-result')).toHaveTextContent('Last result: Failed · Nightly Tests')
+    const [latest, older] = screen.getAllByTestId('trigger-history-entry')
+    expect(latest).toHaveTextContent('Failed · Nightly Tests')
+    expect(latest).not.toHaveTextContent('fired successfully')
+    expect(older).toHaveTextContent('Started a run')
+    await userEvent.setup().click(within(latest).getByRole('link', { name: 'Nightly Tests' }))
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().runsListSession.selectedRunId).toBe('run-failed')
   })
 
   it('shows shared webhook ingress details and regenerates webhook secrets', async () => {
@@ -266,7 +323,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
-    expect(screen.getByText(/POST JSON to/i)).toBeVisible()
+    expect(screen.getByText(/Send a POST request/i)).toBeVisible()
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
 
     await user.click(screen.getByTestId('trigger-regenerate-secret-button'))
@@ -276,7 +333,137 @@ describe('TriggersPanel', () => {
     })
   })
 
-  it('creates triggers in a registered project, defaulting to the active project', async () => {
+  it('shows errors at the field in plain words, and saves an interval in a unit as seconds', async () => {
+    const posts: Array<Record<string, unknown>> = []
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return jsonResponse(makeTrigger({ id: 'created' }))
+      }
+      return jsonResponse(posts.length ? [makeTrigger({ id: 'created' })] : [])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Hourly')
+    const context = form.getByLabelText('Extra data for the run (optional)')
+    await user.type(context, '{{branch: main}')
+    await user.click(screen.getByTestId('trigger-create-button'))
+
+    // Refused before sending, with each problem beside its field and no parser message.
+    expect(posts).toHaveLength(0)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    const flow = form.getByLabelText('Flow to start')
+    expect(flow).toHaveAttribute('aria-invalid', 'true')
+    expect(flow).toHaveFocus()
+    expect(flow).toHaveAccessibleDescription(/Choose the flow to start\./)
+    expect(context).toHaveAttribute('aria-invalid', 'true')
+    expect(context).toHaveAccessibleDescription(/This isn't a valid JSON object\./)
+    expect(context).not.toHaveAccessibleDescription(/Unexpected token|position/)
+
+    // Errors follow the edits once shown.
+    await user.selectOptions(flow, await form.findByRole('option', { name: 'Test planning' }))
+    expect(flow).not.toHaveAttribute('aria-invalid')
+    await user.clear(context)
+    await user.type(context, '{{"branch": "main"}')
+    expect(context).not.toHaveAttribute('aria-invalid')
+    await user.clear(form.getByLabelText('Every'))
+    await user.type(form.getByLabelText('Every'), '2')
+    await user.selectOptions(form.getByLabelText('Every unit'), 'hours')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({
+      action: { flow_name: TEST_TRIGGER_FLOW, static_context: { branch: 'main' } },
+      source: { kind: 'interval', interval_seconds: 7200 },
+    })
+  })
+
+  it('saves weekly days from toggles and a time in the browser\'s zone, and refuses a week with no day', async () => {
+    const posts: Array<Record<string, unknown>> = []
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return jsonResponse(makeTrigger({ id: 'created' }))
+      }
+      return jsonResponse(posts.length ? [makeTrigger({ id: 'created' })] : [])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Standup')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Test planning' }))
+    await user.selectOptions(form.getByLabelText('Repeats'), 'weekly')
+    const days = form.getByRole('group', { name: 'Days' })
+    expect(within(days).getAllByRole('button').map((day) => day.textContent)).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+    expect(within(days).getByRole('button', { name: 'Monday' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(days).getByRole('button', { name: 'Wednesday' })).toHaveAttribute('aria-pressed', 'false')
+    expect(form.getByLabelText('Time')).toHaveAccessibleDescription(`In your time zone, ${browserTimeZone()}.`)
+    // Days take several presses, unlike the one-choice controls beside them.
+    expect(days).toHaveAccessibleDescription('Pick one or more.')
+
+    // Every day off: refused, and focus moves to the days.
+    await user.click(within(days).getByRole('button', { name: 'Monday' }))
+    await user.click(within(days).getByRole('button', { name: 'Friday' }))
+    await user.click(screen.getByTestId('trigger-create-button'))
+    expect(posts).toHaveLength(0)
+    expect(days).toHaveFocus()
+    expect(days).toHaveAccessibleDescription('Pick one or more. Pick at least one day.')
+
+    await user.click(within(days).getByRole('button', { name: 'Friday' }))
+    await user.click(within(days).getByRole('button', { name: 'Wednesday' }))
+    fireEvent.change(form.getByLabelText('Time'), { target: { value: '07:30' } })
+    expect(days).not.toHaveAttribute('aria-invalid')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0].source).toEqual({ kind: 'weekly', weekdays: ['wed', 'fri'], hour: 7, minute: 30, timezone: browserTimeZone() })
+  })
+
+  it('says which zone a saved weekly trigger runs in when it is not the browser\'s, and lists its days and time', async () => {
+    const zone = browserTimeZone() === 'Asia/Tokyo' ? 'Europe/Paris' : 'Asia/Tokyo'
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([makeTrigger({ id: 'weekly', source: { kind: 'weekly', weekdays: ['mon', 'thu'], hour: 9, minute: 0, timezone: zone } })]))
+    renderTriggersPanel()
+    expect((await screen.findByTestId('trigger-row-weekly')).textContent?.replace(/\s/g, ' ')).toContain(`Mon, Thu at 9:00 AM (${zone})`)
+    const time = await screen.findByLabelText('Time')
+    expect(time).toHaveValue('09:00')
+    expect(time).toHaveAccessibleDescription(`In ${zone}, not your time zone.`)
+  })
+
+  it('opens on the list on a phone; a picked trigger shows its form until All triggers returns to its row', async () => {
+    window.innerWidth = 390
+    try {
+      vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+        ? jsonResponse(PROJECT_FLOWS)
+        : jsonResponse([makeTrigger({ id: 'first', name: 'First' }), makeTrigger({ id: 'second', name: 'Second' })]))
+      const user = userEvent.setup()
+      renderTriggersPanel()
+      const second = await screen.findByTestId('trigger-row-second')
+      await waitFor(() => expect(useStore.getState().triggersSession.status).toBe('ready'))
+      expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
+      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(screen.getByText('No trigger selected')).toBeVisible()
+      // No protected triggers, so no System section.
+      expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
+
+      await user.click(second)
+      expect(await screen.findByDisplayValue('Second')).toBeVisible()
+      await user.click(screen.getByRole('button', { name: 'All triggers' }))
+      expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
+      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(second).toHaveFocus()
+    } finally {
+      window.innerWidth = 1024
+    }
+  })
+
+  it('creates triggers in a registered project, defaulting to the one worked in most recently, as Run a flow does', async () => {
     const postPayloads: Array<Record<string, unknown>> = []
     const createdTriggers: Array<ReturnType<typeof makeTrigger>> = []
     const fetchMock = vi.mocked(global.fetch)
@@ -286,6 +473,7 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers') && method === 'GET') {
         return jsonResponse(createdTriggers)
       }
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
       if (url.endsWith('/workspace/api/triggers') && method === 'POST') {
         const payload = JSON.parse(String(init?.body)) as Record<string, unknown>
         postPayloads.push(payload)
@@ -320,19 +508,19 @@ describe('TriggersPanel', () => {
     // No execution target or free-form path: only a registered project.
     expect(createScope.queryByLabelText('Execution target')).not.toBeInTheDocument()
     expect(createScope.queryByLabelText('Project path')).not.toBeInTheDocument()
-    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/active-project')
-    await user.type(createScope.getByLabelText('Name'), 'Active project trigger')
-    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
+    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/last-used-project')
+    await user.type(createScope.getByLabelText('Name'), 'Last used project trigger')
+    await user.selectOptions(createScope.getByLabelText('Flow to start'), await createScope.findByRole('option', { name: 'Test planning' }))
     await user.click(screen.getByTestId('trigger-create-button'))
     await waitFor(() => expect(postPayloads).toHaveLength(1))
-    expect(postPayloads[0]).toMatchObject({ project_path: '/tmp/active-project' })
+    expect(postPayloads[0]).toMatchObject({ project_path: '/tmp/last-used-project' })
     expect(postPayloads[0]?.action).not.toHaveProperty('project_path')
 
     await waitFor(() => expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument())
     createScope = await openCreateTriggerForm(user)
     await user.selectOptions(createScope.getByLabelText('Project'), '/tmp/other-project')
     await user.type(createScope.getByLabelText('Name'), 'Other project trigger')
-    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
+    await user.selectOptions(createScope.getByLabelText('Flow to start'), await createScope.findByRole('option', { name: 'Test planning' }))
     await user.click(screen.getByTestId('trigger-create-button'))
     await waitFor(() => expect(postPayloads).toHaveLength(2))
     expect(postPayloads[1]).toMatchObject({ project_path: '/tmp/other-project' })
@@ -377,12 +565,12 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     const registeredRow = await screen.findByTestId('trigger-row-trigger-registered-project')
-    expect(registeredRow).toHaveTextContent('Project · registered-project')
+    expect(screen.getByTestId('trigger-row-trigger-registered-project').querySelector('[data-testid="trigger-row-project"]')).toHaveTextContent(/^registered-project$/)
     expect(registeredRow).not.toHaveTextContent('Disabled')
     expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
     const otherRow = screen.getByTestId('trigger-row-trigger-other-project')
     // Only the disabled row carries the word; its dot is hollow.
-    expect(otherRow).toHaveTextContent('Unregistered project · other-project · Schedule · interval · Disabled')
+    expect(otherRow).toHaveTextContent('Disabled · Unregistered project · other-project · Every 5 minutes')
     expect(otherRow.querySelector('[data-slot="status-dot"]')).toHaveClass('border')
     expect(otherRow).toHaveAttribute('data-unregistered-target', 'true')
 
@@ -392,7 +580,6 @@ describe('TriggersPanel', () => {
       expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
     })
     expect(selectedTriggerScope.getByLabelText('Project')).toBeDisabled()
-    expect(selectedTriggerScope.getByText('Project · registered-project')).toBeVisible()
   })
 
   it('keeps protected trigger target and source settings locked while saving only allowed edits', async () => {
@@ -414,6 +601,7 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers') && method === 'GET') {
         return jsonResponse([protectedTrigger])
       }
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
       if (url.endsWith('/workspace/api/triggers/trigger-protected?project_path=%2Ftmp%2Fprotected-project') && method === 'PATCH') {
         const payload = JSON.parse(String(init?.body)) as Record<string, unknown>
         patchPayloads.push(payload)
@@ -437,21 +625,22 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     await user.click(await screen.findByTestId('trigger-row-trigger-protected'))
+    expect(screen.getByRole('heading', { name: 'System' })).toBeVisible()
     const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)
 
-    expect(selectedTriggerScope.getByLabelText('Source type')).toBeDisabled()
-    expect(within(selectedTriggerScope.getByLabelText('Source type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
+    expect(selectedTriggerScope.getByLabelText('Starts when')).toBeDisabled()
+    expect(within(selectedTriggerScope.getByLabelText('Starts when')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
     expect(selectedTriggerScope.getByLabelText('Project')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Schedule kind')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Interval seconds')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Static context JSON')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Repeats')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Every')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Every unit')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Extra data for the run (optional)')).toBeDisabled()
 
     await user.clear(selectedTriggerScope.getByLabelText('Name'))
     await user.type(selectedTriggerScope.getByLabelText('Name'), 'Protected planning route updated')
-    await user.clear(selectedTriggerScope.getByLabelText('Target flow'))
-    await user.type(selectedTriggerScope.getByLabelText('Target flow'), 'dispatch.dot')
+    await user.selectOptions(selectedTriggerScope.getByLabelText('Flow to start'), await selectedTriggerScope.findByRole('option', { name: 'Dispatch' }))
     await user.click(selectedTriggerScope.getByRole('switch', { name: 'Enabled' }))
     await user.click(selectedTriggerScope.getByTestId('trigger-save-button'))
 

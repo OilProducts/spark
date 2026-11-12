@@ -33,6 +33,18 @@ export function lastUsedProjectPath(registry: Registry): string | null {
     return (used ?? projects.find((project) => project.isDefault) ?? projects[0])?.directoryPath ?? null
 }
 
+/** The project worked in most recently: the last one used, or where the latest run started when that was later. */
+export function recentProjectPath(registry: Registry, runs: { project_path?: string | null; started_at?: string | null }[]): string | null {
+    const used = lastUsedProjectPath(registry)
+    const usedAt = Date.parse(used ? registry[used]?.lastAccessedAt ?? '' : '') || 0
+    let latest: { projectPath: string; at: number } | null = null
+    for (const run of runs) {
+        const at = Date.parse(run.started_at ?? '') || 0
+        if (run.project_path && registry[run.project_path] && at > (latest?.at ?? 0)) latest = { projectPath: run.project_path, at }
+    }
+    return latest && latest.at > usedAt ? latest.projectPath : used
+}
+
 /**
  * The project a new chat, mission or flow run starts in: the one it came from
  * (such as the chat you were in) when that is still registered, else the last used.

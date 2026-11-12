@@ -10,6 +10,7 @@ import {
   smokeFixtureFile,
   stubProjectRegistration,
   stubProjectMetadata,
+  flowRow,
 } from '../fixtures/smoke-helpers'
 
 test.beforeAll(() => {
@@ -53,7 +54,7 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
     await page.screenshot({ path: screenshotPath("02-projects-panel.png"), fullPage: true })
 
     await page.getByTestId("activity-flows").click()
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -125,7 +126,7 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -187,7 +188,7 @@ test("medium graph performance profile renders optimizations for item 13.3-02", 
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -249,7 +250,7 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -328,7 +329,7 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -416,7 +417,7 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -500,7 +501,7 @@ test("validation diagnostics navigate to matching canvas entities for item 7.3-0
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
 
-    const flowButton = page.getByRole("button", { name: flowName })
+    const flowButton = flowRow(page, flowName)
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
@@ -561,7 +562,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
     })
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    await page.getByRole("button", { name: flowName }).click()
+    await flowRow(page, flowName).click()
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
     await page.getByTestId("graph-advanced-toggle").click()
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
@@ -580,7 +581,7 @@ test("flow metadata round trips through the file view without legacy stylesheet 
   try {
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    await page.getByRole("button", { name: flowName }).click()
+    await flowRow(page, flowName).click()
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
     await page.getByTestId("graph-advanced-toggle").click()
     await expect(page.getByTestId("graph-model-stylesheet-editor")).toHaveCount(0)
@@ -636,7 +637,7 @@ test("files mode keeps structured controls read-only so file saves cannot erase 
   try {
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    await page.getByRole("button", { name: flowName }).click()
+    await flowRow(page, flowName).click()
     const node = page.locator('.react-flow__node[data-id="ingest_spec"]')
     await expect(node).toBeVisible()
     await page.getByRole("button", { name: "Files", exact: true }).click()
@@ -683,7 +684,7 @@ test("files mode leaves readable editing space on a phone-width viewport", async
     await page.setViewportSize({ width: 390, height: 844 })
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("activity-flows").click()
-    await page.getByRole("button", { name: flowName }).click()
+    await flowRow(page, flowName).click()
     await page.getByRole("button", { name: "Files", exact: true }).click()
     const fileEditor = page.getByTestId("flow-file-editor")
     await fileEditor.scrollIntoViewIfNeeded()

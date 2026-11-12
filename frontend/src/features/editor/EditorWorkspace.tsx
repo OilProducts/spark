@@ -1,4 +1,5 @@
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
+import { flowLoadFailed } from './model/flowLoadFailure'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 
@@ -36,7 +37,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
     const activeFlow = useStore((state) => state.activeFlow)
-    const hasActiveFlow = Boolean(activeFlow)
+    // A flow that failed to load has no inspector to resize.
+    const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
@@ -200,7 +202,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                 </div>
                             ) : null}
                             <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
-                                <Editor isActive={isActive} />
+                                <Editor isActive={isActive} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
                             </div>
                             {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
                             {isNarrowViewport ? <Sidebar desktopWidthPx={editorSidebarWidth} /> : null}

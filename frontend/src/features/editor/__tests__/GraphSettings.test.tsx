@@ -153,7 +153,7 @@ describe('Graph and settings behavior', () => {
     await customModel(user, 'custom:next')
     settingsRevision += 1
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
-    await screen.findByText(/responded with HTTP 409/)
+    await screen.findByText(/Settings changed\./)
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('custom:next')
     expect(serverModels.model).toBe('private-model')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Discard/ }))
@@ -455,12 +455,12 @@ describe('Graph and settings behavior', () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    await user.type(screen.getByLabelText('Execution lock key'), 'integration')
+    await user.type(screen.getByLabelText('One at a time (lock name)'), 'integration')
     expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
     expect(buildFlow([], [], useStore.getState().flowMetadata).execution_lock)
       .toEqual({ scope: 'project', key: 'integration', conflict_policy: 'queue' })
 
-    await user.clear(screen.getByLabelText('Execution lock key'))
+    await user.clear(screen.getByLabelText('One at a time (lock name)'))
     const base = { execution_lock: { scope: 'project', key: 'integration', conflict_policy: 'queue' } }
     expect(buildFlow([], [], useStore.getState().flowMetadata, base).execution_lock).toBeUndefined()
     expect(buildFlow([], [], {}, base).execution_lock).toEqual(base.execution_lock)

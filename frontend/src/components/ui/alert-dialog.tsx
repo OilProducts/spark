@@ -115,12 +115,15 @@ function AlertDialogDescription({
 
 function AlertDialogAction({
   className,
+  asChild,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Action>) {
+  // A child button brings its own variant; the default one would override it.
   return (
     <AlertDialogPrimitive.Action
       data-slot="alert-dialog-action"
-      className={cn(buttonVariants(), className)}
+      asChild={asChild}
+      className={asChild ? className : cn(buttonVariants(), className)}
       {...props}
     />
   )

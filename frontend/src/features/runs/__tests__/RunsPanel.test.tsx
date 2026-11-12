@@ -52,8 +52,6 @@ runsListSession: {
       status: 'idle',
       error: null,
       runs: [],
-      streamStatus: 'idle',
-      streamError: null,
     },
 runDetailSessionsByRunId: {}});
 useStore.getState().setRunsSelectedRunId(null);
@@ -1264,13 +1262,15 @@ describe('RunsPanel', () => {
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-one')
     const continuationPanel = await screen.findByTestId('run-continuation-panel')
     expect(continuationPanel).toBeVisible()
-    expect(screen.getByTestId('run-continuation-source-run')).toHaveTextContent('run-to-continue')
+    // The source run's id is on hover, not in the reading path.
+    expect(screen.getByTestId('run-continuation-source-run')).toHaveAttribute('title', 'From run run-to-continue')
+    expect(screen.getByTestId('run-continuation-source-run')).not.toHaveTextContent('run-to-continue')
     expect(screen.getByTestId('run-continuation-working-directory-input')).toHaveValue('/tmp/project-one/worktree')
     expect(screen.getByTestId('run-continuation-model-input')).toHaveValue('')
 
     const continueButton = screen.getByTestId('run-continuation-continue-button')
     expect(continueButton).toBeDisabled()
-    expect(continueButton).toHaveAttribute('title', expect.stringContaining('restart node'))
+    expect(continueButton).toHaveAttribute('title', 'Pick the step to start from on the graph.')
 
     fireEvent.click(await screen.findByText('Failed Node'))
     await waitFor(() => {
@@ -1839,7 +1839,7 @@ describe('RunsPanel', () => {
     })
     // A completed run that reached a failure exit reads as its result, not as a success.
     expect(screen.getByTestId('run-header-status')).toHaveTextContent('Rejected')
-    expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+    expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'destructive')
     expect(screen.getByTestId('run-header-facts')).not.toHaveTextContent(/[0-9a-f]{7}$/)
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-fact-lineage')).not.toBeInTheDocument()
@@ -2155,8 +2155,8 @@ describe('RunsPanel', () => {
     })
     await openRunFacts()
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Live gate failed')
-    // A finished run needs no status word in the selector.
-    expect(screen.queryByTestId('run-history-row-status')).not.toBeInTheDocument()
+    // A failure exit is not a success: the selector names it.
+    expect(screen.getByTestId('run-history-row-status')).toHaveTextContent('Live failure')
   })
 
   it('opens one runs-list stream and one selected-run stream while a run is selected', async () => {
@@ -2836,9 +2836,9 @@ describe('RunsPanel', () => {
     const initialPipelineSource = latestSourceMatching(liveEventsUrl)
 
     act(() => {
-      useStore.getState().updateRunsListSession({
-        streamStatus: 'degraded',
-        streamError: 'Run history transport is unavailable. Reconnect to retry.',
+      useStore.getState().updateRunDetailSession('run-reconnect', {
+        statusSync: 'degraded',
+        statusError: 'Live updates for this run stopped; what you see may be out of date.',
       })
     })
 
@@ -3583,5 +3583,26 @@ describe('RunsPanel', () => {
       oldestSequence: 1,
       newestSequence: 4,
     })
+  })
+  it('says once, with a way to retry, when the run history can\'t load', async () => {
+    let available = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/attractor/runs')) {
+        return available ? jsonResponse({ runs: [] }) : new Response('', { status: 503 })
+      }
+      return jsonResponse({})
+    }))
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    expect(await screen.findByTestId('runs-load-error')).toHaveTextContent('Couldn’t load your runs')
+    expect(screen.queryByText('No runs yet')).toBeNull()
+    expect(screen.queryByTestId('runs-transport-reconnect-banner')).toBeNull()
+
+    available = true
+    await user.click(within(screen.getByTestId('runs-load-error')).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('No runs yet')).toBeVisible()
+    expect(screen.queryByTestId('runs-load-error')).toBeNull()
   })
 })

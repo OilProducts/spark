@@ -1,6 +1,8 @@
 import { RunList } from '@/features/runs/components/RunList'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
+import type { RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { describe, expect, it, vi } from 'vitest'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
@@ -34,6 +36,36 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
 })
 
 describe('RunList', () => {
+    it('narrows to one state from chips with counts, and finds runs by state words in the search', () => {
+        const runs = [
+            makeRun({ run_id: 'run-ok', status: 'completed', title: 'Deploy docs', ended_at: '2026-03-22T01:00:00Z' }),
+            makeRun({ run_id: 'run-bad', status: 'failed', title: 'Nightly sync', ended_at: '2026-03-22T01:00:00Z' }),
+            makeRun({ run_id: 'run-ask', status: 'waiting', title: 'Ship release' }),
+        ]
+        function Harness() {
+            const [statusFilter, setStatusFilter] = useState<RunStatusKind | null>(null)
+            return <RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={null} status="ready" summaryLabel="3 runs" statusFilter={statusFilter} onStatusFilterChange={setStatusFilter} />
+        }
+        render(<Harness />)
+        const ids = () => screen.queryAllByTestId('run-history-row').map((row) => row.dataset.runId)
+
+        // Only states that have runs are offered.
+        expect(screen.getByTestId('run-list-status-filter-all')).toHaveTextContent('All3')
+        expect(screen.getByTestId('run-list-status-filter-failed')).toHaveTextContent('Failed1')
+        expect(screen.queryByTestId('run-list-status-filter-running')).toBeNull()
+
+        fireEvent.click(screen.getByTestId('run-list-status-filter-failed'))
+        expect(screen.getByTestId('run-list-status-filter-failed')).toHaveAttribute('aria-pressed', 'true')
+        expect(ids()).toEqual(['run-bad'])
+        fireEvent.click(screen.getByTestId('run-list-status-filter-all'))
+        expect(ids()).toHaveLength(3)
+
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'failed' } })
+        expect(ids()).toEqual(['run-bad'])
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'needs input' } })
+        expect(ids()).toEqual(['run-ask'])
+    })
+
     it('shows the cold-load notice only when no runs have been loaded yet', () => {
         render(
             <RunList
@@ -68,7 +100,7 @@ describe('RunList', () => {
         expect(screen.queryByTestId('runs-refresh-button')).not.toBeInTheDocument()
     })
 
-    it('tones a completed run that reached a failure exit as a warning, not a success', () => {
+    it('lists a completed run that reached a failure exit as failed, named by its exit', () => {
         render(
             <RunList
                 error={null}
@@ -86,7 +118,20 @@ describe('RunList', () => {
             row.getAttribute('data-run-id'),
             row.querySelector('[data-slot="status-dot"]')?.getAttribute('data-tone'),
         ])
-        expect(tones).toEqual(expect.arrayContaining([['blocked', 'warning'], ['shipped', 'success']]))
+        expect(tones).toEqual(expect.arrayContaining([['blocked', 'destructive'], ['shipped', 'success']]))
+        expect(screen.getByTestId('run-history-row-status')).toHaveTextContent('Blocked')
+    })
+
+    it('keeps a failure exit apart from successes when folding repeats, and counts it as failed', () => {
+        const done = (id: string, at: string, outcome: 'success' | 'failure') => makeRun({
+            run_id: id, flow_name: 'release.yaml', title: 'Release', status: 'completed', outcome,
+            outcome_reason_code: outcome === 'failure' ? 'stop_release' : null, started_at: at, ended_at: at,
+        })
+        const runs = [done('s1', '2026-03-22T09:00:00Z', 'success'), done('s2', '2026-03-22T08:00:00Z', 'success'), done('x1', '2026-03-22T07:00:00Z', 'failure')]
+        render(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={null} status="ready" summaryLabel="3 runs" onStatusFilterChange={vi.fn()} />)
+        expect(screen.queryByTestId('run-history-repeats')).toBeNull()
+        expect(screen.getByTestId('run-list-status-filter-failed')).toHaveTextContent('Failed1')
+        expect(screen.getByTestId('run-history-row-status')).toHaveTextContent('Stop release')
     })
 
     it('titles runs, folds child runs under their parent, and filters on search', () => {
@@ -242,5 +287,64 @@ describe('RunList', () => {
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'Parent work' } })
         expect(titles()).toEqual(['Parent work'])
         expect(screen.getByTestId('run-history-children-toggle')).toHaveAttribute('title', '2 child runs')
+    })
+    it('folds a day\'s repeats of one run into a row that opens, and keeps the rest in order', () => {
+        const done = (id: string, at: string, overrides: Partial<RunRecord> = {}) => makeRun({
+            run_id: id, flow_name: 'format-code.yaml', status: 'completed', started_at: at, ended_at: at, ...overrides,
+        })
+        const runs = [
+            done('f1', '2026-03-22T09:00:00Z'),
+            done('n1', '2026-03-22T08:30:00Z', { flow_name: 'nightly.yaml', status: 'failed' }),
+            done('f2', '2026-03-22T08:00:00Z'),
+            done('f3', '2026-03-22T07:00:00Z'),
+            done('b1', '2026-03-22T06:00:00Z', { flow_name: 'fix-bug.yaml' }),
+            done('b2', '2026-03-22T05:00:00Z', { flow_name: 'fix-bug.yaml' }),
+        ]
+        const { rerender } = render(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId={null} status="ready" summaryLabel="6 runs" />)
+        const listed = () => [...screen.getByTestId('run-list-group-recent').querySelectorAll('[data-testid="run-history-row"], [data-testid="run-history-repeats"]')]
+            .map((row) => (row as HTMLElement).dataset.runId ?? row.textContent)
+
+        // Two repeats stay rows; three fold into one row at the latest one's place.
+        expect(listed()).toEqual([expect.stringContaining('Format Code3 runs'), 'n1', 'b1', 'b2'])
+        const repeats = screen.getByTestId('run-history-repeats')
+        expect(repeats).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(repeats)
+        expect(listed()).toEqual([expect.stringContaining('Format Code3 runs'), 'f1', 'f2', 'f3', 'n1', 'b1', 'b2'])
+        fireEvent.click(repeats)
+        expect(listed()).toHaveLength(4)
+
+        // A run opened from elsewhere is shown inside its fold.
+        rerender(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId="f3" status="ready" summaryLabel="6 runs" />)
+        expect(screen.getByTestId('run-history-repeats')).toHaveAttribute('aria-expanded', 'true')
+        expect(listed()).toContain('f3')
+
+        // An open fold lists its runs by start time, ten at a time.
+        const many = Array.from({ length: 25 }, (_, index) => done(`m${index}`, new Date(Date.parse('2026-03-22T10:00:00Z') + (25 - index) * 1000).toISOString()))
+        rerender(<RunList error={null} onSelectRun={vi.fn()} runs={many} selectedRunId={null} status="ready" summaryLabel="25 runs" />)
+        fireEvent.click(screen.getByTestId('run-history-repeats'))
+        expect(screen.getAllByTestId('run-history-row')).toHaveLength(10)
+        expect(new Set(screen.getAllByTestId('run-history-row-title').map((title) => title.textContent)).size).toBe(10)
+        fireEvent.click(screen.getByTestId('run-history-repeats-more'))
+        expect(screen.getAllByTestId('run-history-row')).toHaveLength(25)
+        expect(screen.queryByTestId('run-history-repeats-more')).toBeNull()
+    })
+
+    it('opens the parent of a run opened from elsewhere', () => {
+        const runs = [
+            makeRun({ run_id: 'parent', title: 'Release train', status: 'completed' }),
+            makeRun({ run_id: 'child', flow_name: 'child-step.yaml', parent_run_id: 'parent', status: 'completed' }),
+        ]
+        render(<RunList error={null} onSelectRun={vi.fn()} runs={runs} selectedRunId="child" status="ready" summaryLabel="2 runs" />)
+        expect(screen.queryAllByTestId('run-history-row').map((row) => row.dataset.runId)).toContain('child')
+    })
+
+    it('says a failed refresh may leave the list out of date, and leaves a failed first load to the main pane', () => {
+        const { rerender } = render(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[makeRun()]} selectedRunId={null} status="error" summaryLabel="1 run" />)
+        expect(screen.getByTestId('run-list-error')).toHaveTextContent('Couldn’t refresh your runs; this list may be out of date.Try again')
+
+        rerender(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[]} selectedRunId={null} status="error" summaryLabel="0 runs" />)
+        expect(screen.queryByTestId('run-list-error')).toBeNull()
+        expect(screen.queryByText('No runs yet.')).toBeNull()
+        expect(screen.queryByTestId('run-list-loading')).toBeNull()
     })
 })

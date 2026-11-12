@@ -44,6 +44,69 @@ fn weekly_trigger_created_after_this_weeks_slot_waits_for_next_week() {
 }
 
 #[test]
+fn weekly_trigger_keeps_its_local_time_across_a_daylight_saving_change() {
+    // Mondays 09:00 in New York: 13:00Z in summer time, 14:00Z after the 2026-11-01 change.
+    let mut definition = weekly_definition("2026-10-20T00:00:00Z");
+    definition
+        .source
+        .insert("timezone".to_string(), json!("America/New_York"));
+    let mut trigger_state = TriggerState::default();
+    let at = |value: &str| state::parse_iso_datetime(Some(value)).expect("timestamp");
+    let next = |trigger_state: &TriggerState, now: &str| {
+        state::compute_next_run_at_at(&definition, trigger_state, at(now))
+    };
+
+    assert_eq!(
+        next(&trigger_state, "2026-10-25T00:00:00Z").as_deref(),
+        Some("2026-10-26T13:00:00Z")
+    );
+    assert_eq!(
+        state::schedule_due_at(&definition, &trigger_state, at("2026-10-26T12:59:59Z")),
+        None
+    );
+    assert_eq!(
+        state::schedule_due_at(&definition, &trigger_state, at("2026-10-26T13:00:00Z")),
+        Some(at("2026-10-26T13:00:00Z"))
+    );
+    trigger_state.last_fired_at = Some("2026-10-26T13:00:00Z".to_string());
+    assert_eq!(
+        next(&trigger_state, "2026-10-26T13:00:01Z").as_deref(),
+        Some("2026-11-02T14:00:00Z")
+    );
+    assert_eq!(
+        state::schedule_due_at(&definition, &trigger_state, at("2026-11-02T13:59:59Z")),
+        None
+    );
+    assert_eq!(
+        state::schedule_due_at(&definition, &trigger_state, at("2026-11-02T14:00:00Z")),
+        Some(at("2026-11-02T14:00:00Z"))
+    );
+}
+
+#[test]
+fn weekly_time_skipped_by_a_daylight_saving_change_runs_after_the_gap() {
+    // 02:30 on 2026-03-08 does not exist in New York; it runs at 03:30 EDT.
+    let mut definition = weekly_definition("2026-03-01T00:00:00Z");
+    definition.source.extend([
+        ("weekdays".to_string(), json!(["sun"])),
+        ("hour".to_string(), json!(2)),
+        ("minute".to_string(), json!(30)),
+        ("timezone".to_string(), json!("America/New_York")),
+    ]);
+    let at = |value: &str| state::parse_iso_datetime(Some(value)).expect("timestamp");
+
+    assert_eq!(
+        state::compute_next_run_at_at(
+            &definition,
+            &TriggerState::default(),
+            at("2026-03-02T00:00:00Z")
+        )
+        .as_deref(),
+        Some("2026-03-08T07:30:00Z")
+    );
+}
+
+#[test]
 fn one_shot_run_at_honours_its_utc_offset() {
     let mut definition = weekly_definition("2026-11-02T00:00:00Z");
     definition.source = Map::from_iter([

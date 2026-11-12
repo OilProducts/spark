@@ -98,6 +98,7 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
                 ("weekdays".to_string(), json!(["mon", "fri"])),
                 ("hour".to_string(), json!(9)),
                 ("minute".to_string(), json!(30)),
+                ("timezone".to_string(), json!("America/New_York")),
             ]),
         ),
         definition_with_source(
@@ -531,6 +532,24 @@ fn persisted_trigger_definitions_are_validated_and_malformed_files_are_skipped_b
             "One-shot schedule run_at must be an RFC 3339 timestamp with an offset or Z, such as 2030-01-01T10:00:00Z."
         ),
         other => panic!("expected offset-less run_at to be rejected, got {other:?}"),
+    }
+    let unknown_zone = definition_with_source(
+        "trigger-unknown-zone",
+        "schedule",
+        Map::from_iter([
+            ("kind".to_string(), json!("weekly")),
+            ("weekdays".to_string(), json!(["mon"])),
+            ("hour".to_string(), json!(9)),
+            ("minute".to_string(), json!(0)),
+            ("timezone".to_string(), json!("Mars/Olympus_Mons")),
+        ]),
+    );
+    match repository.put(&unknown_zone, None) {
+        Err(StorageError::InvalidRepositoryPath { reason, .. }) => assert_eq!(
+            reason,
+            "Unknown time zone: Mars/Olympus_Mons. Use a name such as America/New_York."
+        ),
+        other => panic!("expected an unknown time zone to be rejected, got {other:?}"),
     }
 
     for (trigger_id, toml, expected) in [

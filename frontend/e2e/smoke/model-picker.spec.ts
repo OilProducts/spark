@@ -28,7 +28,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         await page.keyboard.press('Escape')
         await expect(trigger).toBeFocused()
         await page.getByTestId('activity-flows').click()
-        await page.getByRole('button', { name: flow, exact: true }).click()
+        await page.getByTestId('editor-flow-tree').locator(`button[title="${flow}"]`).click()
         await page.locator('.react-flow__node').filter({ hasText: 'Ingest Spec' }).click()
         const inspector = page.locator('[data-inspector-scope="node"]')
         await expect(inspector).toBeVisible()

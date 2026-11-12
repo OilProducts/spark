@@ -72,11 +72,28 @@ async fn schedule_sources_update_runtime_state_and_due_decisions() {
             ]),
         })
         .expect("create interval");
-    let interval_definition = definition(&settings, &project, &interval.id);
+    let mut interval_definition = definition(&settings, &project, &interval.id);
+    // A new interval trigger first falls due one interval after it was created.
+    interval_definition.created_at = "2026-06-24T10:00:00Z".to_string();
+    assert!(runtime
+        .process_schedule_source(&interval_definition, now)
+        .expect("process new interval")
+        .is_empty());
+    assert_eq!(
+        load_state(&settings, &project, &interval.id)
+            .next_run_at
+            .as_deref(),
+        Some("2026-06-24T10:01:00Z")
+    );
+    interval_definition.created_at = "2026-06-24T09:59:00Z".to_string();
     let interval_outcomes = runtime
         .process_schedule_source(&interval_definition, now)
         .expect("process interval");
     assert_eq!(interval_outcomes.len(), 1);
+    assert_eq!(
+        interval_outcomes[0].source_payload,
+        json!({"scheduled_at": "2026-06-24T10:00:00Z"})
+    );
     assert_eq!(
         interval_outcomes[0].trigger.state.next_run_at.as_deref(),
         Some("2026-06-24T10:01:00Z")

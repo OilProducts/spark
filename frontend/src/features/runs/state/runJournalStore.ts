@@ -5,6 +5,7 @@ import {
     buildJournalPendingInterviewGates,
     buildRetryCorrelationEntityKeys,
     buildTimelineTypeOptions,
+    enrichPendingInterviewGate,
     pendingInterviewGateDedupeKey,
     timelineEntityKey,
     toPendingInterviewGateFromEvent,
@@ -360,6 +361,15 @@ const appendPendingInterviewGate = (
         nextGate.prompt,
     )
     if (nextPendingInterviewGateKeys.has(nextGateKey)) {
+        nextPendingInterviewGates = nextPendingInterviewGates.map((gate) => (
+            pendingInterviewGateDedupeKey(
+                gate.sourceScope,
+                gate.sourceParentNodeId,
+                gate.sourceFlowName,
+                gate.nodeId,
+                gate.prompt,
+            ) === nextGateKey ? enrichPendingInterviewGate(gate, nextGate) : gate
+        ))
         return {
             closedInterviewEntityKeys: nextClosedInterviewEntityKeys,
             pendingInterviewGateKeys: nextPendingInterviewGateKeys,

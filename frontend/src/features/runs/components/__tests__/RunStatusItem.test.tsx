@@ -99,14 +99,14 @@ describe('RunStatusItem', () => {
     )
 
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
-    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
+    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent(/from Commit Findings$/)
     expect(screen.getByTestId('run-status-item')).toHaveTextContent('Completed · 14m')
     // A success exit's evidence is a run fact, not a line above the result.
     expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
-    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent('commit chose done (completed)')
+    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent(/commit chose done$/)
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
-    expect(didNotPass).toHaveTextContent('Review · runtime error: Missing a test. · wrote review.required_changes')
+    expect(didNotPass).toHaveTextContent('Review: Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
 
@@ -125,7 +125,7 @@ describe('RunStatusItem', () => {
     const item = screen.getByTestId('run-status-item')
     expect(item).toHaveTextContent('Blocked · 14m')
     expect(item).not.toHaveTextContent('Completed ·')
-    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('review chose blocked: no tests (blocked)')
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent(/^review chose blocked: no tests$/)
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveClass('text-warning')
   })
 
@@ -157,11 +157,13 @@ describe('RunStatusItem', () => {
     )
 
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Why it failed')
-    expect(screen.getByTestId('run-status-failure')).toHaveTextContent('codex app-server exited unexpectedly')
+    // Plain words lead; the runtime's own text follows as the detail.
+    expect(screen.getByTestId('run-status-failure')).toHaveTextContent(/^The agent could not run\.$/)
+    expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent(error)
     // An earlier visit that hit the same error doesn't repeat it.
     const earlier = screen.getByTestId('run-status-did-not-pass')
     expect(within(earlier).getByRole('heading')).toHaveTextContent(/^Earlier errors\s*1$/)
-    expect(earlier).toHaveTextContent('Implement · runtime error: the same error as above')
+    expect(earlier).toHaveTextContent('Implement: the same error as above')
     expect(earlier).not.toHaveTextContent('exited unexpectedly')
     expect(screen.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
     fireEvent.click(within(screen.getByTestId('run-status-stopped-in')).getByTestId('run-visit-link'))
@@ -660,16 +662,27 @@ describe('RunVisitsCard returned evidence', () => {
     return screen.getByTestId('run-visit-returned')
   }
 
-  it('shows an error status with its kind and tolerance and no decision', () => {
+  it('shows an error status with its kind and no decision', () => {
     const returned = openOnly([visit('validate', 1, 'error', {
       failureKind: 'contract', tolerable: false, reason: 'response named no declared decision',
       status: { status: 'error', decision: null, failure_kind: 'contract', tolerable: false },
     })])
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Error')
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
-    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent('contract error, not tolerable')
+    // Tolerance is a fork's concern, so a visit outside one doesn't state it.
+    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent(/^contract error$/)
     expect(within(returned).queryByTestId('run-visit-decision')).toBeNull()
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
+  })
+
+  it("leads a runtime failure with plain words and keeps the kind and the runtime's text as detail", () => {
+    const reason = 'tool exited with unmapped code 1; stderr: lint broke'
+    const returned = openOnly([visit('lint', 1, 'failed', {
+      kind: 'tool', failureKind: 'runtime', tolerable: true, reason,
+      status: { status: 'error', failure_kind: 'runtime', tolerable: true, failure_reason: reason },
+    })])
+    expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent(/^The command failed \(exit code 1\)\.$/)
+    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(`runtime error: ${reason}`)
   })
 
   it("shows a tool's stdout once, under its command", () => {
@@ -696,8 +709,9 @@ describe('RunVisitsCard returned evidence', () => {
     const branches = within(returned).getAllByTestId('run-visit-branch')
     expect(branches.map((branch) => branch.getAttribute('data-status'))).toEqual(['completed', 'error', 'terminal_result', 'canceled'])
     expect(branches[0]).toHaveTextContent(/^lintCompleted$/)
-    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('at tsc · runtime error, not tolerable · 2 attempts')
+    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^at tsc · 2 attempts$/)
     expect(within(branches[1]).getByTestId('run-visit-branch-reason')).toHaveTextContent('tsc exited 2')
+    expect(within(branches[1]).getByTestId('run-visit-branch-reason-detail')).toHaveTextContent(/^runtime error, not tolerable$/)
     expect(branches[2]).toHaveTextContent('Reached an exit')
     expect(within(branches[2]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('result blocked · failure · from judge')
     expect(branches[3]).toHaveTextContent(/^docsCanceled$/)

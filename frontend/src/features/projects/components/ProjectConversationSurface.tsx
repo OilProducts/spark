@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { Folder } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Check, ChevronDown, Folder, Hash } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -22,11 +22,14 @@ import { formatConversationAgeShort, formatConversationTimestamp } from '../mode
 import type { useScrollFollow } from '../hooks/useScrollFollow'
 import type { ComposerAttachment } from '../model/types'
 import { ChatPane } from './ChatPane'
+import { ProjectPicker } from './ProjectPicker'
 import { ContextMeter, type ContextUsage } from './ContextMeter'
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
+    /** A chat is open; otherwise the first message starts one in the project. */
+    hasOpenChat?: boolean
     activeConversationTitle?: string | null
     activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
@@ -67,17 +70,43 @@ interface ProjectConversationSurfaceProps {
     onUseModelDefaults?: () => void
 }
 
-const MODEL_SOURCE_LABELS = {
-    conversation: 'Conversation override',
-    role: 'Role default',
-    project: 'Project default',
-    workspace: 'Workspace default',
+// Where the chat's model comes from, named on the model button, and where to change it.
+const MODEL_SOURCES = {
+    conversation: { prefix: 'Default', title: 'Chosen for this chat with the model picker.' },
+    role: { prefix: 'Role default', title: "Set by this chat's role. Pick a model to use another one in this chat." },
+    project: { prefix: 'Project default', title: "Change it in this project's settings, or pick a model for this chat." },
+    workspace: { prefix: 'Default', title: 'Change it in Settings, or pick a model for this chat.' },
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
+// The chat's ID is how flows and the spark command's --conversation option reach it: kept a click away, not in the title line.
+function CopyChatId({ handle }: { handle: string }) {
+    const [copied, setCopied] = useState(false)
+    return (
+        <button
+            type="button"
+            data-testid="chat-handle"
+            data-handle={handle}
+            aria-label={copied ? 'Chat ID copied' : `Copy chat ID ${handle}`}
+            title={`Copy this chat’s ID (${handle}). Flows and the spark command’s --conversation option use it to reach this chat.`}
+            onClick={() => {
+                void navigator.clipboard?.writeText(handle).then(() => {
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1500)
+                })
+            }}
+            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+            {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Hash aria-hidden="true" className="size-3.5" />}
+            <span className="text-xs">{copied ? 'Copied' : 'Copy ID'}</span>
+        </button>
+    )
+}
+
 export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
+    hasOpenChat = true,
     activeConversationTitle = null,
     activeConversationHandle = null,
     activeConversationUpdatedAt = null,
@@ -121,28 +150,44 @@ export function ProjectConversationSurface({
             data-testid="project-ai-conversation-surface"
             className={cn('flex flex-col', !isNarrowViewport && 'h-full min-h-0')}
         >
-            <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-6 py-4">
-                <div className="min-w-0">
-                    <h1 data-testid="chat-title" className="truncate text-xl font-semibold text-foreground">
-                        {activeConversationTitle || 'Chat'}
+            <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
+                <div className="min-w-0 flex-1">
+                    <h1 data-testid="chat-title" title={activeConversationTitle ?? undefined} className="line-clamp-2 break-words text-xl font-semibold text-foreground">
+                        {activeConversationTitle || (hasOpenChat ? 'Chat' : 'New chat')}
                     </h1>
                     {hasProject ? (
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
-                            {activeConversationHandle ? (
-                                <>
-                                    <span data-testid="chat-handle" className="font-mono">{activeConversationHandle}</span>
-                                    <span aria-hidden="true">·</span>
-                                </>
-                            ) : null}
-                            <button
-                                type="button"
-                                data-testid="chat-project-link"
-                                title={activeProjectPath ?? undefined}
-                                onClick={() => activeProjectPath && useStore.getState().openProjectPage(activeProjectPath)}
-                                className="min-w-0 truncate outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                            >
-                                {activeProjectLabel}
-                            </button>
+                            {hasOpenChat ? (
+                                <button
+                                    type="button"
+                                    data-testid="chat-project-link"
+                                    title={activeProjectPath ?? undefined}
+                                    onClick={() => activeProjectPath && useStore.getState().openProjectPage(activeProjectPath)}
+                                    className="min-w-0 truncate outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    {activeProjectLabel}
+                                </button>
+                            ) : (
+                                // Nothing is sent yet, so the chat can still start in another project.
+                                <ProjectPicker
+                                    heading="Start this chat in"
+                                    testId="new-chat-project-picker"
+                                    defaultProjectPath={activeProjectPath}
+                                    onPick={(projectPath) => window.dispatchEvent(new CustomEvent('spark:new-chat', { detail: projectPath }))}
+                                >
+                                    <button
+                                        type="button"
+                                        data-testid="new-chat-project-button"
+                                        title={activeProjectPath ?? undefined}
+                                        aria-label={`New chat in ${activeProjectLabel}; change project`}
+                                        className="flex min-w-0 items-center gap-1 rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                        <span className="shrink-0">in</span>
+                                        <span className="min-w-0 truncate font-medium text-foreground">{activeProjectLabel}</span>
+                                        <ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
+                                    </button>
+                                </ProjectPicker>
+                            )}
                             {activeConversationUpdatedAt ? (
                                 <>
                                     <span aria-hidden="true">·</span>
@@ -151,27 +196,11 @@ export function ProjectConversationSurface({
                                     </span>
                                 </>
                             ) : null}
+                            {activeConversationHandle ? <CopyChatId handle={activeConversationHandle} /> : null}
                         </p>
                     ) : null}
                 </div>
-                <div className="flex items-center gap-2">
-                    {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} /> : null}
-                    {activeProjectPath && activeChatMode ? (
-                        <NativeSelect
-                            data-testid="project-active-chat-mode-badge"
-                            aria-label="Mode"
-                            size="sm"
-                            value={activeChatMode}
-                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
-                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
-                            className="rounded-lg"
-                        >
-                            <NativeSelectOption value="chat">Chat</NativeSelectOption>
-                            <NativeSelectOption value="plan">Plan</NativeSelectOption>
-                        </NativeSelect>
-                    ) : null}
-                </div>
+                {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} className="shrink-0" /> : null}
             </header>
             <div className={cn('flex flex-col', !isNarrowViewport && 'min-h-0 flex-1')}>
                 {panelError ? (
@@ -200,7 +229,7 @@ export function ProjectConversationSurface({
                             <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>
                         ) : null}
                         composer={{
-                            placeholder: 'Reply, or describe a change to work on',
+                            placeholder: hasOpenChat ? 'Reply, or describe a change to work on' : `Start a new chat in ${activeProjectLabel}`,
                             draft: chatDraft,
                             onDraftChange: onChatDraftChange,
                             onSubmit: onChatComposerSubmit,
@@ -222,8 +251,6 @@ export function ProjectConversationSurface({
                                         <Folder aria-hidden="true" className="size-3.5 shrink-0" />
                                         <span className="truncate">Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span></span>
                                     </p>
-                                    {modelSettingsSource ? <span className="text-xs text-muted-foreground">{MODEL_SOURCE_LABELS[modelSettingsSource]}</span> : null}
-                                    {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
                                     <ContextMeter usage={contextUsage} />
                                 </>
                             ),
@@ -233,8 +260,26 @@ export function ProjectConversationSurface({
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults ? (
                                         <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>
                                     ) : null}
+                                    {activeChatMode ? (
+                                        <NativeSelect
+                                            data-testid="project-active-chat-mode-badge"
+                                            aria-label="Mode"
+                                            size="sm"
+                                            value={activeChatMode}
+                                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
+                                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
+                                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
+                                            className="rounded-lg"
+                                        >
+                                            <NativeSelectOption value="chat">Chat mode</NativeSelectOption>
+                                            <NativeSelectOption value="plan">Plan mode</NativeSelectOption>
+                                        </NativeSelect>
+                                    ) : null}
+                                    {/* One label for the model: the button names it and, when inherited, where from. */}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
-                                        projectPath={activeProjectPath} inheritLabel="Provider default"
+                                        projectPath={activeProjectPath} inheritLabel={defaultModel || 'Provider default'}
+                                        defaultPrefix={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].prefix : undefined}
+                                        title={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].title : undefined}
                                         layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
                                 </>
                             ),
