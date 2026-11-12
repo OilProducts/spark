@@ -1,10 +1,10 @@
-//! What Spark starts through `spawn_process_group` ends with Spark's process,
-//! even when that is killed without warning, and runs on until then. Here a
-//! helper process acts as Spark; it and its child and grandchild are this test
-//! binary, run again in another role.
+//! What Spark starts through `spawn_process_group`, and everything that starts,
+//! ends with Spark's process, even when that is killed without warning, and
+//! runs on until then. Here a helper process acts as Spark; it and what it
+//! starts are this test binary, run again in another role.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use spark_agent_adapter::local_environment::{configure_process_group, spawn_process_group};
@@ -13,16 +13,24 @@ const ROLE_ENV: &str = "SPARK_EXIT_CONTRACT_ROLE";
 const DIR_ENV: &str = "SPARK_EXIT_CONTRACT_DIR";
 const DEADLINE: Duration = Duration::from_secs(5);
 
+/// The directory is also an argument, so a process in the role shows it.
 fn role(role: &str, dir: &Path) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "spark_exit_contracts::spark_exit_role"])
+        .arg(dir)
         .env(ROLE_ENV, role)
         .env(DIR_ENV, dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+fn start(role_name: &str, dir: &Path) -> std::io::Result<Child> {
+    let mut command = role(role_name, dir);
+    configure_process_group(&mut command);
+    spawn_process_group(command)
 }
 
 /// Entry point of the processes the contract starts. A no-op in the ordinary
@@ -34,15 +42,31 @@ fn spark_exit_role() {
     };
     let dir = PathBuf::from(dir);
     match role_name.as_str() {
-        // Starts the child as Spark starts agents and tools.
-        "spark" => {
-            let mut command = role("child", &dir);
-            configure_process_group(&mut command);
-            spawn_process_group(&mut command).unwrap();
+        // Starts a child as Spark starts agents and tools, and reaps it.
+        "spark" | "spark-of-brief-child" => {
+            let child = if role_name == "spark" {
+                "child"
+            } else {
+                "brief-child"
+            };
+            let outcome = start(child, &dir).and_then(|mut child| child.wait());
+            std::fs::write(dir.join("outcome"), format!("{outcome:?}")).unwrap();
+        }
+        // Starts one process after another until it is killed.
+        "launching-spark" => {
+            for _ in 0..4 {
+                let dir = dir.clone();
+                std::thread::spawn(move || loop {
+                    std::mem::forget(start("launched", &dir));
+                });
+            }
+        }
+        "launched" => {
+            std::fs::write(dir.join(format!("launched-{}", std::process::id())), "").unwrap();
         }
         // Starts the grandchild plainly, as an agent starts its tools. On unix
         // it ignores TERM, so only the KILL that follows stops it.
-        "child" => {
+        "child" | "brief-child" => {
             #[cfg(unix)]
             let mut grandchild = {
                 let mut command = Command::new("sh");
@@ -55,6 +79,9 @@ fn spark_exit_role() {
             let pids = format!("{} {}", std::process::id(), grandchild.id());
             std::fs::write(dir.join("pids.tmp"), pids).unwrap();
             std::fs::rename(dir.join("pids.tmp"), dir.join("pids")).unwrap();
+            if role_name == "brief-child" {
+                return;
+            }
         }
         _ => {}
     }
@@ -89,6 +116,26 @@ fn running(pid: u32) -> bool {
     }
 }
 
+/// The live processes that show `dir` among their arguments.
+#[cfg(unix)]
+fn in_role(dir: &Path) -> Vec<u32> {
+    let output = Command::new("ps")
+        .args(["-A", "-ww", "-o", "pid=,stat=,command="])
+        .output()
+        .unwrap();
+    let dir = dir.to_str().unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.contains(dir))
+        .filter_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                [pid, stat, ..] if !stat.starts_with('Z') => pid.parse().ok(),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
 fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
@@ -100,14 +147,11 @@ fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
-#[test]
-fn what_spark_started_stops_when_spark_is_killed_without_warning() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut spark = role("spark", dir.path()).spawn().unwrap();
+fn started_pids(dir: &Path) -> Vec<u32> {
     let mut pids = Vec::new();
     assert!(
         wait_until(|| {
-            pids = std::fs::read_to_string(dir.path().join("pids"))
+            pids = std::fs::read_to_string(dir.join("pids"))
                 .unwrap_or_default()
                 .split_whitespace()
                 .filter_map(|pid| pid.parse::<u32>().ok())
@@ -116,9 +160,17 @@ fn what_spark_started_stops_when_spark_is_killed_without_warning() {
         }),
         "the child and grandchild never started"
     );
+    pids
+}
+
+#[test]
+fn what_spark_started_stops_when_spark_is_killed_without_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spark = role("spark", dir.path()).spawn().unwrap();
+    let pids = started_pids(dir.path());
 
     // Longer than Spark waits between checks on what it started.
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_secs(3));
     assert!(
         pids.iter().all(|pid| running(*pid)),
         "{pids:?} stopped while Spark ran"
@@ -133,15 +185,93 @@ fn what_spark_started_stops_when_spark_is_killed_without_warning() {
     );
 }
 
-/// The lifeline goes once the process it guards has ended, so nothing of the
-/// group stays behind.
+/// As a tool's shell that leaves `sleep 60 &` behind and ends, before the flow
+/// moves on to its next tool.
+#[test]
+fn what_outlives_the_process_spark_started_stops_when_spark_is_killed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spark = role("spark-of-brief-child", dir.path()).spawn().unwrap();
+    let [child, grandchild] = started_pids(dir.path())[..] else {
+        unreachable!()
+    };
+    assert!(wait_until(|| !running(child)), "the child never ended");
+
+    // Longer than Spark takes to let go of a group with nothing left in it.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        running(grandchild),
+        "the grandchild stopped while Spark ran"
+    );
+
+    spark.kill().unwrap();
+    spark.wait().unwrap();
+    assert!(
+        wait_until(|| !running(grandchild)),
+        "the grandchild outlived Spark"
+    );
+}
+
 #[cfg(unix)]
 #[test]
-fn nothing_stays_behind_once_the_process_spark_started_ends() {
+fn nothing_spark_was_starting_survives_its_kill() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spark = role("launching-spark", dir.path()).spawn().unwrap();
+    let launched = || {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|entry| {
+                let name = entry.as_ref().unwrap().file_name();
+                name.to_string_lossy().starts_with("launched-")
+            })
+            .count()
+    };
+    assert!(wait_until(|| launched() >= 8), "Spark started too little");
+
+    spark.kill().unwrap();
+    spark.wait().unwrap();
+    let mut left = Vec::new();
+    assert!(
+        wait_until(|| {
+            left = in_role(dir.path());
+            left.is_empty()
+        }),
+        "{left:?} outlived Spark"
+    );
+}
+
+/// As when Spark has run out of file descriptors: no lifeline, no start.
+#[cfg(unix)]
+#[test]
+fn a_process_that_cannot_be_tied_to_spark_does_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spark = role("spark", dir.path())
+        .env("PATH", dir.path().join("no-shell-here"))
+        .spawn()
+        .unwrap();
+    let mut outcome = String::new();
+    assert!(
+        wait_until(|| {
+            outcome = std::fs::read_to_string(dir.path().join("outcome")).unwrap_or_default();
+            !outcome.is_empty()
+        }),
+        "the start never returned"
+    );
+    let left = in_role(dir.path());
+    spark.kill().unwrap();
+    spark.wait().unwrap();
+    assert!(outcome.starts_with("Err"), "it started: {outcome}");
+    assert_eq!(left, [spark.id()], "a process started untied");
+}
+
+/// The lifeline goes once nothing else is left in the group, so nothing of
+/// the group stays behind.
+#[cfg(unix)]
+#[test]
+fn nothing_stays_behind_once_what_spark_started_has_ended() {
     let mut command = Command::new("sh");
     command.args(["-c", "exit 0"]);
     configure_process_group(&mut command);
-    let mut child = spawn_process_group(&mut command).unwrap();
+    let mut child = spawn_process_group(command).unwrap();
     let group = child.id().to_string();
     child.wait().unwrap();
     let group_running = || {

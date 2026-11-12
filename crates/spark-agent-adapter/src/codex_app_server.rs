@@ -571,7 +571,7 @@ impl CodexAppServerClient {
         // Its own process group, so a forced stop also ends the agent's tools.
         crate::local_environment::configure_process_group(&mut command);
         let mut child =
-            crate::local_environment::spawn_process_group(&mut command).map_err(|error| {
+            crate::local_environment::spawn_process_group(command).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     CodexAppServerError::configuration(format!(
                         "codex app-server executable not found: {}",

@@ -378,7 +378,7 @@ impl ClaudeCodeBackend {
                 content
             }
         };
-        let mut child = crate::local_environment::spawn_process_group(&mut command)
+        let mut child = crate::local_environment::spawn_process_group(command)
             .map_err(|error| launch_error(&executable, error))?;
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -694,7 +694,7 @@ pub fn list_available_claude_code_models_with_settings(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    let mut child = crate::local_environment::spawn_process_group(&mut command)
+    let mut child = crate::local_environment::spawn_process_group(command)
         .map_err(|error| log_model_discovery_error(launch_error(&executable, error)))?;
 
     let mut stdin = child

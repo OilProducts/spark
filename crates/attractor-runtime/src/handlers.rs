@@ -3140,18 +3140,17 @@ fn run_shell_command(
         }
         None => (None, Stdio::piped(), None, Stdio::piped()),
     };
-    let mut child = spark_agent_adapter::local_environment::spawn_process_group(
-        command_line
-            .arg("-c")
-            .arg(script)
-            .current_dir(cwd)
-            .envs(env)
-            .stdin(stdin)
-            .stdout(out_writer)
-            .stderr(err_writer),
-    )?;
-    // It keeps its copies of the write ends, which would hold the output open.
-    drop(command_line);
+    command_line
+        .arg("-c")
+        .arg(script)
+        .current_dir(cwd)
+        .envs(env)
+        .stdin(stdin)
+        .stdout(out_writer)
+        .stderr(err_writer);
+    // It goes with the spawn, since it keeps copies of the write ends, which
+    // would hold the output open.
+    let mut child = spark_agent_adapter::local_environment::spawn_process_group(command_line)?;
 
     if timeout.is_none() && stop.is_none() {
         let output = child.wait_with_output()?;
@@ -3319,6 +3318,8 @@ impl ToolOwner {
         };
         let mut command = Command::new("sh");
         spark_agent_adapter::local_environment::configure_process_group(&mut command);
+        // A plain spawn: Spark's end closes its input, which ends it once its
+        // group is empty, and the tool brings a lifeline into the group.
         let mut anchor = command
             .args(["-c", TOOL_ANCHOR_SCRIPT])
             .current_dir("/")
